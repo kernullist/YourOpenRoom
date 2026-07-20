@@ -98,8 +98,21 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
   const [spawnDraft, setSpawnDraft] = useState<SpawnDraft>(EMPTY_SPAWN_DRAFT);
   const [readDraft, setReadDraft] = useState<RootDraft>(EMPTY_DRAFT);
   const [writeDraft, setWriteDraft] = useState<RootDraft>(EMPTY_DRAFT);
+  // Keep Host PC controls short: one role group visible at a time.
+  const [hostSection, setHostSection] = useState<'capabilities' | 'spawn' | 'roots' | 'approvals'>(
+    'capabilities',
+  );
   const readPresets = listAoiHostReadRootPresets();
   const spawnPresets = listAoiHostSpawnPresets();
+  const HOST_SECTIONS: Array<{
+    id: 'capabilities' | 'spawn' | 'roots' | 'approvals';
+    label: string;
+  }> = [
+    { id: 'capabilities', label: 'Capabilities' },
+    { id: 'spawn', label: 'Spawn' },
+    { id: 'roots', label: 'File roots' },
+    { id: 'approvals', label: 'Approvals' },
+  ];
 
   const syncLinkedSessionConsent = useCallback(
     async (capabilityKey: string, enabled: boolean) => {
@@ -398,152 +411,177 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
             </div>
           ) : null}
 
-          {/* Kill switch */}
+          <div className={styles.advancedSubnav} data-testid="aoi-host-section-subnav">
+            {HOST_SECTIONS.map((section) => (
+              <button
+                key={section.id}
+                type="button"
+                className={
+                  hostSection === section.id
+                    ? `${styles.settingsTab} ${styles.settingsTabActive}`
+                    : styles.settingsTab
+                }
+                data-testid={`aoi-host-section-${section.id}`}
+                onClick={() => setHostSection(section.id)}
+              >
+                {section.label}
+              </button>
+            ))}
+          </div>
+
           <div className={styles.connectorList}>
-            <div className={styles.connectorRow}>
-              <div className={styles.connectorRowHeader}>
-                <strong>Master kill switch</strong>
-                <span className={styles.modelHint}>
-                  {panic ? 'PANIC ENGAGED — everything blocked' : 'Per-capability control'}
-                </span>
-              </div>
-              <div className={styles.connectorToggleRow}>
-                <button
-                  type="button"
-                  className={panic ? styles.saveBtn : styles.cancelBtn}
-                  onClick={() => setPanic(!panic)}
-                  disabled={busy === 'panic'}
-                  data-testid="aoi-host-panic"
-                >
-                  {panic ? 'Clear panic' : 'Panic (block all)'}
-                </button>
-              </div>
-              {CAPABILITIES.map((capability) => (
-                <div key={capability.key} className={styles.connectorToggleRow}>
+            {hostSection === 'capabilities' && (
+              <div className={styles.connectorRow}>
+                <div className={styles.connectorRowHeader}>
+                  <strong>Master kill switch</strong>
                   <span className={styles.modelHint}>
-                    <strong>{capability.label}</strong> · {capability.hint}
+                    {panic ? 'PANIC ENGAGED — everything blocked' : 'Per-capability control'}
                   </span>
+                </div>
+                <div className={styles.connectorToggleRow}>
                   <button
                     type="button"
-                    className={enabled.has(capability.key) ? styles.saveBtn : styles.cancelBtn}
-                    onClick={() => toggleCapability(capability.key, !enabled.has(capability.key))}
-                    disabled={panic || busy === `cap:${capability.key}`}
-                    data-testid={`aoi-host-cap-${capability.key}`}
+                    className={panic ? styles.saveBtn : styles.cancelBtn}
+                    onClick={() => setPanic(!panic)}
+                    disabled={busy === 'panic'}
+                    data-testid="aoi-host-panic"
                   >
-                    {enabled.has(capability.key) ? 'Enabled' : 'Disabled'}
+                    {panic ? 'Clear panic' : 'Panic (block all)'}
                   </button>
                 </div>
-              ))}
-            </div>
-
-            {/* Spawn allowlist */}
-            <div className={styles.connectorRow} data-testid="aoi-host-spawn-allowlist">
-              <div className={styles.connectorRowHeader}>
-                <strong>Spawn allowlist</strong>
-                <span className={styles.modelHint}>{spawnEntries.length} registered</span>
-              </div>
-              <span className={styles.modelHint}>
-                Register a single .exe, or a folder so any .exe under it is allowed. Id is optional.
-                Capability kill-switch + per-action approval still required.
-              </span>
-              <div className={styles.connectorToggleRow}>
-                {spawnPresets.map((preset) => (
-                  <button
-                    key={preset.id}
-                    type="button"
-                    className={styles.inlineActionBtn}
-                    onClick={() => addSpawnPreset(preset)}
-                    disabled={busy === `spawn:preset:${preset.id}`}
-                    data-testid={`aoi-host-spawn-preset-${preset.id}`}
-                  >
-                    + {preset.label}
-                  </button>
-                ))}
-              </div>
-              {spawnEntries.map((entry) => (
-                <div key={entry.id} className={styles.connectorToggleRow}>
-                  <span className={styles.modelHint}>
-                    [{entry.match === 'directory' ? 'dir' : 'file'}]{' '}
-                    {entry.label ? `${entry.label} · ` : ''}
-                    {entry.path}
-                  </span>
-                  <button
-                    type="button"
-                    className={styles.cancelBtn}
-                    onClick={() => removeSpawn(entry.id)}
-                    disabled={busy === `spawn:del:${entry.id}`}
-                    title="Remove this entry"
-                  >
-                    <Trash2 size={13} />
-                  </button>
-                </div>
-              ))}
-              <div className={styles.connectorToggleRow}>
-                <input
-                  className={styles.fieldInput}
-                  value={spawnDraft.path}
-                  onChange={(event) =>
-                    setSpawnDraft((prev) => ({ ...prev, path: event.target.value }))
-                  }
-                  placeholder="absolute exe or folder path"
-                  aria-label="Spawn entry path"
-                />
-                <button
-                  type="button"
-                  className={spawnDraft.match === 'directory' ? styles.saveBtn : styles.cancelBtn}
-                  onClick={() =>
-                    setSpawnDraft((prev) => ({
-                      ...prev,
-                      match: prev.match === 'directory' ? 'file' : 'directory',
-                    }))
-                  }
-                  title="Toggle file vs directory allow"
-                  data-testid="aoi-host-spawn-match-toggle"
-                >
-                  {spawnDraft.match === 'directory' ? 'Directory' : 'File'}
-                </button>
-                <button
-                  type="button"
-                  className={styles.saveBtn}
-                  onClick={addSpawn}
-                  disabled={!spawnDraft.path.trim() || busy === 'spawn:add'}
-                >
-                  Add
-                </button>
-              </div>
-            </div>
-
-            {renderRootsSection('read', 'Read roots', readRoots, readDraft, setReadDraft)}
-            {renderRootsSection('write', 'Write roots', writeRoots, writeDraft, setWriteDraft)}
-
-            {/* Approvals */}
-            <div className={styles.connectorRow} data-testid="aoi-host-approvals">
-              <div className={styles.connectorRowHeader}>
-                <strong>Pending approvals</strong>
-                <span className={styles.modelHint}>{approvals.length} waiting</span>
-              </div>
-              {approvals.length === 0 ? (
-                <span className={styles.modelHint}>No pending approvals.</span>
-              ) : (
-                approvals.map((entry) => (
-                  <div key={entry.id} className={styles.connectorToggleRow}>
+                {CAPABILITIES.map((capability) => (
+                  <div key={capability.key} className={styles.connectorToggleRow}>
                     <span className={styles.modelHint}>
-                      <strong>{entry.capability}</strong> · {entry.targetSummary}
+                      <strong>{capability.label}</strong> · {capability.hint}
                     </span>
                     <button
                       type="button"
-                      className={styles.saveBtn}
-                      onClick={() => approve(entry.approvalFingerprint)}
-                      disabled={busy === `approve:${entry.approvalFingerprint}`}
-                      title="Approve this single, time-bounded action"
+                      className={enabled.has(capability.key) ? styles.saveBtn : styles.cancelBtn}
+                      onClick={() => toggleCapability(capability.key, !enabled.has(capability.key))}
+                      disabled={panic || busy === `cap:${capability.key}`}
+                      data-testid={`aoi-host-cap-${capability.key}`}
                     >
-                      <Check size={13} />
-                      Approve
+                      {enabled.has(capability.key) ? 'Enabled' : 'Disabled'}
                     </button>
                   </div>
-                ))
-              )}
-            </div>
+                ))}
+              </div>
+            )}
+
+            {hostSection === 'spawn' && (
+              <div className={styles.connectorRow} data-testid="aoi-host-spawn-allowlist">
+                <div className={styles.connectorRowHeader}>
+                  <strong>Spawn allowlist</strong>
+                  <span className={styles.modelHint}>{spawnEntries.length} registered</span>
+                </div>
+                <span className={styles.modelHint}>
+                  Register a single .exe, or a folder so any .exe under it is allowed. Id is
+                  optional. Capability kill-switch + per-action approval still required.
+                </span>
+                <div className={styles.connectorToggleRow}>
+                  {spawnPresets.map((preset) => (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      className={styles.inlineActionBtn}
+                      onClick={() => addSpawnPreset(preset)}
+                      disabled={busy === `spawn:preset:${preset.id}`}
+                      data-testid={`aoi-host-spawn-preset-${preset.id}`}
+                    >
+                      + {preset.label}
+                    </button>
+                  ))}
+                </div>
+                {spawnEntries.map((entry) => (
+                  <div key={entry.id} className={styles.connectorToggleRow}>
+                    <span className={styles.modelHint}>
+                      [{entry.match === 'directory' ? 'dir' : 'file'}]{' '}
+                      {entry.label ? `${entry.label} · ` : ''}
+                      {entry.path}
+                    </span>
+                    <button
+                      type="button"
+                      className={styles.cancelBtn}
+                      onClick={() => removeSpawn(entry.id)}
+                      disabled={busy === `spawn:del:${entry.id}`}
+                      title="Remove this entry"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                ))}
+                <div className={styles.connectorToggleRow}>
+                  <input
+                    className={styles.fieldInput}
+                    value={spawnDraft.path}
+                    onChange={(event) =>
+                      setSpawnDraft((prev) => ({ ...prev, path: event.target.value }))
+                    }
+                    placeholder="absolute exe or folder path"
+                    aria-label="Spawn entry path"
+                  />
+                  <button
+                    type="button"
+                    className={spawnDraft.match === 'directory' ? styles.saveBtn : styles.cancelBtn}
+                    onClick={() =>
+                      setSpawnDraft((prev) => ({
+                        ...prev,
+                        match: prev.match === 'directory' ? 'file' : 'directory',
+                      }))
+                    }
+                    title="Toggle file vs directory allow"
+                    data-testid="aoi-host-spawn-match-toggle"
+                  >
+                    {spawnDraft.match === 'directory' ? 'Directory' : 'File'}
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.saveBtn}
+                    onClick={addSpawn}
+                    disabled={!spawnDraft.path.trim() || busy === 'spawn:add'}
+                  >
+                    Add
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {hostSection === 'roots' && (
+              <>
+                {renderRootsSection('read', 'Read roots', readRoots, readDraft, setReadDraft)}
+                {renderRootsSection('write', 'Write roots', writeRoots, writeDraft, setWriteDraft)}
+              </>
+            )}
+
+            {hostSection === 'approvals' && (
+              <div className={styles.connectorRow} data-testid="aoi-host-approvals">
+                <div className={styles.connectorRowHeader}>
+                  <strong>Pending approvals</strong>
+                  <span className={styles.modelHint}>{approvals.length} waiting</span>
+                </div>
+                {approvals.length === 0 ? (
+                  <span className={styles.modelHint}>No pending approvals.</span>
+                ) : (
+                  approvals.map((entry) => (
+                    <div key={entry.id} className={styles.connectorToggleRow}>
+                      <span className={styles.modelHint}>
+                        <strong>{entry.capability}</strong> · {entry.targetSummary}
+                      </span>
+                      <button
+                        type="button"
+                        className={styles.saveBtn}
+                        onClick={() => approve(entry.approvalFingerprint)}
+                        disabled={busy === `approve:${entry.approvalFingerprint}`}
+                        title="Approve this single, time-bounded action"
+                      >
+                        <Check size={13} />
+                        Approve
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
           </div>
         </>
       ) : null}

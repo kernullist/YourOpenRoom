@@ -1,7 +1,17 @@
 export type AppSettingsTabKey = 'chat' | 'models' | 'kira' | 'image' | 'advanced';
 
+/** Sub-sections inside Settings → Advanced (role-based navigation). */
+export type AppSettingsAdvancedSection =
+  | 'autonomy'
+  | 'host'
+  | 'operator'
+  | 'memory'
+  | 'integrations'
+  | 'tools';
+
 export interface OpenAppSettingsDetail {
   tab?: AppSettingsTabKey;
+  advancedSection?: AppSettingsAdvancedSection;
 }
 
 export interface AppSettingsSavedDetail {

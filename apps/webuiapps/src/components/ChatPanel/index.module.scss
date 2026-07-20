@@ -718,6 +718,33 @@
   flex: 0 0 auto;
 }
 
+/* Role-based sub-nav for the long Advanced settings page. Sticky so operators
+   can switch sections without scrolling back to the top. */
+.advancedSubnav {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  padding: 6px 0 10px;
+  margin: 0 0 4px;
+  background: linear-gradient(
+    180deg,
+    rgba(18, 18, 20, 0.98) 0%,
+    rgba(18, 18, 20, 0.92) 70%,
+    rgba(18, 18, 20, 0.7) 100%
+  );
+  backdrop-filter: blur(10px);
+}
+
+.advancedSectionHint {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.55);
+  margin: 0 0 4px;
+  line-height: 1.4;
+}
+
 .settingsTab {
   border: 1px solid rgba(255, 255, 255, 0.1);
   background: rgba(255, 255, 255, 0.04);

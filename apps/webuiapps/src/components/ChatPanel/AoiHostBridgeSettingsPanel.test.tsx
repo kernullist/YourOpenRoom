@@ -70,6 +70,8 @@ describe('AoiHostBridgeSettingsPanel', () => {
     });
     render(<AoiHostBridgeSettingsPanel sessionPath="aoi/default" />);
 
+    // Capabilities is the default host sub-section.
+    expect(await screen.findByTestId('aoi-host-section-capabilities')).toBeTruthy();
     const toggle = await screen.findByTestId('aoi-host-cap-os_file_read');
     expect(toggle.textContent).toContain('Disabled');
 

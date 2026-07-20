@@ -608,6 +608,7 @@ import {
 import {
   OPEN_APP_SETTINGS_EVENT,
   dispatchAppSettingsSaved,
+  type AppSettingsAdvancedSection,
   type AppSettingsTabKey,
   type OpenAppSettingsDetail,
 } from '@/lib/settingsEvents';
@@ -11670,6 +11671,25 @@ const SettingsModal: React.FC<{
     normalizeResponseLanguageMode(conversationPreferences?.responseLanguageMode),
   );
   const [activeTab, setActiveTab] = useState<SettingsTabKey>(initialTab);
+  const [advancedSection, setAdvancedSection] = useState<AppSettingsAdvancedSection>(() => {
+    try {
+      const raw = localStorage.getItem('aoi-advanced-settings-section');
+      const allowed: AppSettingsAdvancedSection[] = [
+        'autonomy',
+        'host',
+        'operator',
+        'memory',
+        'integrations',
+        'tools',
+      ];
+      if (raw && (allowed as string[]).includes(raw)) {
+        return raw as AppSettingsAdvancedSection;
+      }
+    } catch {
+      // ignore
+    }
+    return 'autonomy';
+  });
   const [focusedKiraApiKeyId, setFocusedKiraApiKeyId] = useState<string | null>(null);
   const aoiAgendaNudgeDecisionAuditKeyRef = useRef<string | null>(null);
   const [ttsEnabled, setTtsEnabled] = useState(Boolean(conversationPreferences?.ttsEnabled));
@@ -11695,6 +11715,14 @@ const SettingsModal: React.FC<{
   useEffect(() => {
     setActiveTab(initialTab);
   }, [initialTab]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('aoi-advanced-settings-section', advancedSection);
+    } catch {
+      // ignore quota / private mode
+    }
+  }, [advancedSection]);
 
   useEffect(() => {
     setOperatorVoicePolicy(aoiOperatorVoicePolicy);
@@ -12790,6 +12818,45 @@ const SettingsModal: React.FC<{
     { key: 'kira', label: 'Kira' },
     { key: 'image', label: 'Image' },
     { key: 'advanced', label: 'Advanced' },
+  ];
+
+  // Role-based Advanced sub-pages: only one group is mounted so the modal stays
+  // short and scannable instead of one endless scroll of every operator panel.
+  const ADVANCED_SETTINGS_SECTIONS: Array<{
+    id: AppSettingsAdvancedSection;
+    label: string;
+    hint: string;
+  }> = [
+    {
+      id: 'autonomy',
+      label: 'Autonomy',
+      hint: 'Proposals, goals, safety gates, scheduler, and opportunity inbox.',
+    },
+    {
+      id: 'host',
+      label: 'Host PC',
+      hint: 'Real-PC process/file access: kill-switch, allowlists, roots, approvals.',
+    },
+    {
+      id: 'operator',
+      label: 'Operator',
+      hint: 'Jarvis readiness, situation model, scorecards, and replay promotion.',
+    },
+    {
+      id: 'memory',
+      label: 'Memory',
+      hint: 'Memory decay, preference learning, and durable memory inspector.',
+    },
+    {
+      id: 'integrations',
+      label: 'Integrations',
+      hint: 'Tavily web search and PE Analyst / IDA MCP connectors.',
+    },
+    {
+      id: 'tools',
+      label: 'Tools',
+      hint: 'Prompt budget, run ledger, skills, MCP plugins, and tool safety policy.',
+    },
   ];
 
   const renderModelRuntimeFields = (
@@ -14095,3670 +14162,3803 @@ const SettingsModal: React.FC<{
           )}
 
           {activeTab === 'advanced' && (
-            <div className={styles.settingsSection}>
-              <div className={styles.settingsSectionCard} data-testid="aoi-autonomy-panel">
-                <div className={styles.settingsSectionHeader}>
-                  <div>
-                    <div className={styles.settingsSectionTitle}>
-                      Aoi Autonomy
-                      {aoiAutonomyNotificationBadge?.visible && (
-                        <span
-                          className={styles.aoiAutonomyBadge}
-                          title={aoiAutonomyNotificationBadge.why}
-                        >
-                          {aoiAutonomyNotificationBadge.label}
-                        </span>
-                      )}
+            <div className={styles.settingsSection} data-testid="advanced-settings">
+              <div className={styles.advancedSubnav} data-testid="advanced-settings-subnav">
+                {ADVANCED_SETTINGS_SECTIONS.map((section) => (
+                  <button
+                    key={section.id}
+                    type="button"
+                    className={
+                      advancedSection === section.id
+                        ? `${styles.settingsTab} ${styles.settingsTabActive}`
+                        : styles.settingsTab
+                    }
+                    data-testid={`advanced-section-${section.id}`}
+                    onClick={() => setAdvancedSection(section.id)}
+                  >
+                    {section.label}
+                  </button>
+                ))}
+              </div>
+              <p className={styles.advancedSectionHint} data-testid="advanced-section-hint">
+                {ADVANCED_SETTINGS_SECTIONS.find((section) => section.id === advancedSection)
+                  ?.hint ?? ''}
+              </p>
+
+              {advancedSection === 'autonomy' && (
+                <div className={styles.settingsSectionCard} data-testid="aoi-autonomy-panel">
+                  <div className={styles.settingsSectionHeader}>
+                    <div>
+                      <div className={styles.settingsSectionTitle}>
+                        Aoi Autonomy
+                        {aoiAutonomyNotificationBadge?.visible && (
+                          <span
+                            className={styles.aoiAutonomyBadge}
+                            title={aoiAutonomyNotificationBadge.why}
+                          >
+                            {aoiAutonomyNotificationBadge.label}
+                          </span>
+                        )}
+                      </div>
+                      <span className={styles.modelHint}>
+                        Checks, proposals, goals, and safety gates.
+                      </span>
                     </div>
-                    <span className={styles.modelHint}>
-                      Checks, proposals, goals, and safety gates.
-                    </span>
-                  </div>
-                  <div className={styles.aoiAutonomyHeaderActions}>
-                    <button
-                      type="button"
-                      className={styles.inlineActionBtn}
-                      onClick={() =>
-                        onUpdateAoiAutonomyPanelSettings({
-                          panelExpanded: !aoiAutonomyPanelSettings.panelExpanded,
-                        })
-                      }
-                      title={
-                        aoiAutonomyPanelSettings.panelExpanded
-                          ? 'Collapse Aoi autonomy panel'
-                          : 'Expand Aoi autonomy panel'
-                      }
-                    >
-                      {aoiAutonomyPanelSettings.panelExpanded ? (
-                        <ChevronDown size={14} />
-                      ) : (
-                        <ChevronRight size={14} />
-                      )}
-                      {aoiAutonomyPanelSettings.panelExpanded ? 'Collapse' : 'Expand'}
-                    </button>
-                    <button
-                      type="button"
-                      className={styles.inlineActionBtn}
-                      onClick={() => void onRefreshAoiAutonomy()}
-                      disabled={aoiAutonomyLoading}
-                      title="Refresh Aoi autonomy state"
-                    >
-                      <RotateCcw size={14} />
-                      Refresh
-                    </button>
-                    <button
-                      type="button"
-                      className={styles.inlineActionBtn}
-                      onClick={() => void onRunAoiAutonomyCheck()}
-                      disabled={
-                        aoiAutonomyActionId === 'tick' ||
-                        aoiAutonomyLoading ||
-                        aoiAutonomyStatus?.activeTick
-                      }
-                      title="Run a bounded manual proposal check"
-                    >
-                      Run check
-                    </button>
-                  </div>
-                </div>
-
-                {aoiAutonomyPanelSettings.panelExpanded && (
-                  <>
-                    {aoiAutonomyError && (
-                      <div className={styles.aoiAutonomyError}>{aoiAutonomyError}</div>
-                    )}
-                    {aoiAutonomyLoading && (
-                      <span className={styles.modelHint}>Loading autonomy state...</span>
-                    )}
-
-                    <div className={styles.promptBudgetGrid}>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Enabled</span>
-                        <strong>{aoiAutonomyPolicy?.enabled ? 'On' : 'Off'}</strong>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Level</span>
-                        <strong>{aoiAutonomyPolicy?.level ?? 'L1'}</strong>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Proactive</span>
-                        <strong>
-                          {aoiAutonomyPolicy?.proactiveSuggestionsEnabled ? 'On' : 'Off'}
-                        </strong>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Active</span>
-                        <strong>{aoiAutonomyProposalCounts.active}</strong>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Opportunities</span>
-                        <strong>
-                          {aoiOpportunityInboxSummary.activeCount} /{' '}
-                          {aoiOpportunityInboxSummary.snoozedCount}
-                        </strong>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Dismissed / snoozed</span>
-                        <strong>
-                          {aoiAutonomyProposalCounts.dismissed} /{' '}
-                          {aoiAutonomyProposalCounts.snoozed}
-                        </strong>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Blocked</span>
-                        <strong>{aoiAutonomyBlockedCount}</strong>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Last check</span>
-                        <strong>{aoiAutonomyLastTickLabel}</strong>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Next check</span>
-                        <strong>{aoiAutonomyNextTickLabel}</strong>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Tick</span>
-                        <strong>{aoiAutonomyStatus?.activeTick ? 'Running' : 'Idle'}</strong>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Wakeups</span>
-                        <strong>{aoiAutonomyScheduler?.wakeupCount ?? 0}</strong>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Scheduler</span>
-                        <strong>{aoiAutonomySchedulerSummary.nextWakeupLabel}</strong>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Observed</span>
-                        <strong>{aoiAutonomyStatus?.recentObservationCount ?? 0}</strong>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Goals</span>
-                        <strong>{aoiAutonomyStatus?.activeGoalCount ?? 0}</strong>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Current goal</span>
-                        <strong>{aoiAutonomyCurrentGoalLabel}</strong>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Next goal step</span>
-                        <strong>{aoiAutonomyNextGoalStepLabel}</strong>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Sources</span>
-                        <strong>
-                          {enabledAoiEnvironmentSourceCount} /{' '}
-                          {aoiAutonomyStatus?.environmentSourceCount ??
-                            aoiEnvironmentSourceSummaries.length}
-                        </strong>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Context</span>
-                        <strong>{aoiContextSourceSummaries.length}</strong>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Workspace</span>
-                        <strong>
-                          {aoiWorkspaceSignalSummary.visible ? 'Observed' : 'No signal'}
-                        </strong>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Validation</span>
-                        <strong>{aoiWorkspaceSignalSummary.freshnessLabel}</strong>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Private gated</span>
-                        <strong>{privateAoiEnvironmentSourceCount}</strong>
-                      </div>
-                    </div>
-
-                    {aoiJarvisAutonomyGovernorSummary.visible && (
-                      <div
-                        className={styles.aoiAutonomyProposalSection}
-                        data-testid="aoi-jarvis-autonomy-governor"
+                    <div className={styles.aoiAutonomyHeaderActions}>
+                      <button
+                        type="button"
+                        className={styles.inlineActionBtn}
+                        onClick={() =>
+                          onUpdateAoiAutonomyPanelSettings({
+                            panelExpanded: !aoiAutonomyPanelSettings.panelExpanded,
+                          })
+                        }
+                        title={
+                          aoiAutonomyPanelSettings.panelExpanded
+                            ? 'Collapse Aoi autonomy panel'
+                            : 'Expand Aoi autonomy panel'
+                        }
                       >
-                        <div className={styles.promptBudgetSectionTitle}>
-                          Jarvis autonomy governor
+                        {aoiAutonomyPanelSettings.panelExpanded ? (
+                          <ChevronDown size={14} />
+                        ) : (
+                          <ChevronRight size={14} />
+                        )}
+                        {aoiAutonomyPanelSettings.panelExpanded ? 'Collapse' : 'Expand'}
+                      </button>
+                      <button
+                        type="button"
+                        className={styles.inlineActionBtn}
+                        onClick={() => void onRefreshAoiAutonomy()}
+                        disabled={aoiAutonomyLoading}
+                        title="Refresh Aoi autonomy state"
+                      >
+                        <RotateCcw size={14} />
+                        Refresh
+                      </button>
+                      <button
+                        type="button"
+                        className={styles.inlineActionBtn}
+                        onClick={() => void onRunAoiAutonomyCheck()}
+                        disabled={
+                          aoiAutonomyActionId === 'tick' ||
+                          aoiAutonomyLoading ||
+                          aoiAutonomyStatus?.activeTick
+                        }
+                        title="Run a bounded manual proposal check"
+                      >
+                        Run check
+                      </button>
+                    </div>
+                  </div>
+
+                  {aoiAutonomyPanelSettings.panelExpanded && (
+                    <>
+                      {aoiAutonomyError && (
+                        <div className={styles.aoiAutonomyError}>{aoiAutonomyError}</div>
+                      )}
+                      {aoiAutonomyLoading && (
+                        <span className={styles.modelHint}>Loading autonomy state...</span>
+                      )}
+
+                      <div className={styles.promptBudgetGrid}>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Enabled</span>
+                          <strong>{aoiAutonomyPolicy?.enabled ? 'On' : 'Off'}</strong>
                         </div>
-                        <div className={styles.aoiAutonomyProposalItem}>
-                          <div className={styles.aoiAutonomyProposalMeta}>
-                            <span>{aoiJarvisAutonomyGovernorSummary.modeLabel}</span>
-                            <span>
-                              allowed{' '}
-                              {aoiJarvisAutonomyGovernorSummary.allowedCapabilityLabels.length}
-                            </span>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Level</span>
+                          <strong>{aoiAutonomyPolicy?.level ?? 'L1'}</strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Proactive</span>
+                          <strong>
+                            {aoiAutonomyPolicy?.proactiveSuggestionsEnabled ? 'On' : 'Off'}
+                          </strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Active</span>
+                          <strong>{aoiAutonomyProposalCounts.active}</strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Opportunities</span>
+                          <strong>
+                            {aoiOpportunityInboxSummary.activeCount} /{' '}
+                            {aoiOpportunityInboxSummary.snoozedCount}
+                          </strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Dismissed / snoozed</span>
+                          <strong>
+                            {aoiAutonomyProposalCounts.dismissed} /{' '}
+                            {aoiAutonomyProposalCounts.snoozed}
+                          </strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Blocked</span>
+                          <strong>{aoiAutonomyBlockedCount}</strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Last check</span>
+                          <strong>{aoiAutonomyLastTickLabel}</strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Next check</span>
+                          <strong>{aoiAutonomyNextTickLabel}</strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Tick</span>
+                          <strong>{aoiAutonomyStatus?.activeTick ? 'Running' : 'Idle'}</strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Wakeups</span>
+                          <strong>{aoiAutonomyScheduler?.wakeupCount ?? 0}</strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Scheduler</span>
+                          <strong>{aoiAutonomySchedulerSummary.nextWakeupLabel}</strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Observed</span>
+                          <strong>{aoiAutonomyStatus?.recentObservationCount ?? 0}</strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Goals</span>
+                          <strong>{aoiAutonomyStatus?.activeGoalCount ?? 0}</strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Current goal</span>
+                          <strong>{aoiAutonomyCurrentGoalLabel}</strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Next goal step</span>
+                          <strong>{aoiAutonomyNextGoalStepLabel}</strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Sources</span>
+                          <strong>
+                            {enabledAoiEnvironmentSourceCount} /{' '}
+                            {aoiAutonomyStatus?.environmentSourceCount ??
+                              aoiEnvironmentSourceSummaries.length}
+                          </strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Context</span>
+                          <strong>{aoiContextSourceSummaries.length}</strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Workspace</span>
+                          <strong>
+                            {aoiWorkspaceSignalSummary.visible ? 'Observed' : 'No signal'}
+                          </strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Validation</span>
+                          <strong>{aoiWorkspaceSignalSummary.freshnessLabel}</strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Private gated</span>
+                          <strong>{privateAoiEnvironmentSourceCount}</strong>
+                        </div>
+                      </div>
+
+                      {aoiJarvisAutonomyGovernorSummary.visible && (
+                        <div
+                          className={styles.aoiAutonomyProposalSection}
+                          data-testid="aoi-jarvis-autonomy-governor"
+                        >
+                          <div className={styles.promptBudgetSectionTitle}>
+                            Jarvis autonomy governor
                           </div>
-                          <div className={styles.aoiAutonomyProposalTitle}>
-                            {sanitizeAoiProposalDisplayText(
-                              aoiJarvisAutonomyGovernorSummary.summaryLabel,
-                              180,
-                            )}
-                          </div>
-                          <div className={styles.aoiAutonomyProposalDetails}>
-                            {aoiJarvisAutonomyGovernorSummary.allowedCapabilityLabels.length > 0 ? (
-                              <div>
-                                Allowed:{' '}
-                                {aoiJarvisAutonomyGovernorSummary.allowedCapabilityLabels.join(
-                                  ', ',
-                                )}
-                              </div>
-                            ) : (
-                              <div>Allowed: none beyond observation</div>
-                            )}
-                            {aoiJarvisAutonomyGovernorSummary.blockedCapabilityLabels.length >
-                              0 && (
-                              <div>
-                                Blocked capability:{' '}
-                                {aoiJarvisAutonomyGovernorSummary.blockedCapabilityLabels.join(
-                                  ', ',
-                                )}
-                              </div>
-                            )}
-                            {aoiJarvisAutonomyGovernorSummary.capabilityGapLabels.map(
-                              (label, index) => (
-                                <div key={`jarvis-governor-gap-${index}`}>
-                                  Gap: {sanitizeAoiProposalDisplayText(label, 300)}
+                          <div className={styles.aoiAutonomyProposalItem}>
+                            <div className={styles.aoiAutonomyProposalMeta}>
+                              <span>{aoiJarvisAutonomyGovernorSummary.modeLabel}</span>
+                              <span>
+                                allowed{' '}
+                                {aoiJarvisAutonomyGovernorSummary.allowedCapabilityLabels.length}
+                              </span>
+                            </div>
+                            <div className={styles.aoiAutonomyProposalTitle}>
+                              {sanitizeAoiProposalDisplayText(
+                                aoiJarvisAutonomyGovernorSummary.summaryLabel,
+                                180,
+                              )}
+                            </div>
+                            <div className={styles.aoiAutonomyProposalDetails}>
+                              {aoiJarvisAutonomyGovernorSummary.allowedCapabilityLabels.length >
+                              0 ? (
+                                <div>
+                                  Allowed:{' '}
+                                  {aoiJarvisAutonomyGovernorSummary.allowedCapabilityLabels.join(
+                                    ', ',
+                                  )}
                                 </div>
-                              ),
-                            )}
-                            {aoiJarvisAutonomyGovernorSummary.upgradePlanLabels.map(
-                              (label, index) => (
-                                <div key={`jarvis-governor-upgrade-plan-${index}`}>
-                                  Plan: {sanitizeAoiProposalDisplayText(label, 300)}
+                              ) : (
+                                <div>Allowed: none beyond observation</div>
+                              )}
+                              {aoiJarvisAutonomyGovernorSummary.blockedCapabilityLabels.length >
+                                0 && (
+                                <div>
+                                  Blocked capability:{' '}
+                                  {aoiJarvisAutonomyGovernorSummary.blockedCapabilityLabels.join(
+                                    ', ',
+                                  )}
                                 </div>
-                              ),
-                            )}
-                            {aoiJarvisAutonomyGovernorSummary.responseContractLabels.map(
-                              (label, index) => (
-                                <div key={`jarvis-governor-response-contract-${index}`}>
-                                  Response: {sanitizeAoiProposalDisplayText(label, 300)}
+                              )}
+                              {aoiJarvisAutonomyGovernorSummary.capabilityGapLabels.map(
+                                (label, index) => (
+                                  <div key={`jarvis-governor-gap-${index}`}>
+                                    Gap: {sanitizeAoiProposalDisplayText(label, 300)}
+                                  </div>
+                                ),
+                              )}
+                              {aoiJarvisAutonomyGovernorSummary.upgradePlanLabels.map(
+                                (label, index) => (
+                                  <div key={`jarvis-governor-upgrade-plan-${index}`}>
+                                    Plan: {sanitizeAoiProposalDisplayText(label, 300)}
+                                  </div>
+                                ),
+                              )}
+                              {aoiJarvisAutonomyGovernorSummary.responseContractLabels.map(
+                                (label, index) => (
+                                  <div key={`jarvis-governor-response-contract-${index}`}>
+                                    Response: {sanitizeAoiProposalDisplayText(label, 300)}
+                                  </div>
+                                ),
+                              )}
+                              {aoiJarvisAutonomyGovernorRequestDraft.trim() ? (
+                                <div>
+                                  Request preview:{' '}
+                                  {sanitizeAoiProposalDisplayText(
+                                    aoiJarvisAutonomyGovernorRequestDraft,
+                                    260,
+                                  )}
                                 </div>
-                              ),
-                            )}
-                            {aoiJarvisAutonomyGovernorRequestDraft.trim() ? (
+                              ) : (
+                                <div>Request routing: no current or recent user request</div>
+                              )}
+                              {aoiJarvisAutonomyGovernorRequestRoutingSummary.visible && (
+                                <>
+                                  <div>
+                                    Request routing:{' '}
+                                    {sanitizeAoiProposalDisplayText(
+                                      `${aoiJarvisAutonomyGovernorRequestRoutingSummary.status}; ${aoiJarvisAutonomyGovernorRequestRoutingSummary.summaryLabel}`,
+                                      300,
+                                    )}
+                                  </div>
+                                  <div>
+                                    Request directive:{' '}
+                                    {sanitizeAoiProposalDisplayText(
+                                      aoiJarvisAutonomyGovernorRequestRoutingSummary.responseDirectiveLabel,
+                                      320,
+                                    )}
+                                  </div>
+                                  {aoiJarvisAutonomyGovernorRequestRoutingSummary.allowedMatchedLabels.map(
+                                    (label, index) => (
+                                      <div key={`jarvis-governor-request-allowed-${index}`}>
+                                        Matched allowed:{' '}
+                                        {sanitizeAoiProposalDisplayText(label, 260)}
+                                      </div>
+                                    ),
+                                  )}
+                                  {aoiJarvisAutonomyGovernorRequestRoutingSummary.blockedMatchedLabels.map(
+                                    (label, index) => (
+                                      <div key={`jarvis-governor-request-blocked-${index}`}>
+                                        Matched blocked:{' '}
+                                        {sanitizeAoiProposalDisplayText(label, 300)}
+                                      </div>
+                                    ),
+                                  )}
+                                  {aoiJarvisAutonomyGovernorRequestRoutingSummary.evidenceRefs
+                                    .slice(0, 4)
+                                    .map((ref, index) => (
+                                      <div key={`jarvis-governor-request-evidence-${index}`}>
+                                        Request evidence: {sanitizeAoiProposalDisplayText(ref, 220)}
+                                      </div>
+                                    ))}
+                                </>
+                              )}
+                              {aoiJarvisAutonomyGovernorSummary.requestScenarioLabels.map(
+                                (label, index) => (
+                                  <div key={`jarvis-governor-request-scenario-${index}`}>
+                                    Scenario: {sanitizeAoiProposalDisplayText(label, 300)}
+                                  </div>
+                                ),
+                              )}
+                              {aoiJarvisAutonomyGovernorSummary.blockerLabels.map(
+                                (label, index) => (
+                                  <div key={`jarvis-governor-blocker-${index}`}>
+                                    Blocker: {sanitizeAoiProposalDisplayText(label, 260)}
+                                  </div>
+                                ),
+                              )}
+                              {aoiJarvisAutonomyGovernorSummary.whyNotJarvisYetLabels.map(
+                                (label, index) => (
+                                  <div key={`jarvis-governor-why-${index}`}>
+                                    Boundary: {sanitizeAoiProposalDisplayText(label, 260)}
+                                  </div>
+                                ),
+                              )}
                               <div>
-                                Request preview:{' '}
+                                Next:{' '}
                                 {sanitizeAoiProposalDisplayText(
-                                  aoiJarvisAutonomyGovernorRequestDraft,
+                                  aoiJarvisAutonomyGovernorSummary.nextUpgradeActionLabel,
                                   260,
                                 )}
                               </div>
-                            ) : (
-                              <div>Request routing: no current or recent user request</div>
-                            )}
-                            {aoiJarvisAutonomyGovernorRequestRoutingSummary.visible && (
-                              <>
-                                <div>
-                                  Request routing:{' '}
-                                  {sanitizeAoiProposalDisplayText(
-                                    `${aoiJarvisAutonomyGovernorRequestRoutingSummary.status}; ${aoiJarvisAutonomyGovernorRequestRoutingSummary.summaryLabel}`,
-                                    300,
-                                  )}
-                                </div>
-                                <div>
-                                  Request directive:{' '}
-                                  {sanitizeAoiProposalDisplayText(
-                                    aoiJarvisAutonomyGovernorRequestRoutingSummary.responseDirectiveLabel,
-                                    320,
-                                  )}
-                                </div>
-                                {aoiJarvisAutonomyGovernorRequestRoutingSummary.allowedMatchedLabels.map(
-                                  (label, index) => (
-                                    <div key={`jarvis-governor-request-allowed-${index}`}>
-                                      Matched allowed: {sanitizeAoiProposalDisplayText(label, 260)}
-                                    </div>
-                                  ),
-                                )}
-                                {aoiJarvisAutonomyGovernorRequestRoutingSummary.blockedMatchedLabels.map(
-                                  (label, index) => (
-                                    <div key={`jarvis-governor-request-blocked-${index}`}>
-                                      Matched blocked: {sanitizeAoiProposalDisplayText(label, 300)}
-                                    </div>
-                                  ),
-                                )}
-                                {aoiJarvisAutonomyGovernorRequestRoutingSummary.evidenceRefs
-                                  .slice(0, 4)
-                                  .map((ref, index) => (
-                                    <div key={`jarvis-governor-request-evidence-${index}`}>
-                                      Request evidence: {sanitizeAoiProposalDisplayText(ref, 220)}
-                                    </div>
-                                  ))}
-                              </>
-                            )}
-                            {aoiJarvisAutonomyGovernorSummary.requestScenarioLabels.map(
-                              (label, index) => (
-                                <div key={`jarvis-governor-request-scenario-${index}`}>
-                                  Scenario: {sanitizeAoiProposalDisplayText(label, 300)}
-                                </div>
-                              ),
-                            )}
-                            {aoiJarvisAutonomyGovernorSummary.blockerLabels.map((label, index) => (
-                              <div key={`jarvis-governor-blocker-${index}`}>
-                                Blocker: {sanitizeAoiProposalDisplayText(label, 260)}
-                              </div>
-                            ))}
-                            {aoiJarvisAutonomyGovernorSummary.whyNotJarvisYetLabels.map(
-                              (label, index) => (
-                                <div key={`jarvis-governor-why-${index}`}>
-                                  Boundary: {sanitizeAoiProposalDisplayText(label, 260)}
-                                </div>
-                              ),
-                            )}
-                            <div>
-                              Next:{' '}
-                              {sanitizeAoiProposalDisplayText(
-                                aoiJarvisAutonomyGovernorSummary.nextUpgradeActionLabel,
-                                260,
-                              )}
-                            </div>
-                            {aoiJarvisAutonomyGovernorAuditSummary.visible && (
-                              <>
-                                <div>
-                                  Audit:{' '}
-                                  {sanitizeAoiProposalDisplayText(
-                                    aoiJarvisAutonomyGovernorAuditSummary.headlineLabel,
-                                    220,
-                                  )}
-                                </div>
-                                <div>
-                                  Latest:{' '}
-                                  {sanitizeAoiProposalDisplayText(
-                                    aoiJarvisAutonomyGovernorAuditSummary.latestLabel,
-                                    260,
-                                  )}
-                                </div>
-                                <div>
-                                  Audit plan:{' '}
-                                  {sanitizeAoiProposalDisplayText(
-                                    aoiJarvisAutonomyGovernorAuditSummary.upgradePlanLabel,
-                                    260,
-                                  )}
-                                </div>
-                                <div>
-                                  Audit freshness:{' '}
-                                  {sanitizeAoiProposalDisplayText(
-                                    aoiJarvisAutonomyGovernorAuditSummary.freshnessLabel,
-                                    260,
-                                  )}
-                                </div>
-                                {aoiJarvisAutonomyGovernorAuditSummary.freshnessReviewLabels.map(
-                                  (label, index) => (
-                                    <div key={`jarvis-governor-audit-freshness-${index}`}>
-                                      Freshness: {sanitizeAoiProposalDisplayText(label, 260)}
-                                    </div>
-                                  ),
-                                )}
-                                {aoiJarvisAutonomyGovernorAuditSummary.upgradePlanStepLabels.map(
-                                  (label, index) => (
-                                    <div key={`jarvis-governor-audit-plan-step-${index}`}>
-                                      Audit step: {sanitizeAoiProposalDisplayText(label, 260)}
-                                    </div>
-                                  ),
-                                )}
-                                {aoiJarvisAutonomyGovernorAuditSummary.recentEventLabels.map(
-                                  (label, index) => (
-                                    <div key={`jarvis-governor-audit-${index}`}>
-                                      Recent: {sanitizeAoiProposalDisplayText(label, 260)}
-                                    </div>
-                                  ),
-                                )}
-                                <div>
-                                  Boundary:{' '}
-                                  {sanitizeAoiProposalDisplayText(
-                                    aoiJarvisAutonomyGovernorAuditSummary.safetyBoundaryLabel,
-                                    260,
-                                  )}
-                                </div>
-                                {aoiJarvisAutonomyGovernorAuditSummary.lastResetLabel && (
+                              {aoiJarvisAutonomyGovernorAuditSummary.visible && (
+                                <>
                                   <div>
-                                    Reset:{' '}
+                                    Audit:{' '}
                                     {sanitizeAoiProposalDisplayText(
-                                      aoiJarvisAutonomyGovernorAuditSummary.lastResetLabel,
+                                      aoiJarvisAutonomyGovernorAuditSummary.headlineLabel,
                                       220,
                                     )}
                                   </div>
-                                )}
-                                <div className={styles.aoiInlineSuggestionActions}>
-                                  <button
-                                    type="button"
-                                    className={styles.inlineActionBtn}
-                                    onClick={restartAoiJarvisAutonomyGovernorAudit}
-                                    disabled={aoiJarvisAutonomyGovernorAuditSummary.resetDisabled}
-                                    title={aoiJarvisAutonomyGovernorAuditSummary.resetTitle}
-                                  >
-                                    {aoiJarvisAutonomyGovernorAuditSummary.resetLabel}
-                                  </button>
-                                </div>
-                              </>
-                            )}
-                            {aoiJarvisAutonomyGovernorSummary.evidenceRefs.map((ref, index) => (
-                              <div key={`jarvis-governor-evidence-${index}`}>
-                                Evidence: {sanitizeAoiProposalDisplayText(ref, 220)}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    {aoiOpportunityInboxSummary.visible && (
-                      <div
-                        className={styles.aoiAutonomyProposalSection}
-                        data-testid="aoi-opportunity-inbox"
-                      >
-                        <div className={styles.promptBudgetSectionTitle}>Opportunity inbox</div>
-                        <div className={styles.aoiAutonomyProposalItem}>
-                          <div className={styles.aoiAutonomyProposalMeta}>
-                            <span>{aoiOpportunityInboxSummary.countLabel}</span>
-                            <span>display-only</span>
-                          </div>
-                          <div className={styles.aoiAutonomyProposalTitle}>
-                            {sanitizeAoiProposalDisplayText(
-                              aoiOpportunityInboxSummary.headlineLabel,
-                              180,
-                            )}
-                          </div>
-                          <div className={styles.aoiAutonomyProposalReason}>
-                            {sanitizeAoiProposalDisplayText(
-                              aoiOpportunityInboxSummary.safetyBoundaryLabel,
-                              320,
-                            )}
-                          </div>
-                          <div className={styles.aoiAutonomyProposalDetails}>
-                            <div>{aoiOpportunityInboxSummary.learningSummaryLabel}</div>
-                            {aoiOpportunityInboxSummary.learningAdjustmentLabels.map(
-                              (label, index) => (
-                                <div key={`opportunity-learning-${index}`}>Learning: {label}</div>
-                              ),
-                            )}
-                          </div>
-                          {aoiOpportunityInboxSummary.itemLabels.length > 0 ? (
-                            <div className={styles.aoiAutonomyProposalDetails}>
-                              {aoiOpportunityInboxSummary.itemLabels.map((item) => (
-                                <div key={item.id}>
-                                  <strong>{item.titleLabel}</strong>
-                                  <div>{item.metaLabel}</div>
-                                  <div>Question: {item.curiosityLabel}</div>
-                                  <div>Why now: {item.whyNowLabel}</div>
-                                  <div>Evidence need: {item.evidenceNeedLabel}</div>
-                                  <div>Next: {item.nextActionLabel}</div>
-                                  <div>Delivery: {item.deliveryLabel}</div>
-                                  <div>Governor: {item.interruptionModeLabel}</div>
-                                  <div>Governor reason: {item.interruptionSummaryLabel}</div>
-                                  {item.interruptionBlockedLabels.map((label, index) => (
-                                    <div key={`${item.id}-interruption-blocker-${index}`}>
-                                      Direct chat block: {label}
+                                  <div>
+                                    Latest:{' '}
+                                    {sanitizeAoiProposalDisplayText(
+                                      aoiJarvisAutonomyGovernorAuditSummary.latestLabel,
+                                      260,
+                                    )}
+                                  </div>
+                                  <div>
+                                    Audit plan:{' '}
+                                    {sanitizeAoiProposalDisplayText(
+                                      aoiJarvisAutonomyGovernorAuditSummary.upgradePlanLabel,
+                                      260,
+                                    )}
+                                  </div>
+                                  <div>
+                                    Audit freshness:{' '}
+                                    {sanitizeAoiProposalDisplayText(
+                                      aoiJarvisAutonomyGovernorAuditSummary.freshnessLabel,
+                                      260,
+                                    )}
+                                  </div>
+                                  {aoiJarvisAutonomyGovernorAuditSummary.freshnessReviewLabels.map(
+                                    (label, index) => (
+                                      <div key={`jarvis-governor-audit-freshness-${index}`}>
+                                        Freshness: {sanitizeAoiProposalDisplayText(label, 260)}
+                                      </div>
+                                    ),
+                                  )}
+                                  {aoiJarvisAutonomyGovernorAuditSummary.upgradePlanStepLabels.map(
+                                    (label, index) => (
+                                      <div key={`jarvis-governor-audit-plan-step-${index}`}>
+                                        Audit step: {sanitizeAoiProposalDisplayText(label, 260)}
+                                      </div>
+                                    ),
+                                  )}
+                                  {aoiJarvisAutonomyGovernorAuditSummary.recentEventLabels.map(
+                                    (label, index) => (
+                                      <div key={`jarvis-governor-audit-${index}`}>
+                                        Recent: {sanitizeAoiProposalDisplayText(label, 260)}
+                                      </div>
+                                    ),
+                                  )}
+                                  <div>
+                                    Boundary:{' '}
+                                    {sanitizeAoiProposalDisplayText(
+                                      aoiJarvisAutonomyGovernorAuditSummary.safetyBoundaryLabel,
+                                      260,
+                                    )}
+                                  </div>
+                                  {aoiJarvisAutonomyGovernorAuditSummary.lastResetLabel && (
+                                    <div>
+                                      Reset:{' '}
+                                      {sanitizeAoiProposalDisplayText(
+                                        aoiJarvisAutonomyGovernorAuditSummary.lastResetLabel,
+                                        220,
+                                      )}
                                     </div>
-                                  ))}
-                                  <div>Action ladder: {item.actionLadderLevelLabel}</div>
-                                  <div>Action boundary: {item.actionLadderSummaryLabel}</div>
-                                  {item.actionLadderApprovalLabels.map((label, index) => (
-                                    <div key={`${item.id}-action-ladder-approval-${index}`}>
-                                      Approval needed: {label}
-                                    </div>
-                                  ))}
-                                  {item.actionLadderBlockedLabels.map((label, index) => (
-                                    <div key={`${item.id}-action-ladder-blocked-${index}`}>
-                                      Action blocked: {label}
-                                    </div>
-                                  ))}
-                                  <div>Follow-through: {item.followThroughLabel}</div>
-                                  <div>Learning: {item.followThroughReasonLabel}</div>
-                                  {item.evidenceRefs.map((ref, index) => (
-                                    <div key={`${item.id}-evidence-${index}`}>Evidence: {ref}</div>
-                                  ))}
+                                  )}
+                                  <div className={styles.aoiInlineSuggestionActions}>
+                                    <button
+                                      type="button"
+                                      className={styles.inlineActionBtn}
+                                      onClick={restartAoiJarvisAutonomyGovernorAudit}
+                                      disabled={aoiJarvisAutonomyGovernorAuditSummary.resetDisabled}
+                                      title={aoiJarvisAutonomyGovernorAuditSummary.resetTitle}
+                                    >
+                                      {aoiJarvisAutonomyGovernorAuditSummary.resetLabel}
+                                    </button>
+                                  </div>
+                                </>
+                              )}
+                              {aoiJarvisAutonomyGovernorSummary.evidenceRefs.map((ref, index) => (
+                                <div key={`jarvis-governor-evidence-${index}`}>
+                                  Evidence: {sanitizeAoiProposalDisplayText(ref, 220)}
                                 </div>
                               ))}
                             </div>
-                          ) : (
+                          </div>
+                        </div>
+                      )}
+
+                      {aoiOpportunityInboxSummary.visible && (
+                        <div
+                          className={styles.aoiAutonomyProposalSection}
+                          data-testid="aoi-opportunity-inbox"
+                        >
+                          <div className={styles.promptBudgetSectionTitle}>Opportunity inbox</div>
+                          <div className={styles.aoiAutonomyProposalItem}>
+                            <div className={styles.aoiAutonomyProposalMeta}>
+                              <span>{aoiOpportunityInboxSummary.countLabel}</span>
+                              <span>display-only</span>
+                            </div>
+                            <div className={styles.aoiAutonomyProposalTitle}>
+                              {sanitizeAoiProposalDisplayText(
+                                aoiOpportunityInboxSummary.headlineLabel,
+                                180,
+                              )}
+                            </div>
+                            <div className={styles.aoiAutonomyProposalReason}>
+                              {sanitizeAoiProposalDisplayText(
+                                aoiOpportunityInboxSummary.safetyBoundaryLabel,
+                                320,
+                              )}
+                            </div>
                             <div className={styles.aoiAutonomyProposalDetails}>
-                              <div>No active display-only opportunities are waiting.</div>
-                              {aoiOpportunityInboxSummary.evidenceRefs.map((ref, index) => (
-                                <div key={`opportunity-inbox-evidence-${index}`}>
+                              <div>{aoiOpportunityInboxSummary.learningSummaryLabel}</div>
+                              {aoiOpportunityInboxSummary.learningAdjustmentLabels.map(
+                                (label, index) => (
+                                  <div key={`opportunity-learning-${index}`}>Learning: {label}</div>
+                                ),
+                              )}
+                            </div>
+                            {aoiOpportunityInboxSummary.itemLabels.length > 0 ? (
+                              <div className={styles.aoiAutonomyProposalDetails}>
+                                {aoiOpportunityInboxSummary.itemLabels.map((item) => (
+                                  <div key={item.id}>
+                                    <strong>{item.titleLabel}</strong>
+                                    <div>{item.metaLabel}</div>
+                                    <div>Question: {item.curiosityLabel}</div>
+                                    <div>Why now: {item.whyNowLabel}</div>
+                                    <div>Evidence need: {item.evidenceNeedLabel}</div>
+                                    <div>Next: {item.nextActionLabel}</div>
+                                    <div>Delivery: {item.deliveryLabel}</div>
+                                    <div>Governor: {item.interruptionModeLabel}</div>
+                                    <div>Governor reason: {item.interruptionSummaryLabel}</div>
+                                    {item.interruptionBlockedLabels.map((label, index) => (
+                                      <div key={`${item.id}-interruption-blocker-${index}`}>
+                                        Direct chat block: {label}
+                                      </div>
+                                    ))}
+                                    <div>Action ladder: {item.actionLadderLevelLabel}</div>
+                                    <div>Action boundary: {item.actionLadderSummaryLabel}</div>
+                                    {item.actionLadderApprovalLabels.map((label, index) => (
+                                      <div key={`${item.id}-action-ladder-approval-${index}`}>
+                                        Approval needed: {label}
+                                      </div>
+                                    ))}
+                                    {item.actionLadderBlockedLabels.map((label, index) => (
+                                      <div key={`${item.id}-action-ladder-blocked-${index}`}>
+                                        Action blocked: {label}
+                                      </div>
+                                    ))}
+                                    <div>Follow-through: {item.followThroughLabel}</div>
+                                    <div>Learning: {item.followThroughReasonLabel}</div>
+                                    {item.evidenceRefs.map((ref, index) => (
+                                      <div key={`${item.id}-evidence-${index}`}>
+                                        Evidence: {ref}
+                                      </div>
+                                    ))}
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <div className={styles.aoiAutonomyProposalDetails}>
+                                <div>No active display-only opportunities are waiting.</div>
+                                {aoiOpportunityInboxSummary.evidenceRefs.map((ref, index) => (
+                                  <div key={`opportunity-inbox-evidence-${index}`}>
+                                    Evidence: {ref}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {aoiFieldFeedbackPanel.visible && (
+                        <div
+                          className={styles.aoiAutonomyProposalSection}
+                          data-testid="aoi-field-feedback-learning"
+                        >
+                          <div className={styles.promptBudgetSectionTitle}>
+                            Field feedback learning
+                          </div>
+                          <div className={styles.aoiAutonomyProposalItem}>
+                            <div className={styles.aoiAutonomyProposalMeta}>
+                              <span>{aoiFieldFeedbackPanel.inboxCountLabel}</span>
+                              <span>{aoiFieldFeedbackPanel.unlabeledCountLabel}</span>
+                              <span>{aoiFieldFeedbackPanel.calibrationInputLabel}</span>
+                              <span>{aoiFieldFeedbackPanel.promotionCandidateLabel}</span>
+                            </div>
+                            <div className={styles.aoiAutonomyProposalTitle}>
+                              Label field/shadow decisions
+                            </div>
+                            <div className={styles.aoiAutonomyProposalDetails}>
+                              {aoiFieldFeedbackPanel.labelDistributionLabels.map((label, index) => (
+                                <div key={`field-feedback-distribution-${index}`}>
+                                  Label: {sanitizeAoiProposalDisplayText(label, 120)}
+                                </div>
+                              ))}
+                              {aoiFieldFeedbackPanel.topSourceKindLabels.map((label, index) => (
+                                <div key={`field-feedback-source-${index}`}>
+                                  Source: {sanitizeAoiProposalDisplayText(label, 160)}
+                                </div>
+                              ))}
+                              {aoiFieldFeedbackPanel.evidenceRefs.slice(0, 4).map((ref, index) => (
+                                <div key={`field-feedback-panel-evidence-${index}`}>
+                                  Evidence: {sanitizeAoiProposalDisplayText(ref, 220)}
+                                </div>
+                              ))}
+                            </div>
+                            {aoiFieldFeedbackPanel.itemLabels.length > 0 ? (
+                              <div className={styles.aoiAutonomyProposalList}>
+                                {aoiFieldFeedbackPanel.itemLabels.map((item) => (
+                                  <div
+                                    className={styles.aoiAutonomyProposalItem}
+                                    key={`field-feedback-item-${item.id}`}
+                                  >
+                                    <div className={styles.aoiAutonomyProposalMeta}>
+                                      <span>
+                                        {sanitizeAoiProposalDisplayText(item.metaLabel, 120)}
+                                      </span>
+                                      <span>
+                                        {sanitizeAoiProposalDisplayText(item.labelStateLabel, 120)}
+                                      </span>
+                                      <span>display-only</span>
+                                    </div>
+                                    <div className={styles.aoiAutonomyProposalTitle}>
+                                      {sanitizeAoiProposalDisplayText(item.titleLabel, 180)}
+                                    </div>
+                                    <div className={styles.aoiAutonomyProposalDetails}>
+                                      <div>
+                                        Noticed:{' '}
+                                        {sanitizeAoiProposalDisplayText(
+                                          item.whatAoiNoticedLabel,
+                                          260,
+                                        )}
+                                      </div>
+                                      <div>
+                                        Why speak/quiet:{' '}
+                                        {sanitizeAoiProposalDisplayText(
+                                          item.whySpeakQuietLabel,
+                                          320,
+                                        )}
+                                      </div>
+                                      <div>
+                                        Cannot know:{' '}
+                                        {sanitizeAoiProposalDisplayText(item.cannotKnowLabel, 260)}
+                                      </div>
+                                      <div>
+                                        Effect:{' '}
+                                        {sanitizeAoiProposalDisplayText(
+                                          item.whyShowMoreLessLabel,
+                                          320,
+                                        )}
+                                      </div>
+                                      {item.evidenceRefs.slice(0, 4).map((ref, index) => (
+                                        <div key={`field-feedback-${item.id}-evidence-${index}`}>
+                                          Evidence: {sanitizeAoiProposalDisplayText(ref, 220)}
+                                        </div>
+                                      ))}
+                                    </div>
+                                    <div className={styles.aoiAutonomyProposalActions}>
+                                      {item.labelActions.map((action) => (
+                                        <button
+                                          type="button"
+                                          key={action.id}
+                                          className={styles.inlineActionBtn}
+                                          onClick={() =>
+                                            void onRecordAoiFieldFeedback(
+                                              item,
+                                              action.feedbackLabel,
+                                            )
+                                          }
+                                          disabled={
+                                            action.disabled || aoiAutonomyActionId === action.id
+                                          }
+                                          title={action.title}
+                                        >
+                                          {action.label}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className={styles.modelHint}>
+                                No active field decisions need labels right now.
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {aoiDeliberationRunSummary.visible && (
+                        <div
+                          className={styles.aoiAutonomyProposalSection}
+                          data-testid="aoi-deliberation-run"
+                        >
+                          <div className={styles.promptBudgetSectionTitle}>Deliberation run</div>
+                          <div className={styles.aoiAutonomyProposalItem}>
+                            <div className={styles.aoiAutonomyProposalMeta}>
+                              <span>{aoiDeliberationRunSummary.phaseLabel}</span>
+                              <span>display-only</span>
+                            </div>
+                            <div className={styles.aoiAutonomyProposalTitle}>
+                              {aoiDeliberationRunSummary.headlineLabel}
+                            </div>
+                            <div className={styles.aoiAutonomyProposalReason}>
+                              {aoiDeliberationRunSummary.safetyBoundaryLabel}
+                            </div>
+                            <div className={styles.aoiAutonomyProposalDetails}>
+                              <div>Opportunity: {aoiDeliberationRunSummary.opportunityLabel}</div>
+                              <div>Finding: {aoiDeliberationRunSummary.findingLabel}</div>
+                              {aoiDeliberationRunSummary.opinionLabel && (
+                                <div>Opinion: {aoiDeliberationRunSummary.opinionLabel}</div>
+                              )}
+                              <div>Next: {aoiDeliberationRunSummary.safeNextActionLabel}</div>
+                              {aoiDeliberationRunSummary.blockerLabels.map((blocker, index) => (
+                                <div key={`aoi-deliberation-blocker-${index}`}>
+                                  Blocker: {blocker}
+                                </div>
+                              ))}
+                              {aoiDeliberationRunSummary.evidenceRefs.map((ref, index) => (
+                                <div key={`aoi-deliberation-evidence-${index}`}>
                                   Evidence: {ref}
                                 </div>
                               ))}
                             </div>
-                          )}
+                          </div>
                         </div>
-                      </div>
-                    )}
+                      )}
 
-                    {aoiFieldFeedbackPanel.visible && (
-                      <div
-                        className={styles.aoiAutonomyProposalSection}
-                        data-testid="aoi-field-feedback-learning"
-                      >
-                        <div className={styles.promptBudgetSectionTitle}>
-                          Field feedback learning
-                        </div>
-                        <div className={styles.aoiAutonomyProposalItem}>
-                          <div className={styles.aoiAutonomyProposalMeta}>
-                            <span>{aoiFieldFeedbackPanel.inboxCountLabel}</span>
-                            <span>{aoiFieldFeedbackPanel.unlabeledCountLabel}</span>
-                            <span>{aoiFieldFeedbackPanel.calibrationInputLabel}</span>
-                            <span>{aoiFieldFeedbackPanel.promotionCandidateLabel}</span>
-                          </div>
-                          <div className={styles.aoiAutonomyProposalTitle}>
-                            Label field/shadow decisions
-                          </div>
-                          <div className={styles.aoiAutonomyProposalDetails}>
-                            {aoiFieldFeedbackPanel.labelDistributionLabels.map((label, index) => (
-                              <div key={`field-feedback-distribution-${index}`}>
-                                Label: {sanitizeAoiProposalDisplayText(label, 120)}
-                              </div>
-                            ))}
-                            {aoiFieldFeedbackPanel.topSourceKindLabels.map((label, index) => (
-                              <div key={`field-feedback-source-${index}`}>
-                                Source: {sanitizeAoiProposalDisplayText(label, 160)}
-                              </div>
-                            ))}
-                            {aoiFieldFeedbackPanel.evidenceRefs.slice(0, 4).map((ref, index) => (
-                              <div key={`field-feedback-panel-evidence-${index}`}>
-                                Evidence: {sanitizeAoiProposalDisplayText(ref, 220)}
-                              </div>
-                            ))}
-                          </div>
-                          {aoiFieldFeedbackPanel.itemLabels.length > 0 ? (
-                            <div className={styles.aoiAutonomyProposalList}>
-                              {aoiFieldFeedbackPanel.itemLabels.map((item) => (
-                                <div
-                                  className={styles.aoiAutonomyProposalItem}
-                                  key={`field-feedback-item-${item.id}`}
-                                >
-                                  <div className={styles.aoiAutonomyProposalMeta}>
-                                    <span>
-                                      {sanitizeAoiProposalDisplayText(item.metaLabel, 120)}
-                                    </span>
-                                    <span>
-                                      {sanitizeAoiProposalDisplayText(item.labelStateLabel, 120)}
-                                    </span>
-                                    <span>display-only</span>
-                                  </div>
-                                  <div className={styles.aoiAutonomyProposalTitle}>
-                                    {sanitizeAoiProposalDisplayText(item.titleLabel, 180)}
-                                  </div>
-                                  <div className={styles.aoiAutonomyProposalDetails}>
-                                    <div>
-                                      Noticed:{' '}
-                                      {sanitizeAoiProposalDisplayText(
-                                        item.whatAoiNoticedLabel,
-                                        260,
-                                      )}
-                                    </div>
-                                    <div>
-                                      Why speak/quiet:{' '}
-                                      {sanitizeAoiProposalDisplayText(item.whySpeakQuietLabel, 320)}
-                                    </div>
-                                    <div>
-                                      Cannot know:{' '}
-                                      {sanitizeAoiProposalDisplayText(item.cannotKnowLabel, 260)}
-                                    </div>
-                                    <div>
-                                      Effect:{' '}
-                                      {sanitizeAoiProposalDisplayText(
-                                        item.whyShowMoreLessLabel,
-                                        320,
-                                      )}
-                                    </div>
-                                    {item.evidenceRefs.slice(0, 4).map((ref, index) => (
-                                      <div key={`field-feedback-${item.id}-evidence-${index}`}>
-                                        Evidence: {sanitizeAoiProposalDisplayText(ref, 220)}
-                                      </div>
-                                    ))}
-                                  </div>
-                                  <div className={styles.aoiAutonomyProposalActions}>
-                                    {item.labelActions.map((action) => (
-                                      <button
-                                        type="button"
-                                        key={action.id}
-                                        className={styles.inlineActionBtn}
-                                        onClick={() =>
-                                          void onRecordAoiFieldFeedback(item, action.feedbackLabel)
-                                        }
-                                        disabled={
-                                          action.disabled || aoiAutonomyActionId === action.id
-                                        }
-                                        title={action.title}
-                                      >
-                                        {action.label}
-                                      </button>
-                                    ))}
-                                  </div>
+                      {aoiAutonomyAgendaSummary.visible && (
+                        <div className={styles.aoiAutonomyProposalSection}>
+                          <div className={styles.promptBudgetSectionTitle}>Aoi agenda</div>
+                          <div className={styles.aoiAutonomyProposalItem}>
+                            <div className={styles.aoiAutonomyProposalMeta}>
+                              <span>{aoiAutonomyAgendaSummary.loopLabel}</span>
+                              <span>{aoiAutonomyAgendaSummary.approvalInboxLabel}</span>
+                            </div>
+                            <div className={styles.aoiAutonomyProposalTitle}>
+                              {aoiAutonomyAgendaSummary.headlineLabel}
+                            </div>
+                            <div className={styles.aoiAutonomyProposalReason}>
+                              {aoiAutonomyAgendaSummary.nextBestActionLabel}
+                            </div>
+                            <div className={styles.aoiAutonomyProposalDetails}>
+                              <div>{aoiAutonomyAgendaSummary.safetyBoundaryLabel}</div>
+                              {aoiAutonomyAgendaSummary.phaseSummaries.map((phase) => (
+                                <div key={phase.key}>
+                                  {phase.label}: {phase.statusLabel} - {phase.primaryLabel}
+                                  {phase.detailLabels.length > 0
+                                    ? ` (${phase.detailLabels.join('; ')})`
+                                    : ''}
                                 </div>
                               ))}
-                            </div>
-                          ) : (
-                            <p className={styles.modelHint}>
-                              No active field decisions need labels right now.
-                            </p>
-                          )}
-                        </div>
-                      </div>
-                    )}
-
-                    {aoiDeliberationRunSummary.visible && (
-                      <div
-                        className={styles.aoiAutonomyProposalSection}
-                        data-testid="aoi-deliberation-run"
-                      >
-                        <div className={styles.promptBudgetSectionTitle}>Deliberation run</div>
-                        <div className={styles.aoiAutonomyProposalItem}>
-                          <div className={styles.aoiAutonomyProposalMeta}>
-                            <span>{aoiDeliberationRunSummary.phaseLabel}</span>
-                            <span>display-only</span>
-                          </div>
-                          <div className={styles.aoiAutonomyProposalTitle}>
-                            {aoiDeliberationRunSummary.headlineLabel}
-                          </div>
-                          <div className={styles.aoiAutonomyProposalReason}>
-                            {aoiDeliberationRunSummary.safetyBoundaryLabel}
-                          </div>
-                          <div className={styles.aoiAutonomyProposalDetails}>
-                            <div>Opportunity: {aoiDeliberationRunSummary.opportunityLabel}</div>
-                            <div>Finding: {aoiDeliberationRunSummary.findingLabel}</div>
-                            {aoiDeliberationRunSummary.opinionLabel && (
-                              <div>Opinion: {aoiDeliberationRunSummary.opinionLabel}</div>
-                            )}
-                            <div>Next: {aoiDeliberationRunSummary.safeNextActionLabel}</div>
-                            {aoiDeliberationRunSummary.blockerLabels.map((blocker, index) => (
-                              <div key={`aoi-deliberation-blocker-${index}`}>
-                                Blocker: {blocker}
-                              </div>
-                            ))}
-                            {aoiDeliberationRunSummary.evidenceRefs.map((ref, index) => (
-                              <div key={`aoi-deliberation-evidence-${index}`}>Evidence: {ref}</div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    {aoiAutonomyAgendaSummary.visible && (
-                      <div className={styles.aoiAutonomyProposalSection}>
-                        <div className={styles.promptBudgetSectionTitle}>Aoi agenda</div>
-                        <div className={styles.aoiAutonomyProposalItem}>
-                          <div className={styles.aoiAutonomyProposalMeta}>
-                            <span>{aoiAutonomyAgendaSummary.loopLabel}</span>
-                            <span>{aoiAutonomyAgendaSummary.approvalInboxLabel}</span>
-                          </div>
-                          <div className={styles.aoiAutonomyProposalTitle}>
-                            {aoiAutonomyAgendaSummary.headlineLabel}
-                          </div>
-                          <div className={styles.aoiAutonomyProposalReason}>
-                            {aoiAutonomyAgendaSummary.nextBestActionLabel}
-                          </div>
-                          <div className={styles.aoiAutonomyProposalDetails}>
-                            <div>{aoiAutonomyAgendaSummary.safetyBoundaryLabel}</div>
-                            {aoiAutonomyAgendaSummary.phaseSummaries.map((phase) => (
-                              <div key={phase.key}>
-                                {phase.label}: {phase.statusLabel} - {phase.primaryLabel}
-                                {phase.detailLabels.length > 0
-                                  ? ` (${phase.detailLabels.join('; ')})`
-                                  : ''}
-                              </div>
-                            ))}
-                            {aoiAutonomyAgendaSummary.evidenceRefs.map((ref, index) => (
-                              <div key={`agenda-evidence-${index}`}>Evidence: {ref}</div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    {aoiAgendaNudgeReadinessSummary.visible && (
-                      <div className={styles.aoiAutonomyProposalSection}>
-                        <div className={styles.promptBudgetSectionTitle}>
-                          Agenda nudge readiness
-                        </div>
-                        <div className={styles.aoiAutonomyProposalItem}>
-                          <div className={styles.aoiAutonomyProposalMeta}>
-                            <span>{aoiAgendaNudgeReadinessSummary.statusLabel}</span>
-                            <span>{aoiAgendaNudgeReadinessSummary.candidateLabel}</span>
-                          </div>
-                          <div className={styles.aoiAutonomyProposalTitle}>
-                            {aoiAgendaNudgeReadinessSummary.summaryLabel}
-                          </div>
-                          <div className={styles.aoiAutonomyProposalDetails}>
-                            {aoiAgendaNudgeReadinessSummary.deliveryDecisionLabels.map(
-                              (label, index) => (
-                                <div key={`agenda-readiness-delivery-${index}`}>{label}</div>
-                              ),
-                            )}
-                            {aoiAgendaNudgeReadinessSummary.reasonLabels.map((label, index) => (
-                              <div key={`agenda-readiness-reason-${index}`}>{label}</div>
-                            ))}
-                            {aoiAgendaNudgeReadinessSummary.nextActionLabels.map((label, index) => (
-                              <div key={`agenda-readiness-next-${index}`}>Next: {label}</div>
-                            ))}
-                            {aoiAgendaNudgeReadinessSummary.evidenceRefs.map((ref, index) => (
-                              <div key={`agenda-readiness-evidence-${index}`}>Evidence: {ref}</div>
-                            ))}
-                            {aoiAgendaNudgeReadinessSummary.lastActionLabels.map((label, index) => (
-                              <div key={`agenda-readiness-audit-${index}`}>{label}</div>
-                            ))}
-                            {aoiAgendaNudgeReadinessSummary.lastDecisionLabels.map(
-                              (label, index) => (
-                                <div key={`agenda-readiness-decision-audit-${index}`}>{label}</div>
-                              ),
-                            )}
-                            {aoiAgendaNudgeReadinessSummary.lastDecisionFeedbackLabels.map(
-                              (label, index) => (
-                                <div key={`agenda-readiness-feedback-audit-${index}`}>{label}</div>
-                              ),
-                            )}
-                            {aoiAgendaNudgeReadinessSummary.decisionFeedbackHistoryLabels.map(
-                              (label, index) => (
-                                <div key={`agenda-readiness-feedback-history-${index}`}>
-                                  {label}
-                                </div>
-                              ),
-                            )}
-                          </div>
-                          {aoiAgendaNudgeReadinessSummary.actions.length > 0 && (
-                            <div className={styles.aoiInlineSuggestionActions}>
-                              {aoiAgendaNudgeReadinessSummary.actions.map((action) => (
-                                <button
-                                  key={action.id}
-                                  type="button"
-                                  className={styles.inlineActionBtn}
-                                  onClick={() => runAoiAgendaNudgeReadinessAction(action.id)}
-                                  disabled={isAoiAgendaNudgeReadinessActionDisabled(action.id)}
-                                  title={action.title}
-                                >
-                                  {action.label}
-                                </button>
+                              {aoiAutonomyAgendaSummary.evidenceRefs.map((ref, index) => (
+                                <div key={`agenda-evidence-${index}`}>Evidence: {ref}</div>
                               ))}
                             </div>
-                          )}
-                          {aoiAgendaNudgeReadinessSummary.decisionFeedbackActions.length > 0 && (
-                            <div className={styles.aoiInlineSuggestionActions}>
-                              {aoiAgendaNudgeReadinessSummary.decisionFeedbackActions.map(
-                                (action) => (
+                          </div>
+                        </div>
+                      )}
+
+                      {aoiAgendaNudgeReadinessSummary.visible && (
+                        <div className={styles.aoiAutonomyProposalSection}>
+                          <div className={styles.promptBudgetSectionTitle}>
+                            Agenda nudge readiness
+                          </div>
+                          <div className={styles.aoiAutonomyProposalItem}>
+                            <div className={styles.aoiAutonomyProposalMeta}>
+                              <span>{aoiAgendaNudgeReadinessSummary.statusLabel}</span>
+                              <span>{aoiAgendaNudgeReadinessSummary.candidateLabel}</span>
+                            </div>
+                            <div className={styles.aoiAutonomyProposalTitle}>
+                              {aoiAgendaNudgeReadinessSummary.summaryLabel}
+                            </div>
+                            <div className={styles.aoiAutonomyProposalDetails}>
+                              {aoiAgendaNudgeReadinessSummary.deliveryDecisionLabels.map(
+                                (label, index) => (
+                                  <div key={`agenda-readiness-delivery-${index}`}>{label}</div>
+                                ),
+                              )}
+                              {aoiAgendaNudgeReadinessSummary.reasonLabels.map((label, index) => (
+                                <div key={`agenda-readiness-reason-${index}`}>{label}</div>
+                              ))}
+                              {aoiAgendaNudgeReadinessSummary.nextActionLabels.map(
+                                (label, index) => (
+                                  <div key={`agenda-readiness-next-${index}`}>Next: {label}</div>
+                                ),
+                              )}
+                              {aoiAgendaNudgeReadinessSummary.evidenceRefs.map((ref, index) => (
+                                <div key={`agenda-readiness-evidence-${index}`}>
+                                  Evidence: {ref}
+                                </div>
+                              ))}
+                              {aoiAgendaNudgeReadinessSummary.lastActionLabels.map(
+                                (label, index) => (
+                                  <div key={`agenda-readiness-audit-${index}`}>{label}</div>
+                                ),
+                              )}
+                              {aoiAgendaNudgeReadinessSummary.lastDecisionLabels.map(
+                                (label, index) => (
+                                  <div key={`agenda-readiness-decision-audit-${index}`}>
+                                    {label}
+                                  </div>
+                                ),
+                              )}
+                              {aoiAgendaNudgeReadinessSummary.lastDecisionFeedbackLabels.map(
+                                (label, index) => (
+                                  <div key={`agenda-readiness-feedback-audit-${index}`}>
+                                    {label}
+                                  </div>
+                                ),
+                              )}
+                              {aoiAgendaNudgeReadinessSummary.decisionFeedbackHistoryLabels.map(
+                                (label, index) => (
+                                  <div key={`agenda-readiness-feedback-history-${index}`}>
+                                    {label}
+                                  </div>
+                                ),
+                              )}
+                            </div>
+                            {aoiAgendaNudgeReadinessSummary.actions.length > 0 && (
+                              <div className={styles.aoiInlineSuggestionActions}>
+                                {aoiAgendaNudgeReadinessSummary.actions.map((action) => (
                                   <button
                                     key={action.id}
                                     type="button"
                                     className={styles.inlineActionBtn}
-                                    onClick={() => runAoiAgendaNudgeDecisionFeedback(action.id)}
-                                    disabled={action.disabled}
+                                    onClick={() => runAoiAgendaNudgeReadinessAction(action.id)}
+                                    disabled={isAoiAgendaNudgeReadinessActionDisabled(action.id)}
                                     title={action.title}
                                   >
                                     {action.label}
                                   </button>
-                                ),
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    )}
-
-                    {aoiAgendaNudgeCalibrationSummary.visible && (
-                      <div className={styles.aoiAutonomyProposalSection}>
-                        <div className={styles.promptBudgetSectionTitle}>
-                          Agenda nudge calibration
-                        </div>
-                        <div className={styles.aoiAutonomyProposalItem}>
-                          <div className={styles.aoiAutonomyProposalMeta}>
-                            <span>{aoiAgendaNudgeCalibrationSummary.statusLabel}</span>
-                            {aoiAgendaNudgeCalibrationSummary.countLabels.map((label) => (
-                              <span key={label}>{label}</span>
-                            ))}
-                          </div>
-                          <div className={styles.aoiAutonomyProposalTitle}>
-                            {aoiAgendaNudgeCalibrationSummary.summaryLabel}
-                          </div>
-                          <div className={styles.aoiAutonomyProposalDetails}>
-                            {aoiAgendaNudgeCalibrationSummary.reasonLabels.map((label, index) => (
-                              <div key={`agenda-calibration-reason-${index}`}>{label}</div>
-                            ))}
-                            {aoiAgendaNudgeCalibrationSummary.auditLabels.map((label, index) => (
-                              <div key={`agenda-calibration-audit-${index}`}>{label}</div>
-                            ))}
-                            {aoiAgendaNudgeCalibrationSummary.evidenceRefs.map((ref, index) => (
-                              <div key={`agenda-calibration-evidence-${index}`}>
-                                Evidence: {ref}
-                              </div>
-                            ))}
-                          </div>
-                          <div className={styles.aoiInlineSuggestionActions}>
-                            <button
-                              type="button"
-                              className={styles.inlineActionBtn}
-                              onClick={() =>
-                                onUpdateAoiAutonomyPanelSettings(
-                                  buildAoiAgendaNudgeFeedbackResetPatch(),
-                                )
-                              }
-                              disabled={aoiAgendaNudgeCalibrationSummary.resetDisabled}
-                              title={aoiAgendaNudgeCalibrationSummary.resetTitle}
-                            >
-                              {aoiAgendaNudgeCalibrationSummary.resetLabel}
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    {aoiOperatorHealthSummary.visible && (
-                      <div className={styles.aoiAutonomyProposalSection}>
-                        <div className={styles.promptBudgetSectionTitle}>Operator health</div>
-                        <div className={styles.aoiAutonomyProposalItem}>
-                          <div className={styles.aoiAutonomyProposalMeta}>
-                            <span>{aoiOperatorHealthSummary.statusLabel}</span>
-                            {aoiOperatorHealthSummary.capabilityLabels.map((label) => (
-                              <span key={label}>{label}</span>
-                            ))}
-                          </div>
-                          <div className={styles.aoiAutonomyProposalTitle}>
-                            {aoiOperatorHealthSummary.summaryLabel}
-                          </div>
-                          {(aoiOperatorHealthSummary.issueLabels.length > 0 ||
-                            aoiOperatorHealthSummary.recommendationLabels.length > 0 ||
-                            aoiOperatorHealthSummary.evidenceRefs.length > 0) && (
-                            <div className={styles.aoiAutonomyProposalDetails}>
-                              {aoiOperatorHealthSummary.issueLabels.map((label, index) => (
-                                <div key={`health-issue-${index}`}>{label}</div>
-                              ))}
-                              {aoiOperatorHealthSummary.recommendationLabels.map((label, index) => (
-                                <div key={`health-recommendation-${index}`}>Next: {label}</div>
-                              ))}
-                              {aoiOperatorHealthSummary.evidenceRefs.map((ref, index) => (
-                                <div key={`health-evidence-${index}`}>Evidence: {ref}</div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    )}
-
-                    {aoiPlaybookSummary.visible && (
-                      <div className={styles.aoiAutonomyProposalSection}>
-                        <div className={styles.promptBudgetSectionTitle}>Current playbook</div>
-                        <div className={styles.aoiAutonomyProposalItem}>
-                          <div className={styles.aoiAutonomyProposalMeta}>
-                            <span>{aoiPlaybookSummary.statusLabel}</span>
-                            <span>{aoiPlaybookSummary.stepLabels.length} steps shown</span>
-                          </div>
-                          <div className={styles.aoiAutonomyProposalTitle}>
-                            {aoiPlaybookSummary.titleLabel}
-                          </div>
-                          <div className={styles.aoiAutonomyProposalReason}>
-                            {aoiPlaybookSummary.objectiveLabel}
-                          </div>
-                          <div className={styles.aoiAutonomyProposalDetails}>
-                            <div>Next: {aoiPlaybookSummary.nextDecisionLabel}</div>
-                            {aoiPlaybookSummary.stepLabels.map((label, index) => (
-                              <div key={`playbook-step-${index}`}>{label}</div>
-                            ))}
-                            {aoiPlaybookSummary.boundaryLabels.map((label, index) => (
-                              <div key={`playbook-boundary-${index}`}>Boundary: {label}</div>
-                            ))}
-                            {aoiPlaybookSummary.blockedPrerequisiteLabels.map((label, index) => (
-                              <div key={`playbook-blocked-${index}`}>Blocked: {label}</div>
-                            ))}
-                            {aoiPlaybookSummary.evidenceRefs.map((ref, index) => (
-                              <div key={`playbook-evidence-${index}`}>Evidence: {ref}</div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    <div className={styles.aoiAutonomyControls}>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Autonomy policy</span>
-                        <button
-                          type="button"
-                          className={aoiAutonomyPolicy?.enabled ? styles.saveBtn : styles.cancelBtn}
-                          onClick={() =>
-                            void onUpdateAoiAutonomyPolicy({
-                              enabled: !aoiAutonomyPolicy?.enabled,
-                            })
-                          }
-                          disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
-                        >
-                          {aoiAutonomyPolicy?.enabled ? 'Enabled' : 'Disabled'}
-                        </button>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Thinking (network)</span>
-                        <button
-                          type="button"
-                          className={
-                            aoiAutonomyPolicy?.allowNetwork ? styles.saveBtn : styles.cancelBtn
-                          }
-                          onClick={() =>
-                            void onUpdateAoiAutonomyPolicy({
-                              allowNetwork: !aoiAutonomyPolicy?.allowNetwork,
-                            })
-                          }
-                          disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
-                          data-testid="aoi-autonomy-thinking-toggle"
-                        >
-                          {aoiAutonomyPolicy?.allowNetwork ? 'On' : 'Off'}
-                        </button>
-                      </div>
-                      <div className={styles.field}>
-                        <label className={styles.label}>Autonomy level</label>
-                        <select
-                          className={styles.select}
-                          value={aoiAutonomyPolicy?.level ?? 'L1'}
-                          onChange={(event) =>
-                            void onUpdateAoiAutonomyPolicy({
-                              level: event.target.value as AoiAutonomyLevel,
-                            })
-                          }
-                          disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
-                        >
-                          {AOI_AUTONOMY_UI_LEVELS.map((level) => (
-                            <option key={level} value={level}>
-                              {level}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Inline suggestions</span>
-                        <button
-                          type="button"
-                          className={
-                            aoiAutonomyPolicy?.proactiveSuggestionsEnabled
-                              ? styles.saveBtn
-                              : styles.cancelBtn
-                          }
-                          onClick={() => {
-                            const enabled = !aoiAutonomyPolicy?.proactiveSuggestionsEnabled;
-                            void onUpdateAoiAutonomyPolicy({
-                              proactiveSuggestionsEnabled: enabled,
-                              ...(aoiAutonomyPolicy
-                                ? {
-                                    proactiveBriefing: {
-                                      ...aoiAutonomyPolicy.proactiveBriefing,
-                                      enabled,
-                                    },
-                                  }
-                                : {}),
-                            });
-                          }}
-                          disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
-                        >
-                          {aoiAutonomyPolicy?.proactiveSuggestionsEnabled ? 'On' : 'Off'}
-                        </button>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Field-shadow capture</span>
-                        <button
-                          type="button"
-                          className={
-                            aoiAutonomyPolicy?.fieldShadowCaptureEnabled
-                              ? styles.saveBtn
-                              : styles.cancelBtn
-                          }
-                          onClick={() =>
-                            void onUpdateAoiAutonomyPolicy({
-                              fieldShadowCaptureEnabled:
-                                !aoiAutonomyPolicy?.fieldShadowCaptureEnabled,
-                            })
-                          }
-                          disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
-                          data-testid="aoi-field-shadow-capture-toggle"
-                        >
-                          {aoiAutonomyPolicy?.fieldShadowCaptureEnabled ? 'On' : 'Off'}
-                        </button>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Scout policy</span>
-                        <button
-                          type="button"
-                          className={
-                            aoiAutonomyPolicy?.proactiveBriefing.enabled
-                              ? styles.saveBtn
-                              : styles.cancelBtn
-                          }
-                          onClick={() => {
-                            if (!aoiAutonomyPolicy) {
-                              return;
-                            }
-                            void onUpdateAoiAutonomyPolicy({
-                              proactiveBriefing: {
-                                ...aoiAutonomyPolicy.proactiveBriefing,
-                                enabled: !aoiAutonomyPolicy.proactiveBriefing.enabled,
-                              },
-                            });
-                          }}
-                          disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
-                          title="Pause or resume proactive current-info scouting"
-                        >
-                          {aoiAutonomyPolicy?.proactiveBriefing.enabled ? 'Resumed' : 'Paused'}
-                        </button>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Background scout</span>
-                        <button
-                          type="button"
-                          className={
-                            aoiAutonomyPolicy?.proactiveBriefing.allowBackgroundScout
-                              ? styles.saveBtn
-                              : styles.cancelBtn
-                          }
-                          onClick={() => {
-                            if (!aoiAutonomyPolicy) {
-                              return;
-                            }
-                            void onUpdateAoiAutonomyPolicy({
-                              proactiveBriefing: {
-                                ...aoiAutonomyPolicy.proactiveBriefing,
-                                allowBackgroundScout:
-                                  !aoiAutonomyPolicy.proactiveBriefing.allowBackgroundScout,
-                              },
-                            });
-                          }}
-                          disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
-                          title="Allow scheduler wakeups to scout current public sources"
-                        >
-                          {aoiAutonomyPolicy?.proactiveBriefing.allowBackgroundScout ? 'On' : 'Off'}
-                        </button>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Direct chat hooks</span>
-                        <button
-                          type="button"
-                          className={
-                            aoiAutonomyPolicy?.proactiveBriefing.directChatHookOptIn
-                              ? styles.saveBtn
-                              : styles.cancelBtn
-                          }
-                          onClick={() => {
-                            if (!aoiAutonomyPolicy) {
-                              return;
-                            }
-                            void onUpdateAoiAutonomyPolicy({
-                              proactiveBriefing: {
-                                ...aoiAutonomyPolicy.proactiveBriefing,
-                                directChatHookOptIn:
-                                  !aoiAutonomyPolicy.proactiveBriefing.directChatHookOptIn,
-                              },
-                            });
-                          }}
-                          disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
-                          title="Opt in or out of compact proactive chat hooks"
-                        >
-                          {aoiAutonomyPolicy?.proactiveBriefing.directChatHookOptIn
-                            ? 'Opt-in'
-                            : 'Off'}
-                        </button>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Run scout now</span>
-                        <button
-                          type="button"
-                          className={styles.inlineActionBtn}
-                          onClick={() => void onRunAoiProactiveBriefScout()}
-                          disabled={
-                            !aoiAutonomyPolicy ||
-                            aoiAutonomyLoading ||
-                            aoiAutonomyActionId === 'proactive-scout'
-                          }
-                          title="Run a budgeted proactive scout through scheduler gates"
-                        >
-                          {aoiAutonomyActionId === 'proactive-scout' ? 'Running' : 'Run'}
-                        </button>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Scout cooldown</span>
-                        <button
-                          type="button"
-                          className={styles.inlineActionBtn}
-                          onClick={() => void onResetAoiProactiveBriefCooldown()}
-                          disabled={
-                            !aoiAutonomyPolicy?.enabled ||
-                            !aoiAutonomyPolicy.proactiveBriefing.enabled ||
-                            aoiAutonomyActionId === 'proactive-cooldown-reset'
-                          }
-                          title="Reset global proactive scout cooldown when policy allows it"
-                        >
-                          {aoiAutonomyActionId === 'proactive-cooldown-reset'
-                            ? 'Resetting'
-                            : 'Reset'}
-                        </button>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Quiet mode</span>
-                        <button
-                          type="button"
-                          className={
-                            aoiAutonomyPanelSettings.quietMode ? styles.cancelBtn : styles.saveBtn
-                          }
-                          onClick={() =>
-                            onUpdateAoiAutonomyPanelSettings({
-                              quietMode: !aoiAutonomyPanelSettings.quietMode,
-                            })
-                          }
-                          title="Pause proactive UI indicators while keeping observations"
-                        >
-                          {aoiAutonomyPanelSettings.quietMode ? 'Quiet' : 'Normal'}
-                        </button>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Desktop toast</span>
-                        <button
-                          type="button"
-                          className={
-                            aoiAutonomyPanelSettings.notificationsEnabled
-                              ? styles.saveBtn
-                              : styles.cancelBtn
-                          }
-                          onClick={() =>
-                            onUpdateAoiAutonomyPanelSettings({
-                              notificationsEnabled: !aoiAutonomyPanelSettings.notificationsEnabled,
-                            })
-                          }
-                          title="Desktop notifications stay opt-in and high-risk proposals are excluded"
-                        >
-                          {aoiAutonomyPanelSettings.notificationsEnabled ? 'Opt-in' : 'Off'}
-                        </button>
-                      </div>
-                      <div className={styles.field}>
-                        <label className={styles.label}>Max suggestions</label>
-                        <select
-                          className={styles.select}
-                          value={String(aoiAutonomyPanelSettings.maxSuggestionsPerSession)}
-                          onChange={(event) =>
-                            onUpdateAoiAutonomyPanelSettings({
-                              maxSuggestionsPerSession: Number(event.target.value),
-                            })
-                          }
-                        >
-                          {[0, 1, 2, 3, 5].map((value) => (
-                            <option key={value} value={value}>
-                              {value}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    </div>
-
-                    <div className={styles.aoiAutonomyProposalSection}>
-                      <div className={styles.promptBudgetSectionTitle}>Operator digest</div>
-                      {aoiOperatorDigestSummary.visible ? (
-                        <div className={styles.aoiAutonomyProposalList}>
-                          <div className={styles.aoiAutonomyProposalItem}>
-                            <div className={styles.aoiAutonomyProposalMeta}>
-                              <span>{aoiOperatorDigestSummary.summaryLabel}</span>
-                              {aoiOperatorDigestSummary.laneLabels.map((label) => (
-                                <span key={label}>{label}</span>
-                              ))}
-                            </div>
-                            {aoiOperatorDigestSummary.resumeBriefLabel && (
-                              <div className={styles.aoiAutonomyProposalReason}>
-                                {aoiOperatorDigestSummary.resumeBriefLabel}
-                              </div>
-                            )}
-                            {aoiOperatorDigestSummary.hiddenLabel && (
-                              <div className={styles.aoiAutonomyProposalDetails}>
-                                <div>{aoiOperatorDigestSummary.hiddenLabel}</div>
-                              </div>
-                            )}
-                            {aoiOperatorDigestSummary.itemLabels.length > 0 && (
-                              <div className={styles.aoiAutonomyProposalDetails}>
-                                {aoiOperatorDigestSummary.itemLabels.map((label, index) => (
-                                  <div key={`digest-item-${index}`}>{label}</div>
                                 ))}
                               </div>
                             )}
-                            {aoiOperatorDigestSummary.evidenceRefs.length > 0 && (
-                              <div className={styles.aoiAutonomyProposalDetails}>
-                                {aoiOperatorDigestSummary.evidenceRefs.map((ref, index) => (
-                                  <div key={`digest-evidence-${index}`}>Evidence: {ref}</div>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                          {(aoiOperatorDigest?.approvalInbox ?? []).map((item) => {
-                            const proposalPending = Boolean(
-                              aoiAutonomyActionId?.startsWith(`proposal:${item.proposalId}:`),
-                            );
-                            const expanded = expandedAoiProposalId === item.proposalId;
-                            return (
-                              <div
-                                className={styles.aoiAutonomyProposalItem}
-                                key={`inbox-${item.proposalId}`}
-                              >
-                                <div className={styles.aoiAutonomyProposalMeta}>
-                                  <span>approval inbox</span>
-                                  <span>{item.status}</span>
-                                  <span>{item.risk} risk</span>
-                                  <span>evidence {item.evidenceCount}</span>
-                                  <span>requires {item.requiredAutonomyLevel}</span>
-                                </div>
-                                <div className={styles.aoiAutonomyProposalTitle}>
-                                  {sanitizeAoiProposalDisplayText(item.title, 140)}
-                                </div>
-                                <div className={styles.aoiAutonomyProposalReason}>
-                                  {sanitizeAoiProposalDisplayText(item.exactNextAction, 220)}
-                                </div>
-                                <div className={styles.aoiAutonomyProposalDetails}>
-                                  <div>
-                                    Boundary: {sanitizeAoiProposalDisplayText(item.boundary, 260)}
-                                  </div>
-                                  <div>
-                                    Available:{' '}
-                                    {item.availableActions
-                                      .map((action) => action.replace(/_/g, ' '))
-                                      .join(' / ')}
-                                  </div>
-                                  {expanded &&
-                                    item.evidenceRefs.map((ref, index) => (
-                                      <div key={`inbox-${item.proposalId}-evidence-${index}`}>
-                                        Evidence: {sanitizeAoiProposalDisplayText(ref, 220)}
-                                      </div>
-                                    ))}
-                                </div>
-                                <div className={styles.aoiAutonomyProposalActions}>
-                                  <button
-                                    type="button"
-                                    className={styles.inlineActionBtn}
-                                    onClick={() =>
-                                      void onDecideAoiProposal(item.proposalId, 'accept')
-                                    }
-                                    disabled={proposalPending || item.status !== 'active'}
-                                    title="Record approval through the existing proposal path"
-                                  >
-                                    Approve
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className={styles.inlineActionBtn}
-                                    onClick={() =>
-                                      void onDecideAoiProposal(item.proposalId, 'snooze')
-                                    }
-                                    disabled={proposalPending || item.status !== 'active'}
-                                    title="Snooze this prepared action"
-                                  >
-                                    Snooze
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className={styles.inlineActionBtn}
-                                    onClick={() =>
-                                      void onDecideAoiProposal(item.proposalId, 'dismiss')
-                                    }
-                                    disabled={proposalPending || item.status !== 'active'}
-                                    title="Dismiss this prepared action"
-                                  >
-                                    Dismiss
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className={styles.inlineActionBtn}
-                                    onClick={() => {
-                                      if (expandedAoiProposalId !== item.proposalId) {
-                                        emitAoiProposalOpenedSignal({ id: item.proposalId });
-                                      }
-                                      setExpandedAoiProposalId((prev) =>
-                                        prev === item.proposalId ? null : item.proposalId,
-                                      );
-                                    }}
-                                    title="Show inbox evidence"
-                                  >
-                                    {expanded ? (
-                                      <ChevronDown size={14} />
-                                    ) : (
-                                      <ChevronRight size={14} />
-                                    )}
-                                    Details
-                                  </button>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      ) : (
-                        <p className={styles.modelHint}>
-                          No meaningful ambient operator updates are available.
-                        </p>
-                      )}
-                    </div>
-
-                    {aoiProactiveTrendAdvisor && (
-                      <div className={styles.aoiAutonomyProposalSection}>
-                        <div className={styles.promptBudgetSectionTitle}>
-                          Proactive trend advisor
-                        </div>
-                        <div className={styles.aoiAutonomyProposalList}>
-                          <div className={styles.aoiAutonomyProposalDetails}>
-                            <div>
-                              Readiness:{' '}
-                              {sanitizeAoiProposalDisplayText(
-                                `${aoiProactiveTrendAdvisor.readiness.status}; ${aoiProactiveTrendAdvisor.readiness.summary}`,
-                                320,
-                              )}
-                            </div>
-                            <div>
-                              Watches: {aoiProactiveTrendAdvisor.watchProfile.topicWatches.length} /
-                              snapshots {aoiProactiveTrendAdvisor.snapshots.length}
-                            </div>
-                            <div>
-                              Delivery: quiet {aoiProactiveTrendAdvisor.quietNotificationCount} /
-                              direct {aoiProactiveTrendAdvisor.directChatHookCount}
-                            </div>
-                            <div>
-                              Delivery audit: inline{' '}
-                              {aoiProactiveTrendAdvisor.deliveryAuditSummary.inlineShownCount} /
-                              chat{' '}
-                              {aoiProactiveTrendAdvisor.deliveryAuditSummary.directChatOfferedCount}{' '}
-                              / suppressed{' '}
-                              {aoiProactiveTrendAdvisor.deliveryAuditSummary.suppressedCount}
-                            </div>
-                            <div>
-                              Source quality:{' '}
-                              {sanitizeAoiProposalDisplayText(
-                                formatAoiStatusCounts(aoiProactiveTrendAdvisor.sourceQualityCounts),
-                                180,
-                              )}
-                            </div>
-                            <div>
-                              Interest drift:{' '}
-                              {sanitizeAoiProposalDisplayText(
-                                formatAoiStatusCounts(aoiProactiveTrendAdvisor.interestDriftCounts),
-                                180,
-                              )}
-                            </div>
-                            {aoiProactiveTrendAdvisor.deliveryControlBlockedReasons
-                              .slice(0, 4)
-                              .map((reason, index) => (
-                                <div key={`trend-control-block-${index}`}>
-                                  Control block: {sanitizeAoiProposalDisplayText(reason, 120)}
-                                </div>
-                              ))}
-                            {aoiProactiveTrendAdvisor.recentDeliveryEvents
-                              .slice(0, 3)
-                              .map((event) => (
-                                <div key={`trend-delivery-event-${event.id}`}>
-                                  Delivery event:{' '}
-                                  {sanitizeAoiProposalDisplayText(
-                                    `${event.kind} / ${event.topicLabel} / ${event.title}`,
-                                    220,
-                                  )}
-                                </div>
-                              ))}
-                            {aoiProactiveTrendAdvisor.chatHook && (
-                              <div>
-                                Direct hook:{' '}
-                                {sanitizeAoiProposalDisplayText(
-                                  aoiProactiveTrendAdvisor.chatHook,
-                                  320,
+                            {aoiAgendaNudgeReadinessSummary.decisionFeedbackActions.length > 0 && (
+                              <div className={styles.aoiInlineSuggestionActions}>
+                                {aoiAgendaNudgeReadinessSummary.decisionFeedbackActions.map(
+                                  (action) => (
+                                    <button
+                                      key={action.id}
+                                      type="button"
+                                      className={styles.inlineActionBtn}
+                                      onClick={() => runAoiAgendaNudgeDecisionFeedback(action.id)}
+                                      disabled={action.disabled}
+                                      title={action.title}
+                                    >
+                                      {action.label}
+                                    </button>
+                                  ),
                                 )}
                               </div>
                             )}
-                            {aoiProactiveTrendAdvisor.readiness.directChatBlockedReasons
-                              .slice(0, 4)
-                              .map((reason, index) => (
-                                <div key={`trend-readiness-block-${index}`}>
-                                  Direct chat block: {sanitizeAoiProposalDisplayText(reason, 120)}
+                          </div>
+                        </div>
+                      )}
+
+                      {aoiAgendaNudgeCalibrationSummary.visible && (
+                        <div className={styles.aoiAutonomyProposalSection}>
+                          <div className={styles.promptBudgetSectionTitle}>
+                            Agenda nudge calibration
+                          </div>
+                          <div className={styles.aoiAutonomyProposalItem}>
+                            <div className={styles.aoiAutonomyProposalMeta}>
+                              <span>{aoiAgendaNudgeCalibrationSummary.statusLabel}</span>
+                              {aoiAgendaNudgeCalibrationSummary.countLabels.map((label) => (
+                                <span key={label}>{label}</span>
+                              ))}
+                            </div>
+                            <div className={styles.aoiAutonomyProposalTitle}>
+                              {aoiAgendaNudgeCalibrationSummary.summaryLabel}
+                            </div>
+                            <div className={styles.aoiAutonomyProposalDetails}>
+                              {aoiAgendaNudgeCalibrationSummary.reasonLabels.map((label, index) => (
+                                <div key={`agenda-calibration-reason-${index}`}>{label}</div>
+                              ))}
+                              {aoiAgendaNudgeCalibrationSummary.auditLabels.map((label, index) => (
+                                <div key={`agenda-calibration-audit-${index}`}>{label}</div>
+                              ))}
+                              {aoiAgendaNudgeCalibrationSummary.evidenceRefs.map((ref, index) => (
+                                <div key={`agenda-calibration-evidence-${index}`}>
+                                  Evidence: {ref}
                                 </div>
                               ))}
-                          </div>
-                          {aoiProactiveTrendAdvisor.opinionCards.length > 0 ? (
-                            aoiProactiveTrendAdvisor.opinionCards.map((card) => (
-                              <div
-                                className={styles.aoiAutonomyProposalItem}
-                                key={`proactive-trend-${card.id}`}
-                                data-testid="aoi-proactive-trend-card"
+                            </div>
+                            <div className={styles.aoiInlineSuggestionActions}>
+                              <button
+                                type="button"
+                                className={styles.inlineActionBtn}
+                                onClick={() =>
+                                  onUpdateAoiAutonomyPanelSettings(
+                                    buildAoiAgendaNudgeFeedbackResetPatch(),
+                                  )
+                                }
+                                disabled={aoiAgendaNudgeCalibrationSummary.resetDisabled}
+                                title={aoiAgendaNudgeCalibrationSummary.resetTitle}
                               >
-                                <div className={styles.aoiAutonomyProposalMeta}>
-                                  <span>{sanitizeAoiProposalDisplayText(card.topicLabel, 80)}</span>
-                                  <span>{card.freshnessLabel}</span>
-                                  <span>{card.confidenceLabel}</span>
-                                  <span>{card.noveltyLabel}</span>
-                                  <span>{card.sourceQualityLabel}</span>
-                                  <span>{card.interestDriftLabel}</span>
-                                  <span>{card.deliveryMode}</span>
-                                  <span>
-                                    {card.directChatAllowed
-                                      ? 'direct chat ready'
-                                      : 'dashboard only'}
-                                  </span>
-                                </div>
-                                <div className={styles.aoiAutonomyProposalTitle}>
-                                  {sanitizeAoiProposalDisplayText(card.title, 140)}
-                                </div>
-                                <div className={styles.aoiAutonomyProposalDetails}>
-                                  <div>
-                                    What changed:{' '}
-                                    {sanitizeAoiProposalDisplayText(card.whatChanged, 320)}
-                                  </div>
-                                  <div>
-                                    Why it matters:{' '}
-                                    {sanitizeAoiProposalDisplayText(card.whyItMatters, 320)}
-                                  </div>
-                                  <div>
-                                    My take: {sanitizeAoiProposalDisplayText(card.myTake, 320)}
-                                  </div>
-                                  <div>
-                                    Suggested next action:{' '}
-                                    {sanitizeAoiProposalDisplayText(card.suggestedNextAction, 240)}
-                                  </div>
-                                  <div>
-                                    Delivery:{' '}
-                                    {sanitizeAoiProposalDisplayText(card.deliverySummary, 260)}
-                                  </div>
-                                  <div>
-                                    Controls:{' '}
-                                    {sanitizeAoiProposalDisplayText(card.controlSummary, 220)}
-                                  </div>
-                                  <div>
-                                    Evidence:{' '}
-                                    {sanitizeAoiProposalDisplayText(
-                                      card.sourceHosts.join(', ') || 'source-backed snapshot',
-                                      180,
-                                    )}
-                                  </div>
-                                  {card.directChatBlockedReasons
-                                    .slice(0, 4)
-                                    .map((reason, index) => (
-                                      <div key={`trend-${card.id}-block-${index}`}>
-                                        Direct chat block:{' '}
-                                        {sanitizeAoiProposalDisplayText(reason, 120)}
-                                      </div>
-                                    ))}
-                                  {card.evidenceRefs.slice(0, 4).map((ref, index) => (
-                                    <div key={`trend-${card.id}-evidence-${index}`}>
-                                      Evidence ref: {sanitizeAoiProposalDisplayText(ref, 220)}
-                                    </div>
-                                  ))}
-                                </div>
+                                {aoiAgendaNudgeCalibrationSummary.resetLabel}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {aoiOperatorHealthSummary.visible && (
+                        <div className={styles.aoiAutonomyProposalSection}>
+                          <div className={styles.promptBudgetSectionTitle}>Operator health</div>
+                          <div className={styles.aoiAutonomyProposalItem}>
+                            <div className={styles.aoiAutonomyProposalMeta}>
+                              <span>{aoiOperatorHealthSummary.statusLabel}</span>
+                              {aoiOperatorHealthSummary.capabilityLabels.map((label) => (
+                                <span key={label}>{label}</span>
+                              ))}
+                            </div>
+                            <div className={styles.aoiAutonomyProposalTitle}>
+                              {aoiOperatorHealthSummary.summaryLabel}
+                            </div>
+                            {(aoiOperatorHealthSummary.issueLabels.length > 0 ||
+                              aoiOperatorHealthSummary.recommendationLabels.length > 0 ||
+                              aoiOperatorHealthSummary.evidenceRefs.length > 0) && (
+                              <div className={styles.aoiAutonomyProposalDetails}>
+                                {aoiOperatorHealthSummary.issueLabels.map((label, index) => (
+                                  <div key={`health-issue-${index}`}>{label}</div>
+                                ))}
+                                {aoiOperatorHealthSummary.recommendationLabels.map(
+                                  (label, index) => (
+                                    <div key={`health-recommendation-${index}`}>Next: {label}</div>
+                                  ),
+                                )}
+                                {aoiOperatorHealthSummary.evidenceRefs.map((ref, index) => (
+                                  <div key={`health-evidence-${index}`}>Evidence: {ref}</div>
+                                ))}
                               </div>
-                            ))
-                          ) : (
-                            <p className={styles.modelHint}>
-                              No source-backed trend opinion cards are ready.
-                            </p>
-                          )}
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {aoiPlaybookSummary.visible && (
+                        <div className={styles.aoiAutonomyProposalSection}>
+                          <div className={styles.promptBudgetSectionTitle}>Current playbook</div>
+                          <div className={styles.aoiAutonomyProposalItem}>
+                            <div className={styles.aoiAutonomyProposalMeta}>
+                              <span>{aoiPlaybookSummary.statusLabel}</span>
+                              <span>{aoiPlaybookSummary.stepLabels.length} steps shown</span>
+                            </div>
+                            <div className={styles.aoiAutonomyProposalTitle}>
+                              {aoiPlaybookSummary.titleLabel}
+                            </div>
+                            <div className={styles.aoiAutonomyProposalReason}>
+                              {aoiPlaybookSummary.objectiveLabel}
+                            </div>
+                            <div className={styles.aoiAutonomyProposalDetails}>
+                              <div>Next: {aoiPlaybookSummary.nextDecisionLabel}</div>
+                              {aoiPlaybookSummary.stepLabels.map((label, index) => (
+                                <div key={`playbook-step-${index}`}>{label}</div>
+                              ))}
+                              {aoiPlaybookSummary.boundaryLabels.map((label, index) => (
+                                <div key={`playbook-boundary-${index}`}>Boundary: {label}</div>
+                              ))}
+                              {aoiPlaybookSummary.blockedPrerequisiteLabels.map((label, index) => (
+                                <div key={`playbook-blocked-${index}`}>Blocked: {label}</div>
+                              ))}
+                              {aoiPlaybookSummary.evidenceRefs.map((ref, index) => (
+                                <div key={`playbook-evidence-${index}`}>Evidence: {ref}</div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className={styles.aoiAutonomyControls}>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Autonomy policy</span>
+                          <button
+                            type="button"
+                            className={
+                              aoiAutonomyPolicy?.enabled ? styles.saveBtn : styles.cancelBtn
+                            }
+                            onClick={() =>
+                              void onUpdateAoiAutonomyPolicy({
+                                enabled: !aoiAutonomyPolicy?.enabled,
+                              })
+                            }
+                            disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
+                          >
+                            {aoiAutonomyPolicy?.enabled ? 'Enabled' : 'Disabled'}
+                          </button>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Thinking (network)</span>
+                          <button
+                            type="button"
+                            className={
+                              aoiAutonomyPolicy?.allowNetwork ? styles.saveBtn : styles.cancelBtn
+                            }
+                            onClick={() =>
+                              void onUpdateAoiAutonomyPolicy({
+                                allowNetwork: !aoiAutonomyPolicy?.allowNetwork,
+                              })
+                            }
+                            disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
+                            data-testid="aoi-autonomy-thinking-toggle"
+                          >
+                            {aoiAutonomyPolicy?.allowNetwork ? 'On' : 'Off'}
+                          </button>
+                        </div>
+                        <div className={styles.field}>
+                          <label className={styles.label}>Autonomy level</label>
+                          <select
+                            className={styles.select}
+                            value={aoiAutonomyPolicy?.level ?? 'L1'}
+                            onChange={(event) =>
+                              void onUpdateAoiAutonomyPolicy({
+                                level: event.target.value as AoiAutonomyLevel,
+                              })
+                            }
+                            disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
+                          >
+                            {AOI_AUTONOMY_UI_LEVELS.map((level) => (
+                              <option key={level} value={level}>
+                                {level}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Inline suggestions</span>
+                          <button
+                            type="button"
+                            className={
+                              aoiAutonomyPolicy?.proactiveSuggestionsEnabled
+                                ? styles.saveBtn
+                                : styles.cancelBtn
+                            }
+                            onClick={() => {
+                              const enabled = !aoiAutonomyPolicy?.proactiveSuggestionsEnabled;
+                              void onUpdateAoiAutonomyPolicy({
+                                proactiveSuggestionsEnabled: enabled,
+                                ...(aoiAutonomyPolicy
+                                  ? {
+                                      proactiveBriefing: {
+                                        ...aoiAutonomyPolicy.proactiveBriefing,
+                                        enabled,
+                                      },
+                                    }
+                                  : {}),
+                              });
+                            }}
+                            disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
+                          >
+                            {aoiAutonomyPolicy?.proactiveSuggestionsEnabled ? 'On' : 'Off'}
+                          </button>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Field-shadow capture</span>
+                          <button
+                            type="button"
+                            className={
+                              aoiAutonomyPolicy?.fieldShadowCaptureEnabled
+                                ? styles.saveBtn
+                                : styles.cancelBtn
+                            }
+                            onClick={() =>
+                              void onUpdateAoiAutonomyPolicy({
+                                fieldShadowCaptureEnabled:
+                                  !aoiAutonomyPolicy?.fieldShadowCaptureEnabled,
+                              })
+                            }
+                            disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
+                            data-testid="aoi-field-shadow-capture-toggle"
+                          >
+                            {aoiAutonomyPolicy?.fieldShadowCaptureEnabled ? 'On' : 'Off'}
+                          </button>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Scout policy</span>
+                          <button
+                            type="button"
+                            className={
+                              aoiAutonomyPolicy?.proactiveBriefing.enabled
+                                ? styles.saveBtn
+                                : styles.cancelBtn
+                            }
+                            onClick={() => {
+                              if (!aoiAutonomyPolicy) {
+                                return;
+                              }
+                              void onUpdateAoiAutonomyPolicy({
+                                proactiveBriefing: {
+                                  ...aoiAutonomyPolicy.proactiveBriefing,
+                                  enabled: !aoiAutonomyPolicy.proactiveBriefing.enabled,
+                                },
+                              });
+                            }}
+                            disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
+                            title="Pause or resume proactive current-info scouting"
+                          >
+                            {aoiAutonomyPolicy?.proactiveBriefing.enabled ? 'Resumed' : 'Paused'}
+                          </button>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Background scout</span>
+                          <button
+                            type="button"
+                            className={
+                              aoiAutonomyPolicy?.proactiveBriefing.allowBackgroundScout
+                                ? styles.saveBtn
+                                : styles.cancelBtn
+                            }
+                            onClick={() => {
+                              if (!aoiAutonomyPolicy) {
+                                return;
+                              }
+                              void onUpdateAoiAutonomyPolicy({
+                                proactiveBriefing: {
+                                  ...aoiAutonomyPolicy.proactiveBriefing,
+                                  allowBackgroundScout:
+                                    !aoiAutonomyPolicy.proactiveBriefing.allowBackgroundScout,
+                                },
+                              });
+                            }}
+                            disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
+                            title="Allow scheduler wakeups to scout current public sources"
+                          >
+                            {aoiAutonomyPolicy?.proactiveBriefing.allowBackgroundScout
+                              ? 'On'
+                              : 'Off'}
+                          </button>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Direct chat hooks</span>
+                          <button
+                            type="button"
+                            className={
+                              aoiAutonomyPolicy?.proactiveBriefing.directChatHookOptIn
+                                ? styles.saveBtn
+                                : styles.cancelBtn
+                            }
+                            onClick={() => {
+                              if (!aoiAutonomyPolicy) {
+                                return;
+                              }
+                              void onUpdateAoiAutonomyPolicy({
+                                proactiveBriefing: {
+                                  ...aoiAutonomyPolicy.proactiveBriefing,
+                                  directChatHookOptIn:
+                                    !aoiAutonomyPolicy.proactiveBriefing.directChatHookOptIn,
+                                },
+                              });
+                            }}
+                            disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
+                            title="Opt in or out of compact proactive chat hooks"
+                          >
+                            {aoiAutonomyPolicy?.proactiveBriefing.directChatHookOptIn
+                              ? 'Opt-in'
+                              : 'Off'}
+                          </button>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Run scout now</span>
+                          <button
+                            type="button"
+                            className={styles.inlineActionBtn}
+                            onClick={() => void onRunAoiProactiveBriefScout()}
+                            disabled={
+                              !aoiAutonomyPolicy ||
+                              aoiAutonomyLoading ||
+                              aoiAutonomyActionId === 'proactive-scout'
+                            }
+                            title="Run a budgeted proactive scout through scheduler gates"
+                          >
+                            {aoiAutonomyActionId === 'proactive-scout' ? 'Running' : 'Run'}
+                          </button>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Scout cooldown</span>
+                          <button
+                            type="button"
+                            className={styles.inlineActionBtn}
+                            onClick={() => void onResetAoiProactiveBriefCooldown()}
+                            disabled={
+                              !aoiAutonomyPolicy?.enabled ||
+                              !aoiAutonomyPolicy.proactiveBriefing.enabled ||
+                              aoiAutonomyActionId === 'proactive-cooldown-reset'
+                            }
+                            title="Reset global proactive scout cooldown when policy allows it"
+                          >
+                            {aoiAutonomyActionId === 'proactive-cooldown-reset'
+                              ? 'Resetting'
+                              : 'Reset'}
+                          </button>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Quiet mode</span>
+                          <button
+                            type="button"
+                            className={
+                              aoiAutonomyPanelSettings.quietMode ? styles.cancelBtn : styles.saveBtn
+                            }
+                            onClick={() =>
+                              onUpdateAoiAutonomyPanelSettings({
+                                quietMode: !aoiAutonomyPanelSettings.quietMode,
+                              })
+                            }
+                            title="Pause proactive UI indicators while keeping observations"
+                          >
+                            {aoiAutonomyPanelSettings.quietMode ? 'Quiet' : 'Normal'}
+                          </button>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Desktop toast</span>
+                          <button
+                            type="button"
+                            className={
+                              aoiAutonomyPanelSettings.notificationsEnabled
+                                ? styles.saveBtn
+                                : styles.cancelBtn
+                            }
+                            onClick={() =>
+                              onUpdateAoiAutonomyPanelSettings({
+                                notificationsEnabled:
+                                  !aoiAutonomyPanelSettings.notificationsEnabled,
+                              })
+                            }
+                            title="Desktop notifications stay opt-in and high-risk proposals are excluded"
+                          >
+                            {aoiAutonomyPanelSettings.notificationsEnabled ? 'Opt-in' : 'Off'}
+                          </button>
+                        </div>
+                        <div className={styles.field}>
+                          <label className={styles.label}>Max suggestions</label>
+                          <select
+                            className={styles.select}
+                            value={String(aoiAutonomyPanelSettings.maxSuggestionsPerSession)}
+                            onChange={(event) =>
+                              onUpdateAoiAutonomyPanelSettings({
+                                maxSuggestionsPerSession: Number(event.target.value),
+                              })
+                            }
+                          >
+                            {[0, 1, 2, 3, 5].map((value) => (
+                              <option key={value} value={value}>
+                                {value}
+                              </option>
+                            ))}
+                          </select>
                         </div>
                       </div>
-                    )}
 
-                    <div className={styles.aoiAutonomyProposalSection}>
-                      <div className={styles.promptBudgetSectionTitle}>
-                        Proactive interest briefs
-                      </div>
-                      {aoiProactiveBriefPanel.visible ? (
-                        <div className={styles.aoiAutonomyProposalList}>
-                          {aoiProactiveBriefPanel.hiddenLabel && (
-                            <div className={styles.aoiAutonomyProposalDetails}>
-                              <div>{aoiProactiveBriefPanel.hiddenLabel}</div>
-                            </div>
-                          )}
-                          {aoiProactiveBriefPanel.calibrationSummaryLabels.length > 0 && (
-                            <div className={styles.aoiAutonomyProposalDetails}>
-                              {aoiProactiveBriefPanel.calibrationSummaryLabels.map(
-                                (label, index) => (
-                                  <div key={`proactive-brief-calibration-${index}`}>
-                                    Calibration: {sanitizeAoiProposalDisplayText(label, 220)}
-                                  </div>
-                                ),
+                      <div className={styles.aoiAutonomyProposalSection}>
+                        <div className={styles.promptBudgetSectionTitle}>Operator digest</div>
+                        {aoiOperatorDigestSummary.visible ? (
+                          <div className={styles.aoiAutonomyProposalList}>
+                            <div className={styles.aoiAutonomyProposalItem}>
+                              <div className={styles.aoiAutonomyProposalMeta}>
+                                <span>{aoiOperatorDigestSummary.summaryLabel}</span>
+                                {aoiOperatorDigestSummary.laneLabels.map((label) => (
+                                  <span key={label}>{label}</span>
+                                ))}
+                              </div>
+                              {aoiOperatorDigestSummary.resumeBriefLabel && (
+                                <div className={styles.aoiAutonomyProposalReason}>
+                                  {aoiOperatorDigestSummary.resumeBriefLabel}
+                                </div>
+                              )}
+                              {aoiOperatorDigestSummary.hiddenLabel && (
+                                <div className={styles.aoiAutonomyProposalDetails}>
+                                  <div>{aoiOperatorDigestSummary.hiddenLabel}</div>
+                                </div>
+                              )}
+                              {aoiOperatorDigestSummary.itemLabels.length > 0 && (
+                                <div className={styles.aoiAutonomyProposalDetails}>
+                                  {aoiOperatorDigestSummary.itemLabels.map((label, index) => (
+                                    <div key={`digest-item-${index}`}>{label}</div>
+                                  ))}
+                                </div>
+                              )}
+                              {aoiOperatorDigestSummary.evidenceRefs.length > 0 && (
+                                <div className={styles.aoiAutonomyProposalDetails}>
+                                  {aoiOperatorDigestSummary.evidenceRefs.map((ref, index) => (
+                                    <div key={`digest-evidence-${index}`}>Evidence: {ref}</div>
+                                  ))}
+                                </div>
                               )}
                             </div>
-                          )}
-                          {aoiProactiveBriefPanel.cards.map((card) => {
-                            const expanded = expandedAoiProactiveBriefId === card.id;
-                            const topicControl =
-                              aoiAutonomyPolicy?.proactiveBriefing.topicControls[card.topicId];
-                            const topicMuted = topicControl?.muted === true;
-                            const topicPinned = topicControl?.pinned === true;
-                            return (
-                              <div
-                                className={styles.aoiAutonomyProposalItem}
-                                key={`proactive-brief-${card.id}`}
-                                data-testid="aoi-proactive-brief-card"
-                              >
-                                <div className={styles.aoiAutonomyProposalMeta}>
-                                  <span>{card.status}</span>
-                                  <span>{card.sourceCountLabel}</span>
-                                  <span>{card.delivery.selectedMode ?? 'dashboard'}</span>
-                                  <span>{card.delivery.deliveryScore.toFixed(2)}</span>
-                                </div>
-                                <div className={styles.aoiAutonomyProposalTitle}>
-                                  {sanitizeAoiProposalDisplayText(card.title, 140)}
-                                </div>
-                                <div className={styles.aoiAutonomyProposalReason}>
-                                  {sanitizeAoiProposalDisplayText(card.hook, 220)}
-                                </div>
-                                <div className={styles.aoiAutonomyProposalDetails}>
-                                  <div>
-                                    Why: {sanitizeAoiProposalDisplayText(card.whyForOperator, 260)}
+                            {(aoiOperatorDigest?.approvalInbox ?? []).map((item) => {
+                              const proposalPending = Boolean(
+                                aoiAutonomyActionId?.startsWith(`proposal:${item.proposalId}:`),
+                              );
+                              const expanded = expandedAoiProposalId === item.proposalId;
+                              return (
+                                <div
+                                  className={styles.aoiAutonomyProposalItem}
+                                  key={`inbox-${item.proposalId}`}
+                                >
+                                  <div className={styles.aoiAutonomyProposalMeta}>
+                                    <span>approval inbox</span>
+                                    <span>{item.status}</span>
+                                    <span>{item.risk} risk</span>
+                                    <span>evidence {item.evidenceCount}</span>
+                                    <span>requires {item.requiredAutonomyLevel}</span>
                                   </div>
-                                  <div>
-                                    Sources:{' '}
-                                    {sanitizeAoiProposalDisplayText(card.sourceHostLabel, 220)}
+                                  <div className={styles.aoiAutonomyProposalTitle}>
+                                    {sanitizeAoiProposalDisplayText(item.title, 140)}
                                   </div>
-                                  <div>
-                                    Freshness:{' '}
-                                    {sanitizeAoiProposalDisplayText(card.freshnessLabel, 260)}
+                                  <div className={styles.aoiAutonomyProposalReason}>
+                                    {sanitizeAoiProposalDisplayText(item.exactNextAction, 220)}
                                   </div>
-                                  {card.cannotKnowLabels
-                                    .slice(0, expanded ? 6 : 2)
-                                    .map((label, index) => (
-                                      <div key={`brief-${card.id}-cannot-${index}`}>
-                                        Cannot know: {sanitizeAoiProposalDisplayText(label, 260)}
-                                      </div>
-                                    ))}
-                                  {card.tuningLabels.map((label, index) => (
-                                    <div key={`brief-${card.id}-tuning-${index}`}>
-                                      Calibration: {sanitizeAoiProposalDisplayText(label, 260)}
+                                  <div className={styles.aoiAutonomyProposalDetails}>
+                                    <div>
+                                      Boundary: {sanitizeAoiProposalDisplayText(item.boundary, 260)}
                                     </div>
-                                  ))}
-                                  <div>
-                                    Authority:{' '}
-                                    {sanitizeAoiProposalDisplayText(card.actionAuthorityLabel, 180)}
-                                  </div>
-                                  {card.deliveryLadderLabels.map((label, index) => (
-                                    <div key={`brief-${card.id}-ladder-${index}`}>
-                                      {sanitizeAoiProposalDisplayText(label, 280)}
+                                    <div>
+                                      Available:{' '}
+                                      {item.availableActions
+                                        .map((action) => action.replace(/_/g, ' '))
+                                        .join(' / ')}
                                     </div>
-                                  ))}
-                                  {card.directChatSuppressionLabels.map((label, index) => (
-                                    <div key={`brief-${card.id}-chat-suppression-${index}`}>
-                                      {sanitizeAoiProposalDisplayText(label, 260)}
-                                    </div>
-                                  ))}
-                                  {expanded && (
-                                    <>
-                                      <div>
-                                        Summary:{' '}
-                                        {sanitizeAoiProposalDisplayText(
-                                          card.expandedSummaryLabel,
-                                          700,
-                                        )}
-                                      </div>
-                                      <div>
-                                        Novelty:{' '}
-                                        {sanitizeAoiProposalDisplayText(card.noveltyReason, 260)}
-                                      </div>
-                                      {card.sources.map((source, index) => (
-                                        <div key={`brief-${card.id}-source-${index}`}>
-                                          Source {index + 1}:{' '}
-                                          {sanitizeAoiProposalDisplayText(
-                                            `${source.host} | ${source.title} | published ${source.publishedAtLabel} | retrieved ${source.retrievedAtLabel} | ${source.url} | ${source.snippet}`,
-                                            520,
-                                          )}
-                                        </div>
-                                      ))}
-                                      {card.evidenceRefs.map((ref, index) => (
-                                        <div key={`brief-${card.id}-evidence-${index}`}>
+                                    {expanded &&
+                                      item.evidenceRefs.map((ref, index) => (
+                                        <div key={`inbox-${item.proposalId}-evidence-${index}`}>
                                           Evidence: {sanitizeAoiProposalDisplayText(ref, 220)}
                                         </div>
                                       ))}
-                                      {card.memoryRefs.map((ref, index) => (
-                                        <div key={`brief-${card.id}-memory-${index}`}>
-                                          Memory ref: {sanitizeAoiProposalDisplayText(ref, 220)}
-                                        </div>
-                                      ))}
-                                    </>
+                                  </div>
+                                  <div className={styles.aoiAutonomyProposalActions}>
+                                    <button
+                                      type="button"
+                                      className={styles.inlineActionBtn}
+                                      onClick={() =>
+                                        void onDecideAoiProposal(item.proposalId, 'accept')
+                                      }
+                                      disabled={proposalPending || item.status !== 'active'}
+                                      title="Record approval through the existing proposal path"
+                                    >
+                                      Approve
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={styles.inlineActionBtn}
+                                      onClick={() =>
+                                        void onDecideAoiProposal(item.proposalId, 'snooze')
+                                      }
+                                      disabled={proposalPending || item.status !== 'active'}
+                                      title="Snooze this prepared action"
+                                    >
+                                      Snooze
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={styles.inlineActionBtn}
+                                      onClick={() =>
+                                        void onDecideAoiProposal(item.proposalId, 'dismiss')
+                                      }
+                                      disabled={proposalPending || item.status !== 'active'}
+                                      title="Dismiss this prepared action"
+                                    >
+                                      Dismiss
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={styles.inlineActionBtn}
+                                      onClick={() => {
+                                        if (expandedAoiProposalId !== item.proposalId) {
+                                          emitAoiProposalOpenedSignal({ id: item.proposalId });
+                                        }
+                                        setExpandedAoiProposalId((prev) =>
+                                          prev === item.proposalId ? null : item.proposalId,
+                                        );
+                                      }}
+                                      title="Show inbox evidence"
+                                    >
+                                      {expanded ? (
+                                        <ChevronDown size={14} />
+                                      ) : (
+                                        <ChevronRight size={14} />
+                                      )}
+                                      Details
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <p className={styles.modelHint}>
+                            No meaningful ambient operator updates are available.
+                          </p>
+                        )}
+                      </div>
+
+                      {aoiProactiveTrendAdvisor && (
+                        <div className={styles.aoiAutonomyProposalSection}>
+                          <div className={styles.promptBudgetSectionTitle}>
+                            Proactive trend advisor
+                          </div>
+                          <div className={styles.aoiAutonomyProposalList}>
+                            <div className={styles.aoiAutonomyProposalDetails}>
+                              <div>
+                                Readiness:{' '}
+                                {sanitizeAoiProposalDisplayText(
+                                  `${aoiProactiveTrendAdvisor.readiness.status}; ${aoiProactiveTrendAdvisor.readiness.summary}`,
+                                  320,
+                                )}
+                              </div>
+                              <div>
+                                Watches: {aoiProactiveTrendAdvisor.watchProfile.topicWatches.length}{' '}
+                                / snapshots {aoiProactiveTrendAdvisor.snapshots.length}
+                              </div>
+                              <div>
+                                Delivery: quiet {aoiProactiveTrendAdvisor.quietNotificationCount} /
+                                direct {aoiProactiveTrendAdvisor.directChatHookCount}
+                              </div>
+                              <div>
+                                Delivery audit: inline{' '}
+                                {aoiProactiveTrendAdvisor.deliveryAuditSummary.inlineShownCount} /
+                                chat{' '}
+                                {
+                                  aoiProactiveTrendAdvisor.deliveryAuditSummary
+                                    .directChatOfferedCount
+                                }{' '}
+                                / suppressed{' '}
+                                {aoiProactiveTrendAdvisor.deliveryAuditSummary.suppressedCount}
+                              </div>
+                              <div>
+                                Source quality:{' '}
+                                {sanitizeAoiProposalDisplayText(
+                                  formatAoiStatusCounts(
+                                    aoiProactiveTrendAdvisor.sourceQualityCounts,
+                                  ),
+                                  180,
+                                )}
+                              </div>
+                              <div>
+                                Interest drift:{' '}
+                                {sanitizeAoiProposalDisplayText(
+                                  formatAoiStatusCounts(
+                                    aoiProactiveTrendAdvisor.interestDriftCounts,
+                                  ),
+                                  180,
+                                )}
+                              </div>
+                              {aoiProactiveTrendAdvisor.deliveryControlBlockedReasons
+                                .slice(0, 4)
+                                .map((reason, index) => (
+                                  <div key={`trend-control-block-${index}`}>
+                                    Control block: {sanitizeAoiProposalDisplayText(reason, 120)}
+                                  </div>
+                                ))}
+                              {aoiProactiveTrendAdvisor.recentDeliveryEvents
+                                .slice(0, 3)
+                                .map((event) => (
+                                  <div key={`trend-delivery-event-${event.id}`}>
+                                    Delivery event:{' '}
+                                    {sanitizeAoiProposalDisplayText(
+                                      `${event.kind} / ${event.topicLabel} / ${event.title}`,
+                                      220,
+                                    )}
+                                  </div>
+                                ))}
+                              {aoiProactiveTrendAdvisor.chatHook && (
+                                <div>
+                                  Direct hook:{' '}
+                                  {sanitizeAoiProposalDisplayText(
+                                    aoiProactiveTrendAdvisor.chatHook,
+                                    320,
                                   )}
                                 </div>
-                                <div className={styles.aoiAutonomyProposalActions}>
-                                  {card.feedbackActions.map((action) => {
-                                    const actionId = `proactive-brief:${card.id}:${action.action}`;
-                                    return (
-                                      <button
-                                        type="button"
-                                        key={actionId}
-                                        className={styles.inlineActionBtn}
-                                        onClick={() => {
-                                          if (
-                                            action.action === 'open_sources' ||
-                                            action.action === 'expand_summary'
-                                          ) {
-                                            onToggleAoiProactiveBriefExpanded(card.id);
-                                          }
-                                          void onRecordAoiProactiveBriefFeedback(
-                                            card.id,
-                                            action.action,
-                                          );
-                                        }}
-                                        disabled={aoiAutonomyActionId === actionId}
-                                        title={action.title}
-                                      >
-                                        {action.label}
-                                      </button>
-                                    );
-                                  })}
-                                  <button
-                                    type="button"
-                                    className={styles.inlineActionBtn}
-                                    onClick={() => onToggleAoiProactiveBriefExpanded(card.id)}
-                                    title="Show source freshness and evidence"
-                                  >
-                                    {expanded ? (
-                                      <ChevronDown size={14} />
-                                    ) : (
-                                      <ChevronRight size={14} />
-                                    )}
-                                    Details
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className={styles.inlineActionBtn}
-                                    onClick={() => {
-                                      if (!aoiAutonomyPolicy) {
-                                        return;
-                                      }
-                                      void onUpdateAoiAutonomyPolicy({
-                                        proactiveBriefing: {
-                                          ...aoiAutonomyPolicy.proactiveBriefing,
-                                          topicControls: {
-                                            ...aoiAutonomyPolicy.proactiveBriefing.topicControls,
-                                            [card.topicId]: {
-                                              version: 1,
-                                              topicId: card.topicId,
-                                              allowed: topicMuted,
-                                              muted: !topicMuted,
-                                              pinned: topicMuted ? topicPinned : false,
-                                              updatedAt: Date.now(),
-                                            },
-                                          },
-                                        },
-                                      });
-                                    }}
-                                    disabled={
-                                      !aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'
-                                    }
-                                    title="Mute or unmute this proactive topic"
-                                  >
-                                    {topicMuted ? 'Unmute topic' : 'Mute topic'}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className={styles.inlineActionBtn}
-                                    onClick={() => {
-                                      if (!aoiAutonomyPolicy) {
-                                        return;
-                                      }
-                                      void onUpdateAoiAutonomyPolicy({
-                                        proactiveBriefing: {
-                                          ...aoiAutonomyPolicy.proactiveBriefing,
-                                          topicControls: {
-                                            ...aoiAutonomyPolicy.proactiveBriefing.topicControls,
-                                            [card.topicId]: {
-                                              version: 1,
-                                              topicId: card.topicId,
-                                              allowed: true,
-                                              muted: false,
-                                              pinned: !topicPinned,
-                                              updatedAt: Date.now(),
-                                            },
-                                          },
-                                        },
-                                      });
-                                    }}
-                                    disabled={
-                                      !aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'
-                                    }
-                                    title="Pin or unpin this proactive topic"
-                                  >
-                                    {topicPinned ? 'Unpin topic' : 'Pin topic'}
-                                  </button>
+                              )}
+                              {aoiProactiveTrendAdvisor.readiness.directChatBlockedReasons
+                                .slice(0, 4)
+                                .map((reason, index) => (
+                                  <div key={`trend-readiness-block-${index}`}>
+                                    Direct chat block: {sanitizeAoiProposalDisplayText(reason, 120)}
+                                  </div>
+                                ))}
+                            </div>
+                            {aoiProactiveTrendAdvisor.opinionCards.length > 0 ? (
+                              aoiProactiveTrendAdvisor.opinionCards.map((card) => (
+                                <div
+                                  className={styles.aoiAutonomyProposalItem}
+                                  key={`proactive-trend-${card.id}`}
+                                  data-testid="aoi-proactive-trend-card"
+                                >
+                                  <div className={styles.aoiAutonomyProposalMeta}>
+                                    <span>
+                                      {sanitizeAoiProposalDisplayText(card.topicLabel, 80)}
+                                    </span>
+                                    <span>{card.freshnessLabel}</span>
+                                    <span>{card.confidenceLabel}</span>
+                                    <span>{card.noveltyLabel}</span>
+                                    <span>{card.sourceQualityLabel}</span>
+                                    <span>{card.interestDriftLabel}</span>
+                                    <span>{card.deliveryMode}</span>
+                                    <span>
+                                      {card.directChatAllowed
+                                        ? 'direct chat ready'
+                                        : 'dashboard only'}
+                                    </span>
+                                  </div>
+                                  <div className={styles.aoiAutonomyProposalTitle}>
+                                    {sanitizeAoiProposalDisplayText(card.title, 140)}
+                                  </div>
+                                  <div className={styles.aoiAutonomyProposalDetails}>
+                                    <div>
+                                      What changed:{' '}
+                                      {sanitizeAoiProposalDisplayText(card.whatChanged, 320)}
+                                    </div>
+                                    <div>
+                                      Why it matters:{' '}
+                                      {sanitizeAoiProposalDisplayText(card.whyItMatters, 320)}
+                                    </div>
+                                    <div>
+                                      My take: {sanitizeAoiProposalDisplayText(card.myTake, 320)}
+                                    </div>
+                                    <div>
+                                      Suggested next action:{' '}
+                                      {sanitizeAoiProposalDisplayText(
+                                        card.suggestedNextAction,
+                                        240,
+                                      )}
+                                    </div>
+                                    <div>
+                                      Delivery:{' '}
+                                      {sanitizeAoiProposalDisplayText(card.deliverySummary, 260)}
+                                    </div>
+                                    <div>
+                                      Controls:{' '}
+                                      {sanitizeAoiProposalDisplayText(card.controlSummary, 220)}
+                                    </div>
+                                    <div>
+                                      Evidence:{' '}
+                                      {sanitizeAoiProposalDisplayText(
+                                        card.sourceHosts.join(', ') || 'source-backed snapshot',
+                                        180,
+                                      )}
+                                    </div>
+                                    {card.directChatBlockedReasons
+                                      .slice(0, 4)
+                                      .map((reason, index) => (
+                                        <div key={`trend-${card.id}-block-${index}`}>
+                                          Direct chat block:{' '}
+                                          {sanitizeAoiProposalDisplayText(reason, 120)}
+                                        </div>
+                                      ))}
+                                    {card.evidenceRefs.slice(0, 4).map((ref, index) => (
+                                      <div key={`trend-${card.id}-evidence-${index}`}>
+                                        Evidence ref: {sanitizeAoiProposalDisplayText(ref, 220)}
+                                      </div>
+                                    ))}
+                                  </div>
                                 </div>
-                              </div>
-                            );
-                          })}
+                              ))
+                            ) : (
+                              <p className={styles.modelHint}>
+                                No source-backed trend opinion cards are ready.
+                              </p>
+                            )}
+                          </div>
                         </div>
-                      ) : (
-                        <p className={styles.modelHint}>No proactive interest briefs are ready.</p>
                       )}
-                    </div>
 
-                    <div className={styles.aoiAutonomyProposalSection}>
-                      <div className={styles.promptBudgetSectionTitle}>Context router</div>
-                      {aoiContextSourceSummaries.length > 0 ? (
-                        <div className={styles.aoiAutonomyProposalList}>
-                          {aoiContextSourceSummaries.map((source) => {
-                            const wrongEvidenceActionId = `context:${source.id}:wrong_evidence`;
-                            const wrongSourceActionId = `context:${source.id}:wrong_source`;
-                            const wrongTimingActionId = `context:${source.id}:wrong_timing`;
-                            return (
+                      <div className={styles.aoiAutonomyProposalSection}>
+                        <div className={styles.promptBudgetSectionTitle}>
+                          Proactive interest briefs
+                        </div>
+                        {aoiProactiveBriefPanel.visible ? (
+                          <div className={styles.aoiAutonomyProposalList}>
+                            {aoiProactiveBriefPanel.hiddenLabel && (
+                              <div className={styles.aoiAutonomyProposalDetails}>
+                                <div>{aoiProactiveBriefPanel.hiddenLabel}</div>
+                              </div>
+                            )}
+                            {aoiProactiveBriefPanel.calibrationSummaryLabels.length > 0 && (
+                              <div className={styles.aoiAutonomyProposalDetails}>
+                                {aoiProactiveBriefPanel.calibrationSummaryLabels.map(
+                                  (label, index) => (
+                                    <div key={`proactive-brief-calibration-${index}`}>
+                                      Calibration: {sanitizeAoiProposalDisplayText(label, 220)}
+                                    </div>
+                                  ),
+                                )}
+                              </div>
+                            )}
+                            {aoiProactiveBriefPanel.cards.map((card) => {
+                              const expanded = expandedAoiProactiveBriefId === card.id;
+                              const topicControl =
+                                aoiAutonomyPolicy?.proactiveBriefing.topicControls[card.topicId];
+                              const topicMuted = topicControl?.muted === true;
+                              const topicPinned = topicControl?.pinned === true;
+                              return (
+                                <div
+                                  className={styles.aoiAutonomyProposalItem}
+                                  key={`proactive-brief-${card.id}`}
+                                  data-testid="aoi-proactive-brief-card"
+                                >
+                                  <div className={styles.aoiAutonomyProposalMeta}>
+                                    <span>{card.status}</span>
+                                    <span>{card.sourceCountLabel}</span>
+                                    <span>{card.delivery.selectedMode ?? 'dashboard'}</span>
+                                    <span>{card.delivery.deliveryScore.toFixed(2)}</span>
+                                  </div>
+                                  <div className={styles.aoiAutonomyProposalTitle}>
+                                    {sanitizeAoiProposalDisplayText(card.title, 140)}
+                                  </div>
+                                  <div className={styles.aoiAutonomyProposalReason}>
+                                    {sanitizeAoiProposalDisplayText(card.hook, 220)}
+                                  </div>
+                                  <div className={styles.aoiAutonomyProposalDetails}>
+                                    <div>
+                                      Why:{' '}
+                                      {sanitizeAoiProposalDisplayText(card.whyForOperator, 260)}
+                                    </div>
+                                    <div>
+                                      Sources:{' '}
+                                      {sanitizeAoiProposalDisplayText(card.sourceHostLabel, 220)}
+                                    </div>
+                                    <div>
+                                      Freshness:{' '}
+                                      {sanitizeAoiProposalDisplayText(card.freshnessLabel, 260)}
+                                    </div>
+                                    {card.cannotKnowLabels
+                                      .slice(0, expanded ? 6 : 2)
+                                      .map((label, index) => (
+                                        <div key={`brief-${card.id}-cannot-${index}`}>
+                                          Cannot know: {sanitizeAoiProposalDisplayText(label, 260)}
+                                        </div>
+                                      ))}
+                                    {card.tuningLabels.map((label, index) => (
+                                      <div key={`brief-${card.id}-tuning-${index}`}>
+                                        Calibration: {sanitizeAoiProposalDisplayText(label, 260)}
+                                      </div>
+                                    ))}
+                                    <div>
+                                      Authority:{' '}
+                                      {sanitizeAoiProposalDisplayText(
+                                        card.actionAuthorityLabel,
+                                        180,
+                                      )}
+                                    </div>
+                                    {card.deliveryLadderLabels.map((label, index) => (
+                                      <div key={`brief-${card.id}-ladder-${index}`}>
+                                        {sanitizeAoiProposalDisplayText(label, 280)}
+                                      </div>
+                                    ))}
+                                    {card.directChatSuppressionLabels.map((label, index) => (
+                                      <div key={`brief-${card.id}-chat-suppression-${index}`}>
+                                        {sanitizeAoiProposalDisplayText(label, 260)}
+                                      </div>
+                                    ))}
+                                    {expanded && (
+                                      <>
+                                        <div>
+                                          Summary:{' '}
+                                          {sanitizeAoiProposalDisplayText(
+                                            card.expandedSummaryLabel,
+                                            700,
+                                          )}
+                                        </div>
+                                        <div>
+                                          Novelty:{' '}
+                                          {sanitizeAoiProposalDisplayText(card.noveltyReason, 260)}
+                                        </div>
+                                        {card.sources.map((source, index) => (
+                                          <div key={`brief-${card.id}-source-${index}`}>
+                                            Source {index + 1}:{' '}
+                                            {sanitizeAoiProposalDisplayText(
+                                              `${source.host} | ${source.title} | published ${source.publishedAtLabel} | retrieved ${source.retrievedAtLabel} | ${source.url} | ${source.snippet}`,
+                                              520,
+                                            )}
+                                          </div>
+                                        ))}
+                                        {card.evidenceRefs.map((ref, index) => (
+                                          <div key={`brief-${card.id}-evidence-${index}`}>
+                                            Evidence: {sanitizeAoiProposalDisplayText(ref, 220)}
+                                          </div>
+                                        ))}
+                                        {card.memoryRefs.map((ref, index) => (
+                                          <div key={`brief-${card.id}-memory-${index}`}>
+                                            Memory ref: {sanitizeAoiProposalDisplayText(ref, 220)}
+                                          </div>
+                                        ))}
+                                      </>
+                                    )}
+                                  </div>
+                                  <div className={styles.aoiAutonomyProposalActions}>
+                                    {card.feedbackActions.map((action) => {
+                                      const actionId = `proactive-brief:${card.id}:${action.action}`;
+                                      return (
+                                        <button
+                                          type="button"
+                                          key={actionId}
+                                          className={styles.inlineActionBtn}
+                                          onClick={() => {
+                                            if (
+                                              action.action === 'open_sources' ||
+                                              action.action === 'expand_summary'
+                                            ) {
+                                              onToggleAoiProactiveBriefExpanded(card.id);
+                                            }
+                                            void onRecordAoiProactiveBriefFeedback(
+                                              card.id,
+                                              action.action,
+                                            );
+                                          }}
+                                          disabled={aoiAutonomyActionId === actionId}
+                                          title={action.title}
+                                        >
+                                          {action.label}
+                                        </button>
+                                      );
+                                    })}
+                                    <button
+                                      type="button"
+                                      className={styles.inlineActionBtn}
+                                      onClick={() => onToggleAoiProactiveBriefExpanded(card.id)}
+                                      title="Show source freshness and evidence"
+                                    >
+                                      {expanded ? (
+                                        <ChevronDown size={14} />
+                                      ) : (
+                                        <ChevronRight size={14} />
+                                      )}
+                                      Details
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={styles.inlineActionBtn}
+                                      onClick={() => {
+                                        if (!aoiAutonomyPolicy) {
+                                          return;
+                                        }
+                                        void onUpdateAoiAutonomyPolicy({
+                                          proactiveBriefing: {
+                                            ...aoiAutonomyPolicy.proactiveBriefing,
+                                            topicControls: {
+                                              ...aoiAutonomyPolicy.proactiveBriefing.topicControls,
+                                              [card.topicId]: {
+                                                version: 1,
+                                                topicId: card.topicId,
+                                                allowed: topicMuted,
+                                                muted: !topicMuted,
+                                                pinned: topicMuted ? topicPinned : false,
+                                                updatedAt: Date.now(),
+                                              },
+                                            },
+                                          },
+                                        });
+                                      }}
+                                      disabled={
+                                        !aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'
+                                      }
+                                      title="Mute or unmute this proactive topic"
+                                    >
+                                      {topicMuted ? 'Unmute topic' : 'Mute topic'}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={styles.inlineActionBtn}
+                                      onClick={() => {
+                                        if (!aoiAutonomyPolicy) {
+                                          return;
+                                        }
+                                        void onUpdateAoiAutonomyPolicy({
+                                          proactiveBriefing: {
+                                            ...aoiAutonomyPolicy.proactiveBriefing,
+                                            topicControls: {
+                                              ...aoiAutonomyPolicy.proactiveBriefing.topicControls,
+                                              [card.topicId]: {
+                                                version: 1,
+                                                topicId: card.topicId,
+                                                allowed: true,
+                                                muted: false,
+                                                pinned: !topicPinned,
+                                                updatedAt: Date.now(),
+                                              },
+                                            },
+                                          },
+                                        });
+                                      }}
+                                      disabled={
+                                        !aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'
+                                      }
+                                      title="Pin or unpin this proactive topic"
+                                    >
+                                      {topicPinned ? 'Unpin topic' : 'Pin topic'}
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <p className={styles.modelHint}>
+                            No proactive interest briefs are ready.
+                          </p>
+                        )}
+                      </div>
+
+                      <div className={styles.aoiAutonomyProposalSection}>
+                        <div className={styles.promptBudgetSectionTitle}>Context router</div>
+                        {aoiContextSourceSummaries.length > 0 ? (
+                          <div className={styles.aoiAutonomyProposalList}>
+                            {aoiContextSourceSummaries.map((source) => {
+                              const wrongEvidenceActionId = `context:${source.id}:wrong_evidence`;
+                              const wrongSourceActionId = `context:${source.id}:wrong_source`;
+                              const wrongTimingActionId = `context:${source.id}:wrong_timing`;
+                              return (
+                                <div className={styles.aoiAutonomyProposalItem} key={source.id}>
+                                  <div className={styles.aoiAutonomyProposalMeta}>
+                                    <span>{source.displayNameLabel}</span>
+                                    <span>{source.kindLabel}</span>
+                                    <span>score {source.scoreLabel}</span>
+                                    <span>fresh {source.freshnessLabel}</span>
+                                    <span>confidence {source.confidenceLabel}</span>
+                                    <span>{source.redactionLabel}</span>
+                                  </div>
+                                  <div className={styles.aoiAutonomyProposalTitle}>
+                                    {source.label}
+                                  </div>
+                                  <div className={styles.aoiAutonomyProposalReason}>
+                                    {source.summary}
+                                  </div>
+                                  <div className={styles.aoiAutonomyProposalDetails}>
+                                    {source.scoreReasons.map((reason, index) => (
+                                      <div key={`${source.id}-reason-${index}`}>{reason}</div>
+                                    ))}
+                                    {source.evidenceRefs.map((ref, index) => (
+                                      <div key={`${source.id}-evidence-${index}`}>{ref}</div>
+                                    ))}
+                                  </div>
+                                  <div className={styles.aoiAutonomyProposalActions}>
+                                    <button
+                                      type="button"
+                                      className={styles.inlineActionBtn}
+                                      onClick={() =>
+                                        void onRecordAoiContextSourceFeedback(
+                                          source.sourceId,
+                                          source.id,
+                                          'wrong_evidence',
+                                          source.evidenceRefs,
+                                        )
+                                      }
+                                      disabled={aoiAutonomyActionId === wrongEvidenceActionId}
+                                      title={source.wrongEvidenceTitle}
+                                    >
+                                      Wrong evidence
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={styles.inlineActionBtn}
+                                      onClick={() =>
+                                        void onRecordAoiContextSourceFeedback(
+                                          source.sourceId,
+                                          source.id,
+                                          'wrong_source',
+                                          source.evidenceRefs,
+                                        )
+                                      }
+                                      disabled={aoiAutonomyActionId === wrongSourceActionId}
+                                      title={`Mark ${source.displayNameLabel} as wrong source for future routing.`}
+                                    >
+                                      Wrong source
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={styles.inlineActionBtn}
+                                      onClick={() =>
+                                        void onRecordAoiContextSourceFeedback(
+                                          source.sourceId,
+                                          source.id,
+                                          'wrong_timing',
+                                          source.evidenceRefs,
+                                        )
+                                      }
+                                      disabled={aoiAutonomyActionId === wrongTimingActionId}
+                                      title={source.wrongTimingTitle}
+                                    >
+                                      Wrong timing
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <p className={styles.modelHint}>No context source selected.</p>
+                        )}
+                      </div>
+
+                      <div className={styles.aoiAutonomyProposalSection}>
+                        <div className={styles.promptBudgetSectionTitle}>Workspace signals</div>
+                        {aoiWorkspaceSignalSummary.visible ? (
+                          <div className={styles.aoiAutonomyProposalItem}>
+                            <div className={styles.aoiAutonomyProposalMeta}>
+                              <span>{aoiWorkspaceSignalSummary.workspaceLabel}</span>
+                              <span>branch {aoiWorkspaceSignalSummary.branchLabel}</span>
+                              <span>validation {aoiWorkspaceSignalSummary.freshnessLabel}</span>
+                              <span>sources {aoiWorkspaceSignalSummary.sourceLabel}</span>
+                              {aoiWorkspaceSignalSummary.warningCount > 0 && (
+                                <span>warnings {aoiWorkspaceSignalSummary.warningCount}</span>
+                              )}
+                            </div>
+                            <div className={styles.aoiAutonomyProposalTitle}>
+                              {aoiWorkspaceSignalSummary.dirtyLabel}
+                            </div>
+                            <div className={styles.aoiAutonomyProposalReason}>
+                              {aoiWorkspaceSignalSummary.validationLabel}
+                            </div>
+                            <div className={styles.aoiAutonomyProposalDetails}>
+                              <div>{aoiWorkspaceSignalSummary.recommendationLabel}</div>
+                              <div>{aoiWorkspaceSignalSummary.recommendationReason}</div>
+                              {aoiWorkspaceSignalSummary.changedFileLabels.map((label, index) => (
+                                <div key={`workspace-file-${index}`}>{label}</div>
+                              ))}
+                              {aoiWorkspaceSignalSummary.evidenceRefs.map((ref, index) => (
+                                <div key={`workspace-evidence-${index}`}>{ref}</div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : (
+                          <p className={styles.modelHint}>No workspace signal recorded.</p>
+                        )}
+                      </div>
+
+                      <div className={styles.aoiAutonomyProposalSection}>
+                        <div className={styles.promptBudgetSectionTitle}>Wakeup scheduler</div>
+                        {aoiAutonomySchedulerSummary.visible ? (
+                          <div className={styles.aoiAutonomyProposalItem}>
+                            <div className={styles.aoiAutonomyProposalMeta}>
+                              <span>{aoiAutonomySchedulerSummary.lastWakeupLabel}</span>
+                              <span>{aoiAutonomySchedulerSummary.nextWakeupLabel}</span>
+                              {aoiAutonomySchedulerSummary.budgetLabel && (
+                                <span>{aoiAutonomySchedulerSummary.budgetLabel}</span>
+                              )}
+                            </div>
+                            <div className={styles.aoiAutonomyProposalTitle}>
+                              {aoiAutonomySchedulerSummary.summaryLabel}
+                            </div>
+                            {(aoiAutonomySchedulerSummary.skippedSourceLabels.length > 0 ||
+                              aoiAutonomySchedulerSummary.warningLabels.length > 0) && (
+                              <div className={styles.aoiAutonomyProposalDetails}>
+                                {aoiAutonomySchedulerSummary.skippedSourceLabels.map(
+                                  (label, index) => (
+                                    <div key={`scheduler-skip-${index}`}>{label}</div>
+                                  ),
+                                )}
+                                {aoiAutonomySchedulerSummary.warningLabels.map((label, index) => (
+                                  <div key={`scheduler-warning-${index}`}>{label}</div>
+                                ))}
+                                {aoiAutonomySchedulerSummary.evidenceRefs.map((ref, index) => (
+                                  <div key={`scheduler-evidence-${index}`}>{ref}</div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <p className={styles.modelHint}>No wakeup scheduler record yet.</p>
+                        )}
+                      </div>
+
+                      <div className={styles.aoiAutonomyProposalSection}>
+                        <div className={styles.promptBudgetSectionTitle}>Environment sources</div>
+                        {aoiEnvironmentSourceSummaries.length > 0 ? (
+                          <div className={styles.aoiAutonomyProposalList}>
+                            {aoiEnvironmentSourceSummaries.map((source) => (
                               <div className={styles.aoiAutonomyProposalItem} key={source.id}>
                                 <div className={styles.aoiAutonomyProposalMeta}>
-                                  <span>{source.displayNameLabel}</span>
+                                  <span>{source.enabledLabel}</span>
                                   <span>{source.kindLabel}</span>
-                                  <span>score {source.scoreLabel}</span>
-                                  <span>fresh {source.freshnessLabel}</span>
-                                  <span>confidence {source.confidenceLabel}</span>
-                                  <span>{source.redactionLabel}</span>
+                                  <span>risk {source.riskLabel}</span>
+                                  <span>scope {source.scopeLabel}</span>
+                                  <span>{source.privateLabel}</span>
                                 </div>
                                 <div className={styles.aoiAutonomyProposalTitle}>
                                   {source.label}
                                 </div>
                                 <div className={styles.aoiAutonomyProposalReason}>
-                                  {source.summary}
+                                  {source.operationsLabel}
                                 </div>
                                 <div className={styles.aoiAutonomyProposalDetails}>
-                                  {source.scoreReasons.map((reason, index) => (
-                                    <div key={`${source.id}-reason-${index}`}>{reason}</div>
-                                  ))}
-                                  {source.evidenceRefs.map((ref, index) => (
-                                    <div key={`${source.id}-evidence-${index}`}>{ref}</div>
-                                  ))}
+                                  <div>{source.consentSummary}</div>
+                                  <div>{source.metadataScopeLabel}</div>
+                                  <div>{source.willNotReadOrDoLabel}</div>
+                                  <div>{source.gateReason}</div>
+                                  <div>{source.quietModeLabel}</div>
+                                  <div>Last observed: {source.lastObservedLabel}</div>
+                                  <div>Last reviewed: {source.lastReviewedLabel}</div>
                                 </div>
                                 <div className={styles.aoiAutonomyProposalActions}>
                                   <button
                                     type="button"
-                                    className={styles.inlineActionBtn}
-                                    onClick={() =>
-                                      void onRecordAoiContextSourceFeedback(
-                                        source.sourceId,
-                                        source.id,
-                                        'wrong_evidence',
-                                        source.evidenceRefs,
-                                      )
-                                    }
-                                    disabled={aoiAutonomyActionId === wrongEvidenceActionId}
-                                    title={source.wrongEvidenceTitle}
-                                  >
-                                    Wrong evidence
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className={styles.inlineActionBtn}
-                                    onClick={() =>
-                                      void onRecordAoiContextSourceFeedback(
-                                        source.sourceId,
-                                        source.id,
-                                        'wrong_source',
-                                        source.evidenceRefs,
-                                      )
-                                    }
-                                    disabled={aoiAutonomyActionId === wrongSourceActionId}
-                                    title={`Mark ${source.displayNameLabel} as wrong source for future routing.`}
-                                  >
-                                    Wrong source
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className={styles.inlineActionBtn}
-                                    onClick={() =>
-                                      void onRecordAoiContextSourceFeedback(
-                                        source.sourceId,
-                                        source.id,
-                                        'wrong_timing',
-                                        source.evidenceRefs,
-                                      )
-                                    }
-                                    disabled={aoiAutonomyActionId === wrongTimingActionId}
-                                    title={source.wrongTimingTitle}
-                                  >
-                                    Wrong timing
-                                  </button>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      ) : (
-                        <p className={styles.modelHint}>No context source selected.</p>
-                      )}
-                    </div>
-
-                    <div className={styles.aoiAutonomyProposalSection}>
-                      <div className={styles.promptBudgetSectionTitle}>Workspace signals</div>
-                      {aoiWorkspaceSignalSummary.visible ? (
-                        <div className={styles.aoiAutonomyProposalItem}>
-                          <div className={styles.aoiAutonomyProposalMeta}>
-                            <span>{aoiWorkspaceSignalSummary.workspaceLabel}</span>
-                            <span>branch {aoiWorkspaceSignalSummary.branchLabel}</span>
-                            <span>validation {aoiWorkspaceSignalSummary.freshnessLabel}</span>
-                            <span>sources {aoiWorkspaceSignalSummary.sourceLabel}</span>
-                            {aoiWorkspaceSignalSummary.warningCount > 0 && (
-                              <span>warnings {aoiWorkspaceSignalSummary.warningCount}</span>
-                            )}
-                          </div>
-                          <div className={styles.aoiAutonomyProposalTitle}>
-                            {aoiWorkspaceSignalSummary.dirtyLabel}
-                          </div>
-                          <div className={styles.aoiAutonomyProposalReason}>
-                            {aoiWorkspaceSignalSummary.validationLabel}
-                          </div>
-                          <div className={styles.aoiAutonomyProposalDetails}>
-                            <div>{aoiWorkspaceSignalSummary.recommendationLabel}</div>
-                            <div>{aoiWorkspaceSignalSummary.recommendationReason}</div>
-                            {aoiWorkspaceSignalSummary.changedFileLabels.map((label, index) => (
-                              <div key={`workspace-file-${index}`}>{label}</div>
-                            ))}
-                            {aoiWorkspaceSignalSummary.evidenceRefs.map((ref, index) => (
-                              <div key={`workspace-evidence-${index}`}>{ref}</div>
-                            ))}
-                          </div>
-                        </div>
-                      ) : (
-                        <p className={styles.modelHint}>No workspace signal recorded.</p>
-                      )}
-                    </div>
-
-                    <div className={styles.aoiAutonomyProposalSection}>
-                      <div className={styles.promptBudgetSectionTitle}>Wakeup scheduler</div>
-                      {aoiAutonomySchedulerSummary.visible ? (
-                        <div className={styles.aoiAutonomyProposalItem}>
-                          <div className={styles.aoiAutonomyProposalMeta}>
-                            <span>{aoiAutonomySchedulerSummary.lastWakeupLabel}</span>
-                            <span>{aoiAutonomySchedulerSummary.nextWakeupLabel}</span>
-                            {aoiAutonomySchedulerSummary.budgetLabel && (
-                              <span>{aoiAutonomySchedulerSummary.budgetLabel}</span>
-                            )}
-                          </div>
-                          <div className={styles.aoiAutonomyProposalTitle}>
-                            {aoiAutonomySchedulerSummary.summaryLabel}
-                          </div>
-                          {(aoiAutonomySchedulerSummary.skippedSourceLabels.length > 0 ||
-                            aoiAutonomySchedulerSummary.warningLabels.length > 0) && (
-                            <div className={styles.aoiAutonomyProposalDetails}>
-                              {aoiAutonomySchedulerSummary.skippedSourceLabels.map(
-                                (label, index) => (
-                                  <div key={`scheduler-skip-${index}`}>{label}</div>
-                                ),
-                              )}
-                              {aoiAutonomySchedulerSummary.warningLabels.map((label, index) => (
-                                <div key={`scheduler-warning-${index}`}>{label}</div>
-                              ))}
-                              {aoiAutonomySchedulerSummary.evidenceRefs.map((ref, index) => (
-                                <div key={`scheduler-evidence-${index}`}>{ref}</div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      ) : (
-                        <p className={styles.modelHint}>No wakeup scheduler record yet.</p>
-                      )}
-                    </div>
-
-                    <div className={styles.aoiAutonomyProposalSection}>
-                      <div className={styles.promptBudgetSectionTitle}>Environment sources</div>
-                      {aoiEnvironmentSourceSummaries.length > 0 ? (
-                        <div className={styles.aoiAutonomyProposalList}>
-                          {aoiEnvironmentSourceSummaries.map((source) => (
-                            <div className={styles.aoiAutonomyProposalItem} key={source.id}>
-                              <div className={styles.aoiAutonomyProposalMeta}>
-                                <span>{source.enabledLabel}</span>
-                                <span>{source.kindLabel}</span>
-                                <span>risk {source.riskLabel}</span>
-                                <span>scope {source.scopeLabel}</span>
-                                <span>{source.privateLabel}</span>
-                              </div>
-                              <div className={styles.aoiAutonomyProposalTitle}>{source.label}</div>
-                              <div className={styles.aoiAutonomyProposalReason}>
-                                {source.operationsLabel}
-                              </div>
-                              <div className={styles.aoiAutonomyProposalDetails}>
-                                <div>{source.consentSummary}</div>
-                                <div>{source.metadataScopeLabel}</div>
-                                <div>{source.willNotReadOrDoLabel}</div>
-                                <div>{source.gateReason}</div>
-                                <div>{source.quietModeLabel}</div>
-                                <div>Last observed: {source.lastObservedLabel}</div>
-                                <div>Last reviewed: {source.lastReviewedLabel}</div>
-                              </div>
-                              <div className={styles.aoiAutonomyProposalActions}>
-                                <button
-                                  type="button"
-                                  className={source.enabled ? styles.saveBtn : styles.cancelBtn}
-                                  onClick={() =>
-                                    void onUpdateAoiEnvironmentSource(source.id, {
-                                      enabled: !source.enabled,
-                                      consentReason: !source.enabled
-                                        ? 'User enabled metadata-only observation in Aoi Autonomy panel.'
-                                        : undefined,
-                                      lastReviewedAt: !source.enabled ? Date.now() : undefined,
-                                    })
-                                  }
-                                  disabled={
-                                    !source.canToggle ||
-                                    aoiAutonomyActionId === `source:${source.id}`
-                                  }
-                                  title={source.toggleTitle}
-                                >
-                                  {source.enabled ? 'Enabled' : 'Disabled'}
-                                </button>
-                                {source.canClear && (
-                                  <button
-                                    type="button"
-                                    className={styles.cancelBtn}
+                                    className={source.enabled ? styles.saveBtn : styles.cancelBtn}
                                     onClick={() =>
                                       void onUpdateAoiEnvironmentSource(source.id, {
-                                        enabled: false,
-                                        consentReason: undefined,
-                                        lastObservedAt: undefined,
-                                        lastReviewedAt: undefined,
+                                        enabled: !source.enabled,
+                                        consentReason: !source.enabled
+                                          ? 'User enabled metadata-only observation in Aoi Autonomy panel.'
+                                          : undefined,
+                                        lastReviewedAt: !source.enabled ? Date.now() : undefined,
                                       })
                                     }
-                                    disabled={aoiAutonomyActionId === `source:${source.id}`}
-                                    title={source.clearTitle}
+                                    disabled={
+                                      !source.canToggle ||
+                                      aoiAutonomyActionId === `source:${source.id}`
+                                    }
+                                    title={source.toggleTitle}
                                   >
-                                    Clear
+                                    {source.enabled ? 'Enabled' : 'Disabled'}
                                   </button>
-                                )}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <p className={styles.modelHint}>
-                          Environment sources will appear after autonomy state refresh.
-                        </p>
-                      )}
-                    </div>
-
-                    <div className={styles.aoiAutonomyProposalSection}>
-                      <div className={styles.promptBudgetSectionTitle}>Current mission</div>
-                      {aoiMissionPanelSummary.visible ? (
-                        <div className={styles.aoiAutonomyProposalItem}>
-                          <div className={styles.aoiAutonomyProposalMeta}>
-                            <span>{aoiMissionPanelSummary.statusLabel}</span>
-                            {aoiMissionPanelSummary.visibleState && (
-                              <span>
-                                state {aoiMissionPanelSummary.visibleState.replace(/_/g, ' ')}
-                              </span>
-                            )}
-                            <span>waiting {aoiMissionPanelSummary.waitingOnLabel}</span>
-                            <span>evidence {aoiMissionPanelSummary.evidenceCount}</span>
-                            {aoiMissionState?.sourceRefs.goalRef && (
-                              <span>
-                                {sanitizeAoiProposalDisplayText(
-                                  aoiMissionState.sourceRefs.goalRef,
-                                  80,
-                                )}
-                              </span>
-                            )}
-                          </div>
-                          <div className={styles.aoiAutonomyProposalTitle}>
-                            {aoiMissionPanelSummary.focusSummary}
-                          </div>
-                          <div className={styles.aoiAutonomyProposalReason}>
-                            {aoiMissionPanelSummary.nextActionLabel}
-                          </div>
-                          <div className={styles.aoiAutonomyProposalDetails}>
-                            <div>{aoiMissionPanelSummary.nextActionReason}</div>
-                            <div>
-                              Governor: {aoiJarvisAutonomyGovernor.modeLabel}; mission actions stay
-                              inside this autonomy ceiling.
-                            </div>
-                            {aoiMissionState?.sourceRefs.proposalRef && (
-                              <div>
-                                Proposal:{' '}
-                                {sanitizeAoiProposalDisplayText(
-                                  aoiMissionState.sourceRefs.proposalRef,
-                                  120,
-                                )}
-                              </div>
-                            )}
-                            {aoiMissionState?.sourceRefs.kiraWorkRef && (
-                              <div>
-                                Kira:{' '}
-                                {sanitizeAoiProposalDisplayText(
-                                  aoiMissionState.sourceRefs.kiraWorkRef,
-                                  120,
-                                )}
-                              </div>
-                            )}
-                            {aoiMissionState?.sourceRefs.researchRunRef && (
-                              <div>
-                                Research:{' '}
-                                {sanitizeAoiProposalDisplayText(
-                                  aoiMissionState.sourceRefs.researchRunRef,
-                                  120,
-                                )}
-                              </div>
-                            )}
-                            {aoiMissionPanelSummary.evidenceRefs.map((ref, index) => (
-                              <div key={`mission-evidence-${index}`}>
-                                {sanitizeAoiProposalDisplayText(ref, 220)}
+                                  {source.canClear && (
+                                    <button
+                                      type="button"
+                                      className={styles.cancelBtn}
+                                      onClick={() =>
+                                        void onUpdateAoiEnvironmentSource(source.id, {
+                                          enabled: false,
+                                          consentReason: undefined,
+                                          lastObservedAt: undefined,
+                                          lastReviewedAt: undefined,
+                                        })
+                                      }
+                                      disabled={aoiAutonomyActionId === `source:${source.id}`}
+                                      title={source.clearTitle}
+                                    >
+                                      Clear
+                                    </button>
+                                  )}
+                                </div>
                               </div>
                             ))}
                           </div>
-                          <div className={styles.aoiAutonomyProposalActions}>
-                            <button
-                              type="button"
-                              className={styles.inlineActionBtn}
-                              onClick={() => void onDecideAoiMission('pause')}
-                              disabled={
-                                !aoiMissionPanelSummary.canPause ||
-                                Boolean(aoiAutonomyActionId?.startsWith('mission:'))
-                              }
-                              title={aoiMissionPanelSummary.pauseTitle}
-                            >
-                              {aoiMissionPanelSummary.pauseLabel}
-                            </button>
-                            <button
-                              type="button"
-                              className={styles.inlineActionBtn}
-                              onClick={() => void onDecideAoiMission('resume')}
-                              disabled={
-                                !aoiMissionPanelSummary.canResume ||
-                                Boolean(aoiAutonomyActionId?.startsWith('mission:'))
-                              }
-                              title={aoiMissionPanelSummary.resumeTitle}
-                            >
-                              {aoiMissionPanelSummary.resumeLabel}
-                            </button>
-                            <button
-                              type="button"
-                              className={styles.inlineActionBtn}
-                              onClick={() => void onDecideAoiMission('clear')}
-                              disabled={
-                                !aoiMissionPanelSummary.canClear ||
-                                Boolean(aoiAutonomyActionId?.startsWith('mission:'))
-                              }
-                              title="Clear current mission focus"
-                            >
-                              Clear
-                            </button>
-                            <button
-                              type="button"
-                              className={styles.inlineActionBtn}
-                              onClick={() => setExpandedAoiMissionEvidence((prev) => !prev)}
-                              title={aoiMissionPanelSummary.showEvidenceTitle}
-                            >
-                              {expandedAoiMissionEvidence ? (
-                                <ChevronDown size={14} />
-                              ) : (
-                                <ChevronRight size={14} />
-                              )}
-                              {aoiMissionPanelSummary.showEvidenceLabel}
-                            </button>
-                          </div>
-                        </div>
-                      ) : (
-                        <p className={styles.modelHint}>No active mission focus.</p>
-                      )}
-                    </div>
-
-                    <div className={styles.aoiAutonomyProposalSection}>
-                      <div className={styles.promptBudgetSectionTitle}>Recent feedback</div>
-                      <div className={styles.promptBudgetGrid}>
-                        <div className={styles.promptBudgetMetric}>
-                          <span className={styles.promptBudgetLabel}>Decisions</span>
-                          <strong>{aoiAutonomyEvaluation?.metrics.totalDecisions ?? 0}</strong>
-                        </div>
-                        <div className={styles.promptBudgetMetric}>
-                          <span className={styles.promptBudgetLabel}>Acceptance</span>
-                          <strong>{aoiAutonomyAcceptanceLabel}</strong>
-                        </div>
-                        <div className={styles.promptBudgetMetric}>
-                          <span className={styles.promptBudgetLabel}>Evidence</span>
-                          <strong>{aoiAutonomyEvidenceLabel}</strong>
-                        </div>
-                        <div className={styles.promptBudgetMetric}>
-                          <span className={styles.promptBudgetLabel}>High-risk blocked</span>
-                          <strong>
-                            {aoiAutonomyEvaluation?.metrics.blockedHighRiskProposalCount ?? 0}
-                          </strong>
-                        </div>
-                        <div className={styles.promptBudgetMetric}>
-                          <span className={styles.promptBudgetLabel}>Noisy type</span>
-                          <strong>
-                            {sanitizeAoiProposalDisplayText(aoiAutonomyNoisyTypeLabel, 42)}
-                          </strong>
-                        </div>
+                        ) : (
+                          <p className={styles.modelHint}>
+                            Environment sources will appear after autonomy state refresh.
+                          </p>
+                        )}
                       </div>
-                    </div>
 
-                    <div className={styles.aoiAutonomyProposalSection}>
-                      <div className={styles.promptBudgetSectionTitle}>Trust calibration</div>
-                      {aoiTrustCalibration ? (
-                        <div className={styles.aoiAutonomyProposalList}>
+                      <div className={styles.aoiAutonomyProposalSection}>
+                        <div className={styles.promptBudgetSectionTitle}>Current mission</div>
+                        {aoiMissionPanelSummary.visible ? (
                           <div className={styles.aoiAutonomyProposalItem}>
                             <div className={styles.aoiAutonomyProposalMeta}>
-                              <span>
-                                generated{' '}
-                                {new Date(aoiTrustCalibration.generatedAt).toLocaleTimeString()}
-                              </span>
-                              <span>suppressed {aoiTrustSuppressedCategories.length}</span>
-                              <span>negative sources {aoiTrustNegativeSources.length}</span>
-                              <span>resets {aoiTrustCalibration.resetCategories.length}</span>
+                              <span>{aoiMissionPanelSummary.statusLabel}</span>
+                              {aoiMissionPanelSummary.visibleState && (
+                                <span>
+                                  state {aoiMissionPanelSummary.visibleState.replace(/_/g, ' ')}
+                                </span>
+                              )}
+                              <span>waiting {aoiMissionPanelSummary.waitingOnLabel}</span>
+                              <span>evidence {aoiMissionPanelSummary.evidenceCount}</span>
+                              {aoiMissionState?.sourceRefs.goalRef && (
+                                <span>
+                                  {sanitizeAoiProposalDisplayText(
+                                    aoiMissionState.sourceRefs.goalRef,
+                                    80,
+                                  )}
+                                </span>
+                              )}
                             </div>
-                            {aoiTrustSuppressedCategories.length > 0 && (
-                              <div className={styles.aoiAutonomyProposalDetails}>
-                                {aoiTrustSuppressedCategories.map((item) => {
-                                  const resetId = `trust-reset:${item.dimension}:${item.key}`;
-                                  return (
-                                    <div key={`trust-suppressed-${item.id}`}>
-                                      {item.dimension.replace(/_/g, ' ')}:{' '}
-                                      {sanitizeAoiProposalDisplayText(item.key, 80)}{' '}
-                                      {item.delta.toFixed(2)}{' '}
-                                      <button
-                                        type="button"
-                                        className={styles.inlineActionBtn}
-                                        onClick={() =>
-                                          void onResetAoiTrustCalibration(item.dimension, item.key)
-                                        }
-                                        disabled={aoiAutonomyActionId === resetId}
-                                        title="Reset this calibration category"
-                                      >
-                                        Reset
-                                      </button>
-                                    </div>
-                                  );
-                                })}
+                            <div className={styles.aoiAutonomyProposalTitle}>
+                              {aoiMissionPanelSummary.focusSummary}
+                            </div>
+                            <div className={styles.aoiAutonomyProposalReason}>
+                              {aoiMissionPanelSummary.nextActionLabel}
+                            </div>
+                            <div className={styles.aoiAutonomyProposalDetails}>
+                              <div>{aoiMissionPanelSummary.nextActionReason}</div>
+                              <div>
+                                Governor: {aoiJarvisAutonomyGovernor.modeLabel}; mission actions
+                                stay inside this autonomy ceiling.
                               </div>
-                            )}
-                            {aoiTrustNegativeSources.length > 0 && (
-                              <div className={styles.aoiAutonomyProposalDetails}>
-                                {aoiTrustNegativeSources.map((source) => {
-                                  const resetId = `trust-reset:source_kind:${source.sourceKind}`;
-                                  return (
-                                    <div key={`trust-source-${source.sourceKind}`}>
-                                      source {sanitizeAoiProposalDisplayText(source.sourceKind, 80)}
-                                      : penalty {source.selectionPenalty.toFixed(2)}{' '}
-                                      <button
-                                        type="button"
-                                        className={styles.inlineActionBtn}
-                                        onClick={() =>
-                                          void onResetAoiTrustCalibration(
-                                            'source_kind',
-                                            source.sourceKind,
-                                          )
-                                        }
-                                        disabled={aoiAutonomyActionId === resetId}
-                                        title="Reset this source calibration"
-                                      >
-                                        Reset
-                                      </button>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            )}
-                            {aoiTrustRecentChanges.length > 0 && (
-                              <div className={styles.aoiAutonomyProposalDetails}>
-                                {aoiTrustRecentChanges.map((item) => (
-                                  <div key={`trust-change-${item.id}`}>
-                                    {item.direction}: {item.dimension.replace(/_/g, ' ')}{' '}
-                                    {sanitizeAoiProposalDisplayText(item.key, 80)} (
-                                    {item.delta.toFixed(2)})
-                                  </div>
-                                ))}
-                              </div>
-                            )}
+                              {aoiMissionState?.sourceRefs.proposalRef && (
+                                <div>
+                                  Proposal:{' '}
+                                  {sanitizeAoiProposalDisplayText(
+                                    aoiMissionState.sourceRefs.proposalRef,
+                                    120,
+                                  )}
+                                </div>
+                              )}
+                              {aoiMissionState?.sourceRefs.kiraWorkRef && (
+                                <div>
+                                  Kira:{' '}
+                                  {sanitizeAoiProposalDisplayText(
+                                    aoiMissionState.sourceRefs.kiraWorkRef,
+                                    120,
+                                  )}
+                                </div>
+                              )}
+                              {aoiMissionState?.sourceRefs.researchRunRef && (
+                                <div>
+                                  Research:{' '}
+                                  {sanitizeAoiProposalDisplayText(
+                                    aoiMissionState.sourceRefs.researchRunRef,
+                                    120,
+                                  )}
+                                </div>
+                              )}
+                              {aoiMissionPanelSummary.evidenceRefs.map((ref, index) => (
+                                <div key={`mission-evidence-${index}`}>
+                                  {sanitizeAoiProposalDisplayText(ref, 220)}
+                                </div>
+                              ))}
+                            </div>
+                            <div className={styles.aoiAutonomyProposalActions}>
+                              <button
+                                type="button"
+                                className={styles.inlineActionBtn}
+                                onClick={() => void onDecideAoiMission('pause')}
+                                disabled={
+                                  !aoiMissionPanelSummary.canPause ||
+                                  Boolean(aoiAutonomyActionId?.startsWith('mission:'))
+                                }
+                                title={aoiMissionPanelSummary.pauseTitle}
+                              >
+                                {aoiMissionPanelSummary.pauseLabel}
+                              </button>
+                              <button
+                                type="button"
+                                className={styles.inlineActionBtn}
+                                onClick={() => void onDecideAoiMission('resume')}
+                                disabled={
+                                  !aoiMissionPanelSummary.canResume ||
+                                  Boolean(aoiAutonomyActionId?.startsWith('mission:'))
+                                }
+                                title={aoiMissionPanelSummary.resumeTitle}
+                              >
+                                {aoiMissionPanelSummary.resumeLabel}
+                              </button>
+                              <button
+                                type="button"
+                                className={styles.inlineActionBtn}
+                                onClick={() => void onDecideAoiMission('clear')}
+                                disabled={
+                                  !aoiMissionPanelSummary.canClear ||
+                                  Boolean(aoiAutonomyActionId?.startsWith('mission:'))
+                                }
+                                title="Clear current mission focus"
+                              >
+                                Clear
+                              </button>
+                              <button
+                                type="button"
+                                className={styles.inlineActionBtn}
+                                onClick={() => setExpandedAoiMissionEvidence((prev) => !prev)}
+                                title={aoiMissionPanelSummary.showEvidenceTitle}
+                              >
+                                {expandedAoiMissionEvidence ? (
+                                  <ChevronDown size={14} />
+                                ) : (
+                                  <ChevronRight size={14} />
+                                )}
+                                {aoiMissionPanelSummary.showEvidenceLabel}
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <p className={styles.modelHint}>No active mission focus.</p>
+                        )}
+                      </div>
+
+                      <div className={styles.aoiAutonomyProposalSection}>
+                        <div className={styles.promptBudgetSectionTitle}>Recent feedback</div>
+                        <div className={styles.promptBudgetGrid}>
+                          <div className={styles.promptBudgetMetric}>
+                            <span className={styles.promptBudgetLabel}>Decisions</span>
+                            <strong>{aoiAutonomyEvaluation?.metrics.totalDecisions ?? 0}</strong>
+                          </div>
+                          <div className={styles.promptBudgetMetric}>
+                            <span className={styles.promptBudgetLabel}>Acceptance</span>
+                            <strong>{aoiAutonomyAcceptanceLabel}</strong>
+                          </div>
+                          <div className={styles.promptBudgetMetric}>
+                            <span className={styles.promptBudgetLabel}>Evidence</span>
+                            <strong>{aoiAutonomyEvidenceLabel}</strong>
+                          </div>
+                          <div className={styles.promptBudgetMetric}>
+                            <span className={styles.promptBudgetLabel}>High-risk blocked</span>
+                            <strong>
+                              {aoiAutonomyEvaluation?.metrics.blockedHighRiskProposalCount ?? 0}
+                            </strong>
+                          </div>
+                          <div className={styles.promptBudgetMetric}>
+                            <span className={styles.promptBudgetLabel}>Noisy type</span>
+                            <strong>
+                              {sanitizeAoiProposalDisplayText(aoiAutonomyNoisyTypeLabel, 42)}
+                            </strong>
                           </div>
                         </div>
-                      ) : (
-                        <p className={styles.modelHint}>No trust calibration data yet.</p>
-                      )}
-                    </div>
-
-                    {aoiAutonomyPendingFeedback && (
-                      <div className={styles.aoiAutonomyPendingFeedback}>
-                        <div className={styles.aoiAutonomyProposalMeta}>
-                          <span>{aoiAutonomyPendingFeedback.action}</span>
-                          <span>optional feedback</span>
-                        </div>
-                        <div className={styles.aoiAutonomyProposalTitle}>
-                          {sanitizeAoiProposalDisplayText(aoiAutonomyPendingFeedback.title, 120)}
-                        </div>
-                        <div className={styles.aoiAutonomyFeedbackActions}>
-                          {AOI_PROPOSAL_FEEDBACK_CONTROLS.map((item) => (
-                            <button
-                              type="button"
-                              key={`pending-feedback-${item.category}`}
-                              className={styles.inlineActionBtn}
-                              onClick={() => void onRecordAoiProposalFeedback(item.category)}
-                              disabled={aoiAutonomyActionId !== null}
-                              title={item.title}
-                            >
-                              {item.label}
-                            </button>
-                          ))}
-                        </div>
                       </div>
-                    )}
 
-                    <div className={styles.aoiAutonomyProposalSection}>
-                      <div className={styles.promptBudgetSectionTitle}>Active goals</div>
-                      {visibleAoiAutonomyGoals.length > 0 ? (
-                        <div className={styles.aoiAutonomyProposalList}>
-                          {visibleAoiAutonomyGoals.map((goal) => {
-                            const nextStep =
-                              goal.plan.steps.find((step) => step.status === 'in_progress') ??
-                              goal.plan.steps.find((step) => step.status === 'pending') ??
-                              null;
-
-                            return (
-                              <div className={styles.aoiAutonomyProposalItem} key={goal.id}>
-                                <div className={styles.aoiAutonomyProposalMeta}>
-                                  <span>{goal.status}</span>
-                                  <span>{goal.owner}</span>
-                                  <span>{goal.risk} risk</span>
-                                  <span>conf {goal.confidence.toFixed(2)}</span>
-                                  <span>sources {goal.sourceRefs.length}</span>
-                                </div>
-                                <div className={styles.aoiAutonomyProposalTitle}>
-                                  {sanitizeAoiProposalDisplayText(goal.title, 140)}
-                                </div>
-                                <div className={styles.aoiAutonomyProposalReason}>
-                                  {sanitizeAoiProposalDisplayText(goal.userIntentSummary, 240)}
-                                </div>
-                                <div className={styles.aoiAutonomyProposalDetails}>
-                                  <div>
-                                    Next:{' '}
-                                    {nextStep
-                                      ? sanitizeAoiProposalDisplayText(nextStep.title, 160)
-                                      : 'No pending step'}
-                                  </div>
-                                  {nextStep && (
-                                    <div>
-                                      Gate: {nextStep.allowedActionKind} at{' '}
-                                      {nextStep.requiredAutonomyLevel}
-                                    </div>
-                                  )}
-                                </div>
+                      <div className={styles.aoiAutonomyProposalSection}>
+                        <div className={styles.promptBudgetSectionTitle}>Trust calibration</div>
+                        {aoiTrustCalibration ? (
+                          <div className={styles.aoiAutonomyProposalList}>
+                            <div className={styles.aoiAutonomyProposalItem}>
+                              <div className={styles.aoiAutonomyProposalMeta}>
+                                <span>
+                                  generated{' '}
+                                  {new Date(aoiTrustCalibration.generatedAt).toLocaleTimeString()}
+                                </span>
+                                <span>suppressed {aoiTrustSuppressedCategories.length}</span>
+                                <span>negative sources {aoiTrustNegativeSources.length}</span>
+                                <span>resets {aoiTrustCalibration.resetCategories.length}</span>
                               </div>
-                            );
-                          })}
-                        </div>
-                      ) : (
-                        <p className={styles.modelHint}>
-                          No active autonomy goals are being tracked.
-                        </p>
-                      )}
-                    </div>
+                              {aoiTrustSuppressedCategories.length > 0 && (
+                                <div className={styles.aoiAutonomyProposalDetails}>
+                                  {aoiTrustSuppressedCategories.map((item) => {
+                                    const resetId = `trust-reset:${item.dimension}:${item.key}`;
+                                    return (
+                                      <div key={`trust-suppressed-${item.id}`}>
+                                        {item.dimension.replace(/_/g, ' ')}:{' '}
+                                        {sanitizeAoiProposalDisplayText(item.key, 80)}{' '}
+                                        {item.delta.toFixed(2)}{' '}
+                                        <button
+                                          type="button"
+                                          className={styles.inlineActionBtn}
+                                          onClick={() =>
+                                            void onResetAoiTrustCalibration(
+                                              item.dimension,
+                                              item.key,
+                                            )
+                                          }
+                                          disabled={aoiAutonomyActionId === resetId}
+                                          title="Reset this calibration category"
+                                        >
+                                          Reset
+                                        </button>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                              {aoiTrustNegativeSources.length > 0 && (
+                                <div className={styles.aoiAutonomyProposalDetails}>
+                                  {aoiTrustNegativeSources.map((source) => {
+                                    const resetId = `trust-reset:source_kind:${source.sourceKind}`;
+                                    return (
+                                      <div key={`trust-source-${source.sourceKind}`}>
+                                        source{' '}
+                                        {sanitizeAoiProposalDisplayText(source.sourceKind, 80)}:
+                                        penalty {source.selectionPenalty.toFixed(2)}{' '}
+                                        <button
+                                          type="button"
+                                          className={styles.inlineActionBtn}
+                                          onClick={() =>
+                                            void onResetAoiTrustCalibration(
+                                              'source_kind',
+                                              source.sourceKind,
+                                            )
+                                          }
+                                          disabled={aoiAutonomyActionId === resetId}
+                                          title="Reset this source calibration"
+                                        >
+                                          Reset
+                                        </button>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                              {aoiTrustRecentChanges.length > 0 && (
+                                <div className={styles.aoiAutonomyProposalDetails}>
+                                  {aoiTrustRecentChanges.map((item) => (
+                                    <div key={`trust-change-${item.id}`}>
+                                      {item.direction}: {item.dimension.replace(/_/g, ' ')}{' '}
+                                      {sanitizeAoiProposalDisplayText(item.key, 80)} (
+                                      {item.delta.toFixed(2)})
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        ) : (
+                          <p className={styles.modelHint}>No trust calibration data yet.</p>
+                        )}
+                      </div>
 
-                    <div className={styles.aoiAutonomyProposalSection}>
-                      <div className={styles.promptBudgetSectionTitle}>Other active proposals</div>
-                      {visibleAoiAutonomyProposals.length > 0 ? (
-                        <div className={styles.aoiAutonomyProposalList}>
-                          {visibleAoiAutonomyProposals.map((proposal) => {
-                            const primaryActionAllowed = canShowAoiProposalPrimaryAction(proposal);
-                            const proposalPending = Boolean(
-                              aoiAutonomyActionId?.startsWith(`proposal:${proposal.id}:`),
-                            );
-                            const expanded = expandedAoiProposalId === proposal.id;
-                            const policyExecutableAction = canExecuteAoiProposalAtCurrentLevel(
-                              proposal,
-                              aoiAutonomyPolicy,
-                            );
-                            const governorExecutionCapability =
-                              proposal.acceptAction?.kind === 'run_command'
-                                ? 'command'
-                                : 'app_action';
-                            const governorAllowsExecution = canAoiJarvisAutonomyUseCapability(
-                              aoiJarvisAutonomyGovernor,
-                              governorExecutionCapability,
-                            );
-                            const executableAction =
-                              policyExecutableAction && governorAllowsExecution;
-                            const executionMessage = aoiAutonomyExecutionMessages[proposal.id];
-                            const kiraHandoffPreviewResult = aoiKiraHandoffPreviews[proposal.id];
-                            const kiraHandoffPreview =
-                              getAoiKiraHandoffPreview(kiraHandoffPreviewResult);
-                            const preparedActionPlan = getAoiPreparedActionPlan(
-                              proposal,
-                              kiraHandoffPreviewResult,
-                            );
-                            const actionPlanSummary = buildAoiPreparedActionPlanPanelSummary(
-                              preparedActionPlan,
-                              expanded,
-                            );
-                            const approvedCommandSummary = buildAoiApprovedCommandPanelSummary({
-                              policy: getAoiApprovedCommandPolicy(
+                      {aoiAutonomyPendingFeedback && (
+                        <div className={styles.aoiAutonomyPendingFeedback}>
+                          <div className={styles.aoiAutonomyProposalMeta}>
+                            <span>{aoiAutonomyPendingFeedback.action}</span>
+                            <span>optional feedback</span>
+                          </div>
+                          <div className={styles.aoiAutonomyProposalTitle}>
+                            {sanitizeAoiProposalDisplayText(aoiAutonomyPendingFeedback.title, 120)}
+                          </div>
+                          <div className={styles.aoiAutonomyFeedbackActions}>
+                            {AOI_PROPOSAL_FEEDBACK_CONTROLS.map((item) => (
+                              <button
+                                type="button"
+                                key={`pending-feedback-${item.category}`}
+                                className={styles.inlineActionBtn}
+                                onClick={() => void onRecordAoiProposalFeedback(item.category)}
+                                disabled={aoiAutonomyActionId !== null}
+                                title={item.title}
+                              >
+                                {item.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      <div className={styles.aoiAutonomyProposalSection}>
+                        <div className={styles.promptBudgetSectionTitle}>Active goals</div>
+                        {visibleAoiAutonomyGoals.length > 0 ? (
+                          <div className={styles.aoiAutonomyProposalList}>
+                            {visibleAoiAutonomyGoals.map((goal) => {
+                              const nextStep =
+                                goal.plan.steps.find((step) => step.status === 'in_progress') ??
+                                goal.plan.steps.find((step) => step.status === 'pending') ??
+                                null;
+
+                              return (
+                                <div className={styles.aoiAutonomyProposalItem} key={goal.id}>
+                                  <div className={styles.aoiAutonomyProposalMeta}>
+                                    <span>{goal.status}</span>
+                                    <span>{goal.owner}</span>
+                                    <span>{goal.risk} risk</span>
+                                    <span>conf {goal.confidence.toFixed(2)}</span>
+                                    <span>sources {goal.sourceRefs.length}</span>
+                                  </div>
+                                  <div className={styles.aoiAutonomyProposalTitle}>
+                                    {sanitizeAoiProposalDisplayText(goal.title, 140)}
+                                  </div>
+                                  <div className={styles.aoiAutonomyProposalReason}>
+                                    {sanitizeAoiProposalDisplayText(goal.userIntentSummary, 240)}
+                                  </div>
+                                  <div className={styles.aoiAutonomyProposalDetails}>
+                                    <div>
+                                      Next:{' '}
+                                      {nextStep
+                                        ? sanitizeAoiProposalDisplayText(nextStep.title, 160)
+                                        : 'No pending step'}
+                                    </div>
+                                    {nextStep && (
+                                      <div>
+                                        Gate: {nextStep.allowedActionKind} at{' '}
+                                        {nextStep.requiredAutonomyLevel}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <p className={styles.modelHint}>
+                            No active autonomy goals are being tracked.
+                          </p>
+                        )}
+                      </div>
+
+                      <div className={styles.aoiAutonomyProposalSection}>
+                        <div className={styles.promptBudgetSectionTitle}>
+                          Other active proposals
+                        </div>
+                        {visibleAoiAutonomyProposals.length > 0 ? (
+                          <div className={styles.aoiAutonomyProposalList}>
+                            {visibleAoiAutonomyProposals.map((proposal) => {
+                              const primaryActionAllowed =
+                                canShowAoiProposalPrimaryAction(proposal);
+                              const proposalPending = Boolean(
+                                aoiAutonomyActionId?.startsWith(`proposal:${proposal.id}:`),
+                              );
+                              const expanded = expandedAoiProposalId === proposal.id;
+                              const policyExecutableAction = canExecuteAoiProposalAtCurrentLevel(
+                                proposal,
+                                aoiAutonomyPolicy,
+                              );
+                              const governorExecutionCapability =
+                                proposal.acceptAction?.kind === 'run_command'
+                                  ? 'command'
+                                  : 'app_action';
+                              const governorAllowsExecution = canAoiJarvisAutonomyUseCapability(
+                                aoiJarvisAutonomyGovernor,
+                                governorExecutionCapability,
+                              );
+                              const executableAction =
+                                policyExecutableAction && governorAllowsExecution;
+                              const executionMessage = aoiAutonomyExecutionMessages[proposal.id];
+                              const kiraHandoffPreviewResult = aoiKiraHandoffPreviews[proposal.id];
+                              const kiraHandoffPreview =
+                                getAoiKiraHandoffPreview(kiraHandoffPreviewResult);
+                              const preparedActionPlan = getAoiPreparedActionPlan(
                                 proposal,
                                 kiraHandoffPreviewResult,
-                              ),
-                              result: getAoiApprovedCommandResult(kiraHandoffPreviewResult),
-                              includeDetails: expanded,
-                            });
-                            const preferenceSummary = buildAoiPreferenceInfluencePanelSummary({
-                              proposal,
-                              memories: aoiMemories,
-                              projectKey: aoiWorkspaceSnapshot?.workspaceLabel,
-                              includeDetails: expanded,
-                            });
-                            const isKiraHandoff =
-                              proposal.acceptAction?.kind === 'create_kira_work';
-                            const recoverySummary = buildAoiRecoveryPreviewSummary(
-                              proposal,
-                              expanded,
-                            );
-                            const recoveryGoalId = getAoiProposalGoalId(proposal);
-                            const inspectorSummary = buildAoiProposalInspectorSummary({
-                              proposal,
-                              policy: aoiAutonomyPolicy,
-                              activeProposals: aoiAutonomyActiveProposals,
-                              includeEvidence: expanded,
-                            });
-                            const actionPresentation = buildAoiProposalActionPresentation(
-                              proposal,
-                              {
+                              );
+                              const actionPlanSummary = buildAoiPreparedActionPlanPanelSummary(
+                                preparedActionPlan,
+                                expanded,
+                              );
+                              const approvedCommandSummary = buildAoiApprovedCommandPanelSummary({
+                                policy: getAoiApprovedCommandPolicy(
+                                  proposal,
+                                  kiraHandoffPreviewResult,
+                                ),
+                                result: getAoiApprovedCommandResult(kiraHandoffPreviewResult),
+                                includeDetails: expanded,
+                              });
+                              const preferenceSummary = buildAoiPreferenceInfluencePanelSummary({
+                                proposal,
+                                memories: aoiMemories,
+                                projectKey: aoiWorkspaceSnapshot?.workspaceLabel,
+                                includeDetails: expanded,
+                              });
+                              const isKiraHandoff =
+                                proposal.acceptAction?.kind === 'create_kira_work';
+                              const recoverySummary = buildAoiRecoveryPreviewSummary(
+                                proposal,
+                                expanded,
+                              );
+                              const recoveryGoalId = getAoiProposalGoalId(proposal);
+                              const inspectorSummary = buildAoiProposalInspectorSummary({
+                                proposal,
+                                policy: aoiAutonomyPolicy,
+                                activeProposals: aoiAutonomyActiveProposals,
+                                includeEvidence: expanded,
+                              });
+                              const actionPresentation = buildAoiProposalActionPresentation(
+                                proposal,
+                                {
+                                  hasKiraPreview: Boolean(kiraHandoffPreview),
+                                },
+                              );
+                              const blockedSummary = buildAoiBlockedStateSummary({
+                                proposal,
+                                reasons: proposal.blockedReason
+                                  ? [proposal.blockedReason, ...inspectorSummary.policyReasons]
+                                  : inspectorSummary.policyReasons,
+                              });
+                              const proactiveExplanation = buildAoiProactiveExplanation({
+                                proposal,
+                                policy: aoiAutonomyPolicy,
+                                activeProposals: aoiAutonomyActiveProposals,
+                                includeEvidence: expanded,
                                 hasKiraPreview: Boolean(kiraHandoffPreview),
-                              },
-                            );
-                            const blockedSummary = buildAoiBlockedStateSummary({
-                              proposal,
-                              reasons: proposal.blockedReason
-                                ? [proposal.blockedReason, ...inspectorSummary.policyReasons]
-                                : inspectorSummary.policyReasons,
-                            });
-                            const proactiveExplanation = buildAoiProactiveExplanation({
-                              proposal,
-                              policy: aoiAutonomyPolicy,
-                              activeProposals: aoiAutonomyActiveProposals,
-                              includeEvidence: expanded,
-                              hasKiraPreview: Boolean(kiraHandoffPreview),
-                            });
+                              });
 
-                            return (
-                              <div className={styles.aoiAutonomyProposalItem} key={proposal.id}>
-                                <div className={styles.aoiAutonomyProposalMeta}>
-                                  <span>{proposal.status}</span>
-                                  <span>
-                                    state {actionPresentation.visibleState.replace(/_/g, ' ')}
-                                  </span>
-                                  <span>{proactiveExplanation.confidenceLabel}</span>
-                                  <span>{proactiveExplanation.risk} risk</span>
-                                  <span>plan {actionPlanSummary.statusLabel}</span>
+                              return (
+                                <div className={styles.aoiAutonomyProposalItem} key={proposal.id}>
+                                  <div className={styles.aoiAutonomyProposalMeta}>
+                                    <span>{proposal.status}</span>
+                                    <span>
+                                      state {actionPresentation.visibleState.replace(/_/g, ' ')}
+                                    </span>
+                                    <span>{proactiveExplanation.confidenceLabel}</span>
+                                    <span>{proactiveExplanation.risk} risk</span>
+                                    <span>plan {actionPlanSummary.statusLabel}</span>
+                                    {approvedCommandSummary.visible && (
+                                      <span>command {approvedCommandSummary.statusLabel}</span>
+                                    )}
+                                    {preferenceSummary.visible && (
+                                      <span>preferences {preferenceSummary.statusLabel}</span>
+                                    )}
+                                    <span>requires {proposal.requiredAutonomyLevel}</span>
+                                    <span>evidence {proactiveExplanation.evidenceCount}</span>
+                                  </div>
+                                  <div className={styles.aoiAutonomyProposalTitle}>
+                                    {isAoiGoalCandidateProposal(proposal) && (
+                                      <span
+                                        className={styles.aoiGoalCandidateBadge}
+                                        title="Accepting this proposal activates a new Aoi goal (display-only until you approve)."
+                                      >
+                                        Goal candidate
+                                      </span>
+                                    )}
+                                    {sanitizeAoiProposalDisplayText(proposal.title, 140)}
+                                  </div>
+                                  <div className={styles.aoiAutonomyProposalReason}>
+                                    {proactiveExplanation.oneLineRationale}
+                                  </div>
+                                  <div className={styles.aoiAutonomyProposalDetails}>
+                                    <div>Why now: {proactiveExplanation.whyNow}</div>
+                                    <div>Changed: {proactiveExplanation.whatChanged}</div>
+                                    <div>Evidence: {proactiveExplanation.evidenceSummary}</div>
+                                    <div>Next: {proactiveExplanation.safeNextAction}</div>
+                                    <div>Boundary: {proactiveExplanation.approvalBoundary}</div>
+                                  </div>
+                                  {recoverySummary.visible && (
+                                    <div className={styles.aoiAutonomyProposalDetails}>
+                                      <div>Failure: {recoverySummary.failureKind}</div>
+                                      <div>Cause: {recoverySummary.rootCauseSummary}</div>
+                                      <div>Action: {recoverySummary.proposedActionLabel}</div>
+                                      <div>Safety: {recoverySummary.whyNarrowerOrSafer}</div>
+                                      <div>
+                                        Retry: {recoverySummary.retryLabel} /{' '}
+                                        {recoverySummary.cooldownLabel}
+                                      </div>
+                                      {recoverySummary.nonGoals.map((item, index) => (
+                                        <div key={`${proposal.id}-non-goal-${index}`}>
+                                          Non-goal: {item}
+                                        </div>
+                                      ))}
+                                      {recoverySummary.evidenceRefs.map((ref, index) => (
+                                        <div key={`${proposal.id}-recovery-evidence-${index}`}>
+                                          Evidence: {sanitizeAoiProposalDisplayText(ref, 220)}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                  <div className={styles.aoiAutonomyProposalTools}>
+                                    {proposal.suggestedTools.length > 0
+                                      ? proposal.suggestedTools
+                                          .slice(0, 5)
+                                          .map((tool) => sanitizeAoiProposalDisplayText(tool, 64))
+                                          .join(', ')
+                                      : 'No suggested tools'}
+                                  </div>
+                                  {proposal.blockedReason && (
+                                    <div className={styles.aoiAutonomyBlockedReason}>
+                                      Blocked:{' '}
+                                      {sanitizeAoiProposalDisplayText(proposal.blockedReason, 220)}
+                                    </div>
+                                  )}
+                                  {actionPresentation.primaryRole !== 'none' && (
+                                    <div className={styles.aoiAutonomyProposalDetails}>
+                                      Action boundary:{' '}
+                                      {sanitizeAoiProposalDisplayText(
+                                        actionPresentation.mutationBoundary,
+                                        240,
+                                      )}
+                                    </div>
+                                  )}
+                                  {actionPlanSummary.visible && (
+                                    <div className={styles.aoiAutonomyProposalDetails}>
+                                      <div>Plan: {actionPlanSummary.objective}</div>
+                                      <div>
+                                        Plan risk: {actionPlanSummary.riskLabel} /{' '}
+                                        {actionPlanSummary.approvalLabel}
+                                      </div>
+                                      <div>Checkpoint: {actionPlanSummary.checkpointLabel}</div>
+                                      <div>Validation: {actionPlanSummary.validationLabel}</div>
+                                      <div>Rollback: {actionPlanSummary.rollbackLabel}</div>
+                                      {actionPlanSummary.blockers.map((blocker, index) => (
+                                        <div key={`${proposal.id}-plan-blocker-${index}`}>
+                                          Plan blocked: {blocker}
+                                        </div>
+                                      ))}
+                                      {actionPlanSummary.expectedChanges.map((item, index) => (
+                                        <div key={`${proposal.id}-plan-change-${index}`}>
+                                          Expected change: {item}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
                                   {approvedCommandSummary.visible && (
-                                    <span>command {approvedCommandSummary.statusLabel}</span>
+                                    <div className={styles.aoiAutonomyProposalDetails}>
+                                      <div>Command: {approvedCommandSummary.commandLabel}</div>
+                                      <div>Cwd: {approvedCommandSummary.cwdLabel}</div>
+                                      <div>Command risk: {approvedCommandSummary.riskLabel}</div>
+                                      <div>
+                                        Command result: {approvedCommandSummary.resultLabel}
+                                      </div>
+                                      {approvedCommandSummary.reasonLabels.map((reason, index) => (
+                                        <div key={`${proposal.id}-command-reason-${index}`}>
+                                          Command reason: {reason}
+                                        </div>
+                                      ))}
+                                    </div>
                                   )}
                                   {preferenceSummary.visible && (
-                                    <span>preferences {preferenceSummary.statusLabel}</span>
-                                  )}
-                                  <span>requires {proposal.requiredAutonomyLevel}</span>
-                                  <span>evidence {proactiveExplanation.evidenceCount}</span>
-                                </div>
-                                <div className={styles.aoiAutonomyProposalTitle}>
-                                  {isAoiGoalCandidateProposal(proposal) && (
-                                    <span
-                                      className={styles.aoiGoalCandidateBadge}
-                                      title="Accepting this proposal activates a new Aoi goal (display-only until you approve)."
-                                    >
-                                      Goal candidate
-                                    </span>
-                                  )}
-                                  {sanitizeAoiProposalDisplayText(proposal.title, 140)}
-                                </div>
-                                <div className={styles.aoiAutonomyProposalReason}>
-                                  {proactiveExplanation.oneLineRationale}
-                                </div>
-                                <div className={styles.aoiAutonomyProposalDetails}>
-                                  <div>Why now: {proactiveExplanation.whyNow}</div>
-                                  <div>Changed: {proactiveExplanation.whatChanged}</div>
-                                  <div>Evidence: {proactiveExplanation.evidenceSummary}</div>
-                                  <div>Next: {proactiveExplanation.safeNextAction}</div>
-                                  <div>Boundary: {proactiveExplanation.approvalBoundary}</div>
-                                </div>
-                                {recoverySummary.visible && (
-                                  <div className={styles.aoiAutonomyProposalDetails}>
-                                    <div>Failure: {recoverySummary.failureKind}</div>
-                                    <div>Cause: {recoverySummary.rootCauseSummary}</div>
-                                    <div>Action: {recoverySummary.proposedActionLabel}</div>
-                                    <div>Safety: {recoverySummary.whyNarrowerOrSafer}</div>
-                                    <div>
-                                      Retry: {recoverySummary.retryLabel} /{' '}
-                                      {recoverySummary.cooldownLabel}
-                                    </div>
-                                    {recoverySummary.nonGoals.map((item, index) => (
-                                      <div key={`${proposal.id}-non-goal-${index}`}>
-                                        Non-goal: {item}
-                                      </div>
-                                    ))}
-                                    {recoverySummary.evidenceRefs.map((ref, index) => (
-                                      <div key={`${proposal.id}-recovery-evidence-${index}`}>
-                                        Evidence: {sanitizeAoiProposalDisplayText(ref, 220)}
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                                <div className={styles.aoiAutonomyProposalTools}>
-                                  {proposal.suggestedTools.length > 0
-                                    ? proposal.suggestedTools
-                                        .slice(0, 5)
-                                        .map((tool) => sanitizeAoiProposalDisplayText(tool, 64))
-                                        .join(', ')
-                                    : 'No suggested tools'}
-                                </div>
-                                {proposal.blockedReason && (
-                                  <div className={styles.aoiAutonomyBlockedReason}>
-                                    Blocked:{' '}
-                                    {sanitizeAoiProposalDisplayText(proposal.blockedReason, 220)}
-                                  </div>
-                                )}
-                                {actionPresentation.primaryRole !== 'none' && (
-                                  <div className={styles.aoiAutonomyProposalDetails}>
-                                    Action boundary:{' '}
-                                    {sanitizeAoiProposalDisplayText(
-                                      actionPresentation.mutationBoundary,
-                                      240,
-                                    )}
-                                  </div>
-                                )}
-                                {actionPlanSummary.visible && (
-                                  <div className={styles.aoiAutonomyProposalDetails}>
-                                    <div>Plan: {actionPlanSummary.objective}</div>
-                                    <div>
-                                      Plan risk: {actionPlanSummary.riskLabel} /{' '}
-                                      {actionPlanSummary.approvalLabel}
-                                    </div>
-                                    <div>Checkpoint: {actionPlanSummary.checkpointLabel}</div>
-                                    <div>Validation: {actionPlanSummary.validationLabel}</div>
-                                    <div>Rollback: {actionPlanSummary.rollbackLabel}</div>
-                                    {actionPlanSummary.blockers.map((blocker, index) => (
-                                      <div key={`${proposal.id}-plan-blocker-${index}`}>
-                                        Plan blocked: {blocker}
-                                      </div>
-                                    ))}
-                                    {actionPlanSummary.expectedChanges.map((item, index) => (
-                                      <div key={`${proposal.id}-plan-change-${index}`}>
-                                        Expected change: {item}
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                                {approvedCommandSummary.visible && (
-                                  <div className={styles.aoiAutonomyProposalDetails}>
-                                    <div>Command: {approvedCommandSummary.commandLabel}</div>
-                                    <div>Cwd: {approvedCommandSummary.cwdLabel}</div>
-                                    <div>Command risk: {approvedCommandSummary.riskLabel}</div>
-                                    <div>Command result: {approvedCommandSummary.resultLabel}</div>
-                                    {approvedCommandSummary.reasonLabels.map((reason, index) => (
-                                      <div key={`${proposal.id}-command-reason-${index}`}>
-                                        Command reason: {reason}
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                                {preferenceSummary.visible && (
-                                  <div className={styles.aoiAutonomyProposalDetails}>
-                                    {preferenceSummary.preferenceLabels.map((item, index) => (
-                                      <div key={`${proposal.id}-preference-${index}`}>
-                                        Preference: {item}
-                                      </div>
-                                    ))}
-                                    {preferenceSummary.conflictLabels.map((item, index) => (
-                                      <div key={`${proposal.id}-preference-conflict-${index}`}>
-                                        Preference conflict: {item}
-                                      </div>
-                                    ))}
-                                    {preferenceSummary.demotionLabels.map((item, index) => (
-                                      <div key={`${proposal.id}-preference-demotion-${index}`}>
-                                        Preference demotion: {item}
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                                {proposal.risk === 'high' && (
-                                  <div className={styles.aoiAutonomyBlockedReason}>
-                                    High risk: execution still requires fresh explicit acceptance.
-                                  </div>
-                                )}
-                                {policyExecutableAction && !governorAllowsExecution && (
-                                  <div className={styles.aoiAutonomyBlockedReason}>
-                                    Governor blocked execution: current ceiling is{' '}
-                                    {aoiJarvisAutonomyGovernor.modeLabel}.
-                                  </div>
-                                )}
-                                {proposal.acceptAction?.kind === 'start_research' &&
-                                  proposal.status === 'accepted' && (
-                                    <div className={styles.aoiAutonomyBlockedReason}>
-                                      Approval will start a new Aoi web research run.
-                                    </div>
-                                  )}
-                                {proposal.acceptAction?.kind === 'save_memory' &&
-                                  proposal.status === 'accepted' && (
-                                    <div className={styles.aoiAutonomyBlockedReason}>
-                                      Approval will promote memory or create an untrusted skill
-                                      draft.
-                                    </div>
-                                  )}
-                                {isKiraHandoff && proposal.status === 'accepted' && (
-                                  <div className={styles.aoiAutonomyBlockedReason}>
-                                    {kiraHandoffPreview
-                                      ? 'Preview is ready. Approval creates one reviewed Kira work item and does not edit files.'
-                                      : 'Preview plan first. Preview does not create Kira work items or edit files.'}
-                                  </div>
-                                )}
-                                {actionPresentation.visibleState === 'blocked' && (
-                                  <div className={styles.aoiAutonomyProposalDetails}>
-                                    {blockedSummary.policyReasons.length > 0 && (
-                                      <div>
-                                        Policy reason: {blockedSummary.policyReasons.join(' / ')}
-                                      </div>
-                                    )}
-                                    {blockedSummary.missingEvidence.map((item, index) => (
-                                      <div key={`${proposal.id}-blocked-missing-${index}`}>
-                                        Missing evidence: {item}
-                                      </div>
-                                    ))}
-                                    <div>Safe alternative: {blockedSummary.safeAlternative}</div>
-                                  </div>
-                                )}
-                                {executionMessage && (
-                                  <div className={styles.aoiAutonomyExecutionResult}>
-                                    {sanitizeAoiProposalDisplayText(executionMessage, 320)}
-                                  </div>
-                                )}
-                                {kiraHandoffPreview && (
-                                  <div className={styles.aoiAutonomyProposalDetails}>
-                                    <div>
-                                      Kira handoff preview:{' '}
-                                      {sanitizeAoiProposalDisplayText(
-                                        getPreviewText(kiraHandoffPreview, 'title'),
-                                        160,
-                                      )}
-                                    </div>
-                                    <div>
-                                      Objective:{' '}
-                                      {sanitizeAoiProposalDisplayText(
-                                        getPreviewText(kiraHandoffPreview, 'objective'),
-                                        220,
-                                      )}
-                                    </div>
-                                    <div>
-                                      Scope:{' '}
-                                      {getPreviewList(kiraHandoffPreview, 'scope')
-                                        .map((item) => sanitizeAoiProposalDisplayText(item, 80))
-                                        .join(' / ') || 'none'}
-                                    </div>
-                                    <div>
-                                      Likely modules:{' '}
-                                      {getPreviewList(kiraHandoffPreview, 'likelyFilesOrModules')
-                                        .map((item) => sanitizeAoiProposalDisplayText(item, 80))
-                                        .join(' / ') || 'none'}
-                                    </div>
-                                    <div>
-                                      Validation:{' '}
-                                      {getPreviewList(kiraHandoffPreview, 'validationCommands')
-                                        .slice(0, 3)
-                                        .map((item) => sanitizeAoiProposalDisplayText(item, 120))
-                                        .join(' / ') || 'none'}
-                                    </div>
-                                    <div>
-                                      Evidence refs:{' '}
-                                      {getPreviewList(kiraHandoffPreview, 'evidenceRefs').length}
-                                    </div>
-                                  </div>
-                                )}
-                                {expanded && (
-                                  <div className={styles.aoiAutonomyProposalDetails}>
-                                    <div>Title: {inspectorSummary.title}</div>
-                                    {proactiveExplanation.details.map((detail, index) => (
-                                      <div key={`${proposal.id}-explanation-${index}`}>
-                                        {detail}
-                                      </div>
-                                    ))}
-                                    <div>
-                                      Message summary: {proactiveExplanation.messageSummary}
-                                    </div>
-                                    <div>Reason: {inspectorSummary.reason}</div>
-                                    <div>
-                                      Confidence: {inspectorSummary.confidence.toFixed(2)} / Risk:{' '}
-                                      {inspectorSummary.risk} / Required:{' '}
-                                      {inspectorSummary.requiredAutonomyLevel}
-                                    </div>
-                                    <div>Suggested action: {inspectorSummary.suggestedAction}</div>
-                                    {actionPlanSummary.affectedSurfaces.map((surface, index) => (
-                                      <div key={`${proposal.id}-plan-surface-${index}`}>
-                                        Affected surface: {surface}
-                                      </div>
-                                    ))}
-                                    {actionPlanSummary.validationCommands.map((command, index) => (
-                                      <div key={`${proposal.id}-plan-validation-${index}`}>
-                                        Validation command: {command}
-                                      </div>
-                                    ))}
-                                    {actionPlanSummary.rollbackInstructions.map(
-                                      (instruction, index) => (
-                                        <div key={`${proposal.id}-plan-rollback-${index}`}>
-                                          Rollback: {instruction}
+                                    <div className={styles.aoiAutonomyProposalDetails}>
+                                      {preferenceSummary.preferenceLabels.map((item, index) => (
+                                        <div key={`${proposal.id}-preference-${index}`}>
+                                          Preference: {item}
                                         </div>
-                                      ),
-                                    )}
-                                    {actionPlanSummary.nonGoals.map((item, index) => (
-                                      <div key={`${proposal.id}-plan-nongoal-${index}`}>
-                                        Non-goal: {item}
-                                      </div>
-                                    ))}
-                                    {approvedCommandSummary.stdoutExcerpt && (
-                                      <div>Stdout: {approvedCommandSummary.stdoutExcerpt}</div>
-                                    )}
-                                    {approvedCommandSummary.stderrExcerpt && (
-                                      <div>Stderr: {approvedCommandSummary.stderrExcerpt}</div>
-                                    )}
-                                    {approvedCommandSummary.outputTruncated && (
-                                      <div>Output: truncated</div>
-                                    )}
-                                    {approvedCommandSummary.evidenceRefs.map((ref, index) => (
-                                      <div key={`${proposal.id}-command-evidence-${index}`}>
-                                        Command evidence: {ref}
-                                      </div>
-                                    ))}
-                                    {preferenceSummary.sourceRefs.map((ref, index) => (
-                                      <div key={`${proposal.id}-preference-evidence-${index}`}>
-                                        Preference evidence: {ref}
-                                      </div>
-                                    ))}
-                                    <div>
-                                      Policy:{' '}
-                                      {inspectorSummary.policyAllowed ? 'allowed' : 'blocked'}{' '}
-                                      {inspectorSummary.policyReasons.length > 0
-                                        ? inspectorSummary.policyReasons
-                                            .map((reason) =>
-                                              sanitizeAoiProposalDisplayText(reason, 96),
-                                            )
-                                            .join(' / ')
-                                        : 'no blocking reason'}
+                                      ))}
+                                      {preferenceSummary.conflictLabels.map((item, index) => (
+                                        <div key={`${proposal.id}-preference-conflict-${index}`}>
+                                          Preference conflict: {item}
+                                        </div>
+                                      ))}
+                                      {preferenceSummary.demotionLabels.map((item, index) => (
+                                        <div key={`${proposal.id}-preference-demotion-${index}`}>
+                                          Preference demotion: {item}
+                                        </div>
+                                      ))}
                                     </div>
-                                    <div>Safe alternative: {inspectorSummary.safeAlternative}</div>
-                                    <div>
-                                      Trigger:{' '}
-                                      {sanitizeAoiProposalDisplayText(proposal.trigger, 220)}
-                                    </div>
-                                    <div>
-                                      Cooldown key:{' '}
-                                      {sanitizeAoiProposalDisplayText(proposal.cooldownKey, 160)}
-                                    </div>
-                                    <div>
-                                      Evidence refs: {inspectorSummary.evidenceRefs.length} shown /{' '}
-                                      {proposal.evidenceRefs.length} total
-                                    </div>
-                                    {proactiveExplanation.evidenceRefs.map((ref, index) => (
-                                      <div key={`${proposal.id}-evidence-${index}`}>{ref}</div>
-                                    ))}
-                                    {proposal.riskSignals.slice(0, 5).map((signal, index) => (
-                                      <div key={`${proposal.id}-risk-${index}`}>
-                                        Risk: {sanitizeAoiProposalDisplayText(signal, 220)}
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                                <div className={styles.aoiAutonomyProposalActions}>
-                                  {primaryActionAllowed && proposal.status === 'active' ? (
-                                    <button
-                                      type="button"
-                                      className={styles.inlineActionBtn}
-                                      onClick={() =>
-                                        void onDecideAoiProposal(proposal.id, 'accept')
-                                      }
-                                      disabled={proposalPending}
-                                      title={actionPresentation.primaryTitle}
-                                    >
-                                      {recoverySummary.visible
-                                        ? 'Approve exact recovery'
-                                        : actionPresentation.primaryLabel}
-                                    </button>
-                                  ) : executableAction ? (
-                                    <button
-                                      type="button"
-                                      className={styles.inlineActionBtn}
-                                      onClick={() =>
-                                        isKiraHandoff && !kiraHandoffPreview
-                                          ? void onPrepareAoiKiraHandoff(proposal)
-                                          : void onExecuteAoiProposal(proposal)
-                                      }
-                                      disabled={proposalPending}
-                                      title={actionPresentation.primaryTitle}
-                                    >
-                                      {actionPresentation.primaryLabel}
-                                    </button>
-                                  ) : (
-                                    <span className={styles.modelHint}>
-                                      {proposal.blockedReason
-                                        ? 'Blocked by policy.'
-                                        : `No primary action while status is ${proposal.status}.`}
-                                    </span>
                                   )}
-                                  <button
-                                    type="button"
-                                    className={styles.inlineActionBtn}
-                                    onClick={() => void onDecideAoiProposal(proposal.id, 'snooze')}
-                                    disabled={proposalPending || proposal.status !== 'active'}
-                                    title={`Pause this proposal family by cooldown key: ${sanitizeAoiProposalDisplayText(
-                                      proposal.cooldownKey,
-                                      120,
-                                    )}`}
-                                  >
-                                    Pause suggestion family
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className={styles.inlineActionBtn}
-                                    onClick={() => void onDecideAoiProposal(proposal.id, 'dismiss')}
-                                    disabled={proposalPending || proposal.status !== 'active'}
-                                    title="Dismiss this suggestion and remember why for future calibration"
-                                  >
-                                    Dismiss and remember why
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className={styles.inlineActionBtn}
-                                    onClick={() =>
-                                      void onDecideAoiProposal(
-                                        proposal.id,
-                                        'snooze',
-                                        'too_frequent',
-                                      )
-                                    }
-                                    disabled={proposalPending || proposal.status !== 'active'}
-                                    title="Stop showing this suggestion type for this session window"
-                                  >
-                                    Stop showing this type
-                                  </button>
-                                  {recoverySummary.visible && proposal.status === 'active' && (
+                                  {proposal.risk === 'high' && (
+                                    <div className={styles.aoiAutonomyBlockedReason}>
+                                      High risk: execution still requires fresh explicit acceptance.
+                                    </div>
+                                  )}
+                                  {policyExecutableAction && !governorAllowsExecution && (
+                                    <div className={styles.aoiAutonomyBlockedReason}>
+                                      Governor blocked execution: current ceiling is{' '}
+                                      {aoiJarvisAutonomyGovernor.modeLabel}.
+                                    </div>
+                                  )}
+                                  {proposal.acceptAction?.kind === 'start_research' &&
+                                    proposal.status === 'accepted' && (
+                                      <div className={styles.aoiAutonomyBlockedReason}>
+                                        Approval will start a new Aoi web research run.
+                                      </div>
+                                    )}
+                                  {proposal.acceptAction?.kind === 'save_memory' &&
+                                    proposal.status === 'accepted' && (
+                                      <div className={styles.aoiAutonomyBlockedReason}>
+                                        Approval will promote memory or create an untrusted skill
+                                        draft.
+                                      </div>
+                                    )}
+                                  {isKiraHandoff && proposal.status === 'accepted' && (
+                                    <div className={styles.aoiAutonomyBlockedReason}>
+                                      {kiraHandoffPreview
+                                        ? 'Preview is ready. Approval creates one reviewed Kira work item and does not edit files.'
+                                        : 'Preview plan first. Preview does not create Kira work items or edit files.'}
+                                    </div>
+                                  )}
+                                  {actionPresentation.visibleState === 'blocked' && (
+                                    <div className={styles.aoiAutonomyProposalDetails}>
+                                      {blockedSummary.policyReasons.length > 0 && (
+                                        <div>
+                                          Policy reason: {blockedSummary.policyReasons.join(' / ')}
+                                        </div>
+                                      )}
+                                      {blockedSummary.missingEvidence.map((item, index) => (
+                                        <div key={`${proposal.id}-blocked-missing-${index}`}>
+                                          Missing evidence: {item}
+                                        </div>
+                                      ))}
+                                      <div>Safe alternative: {blockedSummary.safeAlternative}</div>
+                                    </div>
+                                  )}
+                                  {executionMessage && (
+                                    <div className={styles.aoiAutonomyExecutionResult}>
+                                      {sanitizeAoiProposalDisplayText(executionMessage, 320)}
+                                    </div>
+                                  )}
+                                  {kiraHandoffPreview && (
+                                    <div className={styles.aoiAutonomyProposalDetails}>
+                                      <div>
+                                        Kira handoff preview:{' '}
+                                        {sanitizeAoiProposalDisplayText(
+                                          getPreviewText(kiraHandoffPreview, 'title'),
+                                          160,
+                                        )}
+                                      </div>
+                                      <div>
+                                        Objective:{' '}
+                                        {sanitizeAoiProposalDisplayText(
+                                          getPreviewText(kiraHandoffPreview, 'objective'),
+                                          220,
+                                        )}
+                                      </div>
+                                      <div>
+                                        Scope:{' '}
+                                        {getPreviewList(kiraHandoffPreview, 'scope')
+                                          .map((item) => sanitizeAoiProposalDisplayText(item, 80))
+                                          .join(' / ') || 'none'}
+                                      </div>
+                                      <div>
+                                        Likely modules:{' '}
+                                        {getPreviewList(kiraHandoffPreview, 'likelyFilesOrModules')
+                                          .map((item) => sanitizeAoiProposalDisplayText(item, 80))
+                                          .join(' / ') || 'none'}
+                                      </div>
+                                      <div>
+                                        Validation:{' '}
+                                        {getPreviewList(kiraHandoffPreview, 'validationCommands')
+                                          .slice(0, 3)
+                                          .map((item) => sanitizeAoiProposalDisplayText(item, 120))
+                                          .join(' / ') || 'none'}
+                                      </div>
+                                      <div>
+                                        Evidence refs:{' '}
+                                        {getPreviewList(kiraHandoffPreview, 'evidenceRefs').length}
+                                      </div>
+                                    </div>
+                                  )}
+                                  {expanded && (
+                                    <div className={styles.aoiAutonomyProposalDetails}>
+                                      <div>Title: {inspectorSummary.title}</div>
+                                      {proactiveExplanation.details.map((detail, index) => (
+                                        <div key={`${proposal.id}-explanation-${index}`}>
+                                          {detail}
+                                        </div>
+                                      ))}
+                                      <div>
+                                        Message summary: {proactiveExplanation.messageSummary}
+                                      </div>
+                                      <div>Reason: {inspectorSummary.reason}</div>
+                                      <div>
+                                        Confidence: {inspectorSummary.confidence.toFixed(2)} / Risk:{' '}
+                                        {inspectorSummary.risk} / Required:{' '}
+                                        {inspectorSummary.requiredAutonomyLevel}
+                                      </div>
+                                      <div>
+                                        Suggested action: {inspectorSummary.suggestedAction}
+                                      </div>
+                                      {actionPlanSummary.affectedSurfaces.map((surface, index) => (
+                                        <div key={`${proposal.id}-plan-surface-${index}`}>
+                                          Affected surface: {surface}
+                                        </div>
+                                      ))}
+                                      {actionPlanSummary.validationCommands.map(
+                                        (command, index) => (
+                                          <div key={`${proposal.id}-plan-validation-${index}`}>
+                                            Validation command: {command}
+                                          </div>
+                                        ),
+                                      )}
+                                      {actionPlanSummary.rollbackInstructions.map(
+                                        (instruction, index) => (
+                                          <div key={`${proposal.id}-plan-rollback-${index}`}>
+                                            Rollback: {instruction}
+                                          </div>
+                                        ),
+                                      )}
+                                      {actionPlanSummary.nonGoals.map((item, index) => (
+                                        <div key={`${proposal.id}-plan-nongoal-${index}`}>
+                                          Non-goal: {item}
+                                        </div>
+                                      ))}
+                                      {approvedCommandSummary.stdoutExcerpt && (
+                                        <div>Stdout: {approvedCommandSummary.stdoutExcerpt}</div>
+                                      )}
+                                      {approvedCommandSummary.stderrExcerpt && (
+                                        <div>Stderr: {approvedCommandSummary.stderrExcerpt}</div>
+                                      )}
+                                      {approvedCommandSummary.outputTruncated && (
+                                        <div>Output: truncated</div>
+                                      )}
+                                      {approvedCommandSummary.evidenceRefs.map((ref, index) => (
+                                        <div key={`${proposal.id}-command-evidence-${index}`}>
+                                          Command evidence: {ref}
+                                        </div>
+                                      ))}
+                                      {preferenceSummary.sourceRefs.map((ref, index) => (
+                                        <div key={`${proposal.id}-preference-evidence-${index}`}>
+                                          Preference evidence: {ref}
+                                        </div>
+                                      ))}
+                                      <div>
+                                        Policy:{' '}
+                                        {inspectorSummary.policyAllowed ? 'allowed' : 'blocked'}{' '}
+                                        {inspectorSummary.policyReasons.length > 0
+                                          ? inspectorSummary.policyReasons
+                                              .map((reason) =>
+                                                sanitizeAoiProposalDisplayText(reason, 96),
+                                              )
+                                              .join(' / ')
+                                          : 'no blocking reason'}
+                                      </div>
+                                      <div>
+                                        Safe alternative: {inspectorSummary.safeAlternative}
+                                      </div>
+                                      <div>
+                                        Trigger:{' '}
+                                        {sanitizeAoiProposalDisplayText(proposal.trigger, 220)}
+                                      </div>
+                                      <div>
+                                        Cooldown key:{' '}
+                                        {sanitizeAoiProposalDisplayText(proposal.cooldownKey, 160)}
+                                      </div>
+                                      <div>
+                                        Evidence refs: {inspectorSummary.evidenceRefs.length} shown
+                                        / {proposal.evidenceRefs.length} total
+                                      </div>
+                                      {proactiveExplanation.evidenceRefs.map((ref, index) => (
+                                        <div key={`${proposal.id}-evidence-${index}`}>{ref}</div>
+                                      ))}
+                                      {proposal.riskSignals.slice(0, 5).map((signal, index) => (
+                                        <div key={`${proposal.id}-risk-${index}`}>
+                                          Risk: {sanitizeAoiProposalDisplayText(signal, 220)}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                  <div className={styles.aoiAutonomyProposalActions}>
+                                    {primaryActionAllowed && proposal.status === 'active' ? (
+                                      <button
+                                        type="button"
+                                        className={styles.inlineActionBtn}
+                                        onClick={() =>
+                                          void onDecideAoiProposal(proposal.id, 'accept')
+                                        }
+                                        disabled={proposalPending}
+                                        title={actionPresentation.primaryTitle}
+                                      >
+                                        {recoverySummary.visible
+                                          ? 'Approve exact recovery'
+                                          : actionPresentation.primaryLabel}
+                                      </button>
+                                    ) : executableAction ? (
+                                      <button
+                                        type="button"
+                                        className={styles.inlineActionBtn}
+                                        onClick={() =>
+                                          isKiraHandoff && !kiraHandoffPreview
+                                            ? void onPrepareAoiKiraHandoff(proposal)
+                                            : void onExecuteAoiProposal(proposal)
+                                        }
+                                        disabled={proposalPending}
+                                        title={actionPresentation.primaryTitle}
+                                      >
+                                        {actionPresentation.primaryLabel}
+                                      </button>
+                                    ) : (
+                                      <span className={styles.modelHint}>
+                                        {proposal.blockedReason
+                                          ? 'Blocked by policy.'
+                                          : `No primary action while status is ${proposal.status}.`}
+                                      </span>
+                                    )}
                                     <button
                                       type="button"
                                       className={styles.inlineActionBtn}
+                                      onClick={() =>
+                                        void onDecideAoiProposal(proposal.id, 'snooze')
+                                      }
+                                      disabled={proposalPending || proposal.status !== 'active'}
+                                      title={`Pause this proposal family by cooldown key: ${sanitizeAoiProposalDisplayText(
+                                        proposal.cooldownKey,
+                                        120,
+                                      )}`}
+                                    >
+                                      Pause suggestion family
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={styles.inlineActionBtn}
+                                      onClick={() =>
+                                        void onDecideAoiProposal(proposal.id, 'dismiss')
+                                      }
+                                      disabled={proposalPending || proposal.status !== 'active'}
+                                      title="Dismiss this suggestion and remember why for future calibration"
+                                    >
+                                      Dismiss and remember why
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={styles.inlineActionBtn}
+                                      onClick={() =>
+                                        void onDecideAoiProposal(
+                                          proposal.id,
+                                          'snooze',
+                                          'too_frequent',
+                                        )
+                                      }
+                                      disabled={proposalPending || proposal.status !== 'active'}
+                                      title="Stop showing this suggestion type for this session window"
+                                    >
+                                      Stop showing this type
+                                    </button>
+                                    {recoverySummary.visible && proposal.status === 'active' && (
+                                      <button
+                                        type="button"
+                                        className={styles.inlineActionBtn}
+                                        onClick={() => {
+                                          if (expandedAoiProposalId !== proposal.id) {
+                                            emitAoiProposalOpenedSignal(proposal);
+                                          }
+                                          setExpandedAoiProposalId((prev) =>
+                                            prev === proposal.id ? prev : proposal.id,
+                                          );
+                                        }}
+                                        disabled={proposalPending}
+                                        title="Ask Aoi to explain evidence before approval"
+                                      >
+                                        Explain evidence
+                                      </button>
+                                    )}
+                                    {recoverySummary.visible &&
+                                      recoveryGoalId &&
+                                      proposal.status === 'active' && (
+                                        <button
+                                          type="button"
+                                          className={styles.inlineActionBtn}
+                                          onClick={() => void onPauseAoiGoalForRecovery(proposal)}
+                                          disabled={proposalPending}
+                                          title="Pause this goal while keeping evidence and source references"
+                                        >
+                                          Pause this goal
+                                        </button>
+                                      )}
+                                    <button
+                                      type="button"
+                                      className={styles.inlineActionBtn}
+                                      data-testid={`aoi-proposal-expand-${proposal.id}`}
                                       onClick={() => {
                                         if (expandedAoiProposalId !== proposal.id) {
                                           emitAoiProposalOpenedSignal(proposal);
                                         }
                                         setExpandedAoiProposalId((prev) =>
-                                          prev === proposal.id ? prev : proposal.id,
+                                          prev === proposal.id ? null : proposal.id,
                                         );
                                       }}
-                                      disabled={proposalPending}
-                                      title="Ask Aoi to explain evidence before approval"
+                                      title="Show proposal evidence and policy details"
                                     >
-                                      Explain evidence
+                                      {expanded ? (
+                                        <ChevronDown size={14} />
+                                      ) : (
+                                        <ChevronRight size={14} />
+                                      )}
+                                      Show evidence
                                     </button>
+                                  </div>
+                                  {proposal.status === 'active' && (
+                                    <div className={styles.aoiAutonomyFeedbackActions}>
+                                      {AOI_PROPOSAL_FEEDBACK_CONTROLS.map((item) => (
+                                        <button
+                                          type="button"
+                                          key={`${proposal.id}-${item.category}`}
+                                          className={styles.inlineActionBtn}
+                                          onClick={() =>
+                                            void onDecideAoiProposal(
+                                              proposal.id,
+                                              item.action,
+                                              item.category,
+                                            )
+                                          }
+                                          disabled={proposalPending}
+                                          title={item.title}
+                                        >
+                                          {item.label}
+                                        </button>
+                                      ))}
+                                    </div>
                                   )}
-                                  {recoverySummary.visible &&
-                                    recoveryGoalId &&
-                                    proposal.status === 'active' && (
-                                      <button
-                                        type="button"
-                                        className={styles.inlineActionBtn}
-                                        onClick={() => void onPauseAoiGoalForRecovery(proposal)}
-                                        disabled={proposalPending}
-                                        title="Pause this goal while keeping evidence and source references"
-                                      >
-                                        Pause this goal
-                                      </button>
-                                    )}
-                                  <button
-                                    type="button"
-                                    className={styles.inlineActionBtn}
-                                    data-testid={`aoi-proposal-expand-${proposal.id}`}
-                                    onClick={() => {
-                                      if (expandedAoiProposalId !== proposal.id) {
-                                        emitAoiProposalOpenedSignal(proposal);
-                                      }
-                                      setExpandedAoiProposalId((prev) =>
-                                        prev === proposal.id ? null : proposal.id,
-                                      );
-                                    }}
-                                    title="Show proposal evidence and policy details"
-                                  >
-                                    {expanded ? (
-                                      <ChevronDown size={14} />
-                                    ) : (
-                                      <ChevronRight size={14} />
-                                    )}
-                                    Show evidence
-                                  </button>
                                 </div>
-                                {proposal.status === 'active' && (
-                                  <div className={styles.aoiAutonomyFeedbackActions}>
-                                    {AOI_PROPOSAL_FEEDBACK_CONTROLS.map((item) => (
-                                      <button
-                                        type="button"
-                                        key={`${proposal.id}-${item.category}`}
-                                        className={styles.inlineActionBtn}
-                                        onClick={() =>
-                                          void onDecideAoiProposal(
-                                            proposal.id,
-                                            item.action,
-                                            item.category,
-                                          )
-                                        }
-                                        disabled={proposalPending}
-                                        title={item.title}
-                                      >
-                                        {item.label}
-                                      </button>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <p className={styles.modelHint}>
+                            No other active autonomy proposals are available for this session.
+                          </p>
+                        )}
+                      </div>
+
+                      {aoiAutonomyBlockedProposals.length > 0 && (
+                        <div className={styles.aoiAutonomyProposalSection}>
+                          <div className={styles.promptBudgetSectionTitle}>
+                            Blocked in last check
+                          </div>
+                          <div className={styles.aoiAutonomyProposalList}>
+                            {aoiAutonomyBlockedProposals.slice(0, 4).map((proposal) => {
+                              const blockedSummary = buildAoiBlockedStateSummary({
+                                blockedProposal: proposal,
+                              });
+                              const blockedExplanation = buildAoiBlockedProactiveExplanation({
+                                blockedProposal: proposal,
+                                includeEvidence: true,
+                              });
+
+                              return (
+                                <div
+                                  className={styles.aoiAutonomyProposalItem}
+                                  key={proposal.proposalId}
+                                >
+                                  <div className={styles.aoiAutonomyProposalTitle}>
+                                    {sanitizeAoiProposalDisplayText(proposal.title, 140)}
+                                  </div>
+                                  <div className={styles.aoiAutonomyBlockedReason}>
+                                    {blockedExplanation.oneLineRationale}
+                                  </div>
+                                  <div className={styles.aoiAutonomyProposalMeta}>
+                                    <span>state blocked</span>
+                                    <span>{proposal.actionKind ?? 'no action'}</span>
+                                    <span>{blockedExplanation.risk} risk</span>
+                                    <span>
+                                      requires {proposal.requiredAutonomyLevel ?? 'unknown'}
+                                    </span>
+                                    <span>
+                                      approval{' '}
+                                      {proposal.requiresUserApproval ? 'required' : 'not required'}
+                                    </span>
+                                    <span>evidence {proposal.evidenceRefs.length}</span>
+                                    <span>No tool execution available</span>
+                                  </div>
+                                  <div className={styles.aoiAutonomyProposalDetails}>
+                                    <div>Why now: {blockedExplanation.whyNow}</div>
+                                    <div>Changed: {blockedExplanation.whatChanged}</div>
+                                    <div>Evidence: {blockedExplanation.evidenceSummary}</div>
+                                    <div>Next: {blockedExplanation.safeNextAction}</div>
+                                    <div>Boundary: {blockedExplanation.approvalBoundary}</div>
+                                    {blockedSummary.missingEvidence.map((item, index) => (
+                                      <div key={`${proposal.proposalId}-missing-${index}`}>
+                                        Missing evidence: {item}
+                                      </div>
+                                    ))}
+                                    {blockedExplanation.evidenceRefs.map((ref, index) => (
+                                      <div key={`${proposal.proposalId}-evidence-${index}`}>
+                                        Evidence: {ref}
+                                      </div>
                                     ))}
                                   </div>
-                                )}
-                              </div>
-                            );
-                          })}
+                                </div>
+                              );
+                            })}
+                          </div>
                         </div>
-                      ) : (
-                        <p className={styles.modelHint}>
-                          No other active autonomy proposals are available for this session.
-                        </p>
                       )}
+
+                      <AoiStrategicOutputsSection
+                        brief={aoiStrategicBrief}
+                        workOrders={aoiGoalWorkOrders}
+                      />
+                    </>
+                  )}
+                </div>
+              )}
+
+              {advancedSection === 'host' && (
+                <AoiHostBridgeSettingsPanel sessionPath={aoiReplaySessionPath} />
+              )}
+
+              {advancedSection === 'operator' && (
+                <>
+                  <AoiReplayPromotionPanel sessionPath={aoiReplaySessionPath} />
+                  <AoiOperatorSnapshotPanel sessionPath={aoiReplaySessionPath} />
+                  <AoiNonVoiceScorecardPanel sessionPath={aoiReplaySessionPath} />
+                  <AoiSituationPanel sessionPath={aoiReplaySessionPath} />
+                  <AoiReadinessAccrualPanel sessionPath={aoiReplaySessionPath} />
+                </>
+              )}
+
+              {advancedSection === 'memory' && (
+                <>
+                  <AoiMemoryDecayPanel sessionPath={aoiReplaySessionPath} />
+
+                  <AoiPreferenceDashboard
+                    sessionPath={aoiReplaySessionPath}
+                    lang={aoiPreferenceLang}
+                    onMemoriesChanged={onRefreshAoiMemories}
+                    onGenerate={onGenerateAoiPreferenceQuestions}
+                  />
+
+                  <div className={styles.settingsSectionCard} data-testid="aoi-memory-inspector">
+                    <div className={styles.settingsSectionHeader}>
+                      <div>
+                        <div className={styles.settingsSectionTitle}>Aoi Memory Inspector</div>
+                        <span className={styles.modelHint}>
+                          Durable memories selected from Aoi chat turns and manual memory saves.
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        className={styles.inlineActionBtn}
+                        onClick={onRefreshAoiMemories}
+                        title="Refresh Aoi memories"
+                      >
+                        <RotateCcw size={14} />
+                        Refresh
+                      </button>
                     </div>
 
-                    {aoiAutonomyBlockedProposals.length > 0 && (
-                      <div className={styles.aoiAutonomyProposalSection}>
-                        <div className={styles.promptBudgetSectionTitle}>Blocked in last check</div>
-                        <div className={styles.aoiAutonomyProposalList}>
-                          {aoiAutonomyBlockedProposals.slice(0, 4).map((proposal) => {
-                            const blockedSummary = buildAoiBlockedStateSummary({
-                              blockedProposal: proposal,
-                            });
-                            const blockedExplanation = buildAoiBlockedProactiveExplanation({
-                              blockedProposal: proposal,
-                              includeEvidence: true,
-                            });
+                    <div className={styles.promptBudgetGrid}>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Active</span>
+                        <strong>{aoiMemoryOverview.activeCount}</strong>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Prompt eligible</span>
+                        <strong>{aoiMemoryOverview.promptEligibleCount}</strong>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Permanent</span>
+                        <strong>{aoiMemoryOverview.permanentCount}</strong>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Archived</span>
+                        <strong>{aoiMemoryOverview.archivedCount}</strong>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Superseded</span>
+                        <strong>{aoiMemoryOverview.supersededCount}</strong>
+                      </div>
+                    </div>
 
-                            return (
-                              <div
-                                className={styles.aoiAutonomyProposalItem}
-                                key={proposal.proposalId}
-                              >
-                                <div className={styles.aoiAutonomyProposalTitle}>
-                                  {sanitizeAoiProposalDisplayText(proposal.title, 140)}
-                                </div>
-                                <div className={styles.aoiAutonomyBlockedReason}>
-                                  {blockedExplanation.oneLineRationale}
-                                </div>
-                                <div className={styles.aoiAutonomyProposalMeta}>
-                                  <span>state blocked</span>
-                                  <span>{proposal.actionKind ?? 'no action'}</span>
-                                  <span>{blockedExplanation.risk} risk</span>
-                                  <span>
-                                    requires {proposal.requiredAutonomyLevel ?? 'unknown'}
-                                  </span>
-                                  <span>
-                                    approval{' '}
-                                    {proposal.requiresUserApproval ? 'required' : 'not required'}
-                                  </span>
-                                  <span>evidence {proposal.evidenceRefs.length}</span>
-                                  <span>No tool execution available</span>
-                                </div>
-                                <div className={styles.aoiAutonomyProposalDetails}>
-                                  <div>Why now: {blockedExplanation.whyNow}</div>
-                                  <div>Changed: {blockedExplanation.whatChanged}</div>
-                                  <div>Evidence: {blockedExplanation.evidenceSummary}</div>
-                                  <div>Next: {blockedExplanation.safeNextAction}</div>
-                                  <div>Boundary: {blockedExplanation.approvalBoundary}</div>
-                                  {blockedSummary.missingEvidence.map((item, index) => (
-                                    <div key={`${proposal.proposalId}-missing-${index}`}>
-                                      Missing evidence: {item}
-                                    </div>
-                                  ))}
-                                  {blockedExplanation.evidenceRefs.map((ref, index) => (
-                                    <div key={`${proposal.proposalId}-evidence-${index}`}>
-                                      Evidence: {ref}
-                                    </div>
-                                  ))}
-                                </div>
+                    {visibleAoiMemories.length > 0 ? (
+                      <div className={styles.aoiMemoryList}>
+                        {visibleAoiMemories.map((memory) => (
+                          <div className={styles.aoiMemoryItem} key={memory.id}>
+                            <div className={styles.aoiMemoryMain}>
+                              <div className={styles.aoiMemoryMeta}>
+                                <span>{memory.scope}</span>
+                                <span>{memory.type}</span>
+                                <span>{memory.status}</span>
+                                {memory.permanent ? <span>permanent</span> : null}
+                                <span>conf {memory.confidence.toFixed(2)}</span>
+                                <span>hits {memory.hits}</span>
                               </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-
-                    <AoiStrategicOutputsSection
-                      brief={aoiStrategicBrief}
-                      workOrders={aoiGoalWorkOrders}
-                    />
-                  </>
-                )}
-              </div>
-
-              <AoiHostBridgeSettingsPanel sessionPath={sessionPath} />
-
-              <AoiReplayPromotionPanel sessionPath={aoiReplaySessionPath} />
-
-              <AoiOperatorSnapshotPanel sessionPath={aoiReplaySessionPath} />
-
-              <AoiNonVoiceScorecardPanel sessionPath={aoiReplaySessionPath} />
-
-              <AoiSituationPanel sessionPath={aoiReplaySessionPath} />
-
-              <AoiReadinessAccrualPanel sessionPath={aoiReplaySessionPath} />
-
-              <AoiMemoryDecayPanel sessionPath={aoiReplaySessionPath} />
-
-              <AoiPreferenceDashboard
-                sessionPath={aoiReplaySessionPath}
-                lang={aoiPreferenceLang}
-                onMemoriesChanged={onRefreshAoiMemories}
-                onGenerate={onGenerateAoiPreferenceQuestions}
-              />
-
-              <div className={styles.settingsSectionCard} data-testid="aoi-memory-inspector">
-                <div className={styles.settingsSectionHeader}>
-                  <div>
-                    <div className={styles.settingsSectionTitle}>Aoi Memory Inspector</div>
-                    <span className={styles.modelHint}>
-                      Durable memories selected from Aoi chat turns and manual memory saves.
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    className={styles.inlineActionBtn}
-                    onClick={onRefreshAoiMemories}
-                    title="Refresh Aoi memories"
-                  >
-                    <RotateCcw size={14} />
-                    Refresh
-                  </button>
-                </div>
-
-                <div className={styles.promptBudgetGrid}>
-                  <div className={styles.promptBudgetMetric}>
-                    <span className={styles.promptBudgetLabel}>Active</span>
-                    <strong>{aoiMemoryOverview.activeCount}</strong>
-                  </div>
-                  <div className={styles.promptBudgetMetric}>
-                    <span className={styles.promptBudgetLabel}>Prompt eligible</span>
-                    <strong>{aoiMemoryOverview.promptEligibleCount}</strong>
-                  </div>
-                  <div className={styles.promptBudgetMetric}>
-                    <span className={styles.promptBudgetLabel}>Permanent</span>
-                    <strong>{aoiMemoryOverview.permanentCount}</strong>
-                  </div>
-                  <div className={styles.promptBudgetMetric}>
-                    <span className={styles.promptBudgetLabel}>Archived</span>
-                    <strong>{aoiMemoryOverview.archivedCount}</strong>
-                  </div>
-                  <div className={styles.promptBudgetMetric}>
-                    <span className={styles.promptBudgetLabel}>Superseded</span>
-                    <strong>{aoiMemoryOverview.supersededCount}</strong>
-                  </div>
-                </div>
-
-                {visibleAoiMemories.length > 0 ? (
-                  <div className={styles.aoiMemoryList}>
-                    {visibleAoiMemories.map((memory) => (
-                      <div className={styles.aoiMemoryItem} key={memory.id}>
-                        <div className={styles.aoiMemoryMain}>
-                          <div className={styles.aoiMemoryMeta}>
-                            <span>{memory.scope}</span>
-                            <span>{memory.type}</span>
-                            <span>{memory.status}</span>
-                            {memory.permanent ? <span>permanent</span> : null}
-                            <span>conf {memory.confidence.toFixed(2)}</span>
-                            <span>hits {memory.hits}</span>
+                              <div className={styles.aoiMemoryContent}>
+                                {sanitizeAoiProposalDisplayText(memory.content, 260)}
+                              </div>
+                              <div className={styles.aoiMemoryFooter}>
+                                <span>{new Date(memory.updatedAt).toLocaleString()}</span>
+                                {memory.tags.length > 0 ? (
+                                  <span>{memory.tags.slice(0, 4).join(', ')}</span>
+                                ) : null}
+                              </div>
+                            </div>
+                            <div className={styles.aoiMemoryActions}>
+                              <button
+                                type="button"
+                                className={styles.iconActionBtn}
+                                onClick={() =>
+                                  void handleAoiMemoryAction(memory.id, onSaveAoiPreference)
+                                }
+                                disabled={
+                                  memory.permanent ||
+                                  memory.status === 'archived' ||
+                                  pendingAoiMemoryActionId === memory.id
+                                }
+                                title="Save as durable preference"
+                              >
+                                <Plus size={14} />
+                              </button>
+                              <button
+                                type="button"
+                                className={styles.iconActionBtn}
+                                onClick={() =>
+                                  void handleAoiMemoryAction(memory.id, onMarkAoiMemoryTemporary)
+                                }
+                                disabled={
+                                  memory.status === 'archived' ||
+                                  pendingAoiMemoryActionId === memory.id
+                                }
+                                title="Mark temporary for this session"
+                              >
+                                <RotateCcw size={14} />
+                              </button>
+                              <button
+                                type="button"
+                                className={styles.iconActionBtn}
+                                onClick={() =>
+                                  void handleAoiMemoryAction(memory.id, onDemoteAoiMemory)
+                                }
+                                disabled={
+                                  memory.status !== 'active' ||
+                                  pendingAoiMemoryActionId === memory.id
+                                }
+                                title="Demote preference"
+                              >
+                                <Minus size={14} />
+                              </button>
+                              <button
+                                type="button"
+                                className={styles.iconActionBtn}
+                                onClick={() =>
+                                  void handleAoiMemoryAction(memory.id, onArchiveAoiMemory)
+                                }
+                                disabled={
+                                  memory.status === 'archived' ||
+                                  pendingAoiMemoryActionId === memory.id
+                                }
+                                title="Archive memory"
+                              >
+                                <Archive size={14} />
+                              </button>
+                              <button
+                                type="button"
+                                className={styles.iconActionBtn}
+                                onClick={() =>
+                                  void handleAoiMemoryAction(memory.id, onDeleteAoiMemory)
+                                }
+                                disabled={pendingAoiMemoryActionId === memory.id}
+                                title="Delete memory"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
                           </div>
-                          <div className={styles.aoiMemoryContent}>
-                            {sanitizeAoiProposalDisplayText(memory.content, 260)}
-                          </div>
-                          <div className={styles.aoiMemoryFooter}>
-                            <span>{new Date(memory.updatedAt).toLocaleString()}</span>
-                            {memory.tags.length > 0 ? (
-                              <span>{memory.tags.slice(0, 4).join(', ')}</span>
-                            ) : null}
-                          </div>
-                        </div>
-                        <div className={styles.aoiMemoryActions}>
-                          <button
-                            type="button"
-                            className={styles.iconActionBtn}
-                            onClick={() =>
-                              void handleAoiMemoryAction(memory.id, onSaveAoiPreference)
-                            }
-                            disabled={
-                              memory.permanent ||
-                              memory.status === 'archived' ||
-                              pendingAoiMemoryActionId === memory.id
-                            }
-                            title="Save as durable preference"
-                          >
-                            <Plus size={14} />
-                          </button>
-                          <button
-                            type="button"
-                            className={styles.iconActionBtn}
-                            onClick={() =>
-                              void handleAoiMemoryAction(memory.id, onMarkAoiMemoryTemporary)
-                            }
-                            disabled={
-                              memory.status === 'archived' || pendingAoiMemoryActionId === memory.id
-                            }
-                            title="Mark temporary for this session"
-                          >
-                            <RotateCcw size={14} />
-                          </button>
-                          <button
-                            type="button"
-                            className={styles.iconActionBtn}
-                            onClick={() => void handleAoiMemoryAction(memory.id, onDemoteAoiMemory)}
-                            disabled={
-                              memory.status !== 'active' || pendingAoiMemoryActionId === memory.id
-                            }
-                            title="Demote preference"
-                          >
-                            <Minus size={14} />
-                          </button>
-                          <button
-                            type="button"
-                            className={styles.iconActionBtn}
-                            onClick={() =>
-                              void handleAoiMemoryAction(memory.id, onArchiveAoiMemory)
-                            }
-                            disabled={
-                              memory.status === 'archived' || pendingAoiMemoryActionId === memory.id
-                            }
-                            title="Archive memory"
-                          >
-                            <Archive size={14} />
-                          </button>
-                          <button
-                            type="button"
-                            className={styles.iconActionBtn}
-                            onClick={() => void handleAoiMemoryAction(memory.id, onDeleteAoiMemory)}
-                            disabled={pendingAoiMemoryActionId === memory.id}
-                            title="Delete memory"
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className={styles.modelHint}>
-                    No durable Aoi memories have been stored yet. Send a few meaningful chat turns
-                    or use save_memory.
-                  </p>
-                )}
-              </div>
-
-              <div className={styles.settingsSectionCard}>
-                <div className={styles.settingsSectionHeader}>
-                  <div>
-                    <div className={styles.settingsSectionTitle}>Tavily Web Search</div>
-                    <span className={styles.modelHint}>
-                      Enables Aoi's search_web tool for current web information.
-                    </span>
-                  </div>
-                  <span className={styles.modelHint}>
-                    {tavilyApiKey.trim() ? 'Configured' : 'Disabled'}
-                  </span>
-                </div>
-
-                <div className={styles.field}>
-                  <label className={styles.label}>API Key</label>
-                  <input
-                    className={styles.fieldInput}
-                    type="password"
-                    value={tavilyApiKey}
-                    onChange={(e) => setTavilyApiKey(e.target.value)}
-                    placeholder="tvly-YOUR_API_KEY"
-                    data-testid="tavily-api-key-input"
-                  />
-                </div>
-
-                <div className={styles.field}>
-                  <label className={styles.label}>Search endpoint</label>
-                  <input
-                    className={styles.fieldInput}
-                    value={tavilyBaseUrl}
-                    onChange={(e) => setTavilyBaseUrl(e.target.value)}
-                    placeholder={DEFAULT_TAVILY_BASE_URL}
-                    data-testid="tavily-base-url-input"
-                  />
-                  <span className={styles.modelHint}>
-                    Leave as the default unless you are routing Tavily through a compatible proxy.
-                  </span>
-                </div>
-              </div>
-
-              <div className={styles.settingsSectionCard}>
-                <div className={styles.settingsSectionTitle}>PE Analyst / IDA MCP</div>
-                <div className={styles.field}>
-                  <label className={styles.label}>Mode</label>
-                  <select
-                    className={styles.select}
-                    value={idaPeMode}
-                    onChange={(e) => setIdaPeMode(e.target.value as 'prescan-only' | 'mcp-http')}
-                  >
-                    <option value="prescan-only">Pre-scan only</option>
-                    <option value="mcp-http">HTTP MCP backend</option>
-                  </select>
-                  <span className={styles.modelHint}>
-                    `Pre-scan only` uses the built-in PE triage. `HTTP MCP backend` expects an MCP
-                    server reachable by URL.
-                  </span>
-                </div>
-
-                <div className={styles.field}>
-                  <label className={styles.label}>Backend URL</label>
-                  <input
-                    className={styles.fieldInput}
-                    value={idaPeBackendUrl}
-                    onChange={(e) => setIdaPeBackendUrl(e.target.value)}
-                    placeholder="http://127.0.0.1:17300/"
-                  />
-                  <span className={styles.modelHint}>
-                    Supports `ida-headless-mcp` root endpoints and `ida_pro_mcp` plugin endpoints
-                    such as `http://127.0.0.1:13337/mcp`.
-                  </span>
-                </div>
-              </div>
-
-              <div className={styles.settingsSectionCard}>
-                <div className={styles.settingsSectionTitle}>Prompt Budget Inspector</div>
-                <div className={styles.promptBudgetCard}>
-                  <div className={styles.promptBudgetGrid}>
-                    <div className={styles.promptBudgetMetric}>
-                      <span className={styles.promptBudgetLabel}>Recent samples</span>
-                      <strong>{promptBudgetEntries.length}</strong>
-                    </div>
-                    <div className={styles.promptBudgetMetric}>
-                      <span className={styles.promptBudgetLabel}>Dialog turns</span>
-                      <strong>
-                        {promptBudgetOverview.dialogTurnCount} /{' '}
-                        {promptBudgetOverview.recentTurnCount}
-                      </strong>
-                    </div>
-                    <div className={styles.promptBudgetMetric}>
-                      <span className={styles.promptBudgetLabel}>Main turns</span>
-                      <strong>
-                        {promptBudgetOverview.mainTurnCount} /{' '}
-                        {promptBudgetOverview.recentTurnCount}
-                      </strong>
-                    </div>
-                    <div className={styles.promptBudgetMetric}>
-                      <span className={styles.promptBudgetLabel}>Avg tokens</span>
-                      <strong>{promptBudgetOverview.averageEstimatedTokens}</strong>
-                    </div>
-                    <div className={styles.promptBudgetMetric}>
-                      <span className={styles.promptBudgetLabel}>Avg system chars</span>
-                      <strong>{promptBudgetOverview.averageSystemPromptChars}</strong>
-                    </div>
-                    <div className={styles.promptBudgetMetric}>
-                      <span className={styles.promptBudgetLabel}>Avg history chars</span>
-                      <strong>{promptBudgetOverview.averageRecentHistoryChars}</strong>
-                    </div>
-                    <div className={styles.promptBudgetMetric}>
-                      <span className={styles.promptBudgetLabel}>Avg tool schema chars</span>
-                      <strong>{promptBudgetOverview.averageToolSchemaChars}</strong>
-                    </div>
-                  </div>
-
-                  <div className={styles.promptBudgetSection}>
-                    <span className={styles.promptBudgetSectionTitle}>Top cost drivers</span>
-                    {promptBudgetOverview.topCostDrivers.length > 0 ? (
-                      <ul className={styles.promptBudgetList}>
-                        {promptBudgetOverview.topCostDrivers.map((driver) => (
-                          <li key={driver.label}>
-                            <span>{driver.label}</span>
-                            <strong>{driver.averageChars} chars</strong>
-                          </li>
                         ))}
-                      </ul>
+                      </div>
                     ) : (
                       <p className={styles.modelHint}>
-                        Send a few messages to populate prompt budget data.
+                        No durable Aoi memories have been stored yet. Send a few meaningful chat
+                        turns or use save_memory.
                       </p>
                     )}
                   </div>
+                </>
+              )}
 
-                  {promptBudgetEntries.length > 0 && (
-                    <div className={styles.promptBudgetSection}>
-                      <span className={styles.promptBudgetSectionTitle}>
-                        Recent request snapshots
+              {advancedSection === 'integrations' && (
+                <>
+                  <div className={styles.settingsSectionCard}>
+                    <div className={styles.settingsSectionHeader}>
+                      <div>
+                        <div className={styles.settingsSectionTitle}>Tavily Web Search</div>
+                        <span className={styles.modelHint}>
+                          Enables Aoi's search_web tool for current web information.
+                        </span>
+                      </div>
+                      <span className={styles.modelHint}>
+                        {tavilyApiKey.trim() ? 'Configured' : 'Disabled'}
                       </span>
-                      <div className={styles.promptBudgetLog}>
-                        {promptBudgetEntries
-                          .slice()
-                          .reverse()
-                          .map((entry) => (
-                            <div
-                              key={`${entry.label}-${entry.iteration ?? 'seed'}-${entry.createdAt}`}
-                            >
+                    </div>
+
+                    <div className={styles.field}>
+                      <label className={styles.label}>API Key</label>
+                      <input
+                        className={styles.fieldInput}
+                        type="password"
+                        value={tavilyApiKey}
+                        onChange={(e) => setTavilyApiKey(e.target.value)}
+                        placeholder="tvly-YOUR_API_KEY"
+                        data-testid="tavily-api-key-input"
+                      />
+                    </div>
+
+                    <div className={styles.field}>
+                      <label className={styles.label}>Search endpoint</label>
+                      <input
+                        className={styles.fieldInput}
+                        value={tavilyBaseUrl}
+                        onChange={(e) => setTavilyBaseUrl(e.target.value)}
+                        placeholder={DEFAULT_TAVILY_BASE_URL}
+                        data-testid="tavily-base-url-input"
+                      />
+                      <span className={styles.modelHint}>
+                        Leave as the default unless you are routing Tavily through a compatible
+                        proxy.
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className={styles.settingsSectionCard}>
+                    <div className={styles.settingsSectionTitle}>PE Analyst / IDA MCP</div>
+                    <div className={styles.field}>
+                      <label className={styles.label}>Mode</label>
+                      <select
+                        className={styles.select}
+                        value={idaPeMode}
+                        onChange={(e) =>
+                          setIdaPeMode(e.target.value as 'prescan-only' | 'mcp-http')
+                        }
+                      >
+                        <option value="prescan-only">Pre-scan only</option>
+                        <option value="mcp-http">HTTP MCP backend</option>
+                      </select>
+                      <span className={styles.modelHint}>
+                        `Pre-scan only` uses the built-in PE triage. `HTTP MCP backend` expects an
+                        MCP server reachable by URL.
+                      </span>
+                    </div>
+
+                    <div className={styles.field}>
+                      <label className={styles.label}>Backend URL</label>
+                      <input
+                        className={styles.fieldInput}
+                        value={idaPeBackendUrl}
+                        onChange={(e) => setIdaPeBackendUrl(e.target.value)}
+                        placeholder="http://127.0.0.1:17300/"
+                      />
+                      <span className={styles.modelHint}>
+                        Supports `ida-headless-mcp` root endpoints and `ida_pro_mcp` plugin
+                        endpoints such as `http://127.0.0.1:13337/mcp`.
+                      </span>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {advancedSection === 'tools' && (
+                <>
+                  <div className={styles.settingsSectionCard}>
+                    <div className={styles.settingsSectionTitle}>Prompt Budget Inspector</div>
+                    <div className={styles.promptBudgetCard}>
+                      <div className={styles.promptBudgetGrid}>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Recent samples</span>
+                          <strong>{promptBudgetEntries.length}</strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Dialog turns</span>
+                          <strong>
+                            {promptBudgetOverview.dialogTurnCount} /{' '}
+                            {promptBudgetOverview.recentTurnCount}
+                          </strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Main turns</span>
+                          <strong>
+                            {promptBudgetOverview.mainTurnCount} /{' '}
+                            {promptBudgetOverview.recentTurnCount}
+                          </strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Avg tokens</span>
+                          <strong>{promptBudgetOverview.averageEstimatedTokens}</strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Avg system chars</span>
+                          <strong>{promptBudgetOverview.averageSystemPromptChars}</strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Avg history chars</span>
+                          <strong>{promptBudgetOverview.averageRecentHistoryChars}</strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Avg tool schema chars</span>
+                          <strong>{promptBudgetOverview.averageToolSchemaChars}</strong>
+                        </div>
+                      </div>
+
+                      <div className={styles.promptBudgetSection}>
+                        <span className={styles.promptBudgetSectionTitle}>Top cost drivers</span>
+                        {promptBudgetOverview.topCostDrivers.length > 0 ? (
+                          <ul className={styles.promptBudgetList}>
+                            {promptBudgetOverview.topCostDrivers.map((driver) => (
+                              <li key={driver.label}>
+                                <span>{driver.label}</span>
+                                <strong>{driver.averageChars} chars</strong>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className={styles.modelHint}>
+                            Send a few messages to populate prompt budget data.
+                          </p>
+                        )}
+                      </div>
+
+                      {promptBudgetEntries.length > 0 && (
+                        <div className={styles.promptBudgetSection}>
+                          <span className={styles.promptBudgetSectionTitle}>
+                            Recent request snapshots
+                          </span>
+                          <div className={styles.promptBudgetLog}>
+                            {promptBudgetEntries
+                              .slice()
+                              .reverse()
+                              .map((entry) => (
+                                <div
+                                  key={`${entry.label}-${entry.iteration ?? 'seed'}-${entry.createdAt}`}
+                                >
+                                  <strong>
+                                    {entry.label}
+                                    {entry.iteration ? ` #${entry.iteration}` : ''}
+                                  </strong>
+                                  <span>
+                                    {' '}
+                                    [{entry.modelRoute === 'dialog' ? 'dialogLlm' : 'main'}]
+                                    {entry.modelId ? ` ${entry.modelId}` : ''}
+                                  </span>
+                                  <span>
+                                    {' '}
+                                    {entry.snapshot.estimatedTokens} tokens · sys{' '}
+                                    {entry.snapshot.systemPromptChars} · hist{' '}
+                                    {entry.snapshot.recentHistoryChars} · tools{' '}
+                                    {entry.snapshot.toolSchemaChars}
+                                  </span>
+                                </div>
+                              ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className={styles.settingsSectionCard} data-testid="aoi-run-ledger">
+                    <div className={styles.settingsSectionTitle}>Aoi Run Ledger</div>
+                    <div className={styles.promptBudgetCard}>
+                      <div className={styles.promptBudgetGrid}>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Runs</span>
+                          <strong>{runLedgerSummary.total}</strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Running</span>
+                          <strong>{runLedgerSummary.running}</strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Completed</span>
+                          <strong>{runLedgerSummary.completed}</strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Failed</span>
+                          <strong>{runLedgerSummary.failed}</strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Tool calls</span>
+                          <strong>{runLedgerSummary.totalToolCalls}</strong>
+                        </div>
+                      </div>
+
+                      {recentRunLedgerEntries.length > 0 ? (
+                        <div className={styles.promptBudgetLog}>
+                          {recentRunLedgerEntries.map((entry) => (
+                            <div key={entry.id}>
                               <strong>
-                                {entry.label}
-                                {entry.iteration ? ` #${entry.iteration}` : ''}
+                                {entry.status} · {entry.goal.summary}
                               </strong>
                               <span>
                                 {' '}
-                                [{entry.modelRoute === 'dialog' ? 'dialogLlm' : 'main'}]
-                                {entry.modelId ? ` ${entry.modelId}` : ''}
+                                [{entry.modelRoute}
+                                {entry.modelId ? ` ${entry.modelId}` : ''}]
                               </span>
                               <span>
                                 {' '}
-                                {entry.snapshot.estimatedTokens} tokens · sys{' '}
-                                {entry.snapshot.systemPromptChars} · hist{' '}
-                                {entry.snapshot.recentHistoryChars} · tools{' '}
-                                {entry.snapshot.toolSchemaChars}
+                                iter {entry.metrics.iterations} · tools{' '}
+                                {entry.metrics.toolCallCount} ·{' '}
+                                {new Date(entry.updatedAt).toLocaleTimeString()}
                               </span>
                             </div>
                           ))}
+                        </div>
+                      ) : (
+                        <p className={styles.modelHint}>
+                          Send a message to record Aoi's current goal, model iterations, tool calls,
+                          and final delivery status.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className={styles.settingsSectionCard} data-testid="aoi-skills-workshop">
+                    <div className={styles.settingsSectionTitle}>Aoi Skills Workshop</div>
+                    <div className={styles.promptBudgetCard}>
+                      <div className={styles.promptBudgetGrid}>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Skills</span>
+                          <strong>{skillsWorkshopSummary.total}</strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Enabled</span>
+                          <strong>{skillsWorkshopSummary.enabled}</strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Trusted</span>
+                          <strong>{skillsWorkshopSummary.trusted}</strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Built-in</span>
+                          <strong>{skillsWorkshopSummary.builtIn}</strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>User</span>
+                          <strong>{skillsWorkshopSummary.user}</strong>
+                        </div>
+                      </div>
+
+                      <div className={styles.promptBudgetSection}>
+                        <span className={styles.promptBudgetSectionTitle}>Registered Skills</span>
+                        <div className={styles.promptBudgetLog}>
+                          {visibleAoiSkills.map((skill) => (
+                            <div key={skill.id}>
+                              <strong>{skill.name}</strong>
+                              <span>
+                                {' '}
+                                [{skill.source}
+                                {skill.triggerTerms.length
+                                  ? ` · ${skill.triggerTerms.slice(0, 4).join(', ')}`
+                                  : ''}
+                                ]
+                              </span>
+                              <span> {skill.description}</span>
+                              <div>
+                                <button
+                                  type="button"
+                                  className={skill.enabled ? styles.saveBtn : styles.cancelBtn}
+                                  onClick={() =>
+                                    updateAoiSkillDraft(skill.id, { enabled: !skill.enabled })
+                                  }
+                                >
+                                  {skill.enabled ? 'Enabled' : 'Disabled'}
+                                </button>
+                                <button
+                                  type="button"
+                                  className={skill.trusted ? styles.saveBtn : styles.cancelBtn}
+                                  onClick={() =>
+                                    updateAoiSkillDraft(skill.id, { trusted: !skill.trusted })
+                                  }
+                                  disabled={skill.source === 'built-in'}
+                                >
+                                  {skill.trusted ? 'Trusted' : 'Untrusted'}
+                                </button>
+                                {skill.source === 'user' && (
+                                  <button
+                                    type="button"
+                                    className={styles.cancelBtn}
+                                    onClick={() => deleteAoiSkillDraft(skill.id)}
+                                  >
+                                    Delete
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className={styles.promptBudgetSection}>
+                        <span className={styles.promptBudgetSectionTitle}>Add User Skill</span>
+                        <div className={styles.field}>
+                          <label className={styles.label}>Name</label>
+                          <input
+                            className={styles.fieldInput}
+                            value={newAoiSkillName}
+                            onChange={(event) => setNewAoiSkillName(event.target.value)}
+                            placeholder="Code Review Guard"
+                          />
+                        </div>
+                        <div className={styles.field}>
+                          <label className={styles.label}>Triggers</label>
+                          <input
+                            className={styles.fieldInput}
+                            value={newAoiSkillTriggers}
+                            onChange={(event) => setNewAoiSkillTriggers(event.target.value)}
+                            placeholder="review, 검토, audit"
+                          />
+                        </div>
+                        <div className={styles.field}>
+                          <label className={styles.label}>Instructions</label>
+                          <textarea
+                            className={styles.fieldInput}
+                            value={newAoiSkillBody}
+                            onChange={(event) => setNewAoiSkillBody(event.target.value)}
+                            rows={4}
+                            placeholder="When this skill matches, apply these instructions..."
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          className={styles.saveBtn}
+                          onClick={addAoiSkillDraft}
+                          disabled={!newAoiSkillName.trim() || !newAoiSkillBody.trim()}
+                        >
+                          Add Skill
+                        </button>
                       </div>
                     </div>
-                  )}
-                </div>
-              </div>
-
-              <div className={styles.settingsSectionCard} data-testid="aoi-run-ledger">
-                <div className={styles.settingsSectionTitle}>Aoi Run Ledger</div>
-                <div className={styles.promptBudgetCard}>
-                  <div className={styles.promptBudgetGrid}>
-                    <div className={styles.promptBudgetMetric}>
-                      <span className={styles.promptBudgetLabel}>Runs</span>
-                      <strong>{runLedgerSummary.total}</strong>
-                    </div>
-                    <div className={styles.promptBudgetMetric}>
-                      <span className={styles.promptBudgetLabel}>Running</span>
-                      <strong>{runLedgerSummary.running}</strong>
-                    </div>
-                    <div className={styles.promptBudgetMetric}>
-                      <span className={styles.promptBudgetLabel}>Completed</span>
-                      <strong>{runLedgerSummary.completed}</strong>
-                    </div>
-                    <div className={styles.promptBudgetMetric}>
-                      <span className={styles.promptBudgetLabel}>Failed</span>
-                      <strong>{runLedgerSummary.failed}</strong>
-                    </div>
-                    <div className={styles.promptBudgetMetric}>
-                      <span className={styles.promptBudgetLabel}>Tool calls</span>
-                      <strong>{runLedgerSummary.totalToolCalls}</strong>
-                    </div>
                   </div>
 
-                  {recentRunLedgerEntries.length > 0 ? (
-                    <div className={styles.promptBudgetLog}>
-                      {recentRunLedgerEntries.map((entry) => (
-                        <div key={entry.id}>
-                          <strong>
-                            {entry.status} · {entry.goal.summary}
-                          </strong>
-                          <span>
-                            {' '}
-                            [{entry.modelRoute}
-                            {entry.modelId ? ` ${entry.modelId}` : ''}]
-                          </span>
-                          <span>
-                            {' '}
-                            iter {entry.metrics.iterations} · tools {entry.metrics.toolCallCount} ·{' '}
-                            {new Date(entry.updatedAt).toLocaleTimeString()}
-                          </span>
+                  <div className={styles.settingsSectionCard} data-testid="aoi-mcp-plugin-admin">
+                    <div className={styles.settingsSectionTitle}>MCP / Plugin Admin</div>
+                    <div className={styles.promptBudgetCard}>
+                      <div className={styles.promptBudgetGrid}>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Entries</span>
+                          <strong>{mcpPluginSummary.total}</strong>
                         </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className={styles.modelHint}>
-                      Send a message to record Aoi's current goal, model iterations, tool calls, and
-                      final delivery status.
-                    </p>
-                  )}
-                </div>
-              </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Enabled</span>
+                          <strong>{mcpPluginSummary.enabled}</strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Trusted</span>
+                          <strong>{mcpPluginSummary.trusted}</strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Healthy</span>
+                          <strong>{mcpPluginSummary.healthy}</strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Errors</span>
+                          <strong>{mcpPluginSummary.errors}</strong>
+                        </div>
+                      </div>
 
-              <div className={styles.settingsSectionCard} data-testid="aoi-skills-workshop">
-                <div className={styles.settingsSectionTitle}>Aoi Skills Workshop</div>
-                <div className={styles.promptBudgetCard}>
-                  <div className={styles.promptBudgetGrid}>
-                    <div className={styles.promptBudgetMetric}>
-                      <span className={styles.promptBudgetLabel}>Skills</span>
-                      <strong>{skillsWorkshopSummary.total}</strong>
-                    </div>
-                    <div className={styles.promptBudgetMetric}>
-                      <span className={styles.promptBudgetLabel}>Enabled</span>
-                      <strong>{skillsWorkshopSummary.enabled}</strong>
-                    </div>
-                    <div className={styles.promptBudgetMetric}>
-                      <span className={styles.promptBudgetLabel}>Trusted</span>
-                      <strong>{skillsWorkshopSummary.trusted}</strong>
-                    </div>
-                    <div className={styles.promptBudgetMetric}>
-                      <span className={styles.promptBudgetLabel}>Built-in</span>
-                      <strong>{skillsWorkshopSummary.builtIn}</strong>
-                    </div>
-                    <div className={styles.promptBudgetMetric}>
-                      <span className={styles.promptBudgetLabel}>User</span>
-                      <strong>{skillsWorkshopSummary.user}</strong>
+                      <div className={styles.promptBudgetSection}>
+                        <span className={styles.promptBudgetSectionTitle}>
+                          Registered Integrations
+                        </span>
+                        <div className={styles.promptBudgetLog}>
+                          {visibleMcpPlugins.map((entry) => (
+                            <div key={entry.id}>
+                              <strong>{entry.name}</strong>
+                              <span>
+                                {' '}
+                                [{entry.kind} · {entry.healthStatus}]
+                              </span>
+                              <span> {entry.description}</span>
+                              <span> {entry.endpointUrl || 'no endpoint configured'}</span>
+                              {entry.healthMessage && <span> · {entry.healthMessage}</span>}
+                              <div>
+                                <button
+                                  type="button"
+                                  className={entry.enabled ? styles.saveBtn : styles.cancelBtn}
+                                  onClick={() =>
+                                    updateAoiMcpPluginDraft(entry.id, { enabled: !entry.enabled })
+                                  }
+                                >
+                                  {entry.enabled ? 'Enabled' : 'Disabled'}
+                                </button>
+                                <button
+                                  type="button"
+                                  className={entry.trusted ? styles.saveBtn : styles.cancelBtn}
+                                  onClick={() =>
+                                    updateAoiMcpPluginDraft(entry.id, { trusted: !entry.trusted })
+                                  }
+                                  disabled={isAoiMcpPluginTrustLocked(entry)}
+                                >
+                                  {entry.trusted ? 'Trusted' : 'Untrusted'}
+                                </button>
+                                <button
+                                  type="button"
+                                  className={styles.cancelBtn}
+                                  onClick={() => void checkAoiMcpPluginDraft(entry)}
+                                >
+                                  Check
+                                </button>
+                                {entry.source === 'user' && (
+                                  <button
+                                    type="button"
+                                    className={styles.cancelBtn}
+                                    onClick={() => deleteAoiMcpPluginDraft(entry.id)}
+                                  >
+                                    Delete
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className={styles.promptBudgetSection}>
+                        <span className={styles.promptBudgetSectionTitle}>Add Integration</span>
+                        <div className={styles.field}>
+                          <label className={styles.label}>Name</label>
+                          <input
+                            className={styles.fieldInput}
+                            value={newAoiMcpName}
+                            onChange={(event) => setNewAoiMcpName(event.target.value)}
+                            placeholder="Local MCP Gateway"
+                          />
+                        </div>
+                        <div className={styles.field}>
+                          <label className={styles.label}>Kind</label>
+                          <select
+                            className={styles.select}
+                            value={newAoiMcpKind}
+                            onChange={(event) =>
+                              setNewAoiMcpKind(event.target.value as AoiMcpPluginKind)
+                            }
+                          >
+                            <option value="mcp-server">MCP server</option>
+                            <option value="plugin">Plugin</option>
+                            <option value="connector">Connector</option>
+                          </select>
+                        </div>
+                        <div className={styles.field}>
+                          <label className={styles.label}>Endpoint URL</label>
+                          <input
+                            className={styles.fieldInput}
+                            value={newAoiMcpUrl}
+                            onChange={(event) => setNewAoiMcpUrl(event.target.value)}
+                            placeholder="http://127.0.0.1:7331/mcp"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          className={styles.saveBtn}
+                          onClick={addAoiMcpPluginDraft}
+                          disabled={!newAoiMcpName.trim() || !newAoiMcpUrl.trim()}
+                        >
+                          Add Integration
+                        </button>
+                      </div>
                     </div>
                   </div>
 
-                  <div className={styles.promptBudgetSection}>
-                    <span className={styles.promptBudgetSectionTitle}>Registered Skills</span>
-                    <div className={styles.promptBudgetLog}>
-                      {visibleAoiSkills.map((skill) => (
-                        <div key={skill.id}>
-                          <strong>{skill.name}</strong>
-                          <span>
-                            {' '}
-                            [{skill.source}
-                            {skill.triggerTerms.length
-                              ? ` · ${skill.triggerTerms.slice(0, 4).join(', ')}`
-                              : ''}
-                            ]
-                          </span>
-                          <span> {skill.description}</span>
-                          <div>
+                  <div className={styles.settingsSectionCard} data-testid="tool-inspector">
+                    <div className={styles.settingsSectionTitle}>Tool Inspector</div>
+                    <div className={styles.promptBudgetCard}>
+                      <div className={styles.promptBudgetSection}>
+                        <span className={styles.promptBudgetSectionTitle}>Safety Policy</span>
+                        <div className={styles.promptBudgetGrid}>
+                          <div className={styles.promptBudgetMetric}>
+                            <span className={styles.promptBudgetLabel}>Auto verify fixes</span>
                             <button
                               type="button"
-                              className={skill.enabled ? styles.saveBtn : styles.cancelBtn}
-                              onClick={() =>
-                                updateAoiSkillDraft(skill.id, { enabled: !skill.enabled })
-                              }
+                              className={autoVerifyFixes ? styles.saveBtn : styles.cancelBtn}
+                              onClick={() => setAutoVerifyFixes((prev) => !prev)}
                             >
-                              {skill.enabled ? 'Enabled' : 'Disabled'}
+                              {autoVerifyFixes ? 'On' : 'Off'}
                             </button>
-                            <button
-                              type="button"
-                              className={skill.trusted ? styles.saveBtn : styles.cancelBtn}
-                              onClick={() =>
-                                updateAoiSkillDraft(skill.id, { trusted: !skill.trusted })
-                              }
-                              disabled={skill.source === 'built-in'}
-                            >
-                              {skill.trusted ? 'Trusted' : 'Untrusted'}
-                            </button>
-                            {skill.source === 'user' && (
-                              <button
-                                type="button"
-                                className={styles.cancelBtn}
-                                onClick={() => deleteAoiSkillDraft(skill.id)}
-                              >
-                                Delete
-                              </button>
-                            )}
                           </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className={styles.promptBudgetSection}>
-                    <span className={styles.promptBudgetSectionTitle}>Add User Skill</span>
-                    <div className={styles.field}>
-                      <label className={styles.label}>Name</label>
-                      <input
-                        className={styles.fieldInput}
-                        value={newAoiSkillName}
-                        onChange={(event) => setNewAoiSkillName(event.target.value)}
-                        placeholder="Code Review Guard"
-                      />
-                    </div>
-                    <div className={styles.field}>
-                      <label className={styles.label}>Triggers</label>
-                      <input
-                        className={styles.fieldInput}
-                        value={newAoiSkillTriggers}
-                        onChange={(event) => setNewAoiSkillTriggers(event.target.value)}
-                        placeholder="review, 검토, audit"
-                      />
-                    </div>
-                    <div className={styles.field}>
-                      <label className={styles.label}>Instructions</label>
-                      <textarea
-                        className={styles.fieldInput}
-                        value={newAoiSkillBody}
-                        onChange={(event) => setNewAoiSkillBody(event.target.value)}
-                        rows={4}
-                        placeholder="When this skill matches, apply these instructions..."
-                      />
-                    </div>
-                    <button
-                      type="button"
-                      className={styles.saveBtn}
-                      onClick={addAoiSkillDraft}
-                      disabled={!newAoiSkillName.trim() || !newAoiSkillBody.trim()}
-                    >
-                      Add Skill
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              <div className={styles.settingsSectionCard} data-testid="aoi-mcp-plugin-admin">
-                <div className={styles.settingsSectionTitle}>MCP / Plugin Admin</div>
-                <div className={styles.promptBudgetCard}>
-                  <div className={styles.promptBudgetGrid}>
-                    <div className={styles.promptBudgetMetric}>
-                      <span className={styles.promptBudgetLabel}>Entries</span>
-                      <strong>{mcpPluginSummary.total}</strong>
-                    </div>
-                    <div className={styles.promptBudgetMetric}>
-                      <span className={styles.promptBudgetLabel}>Enabled</span>
-                      <strong>{mcpPluginSummary.enabled}</strong>
-                    </div>
-                    <div className={styles.promptBudgetMetric}>
-                      <span className={styles.promptBudgetLabel}>Trusted</span>
-                      <strong>{mcpPluginSummary.trusted}</strong>
-                    </div>
-                    <div className={styles.promptBudgetMetric}>
-                      <span className={styles.promptBudgetLabel}>Healthy</span>
-                      <strong>{mcpPluginSummary.healthy}</strong>
-                    </div>
-                    <div className={styles.promptBudgetMetric}>
-                      <span className={styles.promptBudgetLabel}>Errors</span>
-                      <strong>{mcpPluginSummary.errors}</strong>
-                    </div>
-                  </div>
-
-                  <div className={styles.promptBudgetSection}>
-                    <span className={styles.promptBudgetSectionTitle}>Registered Integrations</span>
-                    <div className={styles.promptBudgetLog}>
-                      {visibleMcpPlugins.map((entry) => (
-                        <div key={entry.id}>
-                          <strong>{entry.name}</strong>
-                          <span>
-                            {' '}
-                            [{entry.kind} · {entry.healthStatus}]
-                          </span>
-                          <span> {entry.description}</span>
-                          <span> {entry.endpointUrl || 'no endpoint configured'}</span>
-                          {entry.healthMessage && <span> · {entry.healthMessage}</span>}
-                          <div>
+                          <div className={styles.promptBudgetMetric}>
+                            <span className={styles.promptBudgetLabel}>Workspace commands</span>
                             <button
                               type="button"
-                              className={entry.enabled ? styles.saveBtn : styles.cancelBtn}
-                              onClick={() =>
-                                updateAoiMcpPluginDraft(entry.id, { enabled: !entry.enabled })
-                              }
+                              className={allowWorkspaceCommands ? styles.saveBtn : styles.cancelBtn}
+                              onClick={() => setAllowWorkspaceCommands((prev) => !prev)}
                             >
-                              {entry.enabled ? 'Enabled' : 'Disabled'}
+                              {allowWorkspaceCommands ? 'On' : 'Off'}
                             </button>
-                            <button
-                              type="button"
-                              className={entry.trusted ? styles.saveBtn : styles.cancelBtn}
-                              onClick={() =>
-                                updateAoiMcpPluginDraft(entry.id, { trusted: !entry.trusted })
-                              }
-                              disabled={isAoiMcpPluginTrustLocked(entry)}
-                            >
-                              {entry.trusted ? 'Trusted' : 'Untrusted'}
-                            </button>
-                            <button
-                              type="button"
-                              className={styles.cancelBtn}
-                              onClick={() => void checkAoiMcpPluginDraft(entry)}
-                            >
-                              Check
-                            </button>
-                            {entry.source === 'user' && (
-                              <button
-                                type="button"
-                                className={styles.cancelBtn}
-                                onClick={() => deleteAoiMcpPluginDraft(entry.id)}
-                              >
-                                Delete
-                              </button>
-                            )}
                           </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className={styles.promptBudgetSection}>
-                    <span className={styles.promptBudgetSectionTitle}>Add Integration</span>
-                    <div className={styles.field}>
-                      <label className={styles.label}>Name</label>
-                      <input
-                        className={styles.fieldInput}
-                        value={newAoiMcpName}
-                        onChange={(event) => setNewAoiMcpName(event.target.value)}
-                        placeholder="Local MCP Gateway"
-                      />
-                    </div>
-                    <div className={styles.field}>
-                      <label className={styles.label}>Kind</label>
-                      <select
-                        className={styles.select}
-                        value={newAoiMcpKind}
-                        onChange={(event) =>
-                          setNewAoiMcpKind(event.target.value as AoiMcpPluginKind)
-                        }
-                      >
-                        <option value="mcp-server">MCP server</option>
-                        <option value="plugin">Plugin</option>
-                        <option value="connector">Connector</option>
-                      </select>
-                    </div>
-                    <div className={styles.field}>
-                      <label className={styles.label}>Endpoint URL</label>
-                      <input
-                        className={styles.fieldInput}
-                        value={newAoiMcpUrl}
-                        onChange={(event) => setNewAoiMcpUrl(event.target.value)}
-                        placeholder="http://127.0.0.1:7331/mcp"
-                      />
-                    </div>
-                    <button
-                      type="button"
-                      className={styles.saveBtn}
-                      onClick={addAoiMcpPluginDraft}
-                      disabled={!newAoiMcpName.trim() || !newAoiMcpUrl.trim()}
-                    >
-                      Add Integration
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              <div className={styles.settingsSectionCard} data-testid="tool-inspector">
-                <div className={styles.settingsSectionTitle}>Tool Inspector</div>
-                <div className={styles.promptBudgetCard}>
-                  <div className={styles.promptBudgetSection}>
-                    <span className={styles.promptBudgetSectionTitle}>Safety Policy</span>
-                    <div className={styles.promptBudgetGrid}>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Auto verify fixes</span>
-                        <button
-                          type="button"
-                          className={autoVerifyFixes ? styles.saveBtn : styles.cancelBtn}
-                          onClick={() => setAutoVerifyFixes((prev) => !prev)}
-                        >
-                          {autoVerifyFixes ? 'On' : 'Off'}
-                        </button>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Workspace commands</span>
-                        <button
-                          type="button"
-                          className={allowWorkspaceCommands ? styles.saveBtn : styles.cancelBtn}
-                          onClick={() => setAllowWorkspaceCommands((prev) => !prev)}
-                        >
-                          {allowWorkspaceCommands ? 'On' : 'Off'}
-                        </button>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Semantic refactors</span>
-                        <button
-                          type="button"
-                          className={allowSemanticRefactors ? styles.saveBtn : styles.cancelBtn}
-                          onClick={() => setAllowSemanticRefactors((prev) => !prev)}
-                        >
-                          {allowSemanticRefactors ? 'On' : 'Off'}
-                        </button>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Background watches</span>
-                        <button
-                          type="button"
-                          className={allowBackgroundWatches ? styles.saveBtn : styles.cancelBtn}
-                          onClick={() => setAllowBackgroundWatches((prev) => !prev)}
-                        >
-                          {allowBackgroundWatches ? 'On' : 'Off'}
-                        </button>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Preview before mutation</span>
-                        <button
-                          type="button"
-                          className={
-                            requirePreviewBeforeMutation ? styles.saveBtn : styles.cancelBtn
-                          }
-                          onClick={() => setRequirePreviewBeforeMutation((prev) => !prev)}
-                        >
-                          {requirePreviewBeforeMutation ? 'On' : 'Off'}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className={styles.promptBudgetSection}>
-                    <span className={styles.promptBudgetSectionTitle}>Capability Registry</span>
-                    <div className={styles.promptBudgetGrid}>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Registered</span>
-                        <strong>
-                          {capabilitySummary.registered} / {capabilitySummary.total}
-                        </strong>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>High risk</span>
-                        <strong>{capabilitySummary.byRisk.high}</strong>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Write / execute</span>
-                        <strong>{capabilitySummary.writeOrExecute}</strong>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Network / external</span>
-                        <strong>{capabilitySummary.external}</strong>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Parallel safe</span>
-                        <strong>{capabilitySummary.parallelSafe}</strong>
-                      </div>
-                      <div className={styles.promptBudgetMetric}>
-                        <span className={styles.promptBudgetLabel}>Cacheable</span>
-                        <strong>{capabilitySummary.cacheable}</strong>
-                      </div>
-                    </div>
-
-                    <ul className={styles.promptBudgetList}>
-                      {capabilitySummary.bySurface.map((item) => (
-                        <li key={item.surface}>
-                          <span>{item.surface}</span>
-                          <strong>{item.count}</strong>
-                        </li>
-                      ))}
-                    </ul>
-
-                    {capabilityRows.length > 0 ? (
-                      <div className={styles.promptBudgetLog}>
-                        {capabilityRows.map((row) => (
-                          <div key={row.name}>
-                            <strong>{row.name}</strong>
-                            <span>
-                              {' '}
-                              [{row.surface} / {row.risk}]
+                          <div className={styles.promptBudgetMetric}>
+                            <span className={styles.promptBudgetLabel}>Semantic refactors</span>
+                            <button
+                              type="button"
+                              className={allowSemanticRefactors ? styles.saveBtn : styles.cancelBtn}
+                              onClick={() => setAllowSemanticRefactors((prev) => !prev)}
+                            >
+                              {allowSemanticRefactors ? 'On' : 'Off'}
+                            </button>
+                          </div>
+                          <div className={styles.promptBudgetMetric}>
+                            <span className={styles.promptBudgetLabel}>Background watches</span>
+                            <button
+                              type="button"
+                              className={allowBackgroundWatches ? styles.saveBtn : styles.cancelBtn}
+                              onClick={() => setAllowBackgroundWatches((prev) => !prev)}
+                            >
+                              {allowBackgroundWatches ? 'On' : 'Off'}
+                            </button>
+                          </div>
+                          <div className={styles.promptBudgetMetric}>
+                            <span className={styles.promptBudgetLabel}>
+                              Preview before mutation
                             </span>
-                            <span> {row.description}</span>
+                            <button
+                              type="button"
+                              className={
+                                requirePreviewBeforeMutation ? styles.saveBtn : styles.cancelBtn
+                              }
+                              onClick={() => setRequirePreviewBeforeMutation((prev) => !prev)}
+                            >
+                              {requirePreviewBeforeMutation ? 'On' : 'Off'}
+                            </button>
                           </div>
-                        ))}
+                        </div>
                       </div>
-                    ) : (
-                      <p className={styles.modelHint}>
-                        Every exposed capability is registered with a risk and surface label.
-                      </p>
-                    )}
-                  </div>
 
-                  <div className={styles.promptBudgetSection}>
-                    <span className={styles.promptBudgetSectionTitle}>Recent Tool Activity</span>
-                    {recentToolActivity.length > 0 ? (
-                      <div className={styles.promptBudgetLog} data-testid="recent-tool-activity">
-                        {recentToolActivity.map((item, index) => (
-                          <div key={`${item}-${index}`}>{item}</div>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className={styles.modelHint}>No tool activity has been recorded yet.</p>
-                    )}
-                  </div>
-
-                  <div className={styles.promptBudgetSection}>
-                    <span className={styles.promptBudgetSectionTitle}>Recent Mutations</span>
-                    {recentMutations.length > 0 ? (
-                      <ul className={styles.promptBudgetList}>
-                        {recentMutations.map((mutation) => (
-                          <li key={mutation.id}>
-                            <span>{mutation.tool_name}</span>
-                            <strong>{mutation.file_path}</strong>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className={styles.modelHint}>
-                        No reversible file mutations in this session yet.
-                      </p>
-                    )}
-                  </div>
-
-                  <div className={styles.promptBudgetSection}>
-                    <span className={styles.promptBudgetSectionTitle}>
-                      Active Background Watches
-                    </span>
-                    {activeBackgroundWatches.length > 0 ? (
-                      <ul className={styles.promptBudgetList}>
-                        {activeBackgroundWatches.map((watch) => (
-                          <li key={watch.id}>
-                            <span>{watch.label}</span>
+                      <div className={styles.promptBudgetSection}>
+                        <span className={styles.promptBudgetSectionTitle}>Capability Registry</span>
+                        <div className={styles.promptBudgetGrid}>
+                          <div className={styles.promptBudgetMetric}>
+                            <span className={styles.promptBudgetLabel}>Registered</span>
                             <strong>
-                              {watch.scope}:{watch.directory}
+                              {capabilitySummary.registered} / {capabilitySummary.total}
                             </strong>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className={styles.modelHint}>No background watches are active.</p>
-                    )}
+                          </div>
+                          <div className={styles.promptBudgetMetric}>
+                            <span className={styles.promptBudgetLabel}>High risk</span>
+                            <strong>{capabilitySummary.byRisk.high}</strong>
+                          </div>
+                          <div className={styles.promptBudgetMetric}>
+                            <span className={styles.promptBudgetLabel}>Write / execute</span>
+                            <strong>{capabilitySummary.writeOrExecute}</strong>
+                          </div>
+                          <div className={styles.promptBudgetMetric}>
+                            <span className={styles.promptBudgetLabel}>Network / external</span>
+                            <strong>{capabilitySummary.external}</strong>
+                          </div>
+                          <div className={styles.promptBudgetMetric}>
+                            <span className={styles.promptBudgetLabel}>Parallel safe</span>
+                            <strong>{capabilitySummary.parallelSafe}</strong>
+                          </div>
+                          <div className={styles.promptBudgetMetric}>
+                            <span className={styles.promptBudgetLabel}>Cacheable</span>
+                            <strong>{capabilitySummary.cacheable}</strong>
+                          </div>
+                        </div>
+
+                        <ul className={styles.promptBudgetList}>
+                          {capabilitySummary.bySurface.map((item) => (
+                            <li key={item.surface}>
+                              <span>{item.surface}</span>
+                              <strong>{item.count}</strong>
+                            </li>
+                          ))}
+                        </ul>
+
+                        {capabilityRows.length > 0 ? (
+                          <div className={styles.promptBudgetLog}>
+                            {capabilityRows.map((row) => (
+                              <div key={row.name}>
+                                <strong>{row.name}</strong>
+                                <span>
+                                  {' '}
+                                  [{row.surface} / {row.risk}]
+                                </span>
+                                <span> {row.description}</span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className={styles.modelHint}>
+                            Every exposed capability is registered with a risk and surface label.
+                          </p>
+                        )}
+                      </div>
+
+                      <div className={styles.promptBudgetSection}>
+                        <span className={styles.promptBudgetSectionTitle}>
+                          Recent Tool Activity
+                        </span>
+                        {recentToolActivity.length > 0 ? (
+                          <div
+                            className={styles.promptBudgetLog}
+                            data-testid="recent-tool-activity"
+                          >
+                            {recentToolActivity.map((item, index) => (
+                              <div key={`${item}-${index}`}>{item}</div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className={styles.modelHint}>
+                            No tool activity has been recorded yet.
+                          </p>
+                        )}
+                      </div>
+
+                      <div className={styles.promptBudgetSection}>
+                        <span className={styles.promptBudgetSectionTitle}>Recent Mutations</span>
+                        {recentMutations.length > 0 ? (
+                          <ul className={styles.promptBudgetList}>
+                            {recentMutations.map((mutation) => (
+                              <li key={mutation.id}>
+                                <span>{mutation.tool_name}</span>
+                                <strong>{mutation.file_path}</strong>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className={styles.modelHint}>
+                            No reversible file mutations in this session yet.
+                          </p>
+                        )}
+                      </div>
+
+                      <div className={styles.promptBudgetSection}>
+                        <span className={styles.promptBudgetSectionTitle}>
+                          Active Background Watches
+                        </span>
+                        {activeBackgroundWatches.length > 0 ? (
+                          <ul className={styles.promptBudgetList}>
+                            {activeBackgroundWatches.map((watch) => (
+                              <li key={watch.id}>
+                                <span>{watch.label}</span>
+                                <strong>
+                                  {watch.scope}:{watch.directory}
+                                </strong>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className={styles.modelHint}>No background watches are active.</p>
+                        )}
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
+                </>
+              )}
             </div>
           )}
         </div>
