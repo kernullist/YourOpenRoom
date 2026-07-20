@@ -77,6 +77,14 @@ do
         $doDaemon = $Daemon -or $buildAll
         $doCapture = ($Capture -or $buildAll) -and (-not $SkipCapture)
 
+        # Same PATH trap as Start-App: editor-bundled Node 6 breaks Vite/pnpm.
+        if ($doClient -or $doDaemon -or $Install)
+        {
+            $nodePath = & (Join-Path $repoRoot "Resolve-OpenRoomNode.ps1")
+            $nodeVersion = (& $nodePath -v 2>$null)
+            Write-Step ("Node: {0} ({1})" -f $nodeVersion, $nodePath)
+        }
+
         $pnpm = Get-Command pnpm -ErrorAction SilentlyContinue
         if (($doClient -or $doDaemon -or $Install) -and $null -eq $pnpm)
         {

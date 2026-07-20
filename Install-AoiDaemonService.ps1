@@ -59,6 +59,10 @@ if ($Uninstall)
     return
 }
 
+# Prefer a modern Node before pnpm/daemon:build (PATH may hit Brackets Node 6).
+$nodePath = & (Join-Path $RepoRoot "Resolve-OpenRoomNode.ps1")
+Write-Step ("Node: {0} ({1})" -f (& $nodePath -v 2>$null), $nodePath)
+
 # Resolve pnpm so the task command is self-contained (Scheduled Tasks do not get
 # the interactive PATH).
 $pnpm = (Get-Command pnpm -ErrorAction SilentlyContinue)

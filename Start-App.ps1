@@ -710,6 +710,12 @@ do
             throw "apps\webuiapps\package.json was not found."
         }
 
+        # Vite is ESM-only. A stale PATH entry (e.g. Brackets Node 6) makes
+        # `pnpm dev` fail with: SyntaxError: Unexpected token import.
+        $nodePath = & (Join-Path $repoRoot "Resolve-OpenRoomNode.ps1")
+        $nodeVersion = (& $nodePath -v 2>$null)
+        Write-Step ("Node: {0} ({1})" -f $nodeVersion, $nodePath)
+
         $pnpmCommand = Get-Command pnpm -ErrorAction SilentlyContinue
         if ($null -eq $pnpmCommand)
         {
