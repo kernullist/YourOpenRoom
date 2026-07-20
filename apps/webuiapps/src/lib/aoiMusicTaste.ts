@@ -1,11 +1,10 @@
-// Aoi music taste learning: in-app YouTube searches + explicit taste polls.
+// Aoi music taste learning: in-app YouTube searches, playback, and taste polls.
 //
-// Two signals feed the idle-music recommendation beyond mood accept/skip:
-// 1. Queries the user typed into the YouTube app themselves (strong interest
-//    signal; agent-triggered searches are filtered out by the caller).
-// 2. Answers to occasional multiple-choice taste questions Aoi asks in chat.
-// Both live in one versioned localStorage store. Everything except the two
-// storage helpers is pure and deterministic for unit testing.
+// Signals that feed recommendations (idle cards + chat):
+// 1. Queries the user typed into the YouTube app (strong interest).
+// 2. Titles the user actually played (PLAY_VIDEO), agent plays excluded by caller.
+// 3. Answers to occasional multiple-choice taste questions.
+// Everything except the storage helpers is pure and deterministic for unit tests.
 
 import type { AoiMusicMood } from './aoiMusicRecommendation';
 
@@ -17,6 +16,8 @@ export interface AoiMusicTasteState {
   answers: Record<string, string>;
   // User-typed YouTube searches, newest first, deduped, capped.
   recentSearches: string[];
+  // User-initiated plays (title [+ channel]), newest first, deduped, capped.
+  recentPlays: string[];
   // When a taste poll was last shown (answered or not), for the cooldown.
   lastAskedAt: number;
 }
@@ -27,16 +28,19 @@ export const DEFAULT_AOI_MUSIC_TASTE_STATE: AoiMusicTasteState = {
   version: AOI_MUSIC_TASTE_STATE_VERSION,
   answers: {},
   recentSearches: [],
+  recentPlays: [],
   lastAskedAt: 0,
 };
 
 const MAX_TASTE_SEARCHES = 12;
+const MAX_TASTE_PLAYS = 16;
 const MAX_SEARCH_QUERY_LENGTH = 80;
+const MAX_PLAY_LABEL_LENGTH = 100;
 // Ask at most one taste question per day, and only while questions remain.
 export const TASTE_POLL_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 export const TASTE_POLL_MIN_IDLE_MS = 3 * 60 * 1000;
 
-// --- YouTube search capture ---------------------------------------------------
+// --- YouTube search / play capture --------------------------------------------
 
 // Normalize a user-typed search into a learnable query, or null when it is not
 // worth remembering (blank, URL paste, symbol-only, unreasonably long).
@@ -54,6 +58,25 @@ export function sanitizeTasteSearchQuery(raw: string): string | null {
   return collapsed;
 }
 
+function sanitizePlayLabel(raw: string): string | null {
+  const collapsed = raw.trim().replace(/\s+/g, ' ');
+  if (!collapsed || collapsed.length > MAX_PLAY_LABEL_LENGTH) {
+    return null;
+  }
+  if (/^https?:\/\//i.test(collapsed)) {
+    return null;
+  }
+  if (!/[\p{L}\p{N}]/u.test(collapsed)) {
+    return null;
+  }
+  return collapsed;
+}
+
+function prependUnique(list: string[], item: string, max: number): string[] {
+  const lower = item.toLowerCase();
+  return [item, ...list.filter((entry) => entry.toLowerCase() !== lower)].slice(0, max);
+}
+
 // Record a user-initiated YouTube search (newest first, case-insensitive
 // dedupe, capped). Returns a new state; never mutates the input.
 export function recordYouTubeSearch(
@@ -65,13 +88,35 @@ export function recordYouTubeSearch(
   if (!query) {
     return base;
   }
-  const lower = query.toLowerCase();
   return {
     ...base,
-    recentSearches: [
-      query,
-      ...base.recentSearches.filter((item) => item.toLowerCase() !== lower),
-    ].slice(0, MAX_TASTE_SEARCHES),
+    recentSearches: prependUnique(base.recentSearches, query, MAX_TASTE_SEARCHES),
+  };
+}
+
+// Record a user-initiated play. Prefer "title - channel" when both exist so
+// recommender personal queries stay searchable on YouTube.
+export function recordYouTubePlay(
+  state: AoiMusicTasteState | null | undefined,
+  params: { title?: string; channel?: string; query?: string },
+): AoiMusicTasteState {
+  const base = normalizeTasteState(state);
+  const title = sanitizePlayLabel(params.title ?? '');
+  const channel = sanitizePlayLabel(params.channel ?? '');
+  const explicit = sanitizeTasteSearchQuery(params.query ?? '');
+  let label: string | null = explicit;
+  if (!label && title && channel && !title.toLowerCase().includes(channel.toLowerCase())) {
+    label = sanitizePlayLabel(`${title} - ${channel}`);
+  }
+  if (!label) {
+    label = title;
+  }
+  if (!label) {
+    return base;
+  }
+  return {
+    ...base,
+    recentPlays: prependUnique(base.recentPlays, label, MAX_TASTE_PLAYS),
   };
 }
 
@@ -329,15 +374,21 @@ export function recordTasteAnswer(
 export interface AoiTasteProfile {
   // Additive mood score from poll answers, fed into chooseAoiMusicMood.
   moodBias: Partial<Record<AoiMusicMood, number>>;
-  // Personal query candidates: poll seeds first (stable), then the user's own
-  // recent searches (newest first). Deduped case-insensitively.
+  // Personal query candidates, strongest first:
+  // recent user searches -> recent plays -> poll seed queries.
   personalQueries: string[];
+  // Human-readable answered poll choices (English labels for the model prompt).
+  pollChoices: string[];
+  recentSearches: string[];
+  recentPlays: string[];
+  hasTasteSignal: boolean;
 }
 
 export function deriveTasteProfile(state: AoiMusicTasteState | null | undefined): AoiTasteProfile {
   const base = normalizeTasteState(state);
   const moodBias: Partial<Record<AoiMusicMood, number>> = {};
   const personalQueries: string[] = [];
+  const pollChoices: string[] = [];
   const seen = new Set<string>();
 
   const push = (query: string) => {
@@ -348,12 +399,21 @@ export function deriveTasteProfile(state: AoiMusicTasteState | null | undefined)
     }
   };
 
+  // User evidence first (real behavior), poll seeds last (weak priors).
+  for (const search of base.recentSearches) {
+    push(search);
+  }
+  for (const play of base.recentPlays) {
+    push(play);
+  }
+
   for (const question of TASTE_POLL_QUESTIONS) {
     const optionId = base.answers[question.id];
     const option = question.options.find((item) => item.id === optionId);
     if (!option) {
       continue;
     }
+    pollChoices.push(option.labels.en);
     for (const [mood, bias] of Object.entries(option.moodBias ?? {})) {
       const key = mood as AoiMusicMood;
       moodBias[key] = (moodBias[key] ?? 0) + (bias ?? 0);
@@ -362,22 +422,265 @@ export function deriveTasteProfile(state: AoiMusicTasteState | null | undefined)
       push(seed);
     }
   }
-  for (const search of base.recentSearches) {
-    push(search);
+
+  return {
+    moodBias,
+    personalQueries,
+    pollChoices,
+    recentSearches: [...base.recentSearches],
+    recentPlays: [...base.recentPlays],
+    hasTasteSignal:
+      base.recentSearches.length > 0 ||
+      base.recentPlays.length > 0 ||
+      Object.keys(base.answers).length > 0,
+  };
+}
+
+// Prompt block for the chat LLM so free-form music talk still honors taste.
+export function buildAoiMusicTastePromptBlock(
+  state: AoiMusicTasteState | null | undefined,
+  options: { maxQueries?: number } = {},
+): string {
+  const profile = deriveTasteProfile(state);
+  if (!profile.hasTasteSignal) {
+    return [
+      '',
+      'Music taste (learned):',
+      '- No durable music taste is stored yet.',
+      '- When the user asks for a song recommendation, prefer asking a short preference question or suggesting a neutral focus/chill mix.',
+      '- Do not invent a personal taste profile.',
+      '- Prefer the runtime music recommender path when available; never invent unrelated viral hits.',
+    ].join('\n');
   }
 
-  return { moodBias, personalQueries };
+  const maxQueries = Math.max(1, Math.min(options.maxQueries ?? 8, 12));
+  const queries = profile.personalQueries.slice(0, maxQueries);
+  const lines = [
+    '',
+    'Music taste (learned — must follow for music recommendations):',
+    '- When the user asks for a song, playlist, or "something to play", recommend from this profile first.',
+    '- Prefer personal queries / plays below over generic global hits.',
+    '- Stay in the same language/genre lane as the personal evidence (e.g. Korean titles stay Korean-leaning).',
+    '- If you recommend, name one concrete YouTube search query the app can open.',
+    '- Do not recommend unrelated pop hits, random Western chart songs, or genres that contradict this profile.',
+  ];
+
+  if (profile.pollChoices.length > 0) {
+    lines.push(`- Poll answers: ${profile.pollChoices.join('; ')}`);
+  }
+  if (profile.recentSearches.length > 0) {
+    lines.push(
+      `- Recent user YouTube searches (newest first): ${profile.recentSearches
+        .slice(0, maxQueries)
+        .map((item) => JSON.stringify(item))
+        .join(', ')}`,
+    );
+  }
+  if (profile.recentPlays.length > 0) {
+    lines.push(
+      `- Recent user plays (newest first): ${profile.recentPlays
+        .slice(0, maxQueries)
+        .map((item) => JSON.stringify(item))
+        .join(', ')}`,
+    );
+  }
+  if (queries.length > 0) {
+    lines.push(
+      `- Preferred recommendation candidates: ${queries
+        .map((item) => JSON.stringify(item))
+        .join(', ')}`,
+    );
+  }
+  const moodBits = Object.entries(profile.moodBias)
+    .filter(([, score]) => typeof score === 'number' && score !== 0)
+    .map(([mood, score]) => `${mood}:${score}`);
+  if (moodBits.length > 0) {
+    lines.push(`- Mood bias scores: ${moodBits.join(', ')}`);
+  }
+  return lines.join('\n');
+}
+
+// Generic "recommend / play something" chat intents that should use the taste
+// recommender instead of free-form LLM guesses. Specific titles ("IVE 틀어줘")
+// are handled by parseDirectMusicIntent and must not match here.
+export type AoiMusicTasteChatIntent = { kind: 'recommend'; autoplay: boolean } | { kind: 'none' };
+
+export function parseAoiMusicTasteChatIntent(text: string): AoiMusicTasteChatIntent {
+  const trimmed = text.trim();
+  if (!trimmed || trimmed.length > 120) {
+    return { kind: 'none' };
+  }
+
+  // Explicit title playback is handled elsewhere.
+  if (
+    /^(?:play|listen to|put on)\s+.+/i.test(trimmed) &&
+    !/^(?:play|listen to|put on)\s+(?:something|anything|music|a song|some music)\b/i.test(trimmed)
+  ) {
+    return { kind: 'none' };
+  }
+  if (
+    /^.+\s*(?:듣자|들어보자|틀어줘|재생해줘|재생해|들려줘|틀어|재생하자|재생)$/u.test(trimmed) &&
+    !/^(?:아무거나|랜덤|아무 노래|아무 음악|음악|노래|곡)\s*(?:듣자|들어보자|틀어줘|재생해줘|재생해|들려줘|틀어|재생하자|재생)?$/u.test(
+      trimmed,
+    )
+  ) {
+    // Has a non-generic title prefix -> not a pure taste recommend intent.
+    if (
+      !/^(?:노래|음악|곡|music|song|track)?\s*(?:추천|recommend)/i.test(trimmed) &&
+      !/^(?:뭐|무엇|무슨)\s*(?:듣지|들을까|들을게|들을래|들어|들어야)/u.test(trimmed)
+    ) {
+      return { kind: 'none' };
+    }
+  }
+
+  const recommendOnly = [
+    /^(?:노래|음악|곡)?\s*추천(?:해|해줘|해 줘| 좀|좀)?(?:\s*봐)?$/u,
+    /^(?:추천|추천해|추천해줘|추천 좀)\s*(?:노래|음악|곡)?$/u,
+    /^(?:뭐|무엇|무슨)\s*(?:듣지|들을까|들을게|들을래|들어|들어야\s*할까)\??$/u,
+    /^(?:오늘|지금)?\s*(?:뭐\s*)?(?:듣지|들을까)\??$/u,
+    /^(?:recommend|suggest)\s*(?:a\s*)?(?:song|track|music|playlist)?\s*(?:please)?[.!?]?$/i,
+    /^(?:any|some)\s+(?:song|music|playlist)\s+recommendations?[.!?]?$/i,
+    /^(?:what\s+should\s+i\s+listen\s+to)[.!?]?$/i,
+    /^(?:음악|노래)\s*추천\s*(?:해\s*)?(?:줄래|해줄래|해봐|해 봐)?$/u,
+  ];
+  for (const pattern of recommendOnly) {
+    if (pattern.test(trimmed)) {
+      return { kind: 'recommend', autoplay: false };
+    }
+  }
+
+  const recommendAndPlay = [
+    /^(?:아무거나|랜덤|아무 노래|아무 음악)\s*(?:틀어줘|재생해줘|재생해|들려줘|틀어|재생)?$/u,
+    /^(?:음악|노래|곡)\s*(?:틀어줘|재생해줘|재생해|들려줘|틀어)$/u,
+    /^(?:틀어줘|재생해줘|들려줘)$/u,
+    /^(?:play|put on)\s+(?:something|anything|music|a song|some music)\s*(?:please)?[.!?]?$/i,
+    /^(?:just\s+)?(?:play|put on)\s+something\s*(?:for me)?[.!?]?$/i,
+    /^(?:네가|니가|너가)\s*골라(?:\s*줘)?$/u,
+    /^(?:추천대로|네 추천으로)\s*(?:틀어줘|재생|가자|해줘)?$/u,
+    /^(?:you\s+pick|pick\s+(?:one|something)|surprise\s+me)[.!?]?$/i,
+  ];
+  for (const pattern of recommendAndPlay) {
+    if (pattern.test(trimmed)) {
+      return { kind: 'recommend', autoplay: true };
+    }
+  }
+
+  return { kind: 'none' };
+}
+
+// Localized reply for a taste-backed chat recommendation.
+export function buildAoiMusicTasteRecommendCopy(input: {
+  query: string;
+  source: 'personal' | 'pool';
+  lang: AoiTasteLang;
+  autoplay: boolean;
+}): { text: string; playPrompt: string; dismissPrompt: string } {
+  const chips = {
+    ko: { play: '재생', dismiss: '다른 거' },
+    ja: { play: '再生', dismiss: '別の曲' },
+    zh: { play: '播放', dismiss: '换一首' },
+    en: { play: 'Play', dismiss: 'Another' },
+  }[input.lang];
+  const personal =
+    input.source === 'personal'
+      ? {
+          ko: '네 검색·재생 취향을 반영해서',
+          ja: 'あなたの検索・再生の好みから',
+          zh: '根据你的搜索和播放偏好',
+          en: 'From your searches and plays',
+        }[input.lang]
+      : {
+          ko: '지금 분위기 기준으로',
+          ja: '今の雰囲気で',
+          zh: '按现在的氛围',
+          en: 'For the current mood',
+        }[input.lang];
+
+  if (input.autoplay) {
+    const text = {
+      ko: `${personal} "${input.query}" 틀어줄게.\nYouTube 검색어: \`${input.query}\``,
+      ja: `${personal}「${input.query}」をかけるね。\nYouTube 検索語: \`${input.query}\``,
+      zh: `${personal}，我放 “${input.query}”。\nYouTube 搜索词: \`${input.query}\``,
+      en: `${personal}, playing "${input.query}".\nYouTube search query: \`${input.query}\``,
+    }[input.lang];
+    return {
+      text,
+      playPrompt: `▶ ${chips.play}`,
+      dismissPrompt: chips.dismiss,
+    };
+  }
+
+  const text = {
+    ko: `${personal} 이 곡/믹스 어때?\n🎵 추천: "${input.query}"\nYouTube 검색어: \`${input.query}\`\n재생 누르면 바로 틀어줄게.`,
+    ja: `${personal}これどう?\n🎵 おすすめ: "${input.query}"\nYouTube 検索語: \`${input.query}\`\n再生を押せばすぐ流すよ。`,
+    zh: `${personal}，这首/这个混音怎么样?\n🎵 推荐: "${input.query}"\nYouTube 搜索词: \`${input.query}\`\n点播放我就直接打开。`,
+    en: `${personal}: how about this?\n🎵 Pick: "${input.query}"\nYouTube search query: \`${input.query}\`\nTap Play and I'll open it.`,
+  }[input.lang];
+
+  return {
+    text,
+    playPrompt: `▶ ${chips.play}`,
+    dismissPrompt: chips.dismiss,
+  };
 }
 
 // --- Persistence ---------------------------------------------------------------
 
 const TASTE_STATE_STORAGE_KEY = 'aoi-music-taste-v1';
 
+function normalizeStringList(value: unknown, max: number): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    if (typeof item !== 'string') {
+      continue;
+    }
+    const trimmed = item.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push(trimmed);
+    if (out.length >= max) {
+      break;
+    }
+  }
+  return out;
+}
+
 function normalizeTasteState(state: AoiMusicTasteState | null | undefined): AoiMusicTasteState {
   if (!state || state.version !== AOI_MUSIC_TASTE_STATE_VERSION) {
-    return { ...DEFAULT_AOI_MUSIC_TASTE_STATE, answers: {}, recentSearches: [] };
+    return {
+      ...DEFAULT_AOI_MUSIC_TASTE_STATE,
+      answers: {},
+      recentSearches: [],
+      recentPlays: [],
+    };
   }
-  return state;
+  // Keep the same object when already fully shaped so no-op writers can return
+  // the input reference (stable for React/ref equality and unit tests).
+  if (
+    Array.isArray(state.recentSearches) &&
+    Array.isArray(state.recentPlays) &&
+    state.answers &&
+    typeof state.lastAskedAt === 'number'
+  ) {
+    return state;
+  }
+  return {
+    version: AOI_MUSIC_TASTE_STATE_VERSION,
+    answers: state.answers ?? {},
+    recentSearches: Array.isArray(state.recentSearches) ? state.recentSearches : [],
+    recentPlays: Array.isArray(state.recentPlays) ? state.recentPlays : [],
+    lastAskedAt: typeof state.lastAskedAt === 'number' ? state.lastAskedAt : 0,
+  };
 }
 
 export function loadAoiMusicTasteState(): AoiMusicTasteState {
@@ -400,7 +703,11 @@ export function loadAoiMusicTasteState(): AoiMusicTasteState {
         answers: Object.fromEntries(
           Object.entries(parsed.answers).filter(([, value]) => typeof value === 'string'),
         ),
-        recentSearches: parsed.recentSearches,
+        recentSearches: normalizeStringList(parsed.recentSearches, MAX_TASTE_SEARCHES),
+        recentPlays: normalizeStringList(
+          (parsed as { recentPlays?: unknown }).recentPlays,
+          MAX_TASTE_PLAYS,
+        ),
         lastAskedAt: typeof parsed.lastAskedAt === 'number' ? parsed.lastAskedAt : 0,
       };
     }
@@ -412,7 +719,7 @@ export function loadAoiMusicTasteState(): AoiMusicTasteState {
 
 export function saveAoiMusicTasteState(state: AoiMusicTasteState): void {
   try {
-    localStorage.setItem(TASTE_STATE_STORAGE_KEY, JSON.stringify(state));
+    localStorage.setItem(TASTE_STATE_STORAGE_KEY, JSON.stringify(normalizeTasteState(state)));
   } catch {
     // Best-effort persistence; ignore quota / privacy-mode failures.
   }

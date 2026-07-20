@@ -64,15 +64,20 @@ import {
 } from '@/lib/aoiMusicRecommendation';
 import {
   DEFAULT_AOI_MUSIC_TASTE_STATE,
+  buildAoiMusicTastePromptBlock,
+  buildAoiMusicTasteRecommendCopy,
   deriveTasteProfile,
   loadAoiMusicTasteState,
+  parseAoiMusicTasteChatIntent,
   pickNextTasteQuestion,
   recordTasteAnswer,
   recordTasteQuestionAsked,
+  recordYouTubePlay,
   recordYouTubeSearch,
   saveAoiMusicTasteState,
   shouldAskTasteQuestion,
   type AoiMusicTasteState,
+  type AoiTasteLang,
 } from '@/lib/aoiMusicTaste';
 import {
   PREFERENCE_POLL_QUESTIONS,
@@ -2200,6 +2205,7 @@ function buildSystemPrompt(
   skillsPrompt = '',
   mcpPluginPrompt = '',
   toolCallRuntimeAvailable = true,
+  aoiMusicTastePrompt = '',
 ): string {
   let prompt = getCharacterPromptContext(character);
   const preferredName = normalizeUserProfileDisplayName(userProfile?.displayName);
@@ -2298,6 +2304,8 @@ Music follow-up rule:
 - When you recommend a song or artist and the user agrees, confirms, or says "let's go with that", treat it as an instruction to operate the YouTube app.
 - In that case, use the YouTube app's search action with the exact artist + song title you recommended, instead of only replying conversationally.
 - Korean intent phrases such as "듣자", "틀어줘", "재생해줘", "들려줘" should also be treated as music playback instructions when they refer to the current recommendation or music context.
+- Always honor the "Music taste (learned)" block below when recommending music. Prefer those personal searches/plays over generic viral hits.
+- When recommending, include an explicit line: YouTube 검색어: \`exact query\` so play-follow-ups can open the same query.
 
 When you receive "[User performed action in ... (appName: xxx)]", the appName is already provided. Read its meta.yaml to understand available actions, then respond accordingly. For games, respond with your own move — think strategically.
 
@@ -2367,6 +2375,7 @@ Tool rule:
   prompt += mcpPluginPrompt;
   prompt += capabilityPrompt;
   prompt += aoiMemoryPrompt;
+  prompt += aoiMusicTastePrompt;
   prompt += buildMemoryPrompt(memories);
 
   return prompt;
@@ -5621,9 +5630,9 @@ const ChatPanel: React.FC<{
     }
   }, []);
 
-  // Learn music taste from the user's own YouTube searches. Subscribes to the
-  // raw app-action stream: agent-triggered searches carry trigger_by=2 and are
-  // skipped, so Aoi's own recommendations never feed back into the profile.
+  // Learn music taste from the user's own YouTube searches and plays. Subscribes
+  // to the raw app-action stream: agent-triggered actions carry trigger_by=2 and
+  // are skipped, so Aoi's own recommendations never feed back into the profile.
   // Deliberately independent of the LLM config -- taste learning works offline.
   useEffect(() => {
     const unsubscribe = onUserAction((event: unknown) => {
@@ -5639,13 +5648,30 @@ const ChatPanel: React.FC<{
       if (evt.action_result !== undefined) return;
       const action = evt.app_action;
       if (!action || action.trigger_by === 2) return;
-      if (action.app_id !== YOUTUBE_APP_ID || action.action_type !== 'OPEN_SEARCH') return;
-      const next = recordYouTubeSearch(musicTasteStateRef.current, {
-        query: action.params?.query ?? '',
-      });
-      if (next !== musicTasteStateRef.current) {
-        musicTasteStateRef.current = next;
-        saveAoiMusicTasteState(next);
+      if (action.app_id !== YOUTUBE_APP_ID) return;
+
+      if (action.action_type === 'OPEN_SEARCH') {
+        const next = recordYouTubeSearch(musicTasteStateRef.current, {
+          query: action.params?.query ?? '',
+        });
+        if (next !== musicTasteStateRef.current) {
+          musicTasteStateRef.current = next;
+          saveAoiMusicTasteState(next);
+        }
+        return;
+      }
+
+      // PLAY_VIDEO is a reported event (user picked a result / started queue play).
+      if (action.action_type === 'PLAY_VIDEO') {
+        const next = recordYouTubePlay(musicTasteStateRef.current, {
+          title: action.params?.title ?? '',
+          channel: action.params?.channel ?? '',
+          query: action.params?.query ?? '',
+        });
+        if (next !== musicTasteStateRef.current) {
+          musicTasteStateRef.current = next;
+          saveAoiMusicTasteState(next);
+        }
       }
     });
     return unsubscribe;
@@ -6186,6 +6212,49 @@ const ChatPanel: React.FC<{
             accepted: false,
           });
           saveAoiIdleMusicState(idleMusicStateRef.current);
+          // "Another" style chips re-roll a taste-backed pick; soft "later" chips just stop.
+          const wantsAnother = /다른|別|换一|Another/i.test(messageText);
+          if (wantsAnother) {
+            const now = Date.now();
+            const taste = deriveTasteProfile(musicTasteStateRef.current);
+            const recommendation = buildAoiMusicRecommendation({
+              now,
+              recentQueries: idleMusicStateRef.current.recentQueries,
+              moodFeedback: idleMusicStateRef.current.moodFeedback,
+              tasteMoodBias: taste.moodBias,
+              personalQueries: taste.personalQueries,
+              preferPersonal: true,
+            });
+            const lang = resolveNudgeLang() as AoiTasteLang;
+            const copy = buildAoiMusicTasteRecommendCopy({
+              query: recommendation.query,
+              source: recommendation.source,
+              lang,
+              autoplay: false,
+            });
+            idleMusicStateRef.current = recordIdleMusicOffered(idleMusicStateRef.current, {
+              query: recommendation.query,
+              now,
+            });
+            saveAoiIdleMusicState(idleMusicStateRef.current);
+            pendingIdleMusicOfferRef.current = {
+              playPrompt: copy.playPrompt,
+              dismissPrompt: copy.dismissPrompt,
+              query: recommendation.query,
+              mood: recommendation.mood,
+            };
+            savePendingIdleMusicOffer(pendingIdleMusicOfferRef.current);
+            emitAssistantMessage(
+              {
+                id: `aoi-taste-music-${now}`,
+                role: 'assistant',
+                content: copy.text,
+                suggestedReplies: [copy.playPrompt, copy.dismissPrompt],
+              },
+              { updateSuggestedReplies: true, speak: false },
+            );
+            return;
+          }
           emitAssistantMessage({
             id: String(Date.now()),
             role: 'assistant',
@@ -6357,6 +6426,97 @@ const ChatPanel: React.FC<{
         } catch (err) {
           console.error('[ChatPanel] Direct music intent dispatch failed', err);
         }
+      }
+
+      // Taste-backed chat music recommend / "play something" after specific-title
+      // intents. Uses the same recommender as idle cards so free-form LLM guesses
+      // are not used for bare "노래 추천해줘" / "아무거나 틀어줘" style requests.
+      const tasteChatIntent = !hasImageAttachments
+        ? parseAoiMusicTasteChatIntent(text)
+        : { kind: 'none' as const };
+      if (tasteChatIntent.kind === 'recommend') {
+        const now = Date.now();
+        const taste = deriveTasteProfile(musicTasteStateRef.current);
+        const recommendation = buildAoiMusicRecommendation({
+          now,
+          recentQueries: idleMusicStateRef.current.recentQueries,
+          moodFeedback: idleMusicStateRef.current.moodFeedback,
+          tasteMoodBias: taste.moodBias,
+          personalQueries: taste.personalQueries,
+          preferPersonal: true,
+        });
+        const lang = resolveNudgeLang() as AoiTasteLang;
+        const copy = buildAoiMusicTasteRecommendCopy({
+          query: recommendation.query,
+          source: recommendation.source,
+          lang,
+          autoplay: tasteChatIntent.autoplay,
+        });
+        idleMusicStateRef.current = recordIdleMusicOffered(idleMusicStateRef.current, {
+          query: recommendation.query,
+          now,
+        });
+        saveAoiIdleMusicState(idleMusicStateRef.current);
+
+        if (tasteChatIntent.autoplay) {
+          try {
+            await dispatchAgentAction({
+              app_id: YOUTUBE_APP_ID,
+              action_type: 'OPEN_SEARCH',
+              params: { query: recommendation.query, autoplay: '1' },
+            });
+            emitAssistantMessage({
+              id: String(now),
+              role: 'assistant',
+              content: copy.text,
+              suggestedReplies: [copy.dismissPrompt],
+            });
+            recordAoiMemoryTurn({
+              userMessage: text,
+              assistantMessage: copy.text,
+              toolCalls: [
+                `direct:aoi_taste_music_play:${recommendation.source}:${recommendation.query}`,
+              ],
+              source: 'direct_action',
+              llmConfig: selectedConfig,
+            });
+          } catch (err) {
+            console.error('[ChatPanel] Taste music autoplay dispatch failed', err);
+            emitAssistantMessage({
+              id: String(now),
+              role: 'assistant',
+              content: buildIdleMusicErrorAck(lang),
+            });
+          }
+          return;
+        }
+
+        pendingIdleMusicOfferRef.current = {
+          playPrompt: copy.playPrompt,
+          dismissPrompt: copy.dismissPrompt,
+          query: recommendation.query,
+          mood: recommendation.mood,
+        };
+        savePendingIdleMusicOffer(pendingIdleMusicOfferRef.current);
+        emitAssistantMessage(
+          {
+            id: `aoi-taste-music-${now}`,
+            role: 'assistant',
+            content: copy.text,
+            suggestedReplies: [copy.playPrompt, copy.dismissPrompt],
+          },
+          { updateSuggestedReplies: true, speak: false },
+        );
+        recordAoiMemoryTurn({
+          userMessage: text,
+          assistantMessage: copy.text,
+          toolCalls: [
+            `direct:aoi_taste_music_recommend:${recommendation.source}:${recommendation.query}`,
+          ],
+          source: 'direct_action',
+          llmConfig: selectedConfig,
+        });
+        return;
       }
 
       const abortController = new AbortController();
@@ -6665,6 +6825,7 @@ const ChatPanel: React.FC<{
       trail: aoiAutonomyPanelSettingsRef.current.jarvisAutonomyGovernorAuditTrail,
       latestUserMessage,
     });
+    const currentAoiMusicTastePrompt = buildAoiMusicTastePromptBlock(musicTasteStateRef.current);
     const systemPrompt = buildSystemPrompt(
       char,
       mm,
@@ -6683,6 +6844,7 @@ const ChatPanel: React.FC<{
       skillsPrompt,
       mcpPluginPrompt,
       toolCallRuntimeAvailable,
+      currentAoiMusicTastePrompt,
     );
     const aoiTrendFollowUpPrompt = buildAoiProactiveTrendFollowUpPromptBlock(
       options.aoiTrendFollowUpContext,
@@ -9368,6 +9530,7 @@ const ChatPanel: React.FC<{
         moodFeedback: state.moodFeedback,
         tasteMoodBias: taste.moodBias,
         personalQueries: taste.personalQueries,
+        preferPersonal: true,
       });
       const copy = buildIdleMusicCardCopy(
         recommendation.mood,

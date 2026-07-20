@@ -34,6 +34,17 @@ describe('parseDirectMusicIntent', () => {
     });
   });
 
+  it('extracts a taste-card quoted pick when the user asks Aoi to choose', () => {
+    expect(
+      parseDirectMusicIntent('그걸로 가자', [
+        {
+          role: 'assistant',
+          content: '네 검색·재생 취향을 반영해서 이 곡/믹스 어때?\n🎵 추천: "aespa supernova"',
+        },
+      ]),
+    ).toEqual({ query: 'aespa supernova' });
+  });
+
   it('extracts a bold recommendation when the user asks Aoi to choose', () => {
     expect(
       parseDirectMusicIntent('네가 골라', [

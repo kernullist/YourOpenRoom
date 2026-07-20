@@ -194,12 +194,25 @@ describe('buildAoiMusicRecommendation — personal taste signals', () => {
     expect(rec.cooldownKey).toBe('music:focus:IVE-I-AM');
   });
 
-  it('alternates back to the pool right after a personal pick', () => {
+  it('keeps preferring personal after a personal pick (no forced pool mix)', () => {
     const rec = buildAoiMusicRecommendation({
       now: NOW,
       hourOfDay: 14,
       personalQueries: ['IVE I AM', 'city pop mix'],
       recentQueries: ['IVE I AM'],
+      preferPersonal: true,
+    });
+    expect(rec.query).toBe('city pop mix');
+    expect(rec.source).toBe('personal');
+  });
+
+  it('can still alternate to the pool when preferPersonal is false', () => {
+    const rec = buildAoiMusicRecommendation({
+      now: NOW,
+      hourOfDay: 14,
+      personalQueries: ['IVE I AM', 'city pop mix'],
+      recentQueries: ['IVE I AM'],
+      preferPersonal: false,
     });
     expect(rec.query).toBe(FOCUS_POOL[0]);
     expect(rec.source).toBe('pool');
@@ -210,10 +223,10 @@ describe('buildAoiMusicRecommendation — personal taste signals', () => {
       now: NOW,
       hourOfDay: 14,
       personalQueries: ['IVE I AM'],
-      // Last offer came from the pool, so personal goes first but has nothing
-      // fresh left; the pool supplies the next unseen entry.
+      preferPersonal: true,
       recentQueries: [FOCUS_POOL[0], 'IVE I AM'],
     });
+    // Personal exhausted -> first fresh pool entry (pool[0] is recent, so pool[1]).
     expect(rec.query).toBe(FOCUS_POOL[1]);
     expect(rec.source).toBe('pool');
   });
@@ -230,15 +243,15 @@ describe('buildAoiMusicRecommendation — personal taste signals', () => {
     expect(rec.source).toBe('personal');
   });
 
-  it('caps personal candidates at six per pick', () => {
-    const personals = ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7'];
+  it('caps personal candidates at eight per pick', () => {
+    const personals = ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8', 'p9'];
     const rec = buildAoiMusicRecommendation({
       now: NOW,
       hourOfDay: 14,
       personalQueries: personals,
-      // Last offer was a pool entry, so personals go first; the first six are
-      // all recent and the seventh must NOT be considered.
-      recentQueries: [FOCUS_POOL[0], 'p1', 'p2', 'p3', 'p4', 'p5', 'p6'],
+      preferPersonal: true,
+      // First eight personals are recent; ninth must NOT be considered.
+      recentQueries: [FOCUS_POOL[0], 'p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8'],
     });
     expect(rec.query).toBe(FOCUS_POOL[1]);
     expect(rec.source).toBe('pool');

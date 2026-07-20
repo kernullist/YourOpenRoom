@@ -5,11 +5,14 @@ import {
   TASTE_POLL_COOLDOWN_MS,
   TASTE_POLL_MIN_IDLE_MS,
   TASTE_POLL_QUESTIONS,
+  buildAoiMusicTastePromptBlock,
   deriveTasteProfile,
   loadAoiMusicTasteState,
+  parseAoiMusicTasteChatIntent,
   pickNextTasteQuestion,
   recordTasteAnswer,
   recordTasteQuestionAsked,
+  recordYouTubePlay,
   recordYouTubeSearch,
   sanitizeTasteSearchQuery,
   saveAoiMusicTasteState,
@@ -82,6 +85,26 @@ describe('recordYouTubeSearch', () => {
     const next = recordYouTubeSearch(stale as unknown as AoiMusicTasteState, { query: 'new' });
     expect(next.recentSearches).toEqual(['new']);
     expect(next.answers).toEqual({});
+    expect(next.recentPlays).toEqual([]);
+  });
+});
+
+describe('recordYouTubePlay', () => {
+  it('stores title - channel labels and dedupes case-insensitively', () => {
+    let state = recordYouTubePlay(DEFAULT_AOI_MUSIC_TASTE_STATE, {
+      title: 'I AM',
+      channel: 'IVE',
+    });
+    state = recordYouTubePlay(state, { title: 'I AM', channel: 'ive' });
+    // Newest casing wins; case-insensitive dedupe keeps a single entry.
+    expect(state.recentPlays).toEqual(['I AM - ive']);
+  });
+
+  it('accepts an explicit query override', () => {
+    const state = recordYouTubePlay(DEFAULT_AOI_MUSIC_TASTE_STATE, {
+      query: 'newjeans attention',
+    });
+    expect(state.recentPlays).toEqual(['newjeans attention']);
   });
 });
 
@@ -188,23 +211,25 @@ describe('deriveTasteProfile', () => {
     const profile = deriveTasteProfile(DEFAULT_AOI_MUSIC_TASTE_STATE);
     expect(profile.moodBias).toEqual({});
     expect(profile.personalQueries).toEqual([]);
+    expect(profile.hasTasteSignal).toBe(false);
   });
 
-  it('sums mood bias across answers and orders seeds before searches', () => {
+  it('orders user searches and plays before poll seeds', () => {
     let state = recordTasteAnswer(DEFAULT_AOI_MUSIC_TASTE_STATE, {
       questionId: 'vibe',
       optionId: 'deep_focus',
     });
     state = recordTasteAnswer(state, { questionId: 'genre', optionId: 'game_ost' });
     state = recordYouTubeSearch(state, { query: 'IVE I AM' });
+    state = recordYouTubePlay(state, { title: 'I AM', channel: 'IVE' });
 
     const profile = deriveTasteProfile(state);
     expect(profile.moodBias).toEqual({ focus: 2, ambient: 1 });
-    expect(profile.personalQueries).toEqual([
-      'deep focus instrumental mix',
-      'game ost focus mix',
-      'IVE I AM',
-    ]);
+    expect(profile.personalQueries[0]).toBe('IVE I AM');
+    expect(profile.personalQueries[1]).toBe('I AM - IVE');
+    expect(profile.personalQueries).toContain('deep focus instrumental mix');
+    expect(profile.personalQueries).toContain('game ost focus mix');
+    expect(profile.hasTasteSignal).toBe(true);
   });
 
   it('dedupes a search that matches an answer seed case-insensitively', () => {
@@ -214,7 +239,60 @@ describe('deriveTasteProfile', () => {
     });
     state = recordYouTubeSearch(state, { query: 'JAZZ LOFI CAFE MIX' });
     const profile = deriveTasteProfile(state);
-    expect(profile.personalQueries).toEqual(['jazz lofi cafe mix']);
+    expect(profile.personalQueries).toEqual(['JAZZ LOFI CAFE MIX']);
+  });
+});
+
+describe('buildAoiMusicTastePromptBlock', () => {
+  it('warns when no taste is stored', () => {
+    const block = buildAoiMusicTastePromptBlock(DEFAULT_AOI_MUSIC_TASTE_STATE);
+    expect(block).toContain('No durable music taste is stored yet');
+  });
+
+  it('lists personal searches and plays for the model', () => {
+    let state = recordYouTubeSearch(DEFAULT_AOI_MUSIC_TASTE_STATE, { query: 'aespa supernova' });
+    state = recordYouTubePlay(state, { title: 'Supernova', channel: 'aespa' });
+    const block = buildAoiMusicTastePromptBlock(state);
+    expect(block).toContain('aespa supernova');
+    expect(block).toContain('Supernova - aespa');
+    expect(block).toContain('must follow for music recommendations');
+  });
+});
+
+describe('parseAoiMusicTasteChatIntent', () => {
+  it('detects bare recommend requests', () => {
+    expect(parseAoiMusicTasteChatIntent('노래 추천해줘')).toEqual({
+      kind: 'recommend',
+      autoplay: false,
+    });
+    expect(parseAoiMusicTasteChatIntent('recommend a song')).toEqual({
+      kind: 'recommend',
+      autoplay: false,
+    });
+    expect(parseAoiMusicTasteChatIntent('뭐 듣지?')).toEqual({
+      kind: 'recommend',
+      autoplay: false,
+    });
+  });
+
+  it('detects play-something requests', () => {
+    expect(parseAoiMusicTasteChatIntent('아무거나 틀어줘')).toEqual({
+      kind: 'recommend',
+      autoplay: true,
+    });
+    expect(parseAoiMusicTasteChatIntent('음악 틀어줘')).toEqual({
+      kind: 'recommend',
+      autoplay: true,
+    });
+    expect(parseAoiMusicTasteChatIntent('play something')).toEqual({
+      kind: 'recommend',
+      autoplay: true,
+    });
+  });
+
+  it('ignores specific-title playback so direct music intent can handle it', () => {
+    expect(parseAoiMusicTasteChatIntent('IVE I AM 틀어줘')).toEqual({ kind: 'none' });
+    expect(parseAoiMusicTasteChatIntent('play newjeans attention')).toEqual({ kind: 'none' });
   });
 });
 
@@ -223,12 +301,13 @@ describe('storage round-trip', () => {
     localStorage.clear();
   });
 
-  it('round-trips a populated state', () => {
+  it('round-trips a populated state including plays', () => {
     let state = recordTasteAnswer(DEFAULT_AOI_MUSIC_TASTE_STATE, {
       questionId: 'vibe',
       optionId: 'calm_lofi',
     });
     state = recordYouTubeSearch(state, { query: 'city pop mix' });
+    state = recordYouTubePlay(state, { title: 'Midnight City', channel: 'M83' });
     state = recordTasteQuestionAsked(state, { now: NOW });
     saveAoiMusicTasteState(state);
     expect(loadAoiMusicTasteState()).toEqual(state);
@@ -245,7 +324,7 @@ describe('storage round-trip', () => {
     expect(loadAoiMusicTasteState()).toEqual(DEFAULT_AOI_MUSIC_TASTE_STATE);
   });
 
-  it('drops non-string answer values and defaults a missing lastAskedAt', () => {
+  it('loads legacy state without recentPlays and drops non-string answers', () => {
     localStorage.setItem(
       'aoi-music-taste-v1',
       JSON.stringify({
@@ -257,6 +336,7 @@ describe('storage round-trip', () => {
     const state = loadAoiMusicTasteState();
     expect(state.answers).toEqual({ vibe: 'calm_lofi' });
     expect(state.recentSearches).toEqual(['lofi']);
+    expect(state.recentPlays).toEqual([]);
     expect(state.lastAskedAt).toBe(0);
   });
 });

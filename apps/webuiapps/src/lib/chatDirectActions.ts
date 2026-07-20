@@ -41,9 +41,17 @@ function extractRecommendedMusicQuery(
 
   for (const message of recentAssistantMessages) {
     const content = message.content;
-    const youtubeQuery = content.match(/YouTube\s*검색어\s*:\s*`([^`]+)`/i)?.[1];
+    const youtubeQuery =
+      content.match(/YouTube\s*(?:검색어|search query|検索語|搜索词)\s*:\s*`([^`]+)`/i)?.[1] ??
+      content.match(/YouTube\s*(?:검색어|search query)\s*:\s*`([^`]+)`/i)?.[1];
     if (youtubeQuery?.trim()) {
       return youtubeQuery.trim();
+    }
+
+    // Taste-backed cards: 🎵 추천: "query" / 🎵 Pick: "query"
+    const tasteCard = content.match(/🎵[^\n"]*["“]([^"”]+)["”]/u)?.[1];
+    if (tasteCard?.trim()) {
+      return tasteCard.trim();
     }
 
     const recommended = content.match(/(?:내\s*)?추천은\s+\*\*([^*]+)\*\*/)?.[1];
