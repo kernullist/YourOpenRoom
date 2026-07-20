@@ -301,6 +301,10 @@ do
 
         $round = 0
         $sawTargets = $false
+        # Track every dev PID we attempted to stop so the post-check can use a
+        # real id list even after a later scan returns zero targets (empty arrays
+        # have no .ProcessId under Set-StrictMode).
+        $stoppedProcessIds = [System.Collections.Generic.HashSet[int]]::new()
         while ($round -lt 4)
         {
             $round++
@@ -332,8 +336,21 @@ do
                 break
             }
 
+            $targetIds = @(
+                $targets |
+                    ForEach-Object { [int]$_.ProcessId } |
+                    Where-Object { $_ -gt 0 }
+            )
+            foreach ($targetId in $targetIds)
+            {
+                [void]$stoppedProcessIds.Add($targetId)
+            }
+
             Write-Step "Stopping matched processes."
-            Stop-Process -Id ($targets.ProcessId) -Force -ErrorAction SilentlyContinue
+            if ($targetIds.Count -gt 0)
+            {
+                Stop-Process -Id $targetIds -Force -ErrorAction SilentlyContinue
+            }
             Start-Sleep -Milliseconds 1200
         }
 
@@ -459,8 +476,16 @@ do
             break
         }
 
-        $remainingPorts = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
-            Where-Object { ($Ports -contains [int]$_.LocalPort) -and $_.OwningProcess -in $targets.ProcessId })
+        $stoppedIdList = @($stoppedProcessIds)
+        $remainingPorts = @()
+        if ($stoppedIdList.Count -gt 0)
+        {
+            $remainingPorts = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+                Where-Object {
+                    ($Ports -contains [int]$_.LocalPort) -and
+                    ($stoppedIdList -contains [int]$_.OwningProcess)
+                })
+        }
         $remainingProcesses = @(
             Find-RemainingOpenRoomDevProcesses `
                 -RepoRoot $repoRoot `
@@ -469,7 +494,14 @@ do
 
         if ($remainingPorts.Count -eq 0 -and $remainingProcesses.Count -eq 0)
         {
-            Write-Step "Stopped all matched OpenRoom dev processes."
+            if ($sawTargets)
+            {
+                Write-Step "Stopped all matched OpenRoom dev processes."
+            }
+            else
+            {
+                Write-Step "No remaining OpenRoom dev processes."
+            }
             break
         }
 
