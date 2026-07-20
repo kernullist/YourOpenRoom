@@ -5,10 +5,12 @@ import { join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   AOI_FILE_MUTATION_APPROVAL_TTL_MS,
+  AOI_MAX_FILE_MUTATION_CONTENT_BYTES,
   compareAoiApprovedFileMutationApproval,
   createAoiApprovedFileMutationRequest,
   evaluateAoiApprovedFileMutationPolicy,
   normalizeAoiApprovedFileMutationPolicy,
+  utf8ByteLength,
 } from '../aoiApprovedFileMutationPolicy';
 import { applyAoiApprovedFileMutation } from '../aoiApprovedFileMutationRunner';
 import type { AoiApprovedFileMutationRequest } from '../aoiAutonomyTypes';
@@ -55,6 +57,15 @@ function writeRequest(
   });
 }
 
+describe('utf8ByteLength (browser-safe)', () => {
+  it('matches UTF-8 sizes for ASCII and multi-byte text without Node Buffer', () => {
+    expect(utf8ByteLength('abc')).toBe(3);
+    // Hangul syllables are 3 bytes each in UTF-8.
+    expect(utf8ByteLength('가나다')).toBe(9);
+    expect(utf8ByteLength('🙂')).toBe(4);
+  });
+});
+
 describe('evaluateAoiApprovedFileMutationPolicy', () => {
   it('allows a safe write and binds a content-addressed fingerprint', () => {
     const policy = evaluateAoiApprovedFileMutationPolicy(writeRequest('apps/x/data/a.json', '{}'));
@@ -63,6 +74,26 @@ describe('evaluateAoiApprovedFileMutationPolicy', () => {
     expect(policy.contentHash).toMatch(/^[0-9a-f]{16}$/);
     expect(policy.approvalFingerprint.length).toBeGreaterThan(0);
     expect(policy.approvalSandbox?.expectedMutationCount).toBe(1);
+    expect(policy.byteLength).toBe(2);
+  });
+
+  it('counts multi-byte write content for size limits without Buffer', () => {
+    const content = '가'.repeat(100);
+    const policy = evaluateAoiApprovedFileMutationPolicy(
+      writeRequest('apps/x/data/ko.txt', content),
+    );
+    expect(policy.allowed).toBe(true);
+    expect(policy.byteLength).toBe(utf8ByteLength(content));
+    expect(policy.byteLength).toBe(300);
+  });
+
+  it('blocks oversized write content using UTF-8 byte length', () => {
+    const content = 'x'.repeat(AOI_MAX_FILE_MUTATION_CONTENT_BYTES + 1);
+    const policy = evaluateAoiApprovedFileMutationPolicy(
+      writeRequest('apps/x/data/big.txt', content),
+    );
+    expect(policy.allowed).toBe(false);
+    expect(policy.blockReasons).toContain('content_too_large');
   });
 
   it('allows a safe patch and defaults expectedCount to 1', () => {

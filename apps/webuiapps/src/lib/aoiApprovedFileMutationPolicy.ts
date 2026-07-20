@@ -42,6 +42,34 @@ function hashStable(value: string): string {
   return hash.toString(16).padStart(8, '0');
 }
 
+// Browser-safe UTF-8 byte length. Do NOT use Node Buffer here: this policy is
+// evaluated in the Settings / ChatPanel client bundle (Buffer is undefined).
+const utf8TextEncoder = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
+
+export function utf8ByteLength(value: string): number {
+  if (utf8TextEncoder) {
+    return utf8TextEncoder.encode(value).byteLength;
+  }
+
+  // Manual UTF-8 size for environments without TextEncoder (should be rare).
+  let bytes = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x7f) {
+      bytes += 1;
+    } else if (code <= 0x7ff) {
+      bytes += 2;
+    } else if (code >= 0xd800 && code <= 0xdbff) {
+      // Surrogate pair -> 4 UTF-8 bytes.
+      bytes += 4;
+      index += 1;
+    } else {
+      bytes += 3;
+    }
+  }
+  return bytes;
+}
+
 // Wider (64-bit) content hash from two independent FNV-1a passes, so the
 // content-addressed approval binding has a low collision rate without 'crypto'.
 // Exported so the runner verifies a write against the exact same digest.
@@ -178,7 +206,7 @@ function collectContentBlockReasons(request: AoiApprovedFileMutationRequest): {
         byteLength: 0,
       };
     }
-    const byteLength = Buffer.byteLength(request.content, 'utf8');
+    const byteLength = utf8ByteLength(request.content);
     const reasons: AoiFileMutationBlockReason[] = [];
     if (byteLength > AOI_MAX_FILE_MUTATION_CONTENT_BYTES) {
       reasons.push('content_too_large');
@@ -203,8 +231,7 @@ function collectContentBlockReasons(request: AoiApprovedFileMutationRequest): {
       reasons.push('too_many_patch_ops');
     }
     const byteLength = ops.reduce(
-      (total, op) =>
-        total + Buffer.byteLength(op.find, 'utf8') + Buffer.byteLength(op.replace, 'utf8'),
+      (total, op) => total + utf8ByteLength(op.find) + utf8ByteLength(op.replace),
       0,
     );
     if (byteLength > AOI_MAX_FILE_MUTATION_PATCH_BYTES) {
