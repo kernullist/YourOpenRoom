@@ -5,9 +5,11 @@ import {
   TASTE_POLL_COOLDOWN_MS,
   TASTE_POLL_MIN_IDLE_MS,
   TASTE_POLL_QUESTIONS,
+  buildAoiMusicTasteNeedPreferenceCopy,
   buildAoiMusicTastePromptBlock,
   deriveTasteProfile,
   loadAoiMusicTasteState,
+  parseAoiMusicPreferenceSeed,
   parseAoiMusicTasteChatIntent,
   pickNextTasteQuestion,
   recordTasteAnswer,
@@ -227,6 +229,9 @@ describe('deriveTasteProfile', () => {
     expect(profile.moodBias).toEqual({ focus: 2, ambient: 1 });
     expect(profile.personalQueries[0]).toBe('IVE I AM');
     expect(profile.personalQueries[1]).toBe('I AM - IVE');
+    // Title / channel fragments expand searchability without leaving the lane.
+    expect(profile.personalQueries).toContain('I AM');
+    expect(profile.personalQueries).toContain('IVE');
     expect(profile.personalQueries).toContain('deep focus instrumental mix');
     expect(profile.personalQueries).toContain('game ost focus mix');
     expect(profile.hasTasteSignal).toBe(true);
@@ -256,6 +261,21 @@ describe('buildAoiMusicTastePromptBlock', () => {
     expect(block).toContain('aespa supernova');
     expect(block).toContain('Supernova - aespa');
     expect(block).toContain('must follow for music recommendations');
+  });
+});
+
+describe('parseAoiMusicPreferenceSeed + need-preference copy', () => {
+  it('accepts common genre chips as personal seeds', () => {
+    expect(parseAoiMusicPreferenceSeed('케이팝')).toBe('케이팝');
+    expect(parseAoiMusicPreferenceSeed('lofi')).toMatch(/lofi/i);
+    expect(parseAoiMusicPreferenceSeed('IVE I AM 틀어줘')).toBeNull();
+  });
+
+  it('asks for a lane instead of inventing a pool mix', () => {
+    const copy = buildAoiMusicTasteNeedPreferenceCopy('ko');
+    expect(copy.text).toMatch(/취향/);
+    expect(copy.suggestedReplies.length).toBeGreaterThan(0);
+    expect(copy.text.toLowerCase()).not.toContain('sunset');
   });
 });
 

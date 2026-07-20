@@ -64,10 +64,12 @@ import {
 } from '@/lib/aoiMusicRecommendation';
 import {
   DEFAULT_AOI_MUSIC_TASTE_STATE,
+  buildAoiMusicTasteNeedPreferenceCopy,
   buildAoiMusicTastePromptBlock,
   buildAoiMusicTasteRecommendCopy,
   deriveTasteProfile,
   loadAoiMusicTasteState,
+  parseAoiMusicPreferenceSeed,
   parseAoiMusicTasteChatIntent,
   pickNextTasteQuestion,
   recordTasteAnswer,
@@ -6442,6 +6444,69 @@ const ChatPanel: React.FC<{
         }
       }
 
+      // Genre/lane chip after a preference ask (e.g. "케이팝") becomes a personal
+      // search seed, then we recommend from that lane instead of a mood pool.
+      if (!hasImageAttachments) {
+        const preferenceSeed = parseAoiMusicPreferenceSeed(text);
+        if (preferenceSeed) {
+          const seeded = recordYouTubeSearch(musicTasteStateRef.current, {
+            query: preferenceSeed,
+          });
+          if (seeded !== musicTasteStateRef.current) {
+            musicTasteStateRef.current = seeded;
+            saveAoiMusicTasteState(seeded);
+          }
+          const now = Date.now();
+          const taste = deriveTasteProfile(musicTasteStateRef.current);
+          const recommendation = buildAoiMusicRecommendation({
+            now,
+            recentQueries: idleMusicStateRef.current.recentQueries,
+            moodFeedback: idleMusicStateRef.current.moodFeedback,
+            tasteMoodBias: taste.moodBias,
+            personalQueries: taste.personalQueries,
+            preferPersonal: true,
+          });
+          const lang = resolveNudgeLang() as AoiTasteLang;
+          const copy = buildAoiMusicTasteRecommendCopy({
+            query: recommendation.query,
+            source: recommendation.source,
+            lang,
+            autoplay: false,
+          });
+          idleMusicStateRef.current = recordIdleMusicOffered(idleMusicStateRef.current, {
+            query: recommendation.query,
+            now,
+          });
+          saveAoiIdleMusicState(idleMusicStateRef.current);
+          pendingIdleMusicOfferRef.current = {
+            playPrompt: copy.playPrompt,
+            dismissPrompt: copy.dismissPrompt,
+            query: recommendation.query,
+            mood: recommendation.mood,
+          };
+          savePendingIdleMusicOffer(pendingIdleMusicOfferRef.current);
+          emitAssistantMessage(
+            {
+              id: `aoi-taste-seed-${now}`,
+              role: 'assistant',
+              content: copy.text,
+              suggestedReplies: [copy.playPrompt, copy.dismissPrompt],
+            },
+            { updateSuggestedReplies: true, speak: false },
+          );
+          recordAoiMemoryTurn({
+            userMessage: text,
+            assistantMessage: copy.text,
+            toolCalls: [
+              `direct:aoi_taste_music_seed:${recommendation.source}:${recommendation.query}`,
+            ],
+            source: 'direct_action',
+            llmConfig: selectedConfig,
+          });
+          return;
+        }
+      }
+
       // Taste-backed chat music recommend / "play something" after specific-title
       // intents. Uses the same recommender as idle cards so free-form LLM guesses
       // are not used for bare "노래 추천해줘" / "아무거나 틀어줘" style requests.
@@ -6451,6 +6516,29 @@ const ChatPanel: React.FC<{
       if (tasteChatIntent.kind === 'recommend') {
         const now = Date.now();
         const taste = deriveTasteProfile(musicTasteStateRef.current);
+        const lang = resolveNudgeLang() as AoiTasteLang;
+        // No personal searches/plays/poll seeds yet -> never invent a generic
+        // mood-pool mix (e.g. "sunset chill beats"). Ask for a lane first.
+        if (taste.personalQueries.length === 0) {
+          const need = buildAoiMusicTasteNeedPreferenceCopy(lang);
+          emitAssistantMessage(
+            {
+              id: `aoi-taste-need-${now}`,
+              role: 'assistant',
+              content: need.text,
+              suggestedReplies: need.suggestedReplies,
+            },
+            { updateSuggestedReplies: true, speak: false },
+          );
+          recordAoiMemoryTurn({
+            userMessage: text,
+            assistantMessage: need.text,
+            toolCalls: ['direct:aoi_taste_music_need_preference'],
+            source: 'direct_action',
+            llmConfig: selectedConfig,
+          });
+          return;
+        }
         const recommendation = buildAoiMusicRecommendation({
           now,
           recentQueries: idleMusicStateRef.current.recentQueries,
@@ -6459,7 +6547,6 @@ const ChatPanel: React.FC<{
           personalQueries: taste.personalQueries,
           preferPersonal: true,
         });
-        const lang = resolveNudgeLang() as AoiTasteLang;
         const copy = buildAoiMusicTasteRecommendCopy({
           query: recommendation.query,
           source: recommendation.source,

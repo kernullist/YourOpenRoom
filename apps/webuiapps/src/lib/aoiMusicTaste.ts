@@ -405,6 +405,19 @@ export function deriveTasteProfile(state: AoiMusicTasteState | null | undefined)
   }
   for (const play of base.recentPlays) {
     push(play);
+    // Expand "Title - Channel" plays into searchable title / artist fragments so
+    // recommendations stay in the same lane instead of falling to the mood pool.
+    const dash = play.match(/^(.+?)\s+[-–—]\s+(.+)$/u);
+    if (dash) {
+      const left = dash[1].trim();
+      const right = dash[2].trim();
+      if (left.length >= 2) {
+        push(left);
+      }
+      if (right.length >= 2 && right.length <= 40) {
+        push(right);
+      }
+    }
   }
 
   for (const question of TASTE_POLL_QUESTIONS) {
@@ -568,6 +581,71 @@ export function parseAoiMusicTasteChatIntent(text: string): AoiMusicTasteChatInt
   return { kind: 'none' };
 }
 
+// Short genre/lane replies used as suggested chips after need-preference, and
+// free-typed equivalents. Recorded as personal search seeds (not pool picks).
+const MUSIC_PREFERENCE_SEED_PATTERNS: readonly RegExp[] = [
+  /^(?:케이\s*팝|k-?pop|케이팝)$/iu,
+  /^(?:로파이|로 파이|lo-?fi|chill|칠(?:hop|hop)?|로파이\s*[·・,]?\s*칠)$/iu,
+  /^(?:게임\s*ost|game\s*ost|ost)$/iu,
+  /^(?:한국어\s*인디|korean\s*indie|인디)$/iu,
+  /^(?:j-?pop|제이팝)$/iu,
+  /^(?:edm|일렉|electronic)$/iu,
+  /^(?:재즈|jazz)$/iu,
+  /^(?:시티\s*팝|city\s*pop)$/iu,
+];
+
+export function parseAoiMusicPreferenceSeed(text: string): string | null {
+  const trimmed = text.trim().replace(/\s+/g, ' ');
+  if (!trimmed || trimmed.length > 40) {
+    return null;
+  }
+  for (const pattern of MUSIC_PREFERENCE_SEED_PATTERNS) {
+    if (pattern.test(trimmed)) {
+      return sanitizeTasteSearchQuery(trimmed);
+    }
+  }
+  return null;
+}
+
+// When chat asks for a recommend but no durable taste exists yet, do NOT dump
+// a generic pool mix (e.g. "sunset chill beats"). Ask a short preference first.
+export function buildAoiMusicTasteNeedPreferenceCopy(lang: AoiTasteLang): {
+  text: string;
+  suggestedReplies: string[];
+} {
+  const copy = {
+    ko: {
+      text:
+        '아직 네 음악 취향 신호가 거의 없어. 아무 제네릭 믹스를 찍기보다 먼저 듣고 싶은 쪽을 알려줄래?\n' +
+        '예: 아티스트/장르/분위기 (케이팝, 로파이, 게임 OST, 한국어 인디…)\n' +
+        'YouTube에서 검색·재생한 곡이 쌓이면 그걸 우선 추천할게.',
+      suggestedReplies: ['케이팝', '로파이·칠', '게임 OST', '한국어 인디'],
+    },
+    ja: {
+      text:
+        'まだ音楽の好みの信号がほとんどないよ。適当な汎用ミックスより、聴きたい方向を教えて?\n' +
+        '例: アーティスト/ジャンル/雰囲気\n' +
+        'YouTubeで検索・再生した曲が増えたらそれを優先して勧めるね。',
+      suggestedReplies: ['K-POP', 'lofi/chill', 'ゲームOST', 'J-POP'],
+    },
+    zh: {
+      text:
+        '我还几乎没有你的音乐口味信号。与其随便推一个通用混音，不如先告诉我想听的方向？\n' +
+        '例如：歌手/类型/氛围\n' +
+        '你在 YouTube 搜索、播放越多，我就会越优先按那些推荐。',
+      suggestedReplies: ['K-pop', 'lofi/chill', '游戏OST', '华语'],
+    },
+    en: {
+      text:
+        'I barely have your music taste signals yet. Instead of inventing a generic mix, tell me a lane first?\n' +
+        'Examples: artist / genre / vibe (k-pop, lofi, game OST, indie…)\n' +
+        "Once you've searched or played songs on YouTube, I'll recommend from those first.",
+      suggestedReplies: ['K-pop', 'lofi / chill', 'game OST', 'indie'],
+    },
+  }[lang];
+  return { text: copy.text, suggestedReplies: copy.suggestedReplies };
+}
+
 // Localized reply for a taste-backed chat recommendation.
 export function buildAoiMusicTasteRecommendCopy(input: {
   query: string;
@@ -590,10 +668,11 @@ export function buildAoiMusicTasteRecommendCopy(input: {
           en: 'From your searches and plays',
         }[input.lang]
       : {
-          ko: '지금 분위기 기준으로',
-          ja: '今の雰囲気で',
-          zh: '按现在的氛围',
-          en: 'For the current mood',
+          // Pool is only used when personal history is empty (idle fallback).
+          ko: '아직 취향 데이터가 얇아서 임시 분위기로',
+          ja: '好みデータが少ないので仮の雰囲気で',
+          zh: '口味数据还少，先按临时氛围',
+          en: 'With little taste history yet, for the moment',
         }[input.lang];
 
   if (input.autoplay) {

@@ -129,15 +129,40 @@ export function chooseAoiMusicMood(
   return bestMood;
 }
 
-// Cap how many personal candidates compete per pick so a long search history
-// cannot fully crowd out the curated pool when we must fall back.
-const MAX_PERSONAL_CANDIDATES = 8;
+// Cap personal candidates per pick (aligned with taste play history size).
+const MAX_PERSONAL_CANDIDATES = 16;
+
+function pickLeastRecent(
+  list: readonly string[],
+  recencyRank: Map<string, number>,
+  source: AoiMusicQuerySource,
+  fallback: { query: string; source: AoiMusicQuerySource },
+): { query: string; source: AoiMusicQuerySource } {
+  let leastRecent = fallback.query;
+  let leastRecentSource = fallback.source;
+  let leastRecentRank = -1;
+  let found = false;
+  for (const query of list) {
+    const rank = recencyRank.get(query.toLowerCase());
+    if (rank === undefined) {
+      continue;
+    }
+    if (!found || rank > leastRecentRank) {
+      found = true;
+      leastRecentRank = rank;
+      leastRecent = query;
+      leastRecentSource = source;
+    }
+  }
+  return found ? { query: leastRecent, source: leastRecentSource } : fallback;
+}
 
 // Pick a query, skipping anything already in recentQueries.
-// When preferPersonal is true (default whenever personal candidates exist),
-// always try personal first and only use the curated pool as a fallback.
-// When preferPersonal is false, alternate after a personal pick so cards can
-// explore the pool deliberately (legacy idle mixing).
+// When preferPersonal is true and personal candidates exist, ONLY cycle the
+// personal set (never drop into the generic mood pool -- that is what produced
+// unrelated "sunset chill beats" style picks after personal history was seen).
+// When preferPersonal is false, personal still leads, then pool, and idle can
+// alternate for exploration. Empty personal always uses the curated pool.
 function pickQuery(
   mood: AoiMusicMood,
   recentQueries: readonly string[],
@@ -158,16 +183,25 @@ function pickQuery(
     }
   });
 
+  // Strict personal mode: recycle the user's own searches/plays only.
+  if (preferPersonal && personal.length > 0) {
+    const freshPersonal = personal.find((query) => !recencyRank.has(query.toLowerCase()));
+    if (freshPersonal) {
+      return { query: freshPersonal, source: 'personal' };
+    }
+    return pickLeastRecent(personal, recencyRank, 'personal', {
+      query: personal[0],
+      source: 'personal',
+    });
+  }
+
   const personalKeys = new Set(personal.map((query) => query.toLowerCase()));
   const lastOffered = recentQueries[0]?.trim().toLowerCase();
   const lastWasPersonal = lastOffered !== undefined && personalKeys.has(lastOffered);
 
   const candidateLists: Array<{ list: readonly string[]; source: AoiMusicQuerySource }> =
-    preferPersonal || personal.length === 0
-      ? [
-          { list: personal, source: 'personal' },
-          { list: pool, source: 'pool' },
-        ]
+    personal.length === 0
+      ? [{ list: pool, source: 'pool' }]
       : lastWasPersonal
         ? [
             { list: pool, source: 'pool' },
@@ -186,20 +220,24 @@ function pickQuery(
   }
 
   // Everything on offer was recommended recently: cycle from the least recent.
-  let leastRecent = pool[0];
-  let leastRecentSource: AoiMusicQuerySource = 'pool';
+  const allCandidates = candidateLists.flatMap(({ list, source }) =>
+    list.map((query) => ({ query, source })),
+  );
+  const flatList = allCandidates.map((item) => item.query);
+  // Prefer the least-recent across all candidates while preserving source tags.
+  let leastRecent = allCandidates[0] ?? { query: pool[0], source: 'pool' as const };
   let leastRecentRank = -1;
-  for (const { list, source } of candidateLists) {
-    for (const query of list) {
-      const rank = recencyRank.get(query.toLowerCase());
-      if (rank !== undefined && rank > leastRecentRank) {
-        leastRecentRank = rank;
-        leastRecent = query;
-        leastRecentSource = source;
-      }
+  for (const item of allCandidates) {
+    const rank = recencyRank.get(item.query.toLowerCase());
+    if (rank !== undefined && rank > leastRecentRank) {
+      leastRecentRank = rank;
+      leastRecent = item;
     }
   }
-  return { query: leastRecent, source: leastRecentSource };
+  if (leastRecentRank < 0 && flatList.length > 0) {
+    return { query: flatList[0], source: allCandidates[0].source };
+  }
+  return leastRecent;
 }
 
 // Build one music recommendation. Pure: same inputs -> same output

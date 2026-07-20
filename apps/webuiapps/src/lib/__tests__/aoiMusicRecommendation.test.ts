@@ -218,7 +218,7 @@ describe('buildAoiMusicRecommendation — personal taste signals', () => {
     expect(rec.source).toBe('pool');
   });
 
-  it('falls back to the pool when every personal query was offered recently', () => {
+  it('recycles personal history instead of falling to the mood pool', () => {
     const rec = buildAoiMusicRecommendation({
       now: NOW,
       hourOfDay: 14,
@@ -226,35 +226,35 @@ describe('buildAoiMusicRecommendation — personal taste signals', () => {
       preferPersonal: true,
       recentQueries: [FOCUS_POOL[0], 'IVE I AM'],
     });
-    // Personal exhausted -> first fresh pool entry (pool[0] is recent, so pool[1]).
-    expect(rec.query).toBe(FOCUS_POOL[1]);
-    expect(rec.source).toBe('pool');
-  });
-
-  it('cycles the least-recently-offered candidate across both sources', () => {
-    const rec = buildAoiMusicRecommendation({
-      now: NOW,
-      hourOfDay: 14,
-      personalQueries: ['IVE I AM'],
-      // Everything is recent; the personal query is the oldest offer.
-      recentQueries: [...FOCUS_POOL, 'IVE I AM'],
-    });
+    // Prefer-personal must never invent a generic pool mix when any personal exists.
     expect(rec.query).toBe('IVE I AM');
     expect(rec.source).toBe('personal');
   });
 
-  it('caps personal candidates at eight per pick', () => {
+  it('cycles the least-recently-offered personal query when all personals are recent', () => {
+    const rec = buildAoiMusicRecommendation({
+      now: NOW,
+      hourOfDay: 14,
+      personalQueries: ['IVE I AM', 'city pop mix'],
+      preferPersonal: true,
+      recentQueries: ['city pop mix', 'IVE I AM'],
+    });
+    // Oldest personal offer wins (higher recency rank).
+    expect(rec.query).toBe('IVE I AM');
+    expect(rec.source).toBe('personal');
+  });
+
+  it('considers more than eight personal candidates', () => {
     const personals = ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8', 'p9'];
     const rec = buildAoiMusicRecommendation({
       now: NOW,
       hourOfDay: 14,
       personalQueries: personals,
       preferPersonal: true,
-      // First eight personals are recent; ninth must NOT be considered.
-      recentQueries: [FOCUS_POOL[0], 'p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8'],
+      recentQueries: ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8'],
     });
-    expect(rec.query).toBe(FOCUS_POOL[1]);
-    expect(rec.source).toBe('pool');
+    expect(rec.query).toBe('p9');
+    expect(rec.source).toBe('personal');
   });
 
   it('lets taste bias steer the mood over the time default', () => {
