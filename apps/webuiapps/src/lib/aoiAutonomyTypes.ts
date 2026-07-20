@@ -26,6 +26,8 @@ export type AoiEnvironmentSourceKind =
   // machine-scoped, default OFF, gated by the host-bridge kill switch.
   | 'process_activity'
   | 'desktop_activity'
+  // Headless Chrome/Edge page reads on the operator PC (public http(s) only).
+  | 'host_browser_read'
   | AoiPersonalSignalSourceKind;
 
 export type AoiEnvironmentSourceOperation =

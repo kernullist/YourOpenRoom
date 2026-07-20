@@ -259,6 +259,12 @@ import {
   getHostProcessToolPendingSummary,
   isHostProcessTool,
 } from '@/lib/aoiHostProcessTools';
+import {
+  executeHostBrowserTool,
+  getHostBrowserToolDefinitions,
+  getHostBrowserToolPendingSummary,
+  isHostBrowserTool,
+} from '@/lib/aoiHostBrowserTools';
 import { executeUrlTool, getUrlToolDefinitions, isUrlTool } from '@/lib/urlTools';
 import {
   executeAppStateTool,
@@ -2248,6 +2254,7 @@ When the user wants to interact with an app, first identify the target app from 
 3. If you do not know the exact session app-storage path yet, use workspace_search to find candidate paths before file_read.
 3a. file_read/file_write/file_patch/file_list/file_delete and workspace_search operate only on Aoi session app storage, normally under apps/{appName}/. They do not access the real IDE or repository workspace.
 3a-1. host_process_list reads a metadata-only snapshot of real host OS processes (image name + pid; never command lines). Use it when the user asks what is running on the PC, whether an app/process is open, or wants a process summary. Prefer mode=summary; use mode=list with query for a specific image. If blocked, tell the user to enable Host Bridge process_activity and process-activity consent.
+3a-2. host_browser_read opens a public http(s) URL with the operator PC's headless Chrome/Edge, renders the page, and returns a reader extract. Use it when the user asks Aoi to visit/read a webpage on their PC or to research a URL with a real browser. Prefer host_browser_read over read_url for JS-rendered pages when host browser is enabled; use read_url for quick network-only extracts. Private/local URLs are blocked. If gated, tell the user to enable Host Bridge Headless browser read (os_browser_read + host-browser-read consent).
 3b. If the user names a repository/worktree path outside apps/{appName}/ or asks about real files, documents, source code, or configuration, use ide_search/ide_read_file/ide_patch_file/ide_write_file instead.
 3b-1. If the user says current file, active file, opened file, currently visible file, selected text, selection, 현재 파일, 활성 파일, 열린 파일, 선택 영역, or 선택한 텍스트 in Aoi's IDE, first use ide_current_file or get_app_state(app_name="openvscode"). Do not guess the file path.
 3c. If the user asks for a specific symbol or definition, use open_symbol.
@@ -6793,6 +6800,7 @@ const ChatPanel: React.FC<{
             ...(hasResearchTools ? getAoiResearchToolDefinitions() : []),
             ...(hasImageGen ? getImageGenToolDefinitions() : []),
             ...getHostProcessToolDefinitions(),
+            ...getHostBrowserToolDefinitions(),
             ...(includeAppTools
               ? [
                   getListAppsToolDefinition(),
@@ -7608,6 +7616,17 @@ const ChatPanel: React.FC<{
               return {
                 toolCallId: tc.id,
                 pendingSummary: getHostProcessToolPendingSummary(params),
+                summarizedResult: summarizeToolResultForModel(tc.function.name, result),
+              };
+            }
+
+            if (isHostBrowserTool(tc.function.name)) {
+              const result = await executeHostBrowserTool(params, {
+                sessionPath: sessionPathRef.current,
+              });
+              return {
+                toolCallId: tc.id,
+                pendingSummary: getHostBrowserToolPendingSummary(params),
                 summarizedResult: summarizeToolResultForModel(tc.function.name, result),
               };
             }
@@ -8532,6 +8551,35 @@ const ChatPanel: React.FC<{
             ];
           } catch (err) {
             console.error('[ChatPanel] host_process_list failed', err);
+            currentMessages = [
+              ...currentMessages,
+              {
+                role: 'tool',
+                content: `error: ${err instanceof Error ? err.message : String(err)}`,
+                tool_call_id: tc.id,
+              },
+            ];
+          }
+          continue;
+        }
+
+        // ---- Host headless browser read (Chrome/Edge dump-dom) ----
+        if (isHostBrowserTool(tc.function.name)) {
+          pendingToolCallsRef.current.push(getHostBrowserToolPendingSummary(params));
+          try {
+            const result = await executeHostBrowserTool(params, {
+              sessionPath: sessionPathRef.current,
+            });
+            console.info('[ChatPanel] host_browser_read result', {
+              resultPreview: result.slice(0, 200),
+            });
+            const summarizedResult = summarizeToolResultForModel(tc.function.name, result);
+            currentMessages = [
+              ...currentMessages,
+              { role: 'tool', content: summarizedResult, tool_call_id: tc.id },
+            ];
+          } catch (err) {
+            console.error('[ChatPanel] host_browser_read failed', err);
             currentMessages = [
               ...currentMessages,
               {

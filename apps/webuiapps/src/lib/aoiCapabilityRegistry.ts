@@ -260,6 +260,21 @@ const AOI_CAPABILITY_REGISTRY = {
     policyNotes:
       'Requires Host Bridge process_activity capability and process-activity environment-source consent.',
   },
+  host_browser_read: {
+    name: 'host_browser_read',
+    label: 'Host headless browser read',
+    kind: 'tool',
+    surface: 'web',
+    risk: 'high',
+    description:
+      'Open a public http(s) page with local Chrome/Edge headless and extract reader text.',
+    access: ['read', 'network', 'external'],
+    sandboxEligible: false,
+    approval: 'policy-gated',
+    promptVisible: true,
+    policyNotes:
+      'Requires Host Bridge os_browser_read capability and host-browser-read consent. Private/local hosts blocked.',
+  },
   read_url: {
     name: 'read_url',
     label: 'Read URL',

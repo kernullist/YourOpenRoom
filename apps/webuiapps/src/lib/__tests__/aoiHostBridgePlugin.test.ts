@@ -278,6 +278,83 @@ describe('resolveAoiHostBridgeRoute /processes (HP1 gate)', () => {
   });
 });
 
+describe('resolveAoiHostBridgeRoute /browser-read (HP5 gate)', () => {
+  function enableBrowserConsent(sessionsDir: string, home: string): void {
+    const registry = getDefaultAoiEnvironmentSourceRegistry('aoi/default', 1000);
+    saveAoiEnvironmentSourceRegistry(sessionsDir, 'aoi/default', registry);
+    updateAoiEnvironmentSource(sessionsDir, 'aoi/default', {
+      sourceId: 'host-browser-read',
+      patch: {
+        enabled: true,
+        consentReason: 'User enabled host headless browser read for this test.',
+      },
+      now: 1500,
+    });
+    saveAoiHostBridgeKillSwitchState(
+      home,
+      setAoiHostBridgeCapability(null, 'os_browser_read', true, 1500),
+    );
+  }
+
+  it('blocks browser-read when capability/consent is off', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-read',
+      body: { sessionPath: 'aoi/default', url: 'https://example.com' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+      browserReadImpl: async () => ({
+        ok: true,
+        url: 'https://example.com',
+        finalUrl: 'https://example.com',
+        title: 'x',
+        excerpt: 'x',
+        siteName: 'example.com',
+        blocks: [],
+        text: 'x',
+        browserPath: 'chrome',
+        sampledAt: 1,
+        durationMs: 1,
+        engine: 'chrome-headless',
+      }),
+    });
+    expect(result.status).toBe(403);
+  });
+
+  it('returns a page extract when gated and enabled', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    enableBrowserConsent(sessionsDir, home);
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-read',
+      body: { sessionPath: 'aoi/default', url: 'https://example.com/a' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+      browserReadImpl: async ({ url }) => ({
+        ok: true,
+        url,
+        finalUrl: url,
+        title: 'Example Article',
+        excerpt: 'Hello',
+        siteName: 'example.com',
+        blocks: [{ type: 'paragraph', text: 'Hello world content for the page.' }],
+        text: 'Hello world content for the page.',
+        browserPath: 'C:\\chrome.exe',
+        sampledAt: 2000,
+        durationMs: 12,
+        engine: 'chrome-headless',
+      }),
+    });
+    expect(result.status).toBe(200);
+    expect((result.payload as { page: { title: string } }).page.title).toBe('Example Article');
+  });
+});
+
 describe('registration CRUD (auth-only)', () => {
   it('adds, lists, and removes a spawn-allowlist entry; rejects a relative path', async () => {
     const { home, sessionsDir, token } = makeDaemonHome();

@@ -74,6 +74,7 @@ export const AOI_ENVIRONMENT_SOURCE_KINDS: readonly AoiEnvironmentSourceKind[] =
   'manual_note',
   'process_activity',
   'desktop_activity',
+  'host_browser_read',
   'calendar_metadata',
   'gmail_metadata',
   'notes_metadata',
@@ -209,6 +210,19 @@ const DEFAULT_AOI_ENVIRONMENT_SOURCES: readonly Omit<
     scope: 'explicit_target',
     risk: 'high',
     allowedOperations: ['read_metadata', 'summarize_counts'],
+    privateByDefault: true,
+    quietModeBehavior: 'suppress',
+  },
+  {
+    // HP5: headless Chrome/Edge reads of public http(s) pages on the operator PC.
+    // JS-rendered content; SSRF-blocked private hosts. Default OFF + kill-switch.
+    id: 'host-browser-read',
+    kind: 'host_browser_read',
+    label: 'Host headless browser page read',
+    enabled: false,
+    scope: 'explicit_target',
+    risk: 'high',
+    allowedOperations: ['read_metadata', 'summarize'],
     privateByDefault: true,
     quietModeBehavior: 'suppress',
   },

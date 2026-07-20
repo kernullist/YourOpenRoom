@@ -23,6 +23,12 @@ export const AOI_HOST_BRIDGE_CONSENT_LINKS: readonly AoiHostBridgeConsentLink[] 
     label: 'Desktop activity',
     consentReason: 'Enabled from Host Bridge settings (desktop activity).',
   },
+  {
+    capabilityKey: 'os_browser_read',
+    sourceId: 'host-browser-read',
+    label: 'Host headless browser read',
+    consentReason: 'Enabled from Host Bridge settings (headless browser page read).',
+  },
 ];
 
 export function getAoiHostBridgeConsentLink(

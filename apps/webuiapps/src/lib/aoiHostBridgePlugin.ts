@@ -32,6 +32,12 @@ import {
 import { evaluateAoiHostBridgeGate } from './aoiHostBridgeGate';
 import { listHostProcesses, type AoiHostProcessListing } from './aoiHostProcessInspect';
 import {
+  AOI_HOST_BROWSER_READ_CAPABILITY,
+  AOI_HOST_BROWSER_READ_SOURCE_ID,
+  runAoiHostBrowserRead,
+  type AoiHostBrowserReadOutcome,
+} from './aoiHostBrowserRead';
+import {
   AOI_HOST_SPAWN_CAPABILITY,
   addAoiHostSpawnAllowlistEntry,
   evaluateAoiHostSpawnPolicy,
@@ -122,6 +128,7 @@ export interface ResolveAoiHostBridgeRouteParams {
   // Injected for tests so a route never spawns tasklist / kills a real process
   // / recycles a real file. Production uses the real OS impls by default.
   listProcessesImpl?: (options: { now: number }) => Promise<AoiHostProcessListing>;
+  browserReadImpl?: (options: { url: string; now: number }) => Promise<AoiHostBrowserReadOutcome>;
   readProcessImpl?: (pid: number) => AoiHostLiveProcess | null;
   killImpl?: (pid: number) => boolean;
   recycleImpl?: (path: string) => boolean;
@@ -247,6 +254,73 @@ export async function resolveAoiHostBridgeRoute(
           ok: false,
           error: error instanceof Error ? error.message : String(error),
           code: 'process_listing_failed',
+        },
+      };
+    }
+  }
+
+  // --- POST /browser-read (HP5): headless Chrome/Edge page extract -------------
+  if (params.method === 'POST' && params.route === '/browser-read') {
+    const sessionPath = normalizeAoiAutonomySessionPath(
+      typeof params.body.sessionPath === 'string' ? params.body.sessionPath : '',
+    );
+    if (!sessionPath) {
+      return {
+        status: 400,
+        payload: { ok: false, error: 'sessionPath is required', code: 'invalid_session_path' },
+      };
+    }
+    const url = typeof params.body.url === 'string' ? params.body.url : '';
+    const killSwitch = loadAoiHostBridgeKillSwitchState(params.openroomHome);
+    const registry = loadAoiEnvironmentSourceRegistry(params.sessionsDir, sessionPath, params.now);
+    const consent = checkAoiEnvironmentSourceOperation({
+      registry,
+      sourceId: AOI_HOST_BROWSER_READ_SOURCE_ID,
+      operation: 'read_metadata',
+    });
+    const gate = evaluateAoiHostBridgeGate({
+      authenticated: true,
+      killSwitchState: killSwitch,
+      capabilityKey: AOI_HOST_BROWSER_READ_CAPABILITY,
+      irreversible: false,
+      consent: { allowed: consent.allowed, reasons: consent.reasons },
+    });
+    if (!gate.allowed) {
+      return {
+        status: 403,
+        payload: {
+          ok: false,
+          error: 'blocked',
+          denyReasons: gate.denyReasons,
+          detail: gate.detail,
+        },
+      };
+    }
+    try {
+      const browserRead =
+        params.browserReadImpl ??
+        ((options: { url: string; now: number }) =>
+          runAoiHostBrowserRead({ url: options.url, now: options.now }));
+      const result = await browserRead({ url, now: params.now });
+      if (!result.ok) {
+        return {
+          status: 422,
+          payload: {
+            ok: false,
+            error: result.reason,
+            code: result.reason,
+            detail: result.detail,
+          },
+        };
+      }
+      return { status: 200, payload: { ok: true, page: result } };
+    } catch (error) {
+      return {
+        status: 500,
+        payload: {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+          code: 'browser_read_failed',
         },
       };
     }

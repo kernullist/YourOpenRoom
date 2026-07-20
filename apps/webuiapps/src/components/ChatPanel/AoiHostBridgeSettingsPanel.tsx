@@ -45,6 +45,11 @@ const CAPABILITIES: { key: string; label: string; hint: string }[] = [
     label: 'Desktop activity',
     hint: 'Learn interests from foreground app usage. Also grants session desktop-activity consent.',
   },
+  {
+    key: 'os_browser_read',
+    label: 'Headless browser read',
+    hint: 'Open public pages with local Chrome/Edge headless and extract text. Also grants host-browser-read consent.',
+  },
   { key: 'os_process_spawn', label: 'Start process', hint: 'Launch an allowlisted executable' },
   { key: 'os_file_read', label: 'Read files', hint: 'Read within registered read-roots' },
   { key: 'os_file_write', label: 'Write files', hint: 'Write within registered write-roots' },

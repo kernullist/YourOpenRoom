@@ -276,6 +276,59 @@ export async function fetchAoiHostProcesses(
   return parseProcessListing(payload.listing);
 }
 
+// --- Headless browser page read (HP5) ----------------------------------------
+
+export interface AoiHostBrowserPageView {
+  url: string;
+  finalUrl: string;
+  title: string;
+  excerpt: string;
+  siteName: string;
+  blocks: Array<{ type: string; text: string }>;
+  text: string;
+  browserPath: string;
+  sampledAt: number;
+  durationMs: number;
+  engine: string;
+}
+
+function parseBrowserPage(value: unknown): AoiHostBrowserPageView {
+  const record = isRecord(value) ? value : {};
+  const blocksRaw = Array.isArray(record.blocks) ? record.blocks : [];
+  return {
+    url: asString(record.url),
+    finalUrl: asString(record.finalUrl) || asString(record.url),
+    title: asString(record.title),
+    excerpt: asString(record.excerpt),
+    siteName: asString(record.siteName),
+    blocks: blocksRaw.filter(isRecord).map((block) => ({
+      type: asString(block.type) || 'paragraph',
+      text: asString(block.text),
+    })),
+    text: asString(record.text),
+    browserPath: asString(record.browserPath),
+    sampledAt: typeof record.sampledAt === 'number' ? record.sampledAt : 0,
+    durationMs: typeof record.durationMs === 'number' ? record.durationMs : 0,
+    engine: asString(record.engine),
+  };
+}
+
+export async function fetchAoiHostBrowserRead(
+  sessionPath: string,
+  url: string,
+): Promise<AoiHostBrowserPageView> {
+  const path = typeof sessionPath === 'string' ? sessionPath.trim() : '';
+  if (!path) {
+    throw new Error('sessionPath is required for host browser read');
+  }
+  const target = typeof url === 'string' ? url.trim() : '';
+  if (!target) {
+    throw new Error('url is required for host browser read');
+  }
+  const payload = await sendJson('/browser-read', 'POST', { sessionPath: path, url: target });
+  return parseBrowserPage(payload.page);
+}
+
 export async function addAoiHostRoot(
   kind: AoiHostRootKind,
   root: { id?: string; path: string; label?: string },
