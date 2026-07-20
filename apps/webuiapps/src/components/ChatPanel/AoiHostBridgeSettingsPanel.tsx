@@ -18,24 +18,32 @@ import {
   type AoiHostBridgeApprovalView,
   type AoiHostRootKind,
 } from '@/lib/aoiHostBridgeClient';
+import {
+  AOI_HOST_BRIDGE_CONSENT_LINKS,
+  buildAoiHostBridgeLinkedSourcePatch,
+  getAoiHostBridgeConsentLink,
+} from '@/lib/aoiHostBridgeConsent';
 import { listAoiHostReadRootPresets, listAoiHostSpawnPresets } from '@/lib/aoiHostBridgePresets';
+import { updateAoiEnvironmentSource } from '@/lib/aoiAutonomyClient';
 
 import styles from './index.module.scss';
 
 // The kill-switch capability keys the daemon recognizes, with operator-facing
 // labels. Kept in sync with the *_CAPABILITY constants (server-only, so not
-// imported here). Enabling one is the MACHINE-level master switch; a capability
-// still needs its per-session consent + (for irreversible ops) an approval.
+// imported here). Enabling one is the MACHINE-level master switch; process /
+// desktop list also need per-session environment-source consent (auto-synced
+// from this panel when sessionPath is provided). Irreversible ops still need
+// per-action approval.
 const CAPABILITIES: { key: string; label: string; hint: string }[] = [
   {
     key: 'process_activity',
     label: 'Process list',
-    hint: 'Read running-process metadata (no command line)',
+    hint: 'Read running-process metadata (no command line). Also grants session process-activity consent.',
   },
   {
     key: 'desktop_activity',
     label: 'Desktop activity',
-    hint: 'Learn interests from foreground app usage',
+    hint: 'Learn interests from foreground app usage. Also grants session desktop-activity consent.',
   },
   { key: 'os_process_spawn', label: 'Start process', hint: 'Launch an allowlisted executable' },
   { key: 'os_file_read', label: 'Read files', hint: 'Read within registered read-roots' },
@@ -64,11 +72,19 @@ interface SpawnDraft {
 const EMPTY_DRAFT: RootDraft = { id: '', path: '', label: '' };
 const EMPTY_SPAWN_DRAFT: SpawnDraft = { id: '', path: '', label: '', match: 'file' };
 
+interface AoiHostBridgeSettingsPanelProps {
+  // Active Aoi session path. Required to auto-sync process/desktop environment
+  // source consent when the machine kill-switch is toggled.
+  sessionPath?: string;
+}
+
 // Operator-only settings surface for the host-bridge (Aoi's real-PC access). It
 // is the machine-level control panel: the kill-switch master toggles + panic,
 // the spawn allowlist, the read/write roots, and the pending-approval queue.
 // Everything here is fail-closed on the daemon; this panel just drives it.
-export const AoiHostBridgeSettingsPanel: React.FC = () => {
+export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProps> = ({
+  sessionPath = '',
+}) => {
   const [status, setStatus] = useState<AoiHostBridgeStatus | null>(null);
   const [spawnEntries, setSpawnEntries] = useState<AoiHostSpawnAllowlistEntryView[]>([]);
   const [readRoots, setReadRoots] = useState<AoiHostRootView[]>([]);
@@ -77,12 +93,33 @@ export const AoiHostBridgeSettingsPanel: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
+  const [consentNote, setConsentNote] = useState('');
 
   const [spawnDraft, setSpawnDraft] = useState<SpawnDraft>(EMPTY_SPAWN_DRAFT);
   const [readDraft, setReadDraft] = useState<RootDraft>(EMPTY_DRAFT);
   const [writeDraft, setWriteDraft] = useState<RootDraft>(EMPTY_DRAFT);
   const readPresets = listAoiHostReadRootPresets();
   const spawnPresets = listAoiHostSpawnPresets();
+
+  const syncLinkedSessionConsent = useCallback(
+    async (capabilityKey: string, enabled: boolean) => {
+      const link = getAoiHostBridgeConsentLink(capabilityKey);
+      const path = sessionPath.trim();
+      if (!link || !path) {
+        return;
+      }
+      await updateAoiEnvironmentSource(path, {
+        sourceId: link.sourceId,
+        patch: buildAoiHostBridgeLinkedSourcePatch(link, enabled),
+      });
+      setConsentNote(
+        enabled
+          ? `Session consent granted for ${link.sourceId} (${path}).`
+          : `Session consent cleared for ${link.sourceId} (${path}).`,
+      );
+    },
+    [sessionPath],
+  );
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -100,12 +137,36 @@ export const AoiHostBridgeSettingsPanel: React.FC = () => {
       setReadRoots(read);
       setWriteRoots(write);
       setApprovals(pending);
+
+      // Repair footgun: capability already ON but session consent never granted.
+      const enabledKeys = new Set(nextStatus.killSwitch.enabledCapabilities);
+      const path = sessionPath.trim();
+      if (path && !nextStatus.killSwitch.globalPanic) {
+        const repaired: string[] = [];
+        for (const link of AOI_HOST_BRIDGE_CONSENT_LINKS) {
+          if (!enabledKeys.has(link.capabilityKey)) {
+            continue;
+          }
+          try {
+            await updateAoiEnvironmentSource(path, {
+              sourceId: link.sourceId,
+              patch: buildAoiHostBridgeLinkedSourcePatch(link, true),
+            });
+            repaired.push(link.sourceId);
+          } catch {
+            // Autonomy route may be unavailable; kill-switch still reflects truth.
+          }
+        }
+        if (repaired.length > 0) {
+          setConsentNote(`Synced session consent: ${repaired.join(', ')} (${path}).`);
+        }
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [sessionPath]);
 
   useEffect(() => {
     void loadAll();
@@ -133,6 +194,16 @@ export const AoiHostBridgeSettingsPanel: React.FC = () => {
         enabled: next,
       });
       setStatus((prev) => (prev ? { ...prev, killSwitch } : prev));
+      try {
+        await syncLinkedSessionConsent(key, next);
+      } catch (err) {
+        // Kill-switch succeeded; surface consent failure separately so the
+        // operator knows chat tools may still be blocked.
+        const message = err instanceof Error ? err.message : String(err);
+        setError(
+          `Capability ${key} is ${next ? 'enabled' : 'disabled'}, but session consent sync failed: ${message}`,
+        );
+      }
     });
 
   const setPanic = (engage: boolean) =>
@@ -306,6 +377,16 @@ export const AoiHostBridgeSettingsPanel: React.FC = () => {
       </div>
 
       {error ? <div className={styles.aoiAutonomyError}>{error}</div> : null}
+      {consentNote ? (
+        <span className={styles.modelHint} data-testid="aoi-host-consent-note">
+          {consentNote}
+        </span>
+      ) : null}
+      {!sessionPath.trim() ? (
+        <span className={styles.modelHint}>
+          No active session path — process/desktop kill-switch will not auto-grant session consent.
+        </span>
+      ) : null}
       {loading ? <span className={styles.modelHint}>Loading host-bridge state...</span> : null}
 
       {status ? (

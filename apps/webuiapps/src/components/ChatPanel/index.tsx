@@ -16871,7 +16871,7 @@ const SettingsModal: React.FC<{
                 )}
               </div>
 
-              <AoiHostBridgeSettingsPanel />
+              <AoiHostBridgeSettingsPanel sessionPath={sessionPath} />
 
               <AoiReplayPromotionPanel sessionPath={aoiReplaySessionPath} />
 

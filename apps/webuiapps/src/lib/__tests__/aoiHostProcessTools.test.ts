@@ -112,12 +112,25 @@ describe('aoiHostProcessTools', () => {
       {
         sessionPath: 'aoi/default',
         fetchListing: async () => {
-          throw new Error('blocked [capability_disabled, consent_disabled]');
+          throw new Error('blocked [capability_disabled]');
         },
       },
     );
     expect(result.startsWith('error:')).toBe(true);
     expect(result).toMatch(/process_activity/);
-    expect(result).toMatch(/process-activity/);
+  });
+
+  it('returns consent-specific guidance when source_not_consented', async () => {
+    const result = await executeHostProcessTool(
+      {},
+      {
+        sessionPath: 'aoi/default',
+        fetchListing: async () => {
+          throw new Error('blocked [source_not_consented]');
+        },
+      },
+    );
+    expect(result).toMatch(/session consent/i);
+    expect(result).toMatch(/toggle Process list/i);
   });
 });

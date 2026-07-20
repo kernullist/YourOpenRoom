@@ -20,7 +20,11 @@ function installFetch(statusBody: Record<string, unknown>) {
       return Promise.resolve(
         jsonResponse({
           ok: true,
-          killSwitch: { globalPanic: false, enabledCapabilities: ['os_file_read'], updatedAt: 1 },
+          killSwitch: {
+            globalPanic: false,
+            enabledCapabilities: ['os_file_read', 'process_activity'],
+            updatedAt: 1,
+          },
         }),
       );
     }
@@ -35,6 +39,15 @@ function installFetch(statusBody: Record<string, unknown>) {
     }
     if (target.includes('/approvals')) {
       return Promise.resolve(jsonResponse({ ok: true, approvals: [] }));
+    }
+    if (target.includes('/api/aoi-autonomy/sources') || target.includes('/sources')) {
+      return Promise.resolve(
+        jsonResponse({
+          ok: true,
+          sessionPath: 'aoi/default',
+          registry: { version: 1, sessionPath: 'aoi/default', sources: [], updatedAt: 1 },
+        }),
+      );
     }
     void init;
     return Promise.resolve(jsonResponse({ ok: false, error: 'unexpected route' }, false));
@@ -55,7 +68,7 @@ describe('AoiHostBridgeSettingsPanel', () => {
       tokenConfigured: true,
       killSwitch: { globalPanic: false, enabledCapabilities: [], updatedAt: 0 },
     });
-    render(<AoiHostBridgeSettingsPanel />);
+    render(<AoiHostBridgeSettingsPanel sessionPath="aoi/default" />);
 
     const toggle = await screen.findByTestId('aoi-host-cap-os_file_read');
     expect(toggle.textContent).toContain('Disabled');
@@ -71,6 +84,32 @@ describe('AoiHostBridgeSettingsPanel', () => {
     expect(killswitchCall).toBeTruthy();
     const body = JSON.parse((killswitchCall?.[1] as { body: string }).body);
     expect(body).toEqual({ action: 'set', capability: 'os_file_read', enabled: true });
+  });
+
+  it('syncs process-activity session consent when Process list is enabled', async () => {
+    const fetchMock = installFetch({
+      tokenConfigured: true,
+      killSwitch: { globalPanic: false, enabledCapabilities: [], updatedAt: 0 },
+    });
+    render(<AoiHostBridgeSettingsPanel sessionPath="aoi/default" />);
+
+    const toggle = await screen.findByTestId('aoi-host-cap-process_activity');
+    fireEvent.click(toggle);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('aoi-host-cap-process_activity').textContent).toContain('Enabled'),
+    );
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          (call) =>
+            String(call[0]).includes('/sources') &&
+            String((call[1] as { body?: string } | undefined)?.body || '').includes(
+              'process-activity',
+            ),
+        ),
+      ).toBe(true),
+    );
   });
 
   it('warns when the daemon has not minted a token', async () => {

@@ -186,17 +186,35 @@ export function formatHostProcessListingForChat(
 function formatGateError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   const lowered = message.toLowerCase();
+  if (lowered.includes('source_not_consented') || lowered.includes('consent')) {
+    return (
+      `error: host process listing blocked by session consent: ${message}. ` +
+      'Machine kill-switch process_activity alone is not enough. ' +
+      'Open Settings → Advanced → Host Bridge, toggle Process list Off then On ' +
+      '(that grants process-activity consent for the active session), then retry.'
+    );
+  }
+  if (lowered.includes('capability_disabled')) {
+    return (
+      `error: host process listing blocked: capability process_activity is disabled. ` +
+      'Enable Process list in Settings → Advanced → Host Bridge, then retry.'
+    );
+  }
+  if (lowered.includes('host_bridge_panic') || lowered.includes('panic')) {
+    return (
+      `error: host process listing blocked by host-bridge panic: ${message}. ` +
+      'Clear panic in Settings → Advanced → Host Bridge, then retry.'
+    );
+  }
   if (
     lowered.includes('blocked') ||
     lowered.includes('capability') ||
-    lowered.includes('consent') ||
-    lowered.includes('panic') ||
-    lowered.includes('deny')
+    lowered.includes('deny') ||
+    lowered.includes('unauthorized')
   ) {
     return (
       `error: host process listing blocked: ${message}. ` +
-      'Enable Host Bridge capability process_activity (Settings → Advanced → Host Bridge) ' +
-      'and session environment source process-activity consent, then retry.'
+      'Check Host Bridge process_activity kill-switch AND session process-activity consent.'
     );
   }
   if (lowered.includes('sessionpath')) {
