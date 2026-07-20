@@ -194,13 +194,14 @@ export function getFileToolDefinitions(): Array<{
       function: {
         name: 'file_list',
         description:
-          'List files and directories in Aoi session app storage. This does not list the real IDE/repository workspace; use ide_search there.',
+          'List files and directories in Aoi session app storage. Pass the directory as "directory" (not path). Example: directory="apps/youtube". This does not list the real IDE/repository workspace; use ide_search there.',
         parameters: {
           type: 'object',
           properties: {
             directory: {
               type: 'string',
-              description: 'Directory path relative to the session app-storage root',
+              description:
+                'Directory path relative to the session app-storage root (preferred key). Aliases path/dir/folder are accepted by the runtime.',
             },
           },
           required: ['directory'],
@@ -238,6 +239,68 @@ export function isFileTool(toolName: string): boolean {
     toolName === 'file_list' ||
     toolName === 'file_delete'
   );
+}
+
+function firstNonEmptyString(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+  return '';
+}
+
+/**
+ * Models often pass common aliases (path/dir/file) instead of the schema keys.
+ * Normalize those so file_list({path:"apps/youtube"}) still works.
+ */
+export function normalizeFileToolParams(
+  toolName: string,
+  params: Record<string, unknown>,
+): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...params };
+
+  if (toolName === 'file_list') {
+    const directory = firstNonEmptyString(
+      params.directory,
+      params.path,
+      params.dir,
+      params.folder,
+      params.file_path,
+    );
+    if (directory) {
+      next.directory = directory;
+    }
+    return next;
+  }
+
+  if (
+    toolName === 'file_read' ||
+    toolName === 'file_write' ||
+    toolName === 'file_patch' ||
+    toolName === 'file_delete'
+  ) {
+    const filePath = firstNonEmptyString(
+      params.file_path,
+      params.path,
+      params.file,
+      params.filepath,
+    );
+    if (filePath) {
+      next.file_path = filePath;
+    }
+  }
+
+  if (toolName === 'file_write') {
+    if (params.content === undefined) {
+      const content = firstNonEmptyString(params.content, params.text, params.body, params.data);
+      if (content) {
+        next.content = content;
+      }
+    }
+  }
+
+  return next;
 }
 
 function countOccurrences(content: string, searchText: string): number {
@@ -324,25 +387,33 @@ export async function executeFileTool(
   toolName: string,
   params: Record<string, unknown>,
 ): Promise<string> {
+  const normalizedParams = normalizeFileToolParams(toolName, params);
+
   switch (toolName) {
     case 'file_read': {
-      const filePath = String(params.file_path || '').replace(/^\/+/, '');
-      if (!filePath) return 'error: file_path is required';
+      const filePath = String(normalizedParams.file_path || '').replace(/^\/+/, '');
+      if (!filePath) {
+        return 'error: file_path is required (aliases path/file are accepted)';
+      }
       try {
         const content = await idb.getFile(filePath);
         if (content === null || content === undefined) {
-          return `error: session app-storage file not found: ${filePath}. If this is a real IDE/repository workspace path, use ide_read_file.`;
+          const parentHint =
+            filePath.includes('/') && !filePath.endsWith('/')
+              ? ` Try file_list(directory="${filePath.split('/').slice(0, -1).join('/')}") or file_read("apps/{app}/guide.md").`
+              : ' Try list_apps, then file_read("apps/{app}/meta.yaml") and file_read("apps/{app}/guide.md").';
+          return `error: session app-storage file not found: ${filePath}.${parentHint} If this is a real IDE/repository workspace path, use ide_read_file.`;
         }
         const textContent =
           typeof content === 'string' ? content : JSON.stringify(content, null, 2);
         const startLine =
-          typeof params.start_line === 'number'
-            ? Math.floor(params.start_line)
-            : Number(String(params.start_line || ''));
+          typeof normalizedParams.start_line === 'number'
+            ? Math.floor(normalizedParams.start_line)
+            : Number(String(normalizedParams.start_line || ''));
         const endLine =
-          typeof params.end_line === 'number'
-            ? Math.floor(params.end_line)
-            : Number(String(params.end_line || ''));
+          typeof normalizedParams.end_line === 'number'
+            ? Math.floor(normalizedParams.end_line)
+            : Number(String(normalizedParams.end_line || ''));
         return buildFileReadResponse(filePath, textContent, {
           startLine: Number.isFinite(startLine) ? startLine : undefined,
           endLine: Number.isFinite(endLine) ? endLine : undefined,
@@ -353,10 +424,10 @@ export async function executeFileTool(
     }
 
     case 'file_write': {
-      const filePath = String(params.file_path || '').replace(/^\/+/, '');
-      let content = String(params.content ?? '');
-      if (!filePath) return 'error: file_path is required';
-      if (params.content === undefined) return 'error: content is required';
+      const filePath = String(normalizedParams.file_path || '').replace(/^\/+/, '');
+      let content = String(normalizedParams.content ?? '');
+      if (!filePath) return 'error: file_path is required (aliases path/file are accepted)';
+      if (normalizedParams.content === undefined) return 'error: content is required';
       // For JSON files, extract JSON (strip markdown wrapping) and validate
       if (filePath.endsWith('.json')) {
         content = extractJson(content);
@@ -403,14 +474,14 @@ export async function executeFileTool(
     }
 
     case 'file_patch': {
-      const filePath = String(params.file_path || '').replace(/^\/+/, '');
-      const oldText = String(params.old_text ?? '');
-      const newText = String(params.new_text ?? '');
+      const filePath = String(normalizedParams.file_path || '').replace(/^\/+/, '');
+      const oldText = String(normalizedParams.old_text ?? '');
+      const newText = String(normalizedParams.new_text ?? '');
       const expectedOccurrences =
-        typeof params.expected_occurrences === 'number'
-          ? Math.floor(params.expected_occurrences)
-          : Number.parseInt(String(params.expected_occurrences || ''), 10);
-      const replaceAll = params.replace_all === true;
+        typeof normalizedParams.expected_occurrences === 'number'
+          ? Math.floor(normalizedParams.expected_occurrences)
+          : Number.parseInt(String(normalizedParams.expected_occurrences || ''), 10);
+      const replaceAll = normalizedParams.replace_all === true;
 
       if (!filePath) return 'error: file_path is required';
       if (!oldText) return 'error: old_text is required';
@@ -478,7 +549,7 @@ export async function executeFileTool(
     }
 
     case 'file_list': {
-      const dir = String(params.directory || '')
+      const dir = String(normalizedParams.directory || '')
         .replace(/^\/+/, '')
         .replace(/\/+$/, '');
       try {
@@ -488,7 +559,17 @@ export async function executeFileTool(
           return f.type === 1 ? `[dir]  ${name}` : `[file] ${name}`;
         });
         if (items.length === 0) {
-          return 'empty session app-storage directory. For real IDE/repository files, use ide_search.';
+          const listed = dir || '/';
+          const parent = listed.includes('/') ? listed.split('/').slice(0, -1).join('/') : '';
+          const hints = [
+            `empty session app-storage directory: ${listed}.`,
+            'Use parameter "directory" (aliases path/dir/folder are accepted).',
+            parent
+              ? `Try parent directory "${parent}" or "apps/{appName}" then read meta.yaml/guide.md.`
+              : 'Try directory "apps" or list_apps first.',
+            'For real IDE/repository files, use ide_search.',
+          ];
+          return hints.join(' ');
         }
         return items.join('\n');
       } catch (e) {
@@ -497,8 +578,8 @@ export async function executeFileTool(
     }
 
     case 'file_delete': {
-      const filePath = String(params.file_path || '').replace(/^\/+/, '');
-      if (!filePath) return 'error: file_path is required';
+      const filePath = String(normalizedParams.file_path || '').replace(/^\/+/, '');
+      if (!filePath) return 'error: file_path is required (aliases path/file are accepted)';
       try {
         const existing = await idb.getFile(filePath);
         const beforeContent =

@@ -640,6 +640,11 @@ import {
 } from '@/lib/modManager';
 import type { AoiMcpConnectorsConfig } from '@/lib/aoiMcpConnectorRegistry';
 import { buildAoiUndeliveredConversationFailureMessage } from '@/lib/aoiConversationFailure';
+import {
+  createAoiToolLoopGuardState,
+  observeAoiToolLoopBatch,
+  type AoiToolLoopGuardState,
+} from '@/lib/aoiToolLoopGuard';
 import CharacterPanel from './CharacterPanel';
 import ModPanel from './ModPanel';
 import { AoiMcpConnectorsSettings } from './AoiMcpConnectorsSettings';
@@ -2239,8 +2244,10 @@ When the user wants to interact with an app, first identify the target app from 
 6. For session app-storage data mutation actions:
    - file_read("apps/{appName}/guide.md")
    - workspace_search/file_list/file_read — explore existing data in "apps/{appName}/data/"
+   - file_list requires the parameter name "directory" (example: directory="apps/youtube"). Do not invent nested data paths like apps/youtube/data/youtube; use guide.md and meta.yaml as the source of truth.
    - file_patch/file_write/file_delete — create/modify/delete data following the JSON schema from guide.md
    - app_action — notify the app to reload or reflect the new state
+   - After enough discovery (meta/guide/state), call respond_to_user. Do not spend the whole turn re-listing the same empty directories.
 
 Rules:
 - Always operate on the app the user specified. Do not redirect the operation to a different app or OS action.
@@ -6809,6 +6816,7 @@ const ChatPanel: React.FC<{
       DEFAULT_CONVERSATION_ITERATION_LIMIT +
       (fileTaskExecutionConfirmed ? CONFIRMED_FILE_TASK_RECOVERY_ITERATIONS : 0);
     pendingToolCallsRef.current = [];
+    let toolLoopGuardState: AoiToolLoopGuardState = createAoiToolLoopGuardState();
     let latestDiagnosticsParams: Record<string, unknown> | null = null;
     let latestDiagnosticsHadIssues = false;
     let fileMutatedSinceDiagnostics = false;
@@ -6817,6 +6825,44 @@ const ChatPanel: React.FC<{
     let pendingResearchStartAck: string | null = null;
     let fileTaskEvidence = createAoiFileTaskEvidence();
     let outcomeFeedbackEvidence: AoiOutcomeFeedbackEvidence | null = null;
+    const applyToolLoopGuard = (
+      toolCalls: Array<{ function: { name: string; arguments?: string } }>,
+      batchHasRespondTool: boolean,
+    ) => {
+      if (deliveredAssistantContent.trim()) {
+        return;
+      }
+      const decision = observeAoiToolLoopBatch({
+        state: toolLoopGuardState,
+        toolCalls,
+        iterations,
+        iterationLimit,
+        deliveredAssistantContent,
+        batchHasRespondTool,
+      });
+      toolLoopGuardState = decision.state;
+      if (!decision.prompt) {
+        return;
+      }
+      console.info('[ChatPanel] Tool-loop guard prompt', {
+        kind: decision.kind,
+        iteration: iterations,
+        iterationLimit,
+      });
+      currentMessages = [
+        ...currentMessages,
+        {
+          role: 'system',
+          content: decision.prompt,
+        },
+      ];
+      recordRunLedgerEvent({
+        type: 'tool_error',
+        iteration: iterations,
+        message: decision.prompt.slice(0, 400),
+        toolNames: toolCalls.map((toolCall) => toolCall.function.name),
+      });
+    };
     const researchAckLanguage = detectPreferredLanguage(
       latestUserMessage,
       normalizeResponseLanguageMode(conversationPreferencesRef.current?.responseLanguageMode),
@@ -7326,6 +7372,7 @@ const ChatPanel: React.FC<{
           ];
         }
 
+        applyToolLoopGuard(response.toolCalls, batchHasRespondTool);
         continue;
       }
 
@@ -8523,6 +8570,8 @@ const ChatPanel: React.FC<{
         console.info('[ChatPanel] Stopping conversation loop after respond_to_user');
         break;
       }
+
+      applyToolLoopGuard(response.toolCalls, batchHasRespondTool);
     }
     if (!deliveredAssistantContent.trim() && pendingResearchStartAck) {
       const verification = evaluateConversationCompletion(pendingResearchStartAck);
