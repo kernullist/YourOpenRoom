@@ -5,6 +5,7 @@ import {
   fetchAoiHostSpawnAllowlist,
   removeAoiHostSpawnAllowlistEntry,
   fetchAoiHostRoots,
+  fetchAoiHostProcesses,
   fetchAoiHostApprovals,
   approveAoiHostApproval,
 } from '../aoiHostBridgeClient';
@@ -86,6 +87,32 @@ describe('aoiHostBridgeClient', () => {
     const writeMock = mockFetch({ ok: true, roots: [] });
     await fetchAoiHostRoots('write');
     expect(writeMock.mock.calls[0][0]).toContain('/write-roots');
+  });
+
+  it('fetches process listing with encoded sessionPath and drops bad rows', async () => {
+    const fetchMock = mockFetch({
+      ok: true,
+      listing: {
+        version: 1,
+        sampledAt: 99,
+        records: [
+          { pid: 1, imageName: 'ok.exe', memKb: 10 },
+          { pid: -1, imageName: 'bad' },
+          { pid: 2 },
+        ],
+        summary: {
+          version: 1,
+          sampledAt: 99,
+          totalCount: 1,
+          distinctImageCount: 1,
+          topImages: [{ imageName: 'ok.exe', count: 1 }],
+        },
+      },
+    });
+    const listing = await fetchAoiHostProcesses('aoi/my session');
+    expect(listing.records).toEqual([{ pid: 1, imageName: 'ok.exe', memKb: 10 }]);
+    expect(listing.summary.totalCount).toBe(1);
+    expect(fetchMock.mock.calls[0][0]).toContain('/processes?sessionPath=aoi%2Fmy%20session');
   });
 
   it('parses approvals and approves via POST with the fingerprint', async () => {

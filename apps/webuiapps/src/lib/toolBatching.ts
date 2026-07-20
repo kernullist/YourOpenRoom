@@ -23,6 +23,7 @@ const PARALLEL_SAFE_TOOLS = new Set([
   'search_web',
   'get_research_status',
   'read_research_artifact',
+  'host_process_list',
 ]);
 
 export function isParallelSafeToolName(toolName: string): boolean {

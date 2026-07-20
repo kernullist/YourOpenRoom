@@ -245,6 +245,21 @@ const AOI_CAPABILITY_REGISTRY = {
     approval: 'none',
     promptVisible: true,
   },
+  host_process_list: {
+    name: 'host_process_list',
+    label: 'Host process list',
+    kind: 'tool',
+    surface: 'diagnostics',
+    risk: 'medium',
+    description:
+      'Read a metadata-only snapshot of running host processes (image name + pid; no command line).',
+    access: ['read'],
+    sandboxEligible: false,
+    approval: 'policy-gated',
+    promptVisible: true,
+    policyNotes:
+      'Requires Host Bridge process_activity capability and process-activity environment-source consent.',
+  },
   read_url: {
     name: 'read_url',
     label: 'Read URL',

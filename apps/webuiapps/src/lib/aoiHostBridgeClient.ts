@@ -183,6 +183,99 @@ export async function fetchAoiHostRoots(kind: AoiHostRootKind): Promise<AoiHostR
   return parseRoots((await getJson(rootsRoute(kind))).roots);
 }
 
+// --- Process listing (HP1, read-only metadata) -------------------------------
+
+export interface AoiHostProcessRecordView {
+  pid: number;
+  imageName: string;
+  sessionName?: string;
+  memKb?: number;
+}
+
+export interface AoiHostProcessSummaryView {
+  version: 1;
+  sampledAt: number;
+  totalCount: number;
+  topImages: Array<{ imageName: string; count: number }>;
+  distinctImageCount: number;
+}
+
+export interface AoiHostProcessListingView {
+  version: 1;
+  sampledAt: number;
+  records: AoiHostProcessRecordView[];
+  summary: AoiHostProcessSummaryView;
+}
+
+function parseProcessRecord(value: unknown): AoiHostProcessRecordView | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const pid = typeof value.pid === 'number' ? value.pid : Number.NaN;
+  const imageName = asString(value.imageName);
+  if (!Number.isFinite(pid) || pid <= 0 || !imageName) {
+    return null;
+  }
+  const record: AoiHostProcessRecordView = { pid, imageName };
+  if (typeof value.sessionName === 'string' && value.sessionName.trim()) {
+    record.sessionName = value.sessionName.trim().slice(0, 32);
+  }
+  if (typeof value.memKb === 'number' && Number.isFinite(value.memKb)) {
+    record.memKb = value.memKb;
+  }
+  return record;
+}
+
+function parseProcessListing(value: unknown): AoiHostProcessListingView {
+  const record = isRecord(value) ? value : {};
+  const summaryRaw = isRecord(record.summary) ? record.summary : {};
+  const topImagesRaw = Array.isArray(summaryRaw.topImages) ? summaryRaw.topImages : [];
+  const recordsRaw = Array.isArray(record.records) ? record.records : [];
+  const topImages = topImagesRaw
+    .filter(isRecord)
+    .map((item) => ({
+      imageName: asString(item.imageName),
+      count: typeof item.count === 'number' ? item.count : 0,
+    }))
+    .filter((item) => item.imageName && item.count > 0);
+  const records = recordsRaw
+    .map(parseProcessRecord)
+    .filter((item): item is AoiHostProcessRecordView => item !== null);
+  const sampledAt =
+    typeof record.sampledAt === 'number'
+      ? record.sampledAt
+      : typeof summaryRaw.sampledAt === 'number'
+        ? summaryRaw.sampledAt
+        : 0;
+  return {
+    version: 1,
+    sampledAt,
+    records,
+    summary: {
+      version: 1,
+      sampledAt,
+      totalCount:
+        typeof summaryRaw.totalCount === 'number' ? summaryRaw.totalCount : records.length,
+      topImages,
+      distinctImageCount:
+        typeof summaryRaw.distinctImageCount === 'number'
+          ? summaryRaw.distinctImageCount
+          : topImages.length,
+    },
+  };
+}
+
+export async function fetchAoiHostProcesses(
+  sessionPath: string,
+): Promise<AoiHostProcessListingView> {
+  const path = typeof sessionPath === 'string' ? sessionPath.trim() : '';
+  if (!path) {
+    throw new Error('sessionPath is required for host process listing');
+  }
+  const payload = await getJson(`/processes?sessionPath=${encodeURIComponent(path)}`);
+  return parseProcessListing(payload.listing);
+}
+
 export async function addAoiHostRoot(
   kind: AoiHostRootKind,
   root: { id?: string; path: string; label?: string },

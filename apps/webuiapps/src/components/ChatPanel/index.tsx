@@ -251,6 +251,12 @@ import {
   isSemanticTool,
 } from '@/lib/semanticTools';
 import { executeCommandTool, getCommandToolDefinitions, isCommandTool } from '@/lib/commandTools';
+import {
+  executeHostProcessTool,
+  getHostProcessToolDefinitions,
+  getHostProcessToolPendingSummary,
+  isHostProcessTool,
+} from '@/lib/aoiHostProcessTools';
 import { executeUrlTool, getUrlToolDefinitions, isUrlTool } from '@/lib/urlTools';
 import {
   executeAppStateTool,
@@ -2238,6 +2244,7 @@ When the user wants to interact with an app, first identify the target app from 
 2a. get_app_schema — if available, use the machine-readable schema for the target app's data files.
 3. If you do not know the exact session app-storage path yet, use workspace_search to find candidate paths before file_read.
 3a. file_read/file_write/file_patch/file_list/file_delete and workspace_search operate only on Aoi session app storage, normally under apps/{appName}/. They do not access the real IDE or repository workspace.
+3a-1. host_process_list reads a metadata-only snapshot of real host OS processes (image name + pid; never command lines). Use it when the user asks what is running on the PC, whether an app/process is open, or wants a process summary. Prefer mode=summary; use mode=list with query for a specific image. If blocked, tell the user to enable Host Bridge process_activity and process-activity consent.
 3b. If the user names a repository/worktree path outside apps/{appName}/ or asks about real files, documents, source code, or configuration, use ide_search/ide_read_file/ide_patch_file/ide_write_file instead.
 3b-1. If the user says current file, active file, opened file, currently visible file, selected text, selection, 현재 파일, 활성 파일, 열린 파일, 선택 영역, or 선택한 텍스트 in Aoi's IDE, first use ide_current_file or get_app_state(app_name="openvscode"). Do not guess the file path.
 3c. If the user asks for a specific symbol or definition, use open_symbol.
@@ -6697,6 +6704,7 @@ const ChatPanel: React.FC<{
             ...(hasTavily ? getTavilyToolDefinitions() : []),
             ...(hasResearchTools ? getAoiResearchToolDefinitions() : []),
             ...(hasImageGen ? getImageGenToolDefinitions() : []),
+            ...getHostProcessToolDefinitions(),
             ...(includeAppTools
               ? [
                   getListAppsToolDefinition(),
@@ -7501,6 +7509,17 @@ const ChatPanel: React.FC<{
               return {
                 toolCallId: tc.id,
                 pendingSummary: `search_web(${String(params.query || '').slice(0, 48)})`,
+                summarizedResult: summarizeToolResultForModel(tc.function.name, result),
+              };
+            }
+
+            if (isHostProcessTool(tc.function.name)) {
+              const result = await executeHostProcessTool(params, {
+                sessionPath: sessionPathRef.current,
+              });
+              return {
+                toolCallId: tc.id,
+                pendingSummary: getHostProcessToolPendingSummary(params),
                 summarizedResult: summarizeToolResultForModel(tc.function.name, result),
               };
             }
@@ -8396,6 +8415,35 @@ const ChatPanel: React.FC<{
             ];
           } catch (err) {
             console.error('[ChatPanel] Tavily tool failed', err);
+            currentMessages = [
+              ...currentMessages,
+              {
+                role: 'tool',
+                content: `error: ${err instanceof Error ? err.message : String(err)}`,
+                tool_call_id: tc.id,
+              },
+            ];
+          }
+          continue;
+        }
+
+        // ---- Host process list (real PC, metadata-only) ----
+        if (isHostProcessTool(tc.function.name)) {
+          pendingToolCallsRef.current.push(getHostProcessToolPendingSummary(params));
+          try {
+            const result = await executeHostProcessTool(params, {
+              sessionPath: sessionPathRef.current,
+            });
+            console.info('[ChatPanel] host_process_list result', {
+              resultPreview: result.slice(0, 200),
+            });
+            const summarizedResult = summarizeToolResultForModel(tc.function.name, result);
+            currentMessages = [
+              ...currentMessages,
+              { role: 'tool', content: summarizedResult, tool_call_id: tc.id },
+            ];
+          } catch (err) {
+            console.error('[ChatPanel] host_process_list failed', err);
             currentMessages = [
               ...currentMessages,
               {
