@@ -286,7 +286,10 @@ export function mergeServerAoiMemoryCandidates(
           (candidate.type === 'preference' &&
             memory.type === 'preference' &&
             memory.scope === (candidate.scope ?? 'user') &&
-            isAoiPreferenceNearDuplicateContent(candidate.content, memory.content))),
+            isAoiPreferenceNearDuplicateContent(candidate.content, memory.content, {
+              leftTags: candidate.tags,
+              rightTags: memory.tags,
+            }))),
     );
     if (duplicate) {
       const episodeAlreadySeen = duplicate.sourceEpisodeIds.includes(params.episodeId);

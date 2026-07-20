@@ -21,7 +21,9 @@ $script:AoiDaemonEnv = [ordered]@{
     'AOI_AUTONOMY_CONSOLIDATION'         = '1'
     'AOI_AUTONOMY_EMBED_SWEEP'           = '1'
     'AOI_AUTONOMY_IDLE_CONFIDENCE_SURGE' = '1'
-    'AOI_AUTONOMY_FIELD_SHADOW_CAPTURE'  = '1'
+    # Field-shadow capture is session-policy controlled (settings toggle / ignition).
+    # Do NOT soft-set AOI_AUTONOMY_FIELD_SHADOW_CAPTURE=1 here -- that made the
+    # operator OFF toggle a no-op. Env=0 remains a hard process ceiling when set.
     'AOI_AUTONOMY_APP_OP_LIVE_DISPATCH'  = '1'
     'AOI_AUTONOMY_APPROVAL_TTL'          = '1'
     'AOI_MCP_SIDE_EFFECTING_RPC'         = '1'

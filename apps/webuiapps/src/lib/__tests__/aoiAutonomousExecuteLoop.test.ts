@@ -188,6 +188,34 @@ describe('runAoiAutonomousExecuteLoop (P2.3)', () => {
     expect(result.executed).toEqual([]);
   });
 
+  it('skips proposals that already have a terminal execute/block decision', async () => {
+    const root = makeRoot();
+    seed(root, makeProposal({ status: 'accepted' }), makeDecision({ nextStatus: 'accepted' }));
+    appendAoiProposalDecision(
+      root,
+      makeDecision({
+        id: 'decision-exec',
+        action: 'execute',
+        actor: 'system',
+        previousStatus: 'accepted',
+        nextStatus: 'executed',
+        createdAt: NOW - 100,
+      }),
+    );
+    const executeProposal = vi.fn(async () => ({ executed: true }));
+    const result = await runAoiAutonomousExecuteLoop({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      now: NOW,
+      env: { AOI_AUTONOMY_SELF_EXECUTE: '1' },
+      deps: { resolveEligibility: () => eligibleInput, executeProposal },
+    });
+    expect(executeProposal).not.toHaveBeenCalled();
+    expect(result.skipped.some((item) => item.blockReasons.includes('duplicate_attempt'))).toBe(
+      true,
+    );
+  });
+
   it('the conservative default resolver treats a proposal with no acceptAction as run_command', async () => {
     const root = makeRoot();
     seed(root, makeProposal({ acceptAction: undefined }), makeDecision());

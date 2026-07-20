@@ -177,16 +177,83 @@ export function sanitizeAoiProcedureContent(value: string): string {
 // Deliberately lexical-only (deterministic, sync, no embedding requirement);
 // cross-language restatements are handled upstream by the distiller grounding.
 export const AOI_PREFERENCE_NEAR_DUPLICATE_THRESHOLD = 0.8;
+// Short restatements need a softer bar when one side adds a filler word.
+export const AOI_PREFERENCE_NEAR_DUPLICATE_SHORT_THRESHOLD = 0.7;
+export const AOI_PREFERENCE_NEAR_DUPLICATE_SHORT_MAX_TOKENS = 8;
+
+const PREFERENCE_POLARITY_NEGATIONS: ReadonlyArray<readonly [string, string]> = [
+  ['like', 'dislike'],
+  ['love', 'hate'],
+  ['prefer', 'avoid'],
+  ['enable', 'disable'],
+  ['always', 'never'],
+  ['want', 'dont'],
+  ['want', "don't"],
+];
 
 function tokenizeForNearDuplicate(value: string): Set<string> {
   const tokens = new Set<string>();
-  for (const token of value.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}'_-]{1,}/gu) ?? []) {
-    tokens.add(token);
+  const lower = value.toLowerCase();
+  for (const token of lower.match(/[\p{L}\p{N}][\p{L}\p{N}'_-]*/gu) ?? []) {
+    if (token.length > 0) {
+      tokens.add(token);
+    }
+  }
+  // CJK / unspaced text: letter bigrams keep short restatements comparable.
+  const compact = lower.replace(/[^\p{L}\p{N}]+/gu, '');
+  const wordLikeCount = [...tokens].filter((token) => token.length >= 2).length;
+  if (compact.length >= 4 && wordLikeCount <= 4) {
+    for (let index = 0; index < compact.length - 1; index += 1) {
+      tokens.add(compact.slice(index, index + 2));
+    }
   }
   return tokens;
 }
 
-export function isAoiPreferenceNearDuplicateContent(left: string, right: string): boolean {
+function extractPrefKeys(tags: readonly string[] | undefined): Set<string> {
+  const keys = new Set<string>();
+  for (const tag of tags ?? []) {
+    const match = /^pref:([a-z0-9._-]{2,64})$/i.exec(tag.trim());
+    if (match) {
+      keys.add(match[1].toLowerCase());
+    }
+  }
+  return keys;
+}
+
+function hasOppositePreferencePolarity(left: string, right: string): boolean {
+  const leftLower = left.toLowerCase();
+  const rightLower = right.toLowerCase();
+  for (const [positive, negative] of PREFERENCE_POLARITY_NEGATIONS) {
+    const leftPos = leftLower.includes(positive);
+    const leftNeg = leftLower.includes(negative);
+    const rightPos = rightLower.includes(positive);
+    const rightNeg = rightLower.includes(negative);
+    if ((leftPos && rightNeg) || (leftNeg && rightPos)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function isAoiPreferenceNearDuplicateContent(
+  left: string,
+  right: string,
+  options?: { leftTags?: readonly string[]; rightTags?: readonly string[] },
+): boolean {
+  // Same pref: key always merges, even when wording diverges.
+  const leftKeys = extractPrefKeys(options?.leftTags);
+  const rightKeys = extractPrefKeys(options?.rightTags);
+  for (const key of leftKeys) {
+    if (rightKeys.has(key)) {
+      return true;
+    }
+  }
+
+  if (hasOppositePreferencePolarity(left, right)) {
+    return false;
+  }
+
   const leftTokens = tokenizeForNearDuplicate(left);
   const rightTokens = tokenizeForNearDuplicate(right);
   if (leftTokens.size === 0 || rightTokens.size === 0) {
@@ -198,8 +265,41 @@ export function isAoiPreferenceNearDuplicateContent(left: string, right: string)
       matches += 1;
     }
   }
-  const score = matches / Math.max(1, Math.min(leftTokens.size, rightTokens.size));
-  return score >= AOI_PREFERENCE_NEAR_DUPLICATE_THRESHOLD;
+  const minSize = Math.max(1, Math.min(leftTokens.size, rightTokens.size));
+  const score = matches / minSize;
+  const shortPair =
+    leftTokens.size <= AOI_PREFERENCE_NEAR_DUPLICATE_SHORT_MAX_TOKENS &&
+    rightTokens.size <= AOI_PREFERENCE_NEAR_DUPLICATE_SHORT_MAX_TOKENS;
+  const threshold = shortPair
+    ? AOI_PREFERENCE_NEAR_DUPLICATE_SHORT_THRESHOLD
+    : AOI_PREFERENCE_NEAR_DUPLICATE_THRESHOLD;
+  if (score >= threshold) {
+    return true;
+  }
+  // Containment: one restatement fully includes the other content tokens.
+  if (matches === minSize && minSize >= 3) {
+    return true;
+  }
+
+  // Compact letter/digit character overlap for short unspaced restatements
+  // (common in Korean preference phrases without spaces).
+  const leftCompact = left.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+  const rightCompact = right.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+  if (leftCompact.length >= 4 && rightCompact.length >= 4) {
+    const leftChars = new Set([...leftCompact]);
+    const rightChars = new Set([...rightCompact]);
+    let charMatches = 0;
+    leftChars.forEach((ch) => {
+      if (rightChars.has(ch)) {
+        charMatches += 1;
+      }
+    });
+    const charMin = Math.max(1, Math.min(leftChars.size, rightChars.size));
+    if (charMatches / charMin >= 0.85 && Math.abs(leftCompact.length - rightCompact.length) <= 4) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function sanitizeAoiStoragePart(value: string): string {

@@ -302,6 +302,20 @@ export const DEFAULT_AOI_AUTONOMY_POLICY: AoiAutonomyPolicy = {
   updatedAt: 0,
 };
 
+// Field-shadow capture enablement. Operator session policy is the authority;
+// env=0/false/no is a hard process ceiling. Launcher soft env=1 alone must NOT
+// keep capturing after the settings toggle turns the policy off.
+export function isAoiFieldShadowCaptureEnabled(params: {
+  policyEnabled: boolean;
+  env?: Record<string, string | undefined>;
+}): boolean {
+  const raw = (params.env ?? process.env).AOI_AUTONOMY_FIELD_SHADOW_CAPTURE;
+  if (raw === '0' || raw === 'false' || raw === 'no') {
+    return false;
+  }
+  return params.policyEnabled === true;
+}
+
 const DEFAULT_BLOCKED_TOOL_POLICY: AoiAutonomyToolPolicy = {
   toolName: '*',
   maxLevel: 'L5',
@@ -1490,13 +1504,21 @@ export function evaluateAoiProposalExecution(
 
 // Concrete artifact anchors that identify "the same underlying subject" across
 // re-authored proposals: memory/research/kira/goal/workspace/proposal refs.
-// Per-tick refs (situation/activity/observation/chat) and broad source refs
-// (environment-source) are deliberately excluded -- matching on those would
-// suppress unrelated proposals.
+// Per-tick live refs (activity/chat) and broad source refs (environment-source)
+// stay excluded so matching cannot blanket-suppress unrelated proposals.
+// observation/situation ARE included for DISMISSAL matching: live-context
+// proposals often cite only those, and without them a re-worded LLM card
+// reappears every tick after dismiss.
 const STABLE_ANCHOR_REF_PATTERN = /^(?:memory|research|kira|goal|workspace|proposal):/;
+const DISMISSAL_ANCHOR_REF_PATTERN =
+  /^(?:memory|research|kira|goal|workspace|proposal|observation|situation):/;
 
 function stableAnchorRefs(refs: readonly string[] | undefined): string[] {
   return (refs ?? []).filter((ref) => STABLE_ANCHOR_REF_PATTERN.test(ref));
+}
+
+function dismissalAnchorRefs(refs: readonly string[] | undefined): string[] {
+  return (refs ?? []).filter((ref) => DISMISSAL_ANCHOR_REF_PATTERN.test(ref));
 }
 
 function proposalAnchorRefSet(proposal: AoiProposal): Set<string> {
@@ -1507,28 +1529,92 @@ function proposalAnchorRefSet(proposal: AoiProposal): Set<string> {
   ]);
 }
 
-function sharesStableAnchorRef(proposal: AoiProposal, decision: AoiProposalDecision): boolean {
-  const anchors = proposalAnchorRefSet(proposal);
+function proposalDismissalAnchorRefSet(proposal: AoiProposal): Set<string> {
+  return new Set([
+    ...proposal.memoryIds.map((id) => `memory:${id}`),
+    ...dismissalAnchorRefs(proposal.evidenceRefs),
+    ...dismissalAnchorRefs(proposal.artifactRefs),
+  ]);
+}
+
+function sharesDismissalAnchorRef(proposal: AoiProposal, decision: AoiProposalDecision): boolean {
+  const anchors = proposalDismissalAnchorRefSet(proposal);
   if (anchors.size === 0) {
     return false;
   }
   return [
     ...(decision.memoryIds ?? []).map((id) => `memory:${id}`),
-    ...stableAnchorRefs(decision.evidenceRefs),
+    ...dismissalAnchorRefs(decision.evidenceRefs),
   ].some((ref) => anchors.has(ref));
+}
+
+// Normalize titles for soft dismissal matching (re-worded LLM cards).
+function normalizeDismissalTitle(value: string | undefined): string {
+  return (value ?? '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function titlesLookLikeSameDismissalSubject(
+  proposalTitle: string | undefined,
+  decisionReasonOrTitle: string | undefined,
+): boolean {
+  const left = normalizeDismissalTitle(proposalTitle);
+  const right = normalizeDismissalTitle(decisionReasonOrTitle);
+  if (!left || !right || left.length < 8 || right.length < 8) {
+    return false;
+  }
+  if (left === right) {
+    return true;
+  }
+  // One contains the other (re-worded prefix/suffix).
+  if (left.includes(right) || right.includes(left)) {
+    return true;
+  }
+  // Token Jaccard for short rephrases.
+  const leftTokens = new Set(left.split(' ').filter((token) => token.length >= 2));
+  const rightTokens = new Set(right.split(' ').filter((token) => token.length >= 2));
+  if (leftTokens.size === 0 || rightTokens.size === 0) {
+    return false;
+  }
+  let overlap = 0;
+  leftTokens.forEach((token) => {
+    if (rightTokens.has(token)) {
+      overlap += 1;
+    }
+  });
+  const union = leftTokens.size + rightTokens.size - overlap;
+  return union > 0 && overlap / union >= 0.6;
 }
 
 // LLM reflection invents a fresh cooldownKey (and usually a new title) every
 // tick, so an exact-key comparison lets a dismissed proposal come straight back
 // re-worded. A dismissal therefore also applies when the new proposal
-// re-proposes the SAME action against the SAME concrete anchor. Trigger-only
+// re-proposes the SAME action against the SAME concrete anchor, OR the same
+// action with a near-identical title (observation-only cards). Trigger-only
 // matching is deliberately NOT used: it would blanket-suppress every
 // llm_reflection proposal after one dismissal.
 function dismissalAppliesToProposal(proposal: AoiProposal, decision: AoiProposalDecision): boolean {
   if (decision.cooldownKey === proposal.cooldownKey) {
     return true;
   }
-  return actionKindMatches(proposal, decision) && sharesStableAnchorRef(proposal, decision);
+  if (!actionKindMatches(proposal, decision)) {
+    return false;
+  }
+  if (sharesDismissalAnchorRef(proposal, decision)) {
+    return true;
+  }
+  // Soft title match only when neither side has a stable artifact anchor --
+  // prevents unrelated memory-grounded proposals from colliding on generic titles.
+  const proposalHasStable = proposalAnchorRefSet(proposal).size > 0;
+  const decisionHasStable =
+    (decision.memoryIds?.length ?? 0) > 0 || stableAnchorRefs(decision.evidenceRefs).length > 0;
+  if (proposalHasStable || decisionHasStable) {
+    return false;
+  }
+  return titlesLookLikeSameDismissalSubject(proposal.title, decision.proposalTitle);
 }
 
 function proposalsProposeSameAction(left: AoiProposal, right: AoiProposal): boolean {

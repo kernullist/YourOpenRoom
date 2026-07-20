@@ -126,19 +126,35 @@ describe('runAoiAppOperationDispatchBridge()', () => {
     expect(summary.failed).toBe(1);
   });
 
-  it('reports failed when the source proposal cannot be resolved', async () => {
+  it('leaves the record pending when the local proposal cache misses (not terminal)', async () => {
     const { deps, reports, dispatchToApp } = makeHarness({
       lookupProposal: () => null,
     });
     const summary = await runAoiAppOperationDispatchBridge([makeDispatch()], deps);
 
     expect(dispatchToApp).not.toHaveBeenCalled();
+    expect(reports).toEqual([]);
+    expect(summary.outcomes[0].result).toBe('unavailable');
+    expect(summary.unavailable).toBe(1);
+    expect(summary.failed).toBe(0);
+  });
+
+  it('does NOT dispatch and reports failed when the queue-time standing approval has expired', async () => {
+    const { deps, reports, dispatchToApp } = makeHarness({
+      now: () => 100_000,
+    });
+    const summary = await runAoiAppOperationDispatchBridge(
+      [makeDispatch({ approvalExpiresAt: 1 })],
+      deps,
+    );
+
+    expect(dispatchToApp).not.toHaveBeenCalled();
     expect(reports[0]).toEqual({
       id: 'app-op-dispatch-1700-7-PLAY_TRACK',
       status: 'failed',
-      failureReason: 'proposal_not_found',
+      failureReason: 'approval_expired',
     });
-    expect(summary.outcomes[0].result).toBe('proposal_not_found');
+    expect(summary.outcomes[0].result).toBe('approval_mismatch');
     expect(summary.failed).toBe(1);
   });
 

@@ -1083,6 +1083,9 @@ function makeAoiProposalDecisionRecord(params: {
     ...(feedbackCategory && feedbackNote ? { feedbackNote } : {}),
     ...(params.snoozedUntil ? { snoozedUntil: params.snoozedUntil } : {}),
     proposalTrigger: params.proposal.trigger,
+    ...(typeof params.proposal.title === 'string' && params.proposal.title.trim()
+      ? { proposalTitle: params.proposal.title.trim().slice(0, 180) }
+      : {}),
     proposalRisk: params.proposal.risk,
     ...(params.proposal.acceptAction ? { actionKind: params.proposal.acceptAction.kind } : {}),
     suggestedTools: normalizeStringList(params.proposal.suggestedTools, 12),
@@ -2803,6 +2806,9 @@ function normalizeLoadedAoiProposalDecision(value: unknown): AoiProposalDecision
     ...(typeof item.snoozedUntil === 'number' ? { snoozedUntil: item.snoozedUntil } : {}),
     ...(normalizeOptionalText(item.proposalTrigger, 80)
       ? { proposalTrigger: normalizeOptionalText(item.proposalTrigger, 80) }
+      : {}),
+    ...(normalizeOptionalText(item.proposalTitle, 180)
+      ? { proposalTitle: normalizeOptionalText(item.proposalTitle, 180) }
       : {}),
     ...(item.proposalRisk === 'low' ||
     item.proposalRisk === 'medium' ||

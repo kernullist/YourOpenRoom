@@ -47,13 +47,26 @@ export interface AoiAppOperationDispatchBridgeReport {
   failureReason?: string;
 }
 
+export interface AoiAppOperationDispatchBridgeApprovalSnapshot {
+  fingerprint: string;
+  // Epoch-ms expiry of the standing content-addressed approval. Required so a
+  // queued dispatch cannot fire after the 5-minute approval TTL.
+  expiresAt: number;
+}
+
 export interface AoiAppOperationDispatchBridgeDeps {
   // Find the source proposal (active or archived) for a dispatch, for the approval
-  // re-check. Returns null when the proposal can no longer be resolved.
+  // re-check. Returns null when the proposal can no longer be resolved (e.g. local
+  // cache miss while the server still has it -- leave pending, do NOT fail terminal).
   lookupProposal: (proposalId: string) => AoiProposal | null;
-  // Recompute the proposal's CURRENT content-addressed approval fingerprint. May throw
-  // for a malformed proposal -> treated as a failed re-check (never dispatched).
-  recomputeApprovalFingerprint: (proposal: AoiProposal) => string;
+  // Recompute the proposal's CURRENT content-addressed approval. May return a plain
+  // fingerprint string (legacy) or {fingerprint, expiresAt}. May throw for a
+  // malformed proposal -> treated as a failed re-check (never dispatched).
+  recomputeApprovalFingerprint:
+    | ((proposal: AoiProposal) => string)
+    | ((proposal: AoiProposal) => AoiAppOperationDispatchBridgeApprovalSnapshot);
+  // Optional clock for expiry checks (tests inject a fixed now).
+  now?: () => number;
   // Publish the action to the target app over the agent->app bus and capture its
   // action_result. Resolve a string = the app's action_result; resolve null = the app is
   // NOT loaded in this client (leave the record pending); throw = a transport / dispatch
@@ -109,16 +122,29 @@ async function processOne(
   }
   const proposal = deps.lookupProposal(record.proposalId);
   if (!proposal) {
-    await safeReport(deps, {
-      id: record.id,
-      status: 'failed',
-      failureReason: 'proposal_not_found',
-    });
-    return { recordId: record.id, result: 'proposal_not_found', detail: 'proposal_not_found' };
+    // Local cache miss is NOT terminal: the server may still hold the proposal
+    // (dashboard load lag, another client owns the iframe, etc.). Leave pending.
+    return {
+      recordId: record.id,
+      result: 'unavailable',
+      detail: 'proposal_not_found_local',
+    };
   }
   let currentFingerprint: string;
+  let expiresAt = Number.POSITIVE_INFINITY;
   try {
-    currentFingerprint = deps.recomputeApprovalFingerprint(proposal);
+    const recomputed = deps.recomputeApprovalFingerprint(proposal) as
+      | string
+      | AoiAppOperationDispatchBridgeApprovalSnapshot;
+    if (typeof recomputed === 'string') {
+      currentFingerprint = recomputed;
+    } else {
+      currentFingerprint = recomputed.fingerprint;
+      expiresAt =
+        typeof recomputed.expiresAt === 'number' && Number.isFinite(recomputed.expiresAt)
+          ? recomputed.expiresAt
+          : Number.POSITIVE_INFINITY;
+    }
   } catch (error) {
     await safeReport(deps, {
       id: record.id,
@@ -143,6 +169,24 @@ async function processOne(
       recordId: record.id,
       result: 'approval_mismatch',
       detail: 'approval_fingerprint_mismatch',
+    };
+  }
+  const now = typeof deps.now === 'function' ? deps.now() : Date.now();
+  // Prefer the queue-time standing expiry snapshotted on the dispatch record.
+  const standingExpiresAt =
+    typeof record.approvalExpiresAt === 'number' && Number.isFinite(record.approvalExpiresAt)
+      ? record.approvalExpiresAt
+      : expiresAt;
+  if (standingExpiresAt < now) {
+    await safeReport(deps, {
+      id: record.id,
+      status: 'failed',
+      failureReason: 'approval_expired',
+    });
+    return {
+      recordId: record.id,
+      result: 'approval_mismatch',
+      detail: 'approval_expired',
     };
   }
 

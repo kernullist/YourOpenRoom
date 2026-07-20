@@ -93,13 +93,27 @@ export async function runAoiAutonomousExecuteLoop(params: {
 
   const resolveEligibility = params.deps?.resolveEligibility ?? conservativeResolve;
   const executeProposal = params.deps?.executeProposal;
+  const allDecisions = loadAoiProposalDecisions(params.sessionsDir, params.sessionPath);
+  // Terminal execute/block decisions mark a proposal as already attempted so a
+  // failed self-execute does not burn budget every wakeup forever.
+  const terminalAttemptProposalIds = new Set(
+    allDecisions
+      .filter(
+        (decision) =>
+          decision.action === 'execute' ||
+          decision.action === 'block' ||
+          decision.nextStatus === 'executed' ||
+          decision.nextStatus === 'blocked',
+      )
+      .map((decision) => decision.proposalId),
+  );
   const proposalsById = new Map(
     loadAoiActiveProposals(params.sessionsDir, params.sessionPath)
       .filter((proposal) => proposal.status === 'active' || proposal.status === 'accepted')
       .map((proposal) => [proposal.id, proposal]),
   );
   // CONSUME, never AUTHOR: only human-accepted decisions.
-  const decisions = loadAoiProposalDecisions(params.sessionsDir, params.sessionPath).filter(
+  const decisions = allDecisions.filter(
     (decision) => decision.actor === 'user' && decision.action === 'accept',
   );
 
@@ -114,9 +128,17 @@ export async function runAoiAutonomousExecuteLoop(params: {
       continue;
     }
     processedProposalIds.add(decision.proposalId);
+    if (terminalAttemptProposalIds.has(decision.proposalId)) {
+      skipped.push({ proposalId: decision.proposalId, blockReasons: ['duplicate_attempt'] });
+      continue;
+    }
     const proposal = proposalsById.get(decision.proposalId);
     if (!proposal) {
       skipped.push({ proposalId: decision.proposalId, blockReasons: ['proposal_not_executable'] });
+      continue;
+    }
+    if (proposal.status === 'executed' || proposal.status === 'blocked') {
+      skipped.push({ proposalId: decision.proposalId, blockReasons: ['duplicate_attempt'] });
       continue;
     }
     const input = resolveEligibility({

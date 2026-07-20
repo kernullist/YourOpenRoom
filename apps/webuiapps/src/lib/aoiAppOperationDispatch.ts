@@ -28,6 +28,8 @@ export interface AoiAppOperationDispatchDraft {
   actionType: string;
   params: Record<string, string>;
   approvalFingerprint: string;
+  // Standing approval expiry at accept/queue time (required for late-dispatch expiry).
+  approvalExpiresAt?: number;
   proposalId?: string;
   decisionId?: string;
   evidenceRefs?: string[];
@@ -55,6 +57,9 @@ export function buildAoiAppOperationDispatch(
     ...(draft.proposalId ? { proposalId: draft.proposalId } : {}),
     ...(draft.decisionId ? { decisionId: draft.decisionId } : {}),
     approvalFingerprint: draft.approvalFingerprint,
+    ...(typeof draft.approvalExpiresAt === 'number' && Number.isFinite(draft.approvalExpiresAt)
+      ? { approvalExpiresAt: draft.approvalExpiresAt }
+      : {}),
     evidenceRefs: draft.evidenceRefs ?? [],
     createdAt: draft.now,
     updatedAt: draft.now,

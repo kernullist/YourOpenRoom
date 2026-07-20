@@ -117,4 +117,25 @@ describe('selectAoiServerValidatedAppDispatches (P2.2 server-side re-check)', ()
       { id: 'done', reason: 'not_pending' },
     ]);
   });
+
+  it('drops a record whose queue-time standing approval has expired', () => {
+    const result = selectAoiServerValidatedAppDispatches({
+      records: [makeDispatch({ approvalExpiresAt: NOW - 1 })],
+      lookupProposal,
+      recomputeApprovalFingerprint: matchingFingerprint,
+      now: NOW,
+    });
+    expect(result.eligible).toEqual([]);
+    expect(result.rejected).toEqual([{ id: 'dispatch-1', reason: 'approval_expired' }]);
+  });
+
+  it('keeps a record with a future queue-time expiresAt', () => {
+    const result = selectAoiServerValidatedAppDispatches({
+      records: [makeDispatch({ approvalExpiresAt: NOW + 60_000 })],
+      lookupProposal,
+      recomputeApprovalFingerprint: matchingFingerprint,
+      now: NOW,
+    });
+    expect(result.eligible.map((r) => r.id)).toEqual(['dispatch-1']);
+  });
 });

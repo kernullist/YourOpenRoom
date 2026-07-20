@@ -40,7 +40,19 @@ import type {
 // the approval sandbox and the file-mutation policy. The broker and file-mutation
 // policy it depends on are already client-safe.
 
+// Short binding window for high-risk app actions (content-addressed approval).
 export const AOI_APP_ACTION_APPROVAL_TTL_MS = 5 * 60 * 1000;
+// Align non-high-risk standing approval with the operator approval-TTL default
+// (1h) so self-execute / live-dispatch windows match the widened re-click gate
+// instead of expiring at 5 minutes while the 1h TTL flag is on.
+export const AOI_APP_ACTION_APPROVAL_EXTENDED_TTL_MS = 60 * 60 * 1000;
+
+export function resolveAoiAppActionApprovalTtlMs(risk: string | undefined): number {
+  if (risk === 'high') {
+    return AOI_APP_ACTION_APPROVAL_TTL_MS;
+  }
+  return AOI_APP_ACTION_APPROVAL_EXTENDED_TTL_MS;
+}
 
 const MAX_PURPOSE_CHARS = 180;
 
@@ -396,7 +408,7 @@ export function evaluateAoiApprovedAppActionPolicy(
     requiredAutonomyLevel: 'L5',
     approvalFingerprint: approvalSandbox.approvalFingerprint,
     approvalSandbox,
-    expiresAt: request.requestedAt + AOI_APP_ACTION_APPROVAL_TTL_MS,
+    expiresAt: request.requestedAt + resolveAoiAppActionApprovalTtlMs(request.risk),
     rationale: allowed
       ? [
           `Approved ${executionKind} app action ${capabilityId} on ${appName} under L5 with ${

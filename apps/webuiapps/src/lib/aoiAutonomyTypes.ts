@@ -2638,6 +2638,10 @@ export interface AoiAppOperationDispatch {
   proposalId?: string;
   decisionId?: string;
   approvalFingerprint: string;
+  // Snapshot of the standing content-addressed approval expiry at queue time
+  // (accept.requestedAt + app-action TTL). Re-checked before dispatch so a late
+  // client cannot fire after the approval window closes.
+  approvalExpiresAt?: number;
   evidenceRefs: string[];
   createdAt: number;
   updatedAt: number;
@@ -3290,6 +3294,9 @@ export interface AoiProposalDecision {
   feedbackNote?: string;
   snoozedUntil?: number;
   proposalTrigger?: string;
+  // Snapshot of the dismissed/snoozed proposal title for soft reappear matching
+  // when evidence is only per-tick (observation/situation) and cooldownKey churns.
+  proposalTitle?: string;
   proposalRisk?: AoiAutonomyRisk;
   actionKind?: AoiProposalAcceptActionKind;
   suggestedTools?: string[];

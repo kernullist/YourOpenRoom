@@ -715,8 +715,15 @@ export async function handleAoiAutonomyRequest(
       const dispatchSelection = selectAoiServerValidatedAppDispatches({
         records: loadAoiAppOperationDispatches(sessionsDir, sessionPath),
         lookupProposal: (proposalId) => proposalsById.get(proposalId) ?? null,
-        recomputeApprovalFingerprint: (proposal) =>
-          getAoiApprovedAppActionPolicyForProposal(proposal, Date.now()).approvalFingerprint,
+        recomputeApprovalFingerprint: (proposal) => {
+          const now = Date.now();
+          const policy = getAoiApprovedAppActionPolicyForProposal(proposal, now);
+          return {
+            fingerprint: policy.approvalFingerprint,
+            expiresAt: policy.expiresAt,
+          };
+        },
+        now: Date.now(),
       });
       writeJson(res, 200, {
         ok: true,

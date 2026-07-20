@@ -4,6 +4,7 @@ import { randomUUID } from 'crypto';
 import {
   applyAoiProactiveBriefingTopicControls,
   checkAoiEnvironmentSourceOperation,
+  isAoiFieldShadowCaptureEnabled,
   isAoiProactiveBriefQuietWindowActive,
 } from './aoiAutonomyPolicy';
 import {
@@ -1572,7 +1573,12 @@ async function runProactiveScoutForWakeup(params: {
             title: card.title,
             deliveryMode: card.deliveryMode,
             directChatAllowed: card.directChatAllowed,
-            risk: 'low' as const,
+            // Honor the card's real risk so high-risk push stays blocked by the
+            // proactive-push gate (was hardcoded 'low', which bypassed it).
+            risk:
+              card.risk === 'high' || card.risk === 'medium' || card.risk === 'low'
+                ? card.risk
+                : 'medium',
             deepLinkRef: card.id,
           })),
         pushOptIn: webhookUrl.length > 0,
@@ -1927,13 +1933,17 @@ async function runWakeupInternal(
   // un-promoted candidates until a human labels + reviews them. This path persists
   // records/field-events only (recordAoiFieldShadowDecisionIntegration); it writes
   // no autonomy level or trust, and never labels or promotes.
-  // P5.4: capture fires on the env ceiling OR the operator's per-session opt-in
-  // (policy.fieldShadowCaptureEnabled), so the trust on-ramp can accrue from the settings
-  // UI without an env var. Env is checked first (short-circuit); default-off policy ->
-  // byte-identical to the env-only gate. Still records-only + zero-mutation (see below).
+  // P5.4 field-shadow capture gate (records-only + zero-mutation):
+  //   env=0/false/no  -> hard off (ops ceiling)
+  //   policy.on        -> on (settings toggle / ignition)
+  //   env=1 alone      -> soft on ONLY when policy is not explicitly false
+  // Operator toggle OFF must win over launcher soft default env=1.
+  const fieldShadowPolicy = loadAoiAutonomyPolicy(input.sessionsDir, sessionPath);
   if (
-    process.env.AOI_AUTONOMY_FIELD_SHADOW_CAPTURE === '1' ||
-    loadAoiAutonomyPolicy(input.sessionsDir, sessionPath).fieldShadowCaptureEnabled === true
+    isAoiFieldShadowCaptureEnabled({
+      policyEnabled: fieldShadowPolicy.fieldShadowCaptureEnabled === true,
+      env: process.env,
+    })
   ) {
     try {
       const shadowOpportunities = loadAoiActiveOpportunities(input.sessionsDir, sessionPath, now);
@@ -1946,7 +1956,7 @@ async function runWakeupInternal(
         // deliberation runs resolve real source freshness -- so the persisted records
         // are meaningful promotion evidence. Still display-only + zero-mutation, and
         // still records-only: no label and no promotion are written here.
-        const capturePolicy = loadAoiAutonomyPolicy(input.sessionsDir, sessionPath);
+        const capturePolicy = fieldShadowPolicy;
         const deliberationRuns = loadAoiDeliberationRuns(input.sessionsDir, sessionPath, now);
         const interruptionDecisions = buildAoiInterruptionGovernorDecisions({
           sessionPath,

@@ -3,6 +3,7 @@ import * as os from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  AOI_APP_ACTION_APPROVAL_EXTENDED_TTL_MS,
   AOI_APP_ACTION_APPROVAL_TTL_MS,
   compareAoiApprovedAppActionApproval,
   createAoiApprovedAppActionRequest,
@@ -86,6 +87,17 @@ describe('evaluateAoiApprovedAppActionPolicy', () => {
     );
     expect(policy.allowed).toBe(false);
     expect(policy.blockReasons).toContain('path_outside_data_root');
+  });
+
+  it('uses a short standing TTL for high-risk and an extended TTL for lower risk', () => {
+    const high = evaluateAoiApprovedAppActionPolicy(fileBackedRequest({ risk: 'high' }), {
+      apps: APPS,
+    });
+    const low = evaluateAoiApprovedAppActionPolicy(fileBackedRequest({ risk: 'low' }), {
+      apps: APPS,
+    });
+    expect(high.expiresAt).toBe(1000 + AOI_APP_ACTION_APPROVAL_TTL_MS);
+    expect(low.expiresAt).toBe(1000 + AOI_APP_ACTION_APPROVAL_EXTENDED_TTL_MS);
   });
 
   it('allows a pure app/window operation and routes it to a review handoff', () => {

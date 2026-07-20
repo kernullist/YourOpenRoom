@@ -450,6 +450,7 @@ function maybeQueueAppOperationDispatch(params: {
       actionType,
       params: request.operationParams ?? {},
       approvalFingerprint: policy.approvalFingerprint,
+      approvalExpiresAt: policy.expiresAt,
       proposalId: params.proposal.id,
       decisionId: params.decisionId,
       evidenceRefs: [...params.proposal.evidenceRefs, ...params.proposal.artifactRefs],

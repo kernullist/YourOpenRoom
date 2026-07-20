@@ -10,7 +10,7 @@ import {
   resolveAoiIgnitionCommand,
   sleepAoiActiveAssistant,
 } from '../aoiActiveAssistantPolicy';
-import { DEFAULT_AOI_AUTONOMY_POLICY } from '../aoiAutonomyPolicy';
+import { DEFAULT_AOI_AUTONOMY_POLICY, isAoiFieldShadowCaptureEnabled } from '../aoiAutonomyPolicy';
 import { loadAoiAutonomyPolicy } from '../aoiAutonomyStore';
 
 const NOW = 1_800_000_000_000;
@@ -30,6 +30,32 @@ afterEach(() => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   }
+});
+
+describe('isAoiFieldShadowCaptureEnabled', () => {
+  it('respects hard env off even when policy is on', () => {
+    expect(
+      isAoiFieldShadowCaptureEnabled({
+        policyEnabled: true,
+        env: { AOI_AUTONOMY_FIELD_SHADOW_CAPTURE: '0' },
+      }),
+    ).toBe(false);
+  });
+
+  it('requires the session policy toggle; soft env=1 alone does not force capture', () => {
+    expect(
+      isAoiFieldShadowCaptureEnabled({
+        policyEnabled: false,
+        env: { AOI_AUTONOMY_FIELD_SHADOW_CAPTURE: '1' },
+      }),
+    ).toBe(false);
+    expect(
+      isAoiFieldShadowCaptureEnabled({
+        policyEnabled: true,
+        env: { AOI_AUTONOMY_FIELD_SHADOW_CAPTURE: '1' },
+      }),
+    ).toBe(true);
+  });
 });
 
 describe('buildAoiActiveAssistantPolicy', () => {

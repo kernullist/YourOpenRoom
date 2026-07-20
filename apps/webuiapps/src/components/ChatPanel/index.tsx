@@ -4064,8 +4064,15 @@ const ChatPanel: React.FC<{
       const proposalById = new Map(proposals.map((proposal) => [proposal.id, proposal]));
       await runAoiAppOperationDispatchBridge(pending, {
         lookupProposal: (proposalId) => proposalById.get(proposalId) ?? null,
-        recomputeApprovalFingerprint: (proposal) =>
-          getAoiApprovedAppActionPolicyForProposal(proposal, Date.now()).approvalFingerprint,
+        recomputeApprovalFingerprint: (proposal) => {
+          const now = Date.now();
+          const policy = getAoiApprovedAppActionPolicyForProposal(proposal, now);
+          return {
+            fingerprint: policy.approvalFingerprint,
+            expiresAt: policy.expiresAt,
+          };
+        },
+        now: () => Date.now(),
         dispatchToApp: async (record) => {
           // Only dispatch to an app already loaded in this client; otherwise leave the
           // record pending for a later refresh / another connected client (no auto-open).

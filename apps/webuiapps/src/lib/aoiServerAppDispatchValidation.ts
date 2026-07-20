@@ -19,7 +19,8 @@ export type AoiServerDispatchRejectReason =
   | 'missing_proposal_reference'
   | 'proposal_not_found'
   | 'approval_recheck_failed'
-  | 'approval_fingerprint_mismatch';
+  | 'approval_fingerprint_mismatch'
+  | 'approval_expired';
 
 export interface AoiServerDispatchRejected {
   id: string;
@@ -28,19 +29,33 @@ export interface AoiServerDispatchRejected {
 
 export interface AoiServerValidatedAppDispatchSelection {
   // Pending records whose approval fingerprint still matches the current server-derived
-  // approval. Only these are advertised to the client bridge.
+  // approval AND whose standing approval has not expired. Only these are advertised.
   eligible: AoiAppOperationDispatch[];
   // The rest, with why each was dropped -- for operator observability.
   rejected: AoiServerDispatchRejected[];
 }
 
+export interface AoiServerDispatchApprovalSnapshot {
+  fingerprint: string;
+  // Epoch-ms expiry of the standing content-addressed app-action approval.
+  expiresAt: number;
+}
+
 export function selectAoiServerValidatedAppDispatches(params: {
   records: readonly AoiAppOperationDispatch[];
   lookupProposal: (proposalId: string) => AoiProposal | null;
-  recomputeApprovalFingerprint: (proposal: AoiProposal) => string;
+  // Prefer the snapshot form (fingerprint + expiresAt). The legacy string form is
+  // still accepted for older callers/tests and is treated as non-expiring only when
+  // no expiresAt can be derived -- prefer always returning expiresAt.
+  recomputeApprovalFingerprint:
+    | ((proposal: AoiProposal) => string)
+    | ((proposal: AoiProposal) => AoiServerDispatchApprovalSnapshot);
+  now?: number;
 }): AoiServerValidatedAppDispatchSelection {
   const eligible: AoiAppOperationDispatch[] = [];
   const rejected: AoiServerDispatchRejected[] = [];
+  const now =
+    typeof params.now === 'number' && Number.isFinite(params.now) ? params.now : Date.now();
 
   for (const record of params.records) {
     if (record.status !== 'pending') {
@@ -57,8 +72,20 @@ export function selectAoiServerValidatedAppDispatches(params: {
       continue;
     }
     let currentFingerprint: string;
+    let expiresAt = Number.POSITIVE_INFINITY;
     try {
-      currentFingerprint = params.recomputeApprovalFingerprint(proposal);
+      const recomputed = params.recomputeApprovalFingerprint(proposal) as
+        | string
+        | AoiServerDispatchApprovalSnapshot;
+      if (typeof recomputed === 'string') {
+        currentFingerprint = recomputed;
+      } else {
+        currentFingerprint = recomputed.fingerprint;
+        expiresAt =
+          typeof recomputed.expiresAt === 'number' && Number.isFinite(recomputed.expiresAt)
+            ? recomputed.expiresAt
+            : Number.POSITIVE_INFINITY;
+      }
     } catch {
       rejected.push({ id: record.id, reason: 'approval_recheck_failed' });
       continue;
@@ -69,6 +96,16 @@ export function selectAoiServerValidatedAppDispatches(params: {
       currentFingerprint !== record.approvalFingerprint
     ) {
       rejected.push({ id: record.id, reason: 'approval_fingerprint_mismatch' });
+      continue;
+    }
+    // Prefer the standing expiry snapshotted on the dispatch at queue time
+    // (accept-time + TTL). Fall back to the recompute snapshot when present.
+    const standingExpiresAt =
+      typeof record.approvalExpiresAt === 'number' && Number.isFinite(record.approvalExpiresAt)
+        ? record.approvalExpiresAt
+        : expiresAt;
+    if (standingExpiresAt < now) {
+      rejected.push({ id: record.id, reason: 'approval_expired' });
       continue;
     }
     eligible.push(record);
