@@ -1,6 +1,9 @@
 // Operator-facing host-bridge presets: one-click consent for common user
 // folders and program directories. Capability kill-switch + per-action
 // approval still gate real effects; these only reduce registration friction.
+//
+// Browser-safe: never reference the bare Node `process` identifier (Settings
+// UI runs in the browser; that throws ReferenceError: process is not defined).
 
 export interface AoiHostPathPreset {
   id: string;
@@ -9,13 +12,61 @@ export interface AoiHostPathPreset {
   kind: 'file' | 'directory' | 'root';
 }
 
+export type AoiHostPresetPlatform = 'win32' | 'posix';
+
+type ProcessLike = {
+  env?: Record<string, string | undefined>;
+  platform?: string;
+};
+
+function getProcessLike(): ProcessLike | null {
+  const candidate = (globalThis as { process?: ProcessLike }).process;
+  return candidate && typeof candidate === 'object' ? candidate : null;
+}
+
+function readProcessEnv(): Record<string, string | undefined> {
+  const env = getProcessLike()?.env;
+  return env && typeof env === 'object' ? env : {};
+}
+
+function readProcessPlatform(): AoiHostPresetPlatform | null {
+  const platform = getProcessLike()?.platform;
+  if (typeof platform !== 'string' || !platform) {
+    return null;
+  }
+  return platform === 'win32' ? 'win32' : 'posix';
+}
+
+function readBrowserPlatform(): AoiHostPresetPlatform | null {
+  if (typeof navigator === 'undefined') {
+    return null;
+  }
+  const signal = `${navigator.platform || ''} ${navigator.userAgent || ''}`;
+  if (/Win/i.test(signal)) {
+    return 'win32';
+  }
+  if (signal.trim()) {
+    return 'posix';
+  }
+  return null;
+}
+
+export function resolveAoiHostPresetPlatform(
+  platform?: AoiHostPresetPlatform | string,
+): AoiHostPresetPlatform {
+  if (platform === 'win32' || platform === 'posix') {
+    return platform;
+  }
+  return readProcessPlatform() ?? readBrowserPlatform() ?? 'posix';
+}
+
 function joinUserPath(home: string, ...parts: string[]): string {
   const sep = home.includes('\\') ? '\\' : '/';
   return [home.replace(/[\\/]+$/, ''), ...parts].join(sep);
 }
 
 export function listAoiHostReadRootPresets(
-  env: Record<string, string | undefined> = typeof process !== 'undefined' ? process.env : {},
+  env: Record<string, string | undefined> = readProcessEnv(),
 ): AoiHostPathPreset[] {
   const home = env.USERPROFILE || env.HOME || '';
   if (!home) {
@@ -40,11 +91,14 @@ export function listAoiHostReadRootPresets(
 }
 
 export function listAoiHostSpawnPresets(
-  env: Record<string, string | undefined> = typeof process !== 'undefined' ? process.env : {},
+  env: Record<string, string | undefined> = readProcessEnv(),
+  platform?: AoiHostPresetPlatform | string,
 ): AoiHostPathPreset[] {
   const home = env.USERPROFILE || env.HOME || '';
   const presets: AoiHostPathPreset[] = [];
-  if (process.platform === 'win32') {
+  const resolved = resolveAoiHostPresetPlatform(platform);
+
+  if (resolved === 'win32') {
     presets.push(
       {
         id: 'exe-notepad',
