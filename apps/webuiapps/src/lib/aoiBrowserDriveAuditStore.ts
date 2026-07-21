@@ -37,6 +37,9 @@ export interface AoiBrowserDriveAuditEntry {
   category: AoiBrowserDriveAuditCategory;
   ok: boolean;
   stopReason?: string;
+  // True when an ACT was authorized by a standing grant (P3.1) rather than a fresh
+  // per-action approval -- marks an autonomous act in the ledger.
+  viaStanding?: boolean;
   url: string;
   beforeScreenshotRef?: string;
   afterScreenshotRef?: string;
@@ -102,6 +105,7 @@ export function normalizeAoiBrowserDriveAuditEntry(raw: unknown): AoiBrowserDriv
     ...(typeof value.stopReason === 'string'
       ? { stopReason: clampText(value.stopReason, 60) }
       : {}),
+    ...(value.viaStanding === true ? { viaStanding: true } : {}),
     url: clampText(value.url, 300),
     ...(optionalRef(value.beforeScreenshotRef)
       ? { beforeScreenshotRef: optionalRef(value.beforeScreenshotRef) }
@@ -165,6 +169,7 @@ export function appendAoiBrowserDriveAuditEntry(
     category: normalizeCategory(input.category),
     ok: input.ok === true,
     ...(input.stopReason ? { stopReason: clampText(input.stopReason, 60) } : {}),
+    ...(input.viaStanding === true ? { viaStanding: true } : {}),
     url: clampText(input.url, 300),
     ...(input.beforeScreenshotRef
       ? { beforeScreenshotRef: optionalRef(input.beforeScreenshotRef) }

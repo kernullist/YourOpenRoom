@@ -25,6 +25,7 @@ import {
 import {
   clearAoiHostBridgePanic,
   engageAoiHostBridgePanic,
+  isAoiHostBridgeCapabilityEnabled,
   loadAoiHostBridgeKillSwitchState,
   saveAoiHostBridgeKillSwitchState,
   setAoiHostBridgeCapability,
@@ -68,6 +69,11 @@ import {
 } from './aoiBrowserDriveApproval';
 import { recordAoiBrowserDriveAuditEntry } from './aoiBrowserDriveAuditStore';
 import { writeAoiBrowserDriveArtifact } from './aoiBrowserDriveAuditObserver';
+import {
+  AOI_BROWSER_DRIVE_STANDING_CAPABILITY,
+  loadAoiBrowserDriveStandingGrantStore,
+  saveAoiBrowserDriveStandingGrantStore,
+} from './aoiBrowserDriveStandingGrant';
 import type { AoiBrowserDrivePlan } from './aoiBrowserDrivePlan';
 import type { AoiBrowserDriveActablePage } from './aoiBrowserDriveExecutor';
 import {
@@ -336,12 +342,25 @@ async function runAoiBrowserDriveExecuteDefault(options: {
   now: number;
   openroomHome: string;
 }): Promise<AoiBrowserDriveActExecuteResult | AoiBrowserDriveRunFailure> {
+  // Standing-grant fallback is honored ONLY when the os_browser_drive_standing
+  // capability toggle is ON (and, via isAoiHostBridgeCapabilityEnabled, panic is off).
+  const standingEnabled = isAoiHostBridgeCapabilityEnabled(
+    loadAoiHostBridgeKillSwitchState(options.openroomHome),
+    AOI_BROWSER_DRIVE_STANDING_CAPABILITY,
+  );
   const gate = makeAoiBrowserDriveStoreApprovalGate({
     loadStore: () => loadAoiHostBridgeApprovalStore(options.openroomHome),
     saveStore: (store) => {
       saveAoiHostBridgeApprovalStore(options.openroomHome, store);
     },
     now: options.now,
+    standing: {
+      enabled: standingEnabled,
+      loadGrants: () => loadAoiBrowserDriveStandingGrantStore(options.openroomHome),
+      saveGrants: (store) => {
+        saveAoiBrowserDriveStandingGrantStore(options.openroomHome, store);
+      },
+    },
   });
   // One run id per execute call groups its steps in the audit ledger; artifacts are
   // written under host-bridge/browser-drive-artifacts/<runId>/. Auditing is best-

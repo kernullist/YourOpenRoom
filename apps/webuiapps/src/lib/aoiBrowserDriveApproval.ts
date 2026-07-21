@@ -40,6 +40,11 @@ import {
   recordAoiHostBridgePendingApproval,
   type AoiHostBridgeApprovalStoreData,
 } from './aoiHostBridgeApprovalStore';
+import {
+  consumeAoiBrowserDriveStandingGrant,
+  findLiveAoiBrowserDriveStandingGrant,
+  type AoiBrowserDriveStandingGrantStore,
+} from './aoiBrowserDriveStandingGrant';
 
 export const AOI_BROWSER_DRIVE_APPROVAL_TTL_MS = 5 * 60 * 1000;
 const MAX_SUMMARY = 200;
@@ -171,24 +176,45 @@ export function recordAoiBrowserDriveActPendingApproval(
   return { store: recorded.store };
 }
 
+// Optional standing-grant fallback (P3.1): when the os_browser_drive_standing toggle
+// is ON, a per-action inbox approval that is missing can be satisfied instead by a
+// LIVE operator-created domain-wide grant covering the acting page's host. This is
+// the ONLY relaxation of the per-ACT click, and it is domain-allowlist-bound + TTL +
+// quota + panic-off (the caller sets `enabled` = capability toggle && !panic).
+export interface AoiBrowserDriveStandingFallback {
+  enabled: boolean;
+  loadGrants: () => AoiBrowserDriveStandingGrantStore;
+  saveGrants: (store: AoiBrowserDriveStandingGrantStore) => void;
+}
+
 export interface AoiBrowserDriveApprovalGateDeps {
   loadStore: () => AoiHostBridgeApprovalStoreData;
   saveStore: (store: AoiHostBridgeApprovalStoreData) => void;
   now: number;
   capability?: string;
+  standing?: AoiBrowserDriveStandingFallback;
+}
+
+function hostnameOf(url: string): string {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return '';
+  }
 }
 
 /**
- * A store-backed approval gate for the executor. Consuming a matching operator-
- * approved, unexpired entry is the ONLY way it returns approved; the entry is
- * single-use, so an approval runs one action and no more. Anything else is
- * fail-closed.
+ * A store-backed approval gate for the executor. FIRST tries to consume a matching
+ * operator-approved, unexpired, single-use per-action approval (Phase 2). If none
+ * exists AND the standing fallback is enabled, it consumes one action from a LIVE
+ * domain-wide grant covering the acting host (P3.1) and reports viaStanding. Anything
+ * else is fail-closed.
  */
 export function makeAoiBrowserDriveStoreApprovalGate(
   deps: AoiBrowserDriveApprovalGateDeps,
 ): AoiBrowserDriveApprovalGate {
   const capability = deps.capability ?? AOI_BROWSER_DRIVE_CAPABILITY;
-  return async ({ fingerprint }) => {
+  return async ({ fingerprint, url }) => {
     const consumed = consumeAoiHostBridgeApproval(deps.loadStore(), {
       capability,
       approvalFingerprint: fingerprint,
@@ -197,6 +223,28 @@ export function makeAoiBrowserDriveStoreApprovalGate(
     if (consumed.ok) {
       deps.saveStore(consumed.store);
       return { approved: true };
+    }
+    // Standing-grant fallback: only when explicitly enabled by the caller.
+    if (deps.standing?.enabled) {
+      const hostname = hostnameOf(typeof url === 'string' ? url : '');
+      if (hostname) {
+        const grant = findLiveAoiBrowserDriveStandingGrant(
+          deps.standing.loadGrants(),
+          hostname,
+          deps.now,
+        );
+        if (grant) {
+          const result = consumeAoiBrowserDriveStandingGrant(
+            deps.standing.loadGrants(),
+            grant.id,
+            deps.now,
+          );
+          if (result.consumed) {
+            deps.standing.saveGrants(result.store);
+            return { approved: true, viaStanding: true };
+          }
+        }
+      }
     }
     return { approved: false, reason: consumed.reason ?? 'approval_missing' };
   };

@@ -390,6 +390,7 @@ function recordAuditStep(
       category: result.category,
       ok: result.ok,
       ...(result.stopReason ? { stopReason: result.stopReason } : {}),
+      ...(result.approvalViaStanding ? { viaStanding: true } : {}),
       url: result.finalUrl ?? '',
       ...(result.observation?.before?.screenshotRef
         ? { beforeScreenshotRef: result.observation.before.screenshotRef }

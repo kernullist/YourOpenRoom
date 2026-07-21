@@ -12,6 +12,10 @@ import {
   DEFAULT_AOI_HOST_BRIDGE_APPROVAL_STORE,
   type AoiHostBridgeApprovalStoreData,
 } from '../aoiHostBridgeApprovalStore';
+import {
+  addAoiBrowserDriveStandingGrant,
+  type AoiBrowserDriveStandingGrantStore,
+} from '../aoiBrowserDriveStandingGrant';
 import type { AoiBrowserDrivePlan } from '../aoiBrowserDrivePlan';
 import type { AoiBrowserDriveActionRequest } from '../aoiBrowserDriveAction';
 
@@ -123,6 +127,7 @@ describe('approval store round-trip via the gate', () => {
       fingerprint: preview.fingerprint,
       stepIndex: 0,
       action: clickStep,
+      url: 'https://example.com/x',
     });
     expect(beforeApprove.approved).toBe(false);
     expect(beforeApprove.reason).toBe('approval_not_granted');
@@ -135,6 +140,7 @@ describe('approval store round-trip via the gate', () => {
       fingerprint: preview.fingerprint,
       stepIndex: 0,
       action: clickStep,
+      url: 'https://example.com/x',
     });
     expect(granted.approved).toBe(true);
 
@@ -143,6 +149,7 @@ describe('approval store round-trip via the gate', () => {
       fingerprint: preview.fingerprint,
       stepIndex: 0,
       action: clickStep,
+      url: 'https://example.com/x',
     });
     expect(replay.approved).toBe(false);
     expect(replay.reason).toBe('approval_missing');
@@ -155,8 +162,127 @@ describe('approval store round-trip via the gate', () => {
       saveStore: mem.saveStore,
       now: 1,
     });
-    const verdict = await gate({ fingerprint: 'deadbeef', stepIndex: 0, action: clickStep });
+    const verdict = await gate({
+      fingerprint: 'deadbeef',
+      stepIndex: 0,
+      action: clickStep,
+      url: 'https://example.com/x',
+    });
     expect(verdict.approved).toBe(false);
     expect(verdict.reason).toBe('approval_missing');
+  });
+});
+
+describe('standing-grant fallback (P3.1)', () => {
+  function makeMemStore() {
+    let store: AoiHostBridgeApprovalStoreData = {
+      ...DEFAULT_AOI_HOST_BRIDGE_APPROVAL_STORE,
+      approvals: [],
+    };
+    return {
+      loadStore: () => store,
+      saveStore: (next: AoiHostBridgeApprovalStoreData) => {
+        store = next;
+      },
+    };
+  }
+
+  it('grants via a live domain grant when no per-action approval exists (and consumes it)', async () => {
+    const mem = makeMemStore();
+    let grants: AoiBrowserDriveStandingGrantStore = addAoiBrowserDriveStandingGrant(
+      null,
+      { domain: 'example.com', maxActions: 2 },
+      1_000,
+    ).store;
+    const gate = makeAoiBrowserDriveStoreApprovalGate({
+      loadStore: mem.loadStore,
+      saveStore: mem.saveStore,
+      now: 1_100,
+      standing: {
+        enabled: true,
+        loadGrants: () => grants,
+        saveGrants: (next) => {
+          grants = next;
+        },
+      },
+    });
+    const verdict = await gate({
+      fingerprint: 'ff00aa',
+      stepIndex: 1,
+      action: clickStep,
+      url: 'https://app.example.com/dashboard',
+    });
+    expect(verdict.approved).toBe(true);
+    expect(verdict.viaStanding).toBe(true);
+    expect(grants.grants[0].usedActions).toBe(1);
+  });
+
+  it('does not use a standing grant when the fallback is disabled (toggle off)', async () => {
+    const mem = makeMemStore();
+    const grants = addAoiBrowserDriveStandingGrant(null, { domain: 'example.com' }, 1_000).store;
+    const gate = makeAoiBrowserDriveStoreApprovalGate({
+      loadStore: mem.loadStore,
+      saveStore: mem.saveStore,
+      now: 1_100,
+      standing: { enabled: false, loadGrants: () => grants, saveGrants: () => {} },
+    });
+    const verdict = await gate({
+      fingerprint: 'ff00aa',
+      stepIndex: 1,
+      action: clickStep,
+      url: 'https://example.com/x',
+    });
+    expect(verdict.approved).toBe(false);
+  });
+
+  it('does not use a grant for a host outside its domain', async () => {
+    const mem = makeMemStore();
+    const grants = addAoiBrowserDriveStandingGrant(null, { domain: 'example.com' }, 1_000).store;
+    const gate = makeAoiBrowserDriveStoreApprovalGate({
+      loadStore: mem.loadStore,
+      saveStore: mem.saveStore,
+      now: 1_100,
+      standing: { enabled: true, loadGrants: () => grants, saveGrants: () => {} },
+    });
+    const verdict = await gate({
+      fingerprint: 'ff00aa',
+      stepIndex: 1,
+      action: clickStep,
+      url: 'https://other.test/x',
+    });
+    expect(verdict.approved).toBe(false);
+  });
+
+  it('a real per-action approval still wins over standing (no grant consumed)', async () => {
+    const mem = makeMemStore();
+    const p = plan(clickStep);
+    const preview = buildAoiBrowserDriveActApprovalPreview({ plan: p, stepIndex: 0, now: 1_000 });
+    if (!preview.ok) {
+      throw new Error('expected ok preview');
+    }
+    mem.saveStore(recordAoiBrowserDriveActPendingApproval(mem.loadStore(), preview, 1_000).store);
+    mem.saveStore(approveAoiHostBridgeApproval(mem.loadStore(), preview.fingerprint, 1_050).store);
+    let grants = addAoiBrowserDriveStandingGrant(null, { domain: 'example.com' }, 1_000).store;
+    const gate = makeAoiBrowserDriveStoreApprovalGate({
+      loadStore: mem.loadStore,
+      saveStore: mem.saveStore,
+      now: 1_100,
+      standing: {
+        enabled: true,
+        loadGrants: () => grants,
+        saveGrants: (next) => {
+          grants = next;
+        },
+      },
+    });
+    const verdict = await gate({
+      fingerprint: preview.fingerprint,
+      stepIndex: 0,
+      action: clickStep,
+      url: 'https://example.com/x',
+    });
+    expect(verdict.approved).toBe(true);
+    expect(verdict.viaStanding).toBeUndefined();
+    expect(grants.grants[0].usedActions).toBe(0);
   });
 });

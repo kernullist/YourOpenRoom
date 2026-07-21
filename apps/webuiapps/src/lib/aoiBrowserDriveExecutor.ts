@@ -74,7 +74,10 @@ export type AoiBrowserDriveApprovalGate = (input: {
   fingerprint: string;
   stepIndex: number;
   action: AoiBrowserDriveActionRequest;
-}) => Promise<{ approved: boolean; reason?: string }>;
+  // The current page URL where the act would happen -- lets a gate scope a standing
+  // (domain-wide) pre-authorization to the acting domain (P3.1).
+  url: string;
+}) => Promise<{ approved: boolean; reason?: string; viaStanding?: boolean }>;
 
 // Audit seam (P2.4 plugs in before/after screenshot + DOM capture). Best-effort:
 // an observer that throws never blocks or fails a step.
@@ -117,6 +120,9 @@ export interface AoiBrowserDriveStepResult {
   screenshotBase64?: string;
   // Present for an ACT step: the fingerprint the approval gate was asked about.
   approvalFingerprint?: string;
+  // True when the ACT was authorized by a standing grant (P3.1) rather than a fresh
+  // per-action approval -- surfaced so the audit ledger can mark autonomous acts.
+  approvalViaStanding?: boolean;
   observation?: { before?: AoiBrowserDriveObservation; after?: AoiBrowserDriveObservation };
 }
 
@@ -291,11 +297,17 @@ export async function executeAoiBrowserDriveStep(
   // ACT steps: require per-action approval BEFORE the effect. A denying/erroring
   // gate is fail-closed.
   let approvalFingerprint: string | undefined;
+  let approvalViaStanding = false;
   if (decision.category === 'act') {
     approvalFingerprint = computeAoiBrowserDriveActionFingerprint(plan.goal, stepIndex, action);
-    let verdict: { approved: boolean; reason?: string };
+    let verdict: { approved: boolean; reason?: string; viaStanding?: boolean };
     try {
-      verdict = await approvalGate({ fingerprint: approvalFingerprint, stepIndex, action });
+      verdict = await approvalGate({
+        fingerprint: approvalFingerprint,
+        stepIndex,
+        action,
+        url: beforeUrl,
+      });
     } catch (error) {
       return finish(params.observer, stepIndex, action, before, {
         index: stepIndex,
@@ -316,6 +328,7 @@ export async function executeAoiBrowserDriveStep(
         approvalFingerprint,
       });
     }
+    approvalViaStanding = verdict.viaStanding === true;
   }
 
   // 5) Execute.
@@ -361,6 +374,7 @@ export async function executeAoiBrowserDriveStep(
       ok: true,
       finalUrl,
       approvalFingerprint,
+      ...(approvalViaStanding ? { approvalViaStanding: true } : {}),
     });
   } catch (error) {
     return finish(params.observer, stepIndex, action, before, {
