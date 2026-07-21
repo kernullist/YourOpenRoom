@@ -433,6 +433,62 @@ export async function runAoiHostBrowserDriveActExecute(
   };
 }
 
+// --- Browser-drive standing grants (auth-only config CRUD, BD P3.1) ----------
+
+export interface AoiBrowserDriveStandingGrantView {
+  id: string;
+  domain: string;
+  label: string;
+  createdAt: number;
+  expiresAt: number;
+  maxActions: number;
+  usedActions: number;
+}
+
+function parseStandingGrants(value: unknown): AoiBrowserDriveStandingGrantView[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter(isRecord).map((record) => ({
+    id: asString(record.id),
+    domain: asString(record.domain),
+    label: asString(record.label) || asString(record.domain),
+    createdAt: typeof record.createdAt === 'number' ? record.createdAt : 0,
+    expiresAt: typeof record.expiresAt === 'number' ? record.expiresAt : 0,
+    maxActions: typeof record.maxActions === 'number' ? record.maxActions : 0,
+    usedActions: typeof record.usedActions === 'number' ? record.usedActions : 0,
+  }));
+}
+
+export async function fetchAoiBrowserDriveStandingGrants(): Promise<
+  AoiBrowserDriveStandingGrantView[]
+> {
+  return parseStandingGrants((await getJson('/browser-drive/standing-grants')).grants);
+}
+
+export async function addAoiBrowserDriveStandingGrant(input: {
+  domain: string;
+  label?: string;
+  ttlMs?: number;
+  maxActions?: number;
+}): Promise<AoiBrowserDriveStandingGrantView[]> {
+  const payload = await sendJson('/browser-drive/standing-grants', 'POST', {
+    domain: input.domain,
+    ...(input.label ? { label: input.label } : {}),
+    ...(typeof input.ttlMs === 'number' ? { ttlMs: input.ttlMs } : {}),
+    ...(typeof input.maxActions === 'number' ? { maxActions: input.maxActions } : {}),
+  });
+  return parseStandingGrants(payload.grants);
+}
+
+export async function removeAoiBrowserDriveStandingGrant(
+  id: string,
+): Promise<AoiBrowserDriveStandingGrantView[]> {
+  return parseStandingGrants(
+    (await sendJson('/browser-drive/standing-grants', 'DELETE', { id })).grants,
+  );
+}
+
 // --- Browser-drive domain allowlist (auth-only config CRUD) ------------------
 
 export interface AoiBrowserDriveAllowlistEntryView {

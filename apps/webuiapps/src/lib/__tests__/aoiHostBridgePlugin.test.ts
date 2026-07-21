@@ -727,6 +727,84 @@ describe('resolveAoiHostBridgeRoute /browser-drive/preview + /execute (BD P2.3)'
   });
 });
 
+describe('standing-grant CRUD (BD P3.1c, auth-only)', () => {
+  it('adds, lists (live only), and removes a standing grant; rejects a bad domain', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    const add = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive/standing-grants',
+      body: { domain: 'example.com', maxActions: 5, ttlMs: 60_000 },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 1000,
+    });
+    expect(add.status).toBe(200);
+    const grants = (add.payload as { grants: Array<{ id: string; domain: string }> }).grants;
+    expect(grants).toHaveLength(1);
+    expect(grants[0].domain).toBe('example.com');
+
+    const list = await resolveAoiHostBridgeRoute({
+      method: 'GET',
+      route: '/browser-drive/standing-grants',
+      body: {},
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+    });
+    expect((list.payload as { grants: unknown[] }).grants).toHaveLength(1);
+
+    // Past the TTL the list prunes it out.
+    const listLater = await resolveAoiHostBridgeRoute({
+      method: 'GET',
+      route: '/browser-drive/standing-grants',
+      body: {},
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 1000 + 60_001,
+    });
+    expect((listLater.payload as { grants: unknown[] }).grants).toHaveLength(0);
+
+    const del = await resolveAoiHostBridgeRoute({
+      method: 'DELETE',
+      route: '/browser-drive/standing-grants',
+      body: { id: grants[0].id },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 3000,
+    });
+    expect((del.payload as { grants: unknown[] }).grants).toHaveLength(0);
+
+    const bad = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive/standing-grants',
+      body: { domain: 'not a domain' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 4000,
+    });
+    expect(bad.status).toBe(400);
+  });
+
+  it('requires a valid token', async () => {
+    const { home, sessionsDir } = makeDaemonHome();
+    const res = await resolveAoiHostBridgeRoute({
+      method: 'GET',
+      route: '/browser-drive/standing-grants',
+      body: {},
+      token: 'b'.repeat(64),
+      openroomHome: home,
+      sessionsDir,
+      now: 1000,
+    });
+    expect(res.status).toBe(401);
+  });
+});
+
 describe('registration CRUD (auth-only)', () => {
   it('adds, lists, and removes a spawn-allowlist entry; rejects a relative path', async () => {
     const { home, sessionsDir, token } = makeDaemonHome();

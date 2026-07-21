@@ -10,6 +10,9 @@ import {
   approveAoiHostApproval,
   fetchAoiHostBrowserDriveActPreview,
   runAoiHostBrowserDriveActExecute,
+  fetchAoiBrowserDriveStandingGrants,
+  addAoiBrowserDriveStandingGrant,
+  removeAoiBrowserDriveStandingGrant,
 } from '../aoiHostBridgeClient';
 
 function mockFetch(payload: unknown, ok = true, status = 200): ReturnType<typeof vi.fn> {
@@ -184,5 +187,41 @@ describe('aoiHostBridgeClient', () => {
     await expect(
       runAoiHostBrowserDriveActExecute('aoi/default', { goal: 'g', steps: [] }, 1),
     ).rejects.toThrow(/approval_denied/);
+  });
+
+  it('lists, adds, and removes standing grants', async () => {
+    mockFetch({
+      ok: true,
+      grants: [
+        {
+          id: 'g1',
+          domain: 'example.com',
+          label: 'Example',
+          createdAt: 1,
+          expiresAt: 2,
+          maxActions: 5,
+          usedActions: 1,
+        },
+      ],
+    });
+    const listed = await fetchAoiBrowserDriveStandingGrants();
+    expect(listed[0].domain).toBe('example.com');
+    expect(listed[0].usedActions).toBe(1);
+
+    const addMock = mockFetch({ ok: true, grants: [] });
+    await addAoiBrowserDriveStandingGrant({ domain: 'example.com', ttlMs: 60_000, maxActions: 10 });
+    const [addUrl, addInit] = addMock.mock.calls[0] as [string, { body: string }];
+    expect(addUrl).toContain('/browser-drive/standing-grants');
+    expect(JSON.parse(addInit.body)).toEqual({
+      domain: 'example.com',
+      ttlMs: 60_000,
+      maxActions: 10,
+    });
+
+    const delMock = mockFetch({ ok: true, grants: [] });
+    await removeAoiBrowserDriveStandingGrant('g1');
+    const [, delInit] = delMock.mock.calls[0] as [string, { method: string; body: string }];
+    expect((delInit as { method: string }).method).toBe('DELETE');
+    expect(JSON.parse(delInit.body)).toEqual({ id: 'g1' });
   });
 });

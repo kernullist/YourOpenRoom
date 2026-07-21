@@ -71,7 +71,10 @@ import { recordAoiBrowserDriveAuditEntry } from './aoiBrowserDriveAuditStore';
 import { writeAoiBrowserDriveArtifact } from './aoiBrowserDriveAuditObserver';
 import {
   AOI_BROWSER_DRIVE_STANDING_CAPABILITY,
+  addAoiBrowserDriveStandingGrant,
   loadAoiBrowserDriveStandingGrantStore,
+  pruneAoiBrowserDriveStandingGrants,
+  removeAoiBrowserDriveStandingGrant,
   saveAoiBrowserDriveStandingGrantStore,
 } from './aoiBrowserDriveStandingGrant';
 import type { AoiBrowserDrivePlan } from './aoiBrowserDrivePlan';
@@ -893,6 +896,56 @@ export async function resolveAoiHostBridgeRoute(
         removeAoiBrowserDriveAllowlistEntry(current, id, params.now),
       );
       return { status: 200, payload: { ok: true, entries: saved.entries } };
+    }
+  }
+
+  // --- Standing grants CRUD (BD P3.1c, auth-only config): the operator creates /
+  //     revokes a TTL+quota domain grant that lets Aoi act without a per-action click
+  //     WHEN the os_browser_drive_standing toggle is on. Creating a grant is consent
+  //     configuration (actor='user'), not capability execution, so auth-only.
+  if (params.route === '/browser-drive/standing-grants') {
+    const current = loadAoiBrowserDriveStandingGrantStore(params.openroomHome);
+    if (params.method === 'GET') {
+      return {
+        status: 200,
+        payload: {
+          ok: true,
+          grants: pruneAoiBrowserDriveStandingGrants(current.grants, params.now),
+        },
+      };
+    }
+    if (params.method === 'POST') {
+      const domain = typeof params.body.domain === 'string' ? params.body.domain : '';
+      const label = typeof params.body.label === 'string' ? params.body.label : undefined;
+      const ttlMs = typeof params.body.ttlMs === 'number' ? params.body.ttlMs : undefined;
+      const maxActions =
+        typeof params.body.maxActions === 'number' ? params.body.maxActions : undefined;
+      const result = addAoiBrowserDriveStandingGrant(
+        current,
+        {
+          domain,
+          ...(label ? { label } : {}),
+          ...(ttlMs !== undefined ? { ttlMs } : {}),
+          ...(maxActions !== undefined ? { maxActions } : {}),
+        },
+        params.now,
+      );
+      if (!result.grant) {
+        return {
+          status: 400,
+          payload: { ok: false, error: result.reason ?? 'bad_request', code: 'bad_request' },
+        };
+      }
+      const saved = saveAoiBrowserDriveStandingGrantStore(params.openroomHome, result.store);
+      return { status: 200, payload: { ok: true, grants: saved.grants } };
+    }
+    if (params.method === 'DELETE') {
+      const id = typeof params.body.id === 'string' ? params.body.id : '';
+      const saved = saveAoiBrowserDriveStandingGrantStore(
+        params.openroomHome,
+        removeAoiBrowserDriveStandingGrant(current, id, params.now),
+      );
+      return { status: 200, payload: { ok: true, grants: saved.grants } };
     }
   }
 
