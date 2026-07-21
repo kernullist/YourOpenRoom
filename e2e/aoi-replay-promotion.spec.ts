@@ -23,6 +23,7 @@ test.describe('Chat settings – Aoi Replay Promotion panel', () => {
 
     // The replay-promotion panel lives in the Advanced tab, next to Aoi Autonomy.
     await modal.getByRole('button', { name: 'Advanced', exact: true }).click();
+    await modal.getByTestId('advanced-section-operator').click();
 
     const panel = modal.locator('[data-testid="aoi-replay-promotion-panel"]');
     await expect(panel).toBeVisible();

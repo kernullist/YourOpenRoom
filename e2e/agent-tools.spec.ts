@@ -75,6 +75,7 @@ test.describe('Agent tool integration', () => {
     // The settings modal is now tab-based; the Tool Inspector lives under the
     // Advanced tab, so navigate there before asserting its sections.
     await modal.getByRole('button', { name: 'Advanced', exact: true }).click();
+    await modal.getByTestId('advanced-section-tools').click();
     await expect(modal).toContainText('Tool Inspector');
     await expect(page.locator('[data-testid="tool-inspector"]')).toBeVisible();
     await expect(modal).toContainText('Safety Policy');

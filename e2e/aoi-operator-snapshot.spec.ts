@@ -22,6 +22,7 @@ test.describe('Chat settings – Aoi Operator Snapshot panel', () => {
 
     // The operator-snapshot panel lives in the Advanced tab, next to Aoi Replay Promotion.
     await modal.getByRole('button', { name: 'Advanced', exact: true }).click();
+    await modal.getByTestId('advanced-section-operator').click();
 
     const panel = modal.locator('[data-testid="aoi-operator-snapshot-panel"]');
     await expect(panel).toBeVisible();

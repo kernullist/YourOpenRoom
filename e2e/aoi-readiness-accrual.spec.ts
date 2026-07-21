@@ -17,6 +17,7 @@ test.describe('Chat settings – Aoi Trust On-ramp panel', () => {
     await expect(modal).toBeVisible();
 
     await modal.getByRole('button', { name: 'Advanced', exact: true }).click();
+    await modal.getByTestId('advanced-section-operator').click();
 
     const panel = modal.locator('[data-testid="aoi-readiness-accrual-panel"]');
     await expect(panel).toBeVisible();

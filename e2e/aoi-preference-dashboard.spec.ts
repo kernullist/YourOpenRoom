@@ -20,6 +20,7 @@ test.describe('Chat settings – Aoi preference dashboard', () => {
     await expect(modal).toBeVisible();
 
     await modal.getByRole('button', { name: 'Advanced', exact: true }).click();
+    await modal.getByTestId('advanced-section-memory').click();
 
     const dashboard = modal.locator('[data-testid="aoi-preference-dashboard"]');
     await expect(dashboard).toBeVisible();

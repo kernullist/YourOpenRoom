@@ -21,6 +21,7 @@ test.describe('Chat settings – Aoi Memory Decay panel', () => {
 
     // The decay panel lives in the Advanced tab, next to the other Aoi operator panels.
     await modal.getByRole('button', { name: 'Advanced', exact: true }).click();
+    await modal.getByTestId('advanced-section-memory').click();
 
     const panel = modal.locator('[data-testid="aoi-memory-decay-panel"]');
     await expect(panel).toBeVisible();

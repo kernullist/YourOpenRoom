@@ -16,6 +16,7 @@ test.describe('Chat settings – Aoi current situation panel', () => {
     await expect(modal).toBeVisible();
 
     await modal.getByRole('button', { name: 'Advanced', exact: true }).click();
+    await modal.getByTestId('advanced-section-operator').click();
 
     const panel = modal.locator('[data-testid="aoi-situation-panel"]');
     await expect(panel).toBeVisible({ timeout: 15000 });

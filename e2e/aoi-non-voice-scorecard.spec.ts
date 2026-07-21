@@ -97,6 +97,7 @@ test.describe('Chat settings - Aoi non-voice claim console', () => {
     const modal = page.locator('[data-testid="settings-modal"]');
     await expect(modal).toBeVisible();
     await modal.getByRole('button', { name: 'Advanced', exact: true }).click();
+    await modal.getByTestId('advanced-section-operator').click();
 
     const panel = modal.locator('[data-testid="aoi-non-voice-scorecard-panel"]');
     await expect(panel).toBeVisible();
