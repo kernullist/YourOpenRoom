@@ -356,6 +356,83 @@ export async function fetchAoiHostBrowserDriveRead(
   return { ...page, hostname: asString(record.hostname) };
 }
 
+// --- Browser drive: propose (preview) + run (execute) ONE act (BD P2.3) ------
+
+export interface AoiHostBrowserDriveActPreviewView {
+  capability: string;
+  approvalFingerprint: string;
+  targetSummary: string;
+  stepIndex: number;
+  hostname: string;
+  finalUrl: string;
+  expiresAt: number;
+  beforeScreenshotBase64?: string;
+}
+
+export interface AoiHostBrowserDriveActExecuteView {
+  ok: boolean;
+  stepIndex: number;
+  stopReason?: string;
+  finalUrl?: string;
+}
+
+// Preview: replay the read prefix and record a PENDING per-action approval. The
+// operator approves it in the Host Bridge Approvals inbox before run can execute.
+export async function fetchAoiHostBrowserDriveActPreview(
+  sessionPath: string,
+  plan: unknown,
+  targetStepIndex: number,
+): Promise<AoiHostBrowserDriveActPreviewView> {
+  const path = typeof sessionPath === 'string' ? sessionPath.trim() : '';
+  if (!path) {
+    throw new Error('sessionPath is required for browser-drive act preview');
+  }
+  const payload = await sendJson('/browser-drive/preview', 'POST', {
+    sessionPath: path,
+    plan,
+    targetStepIndex,
+  });
+  const record = isRecord(payload.preview) ? payload.preview : {};
+  return {
+    capability: asString(record.capability),
+    approvalFingerprint: asString(record.approvalFingerprint),
+    targetSummary: asString(record.targetSummary),
+    stepIndex: typeof record.stepIndex === 'number' ? record.stepIndex : targetStepIndex,
+    hostname: asString(record.hostname),
+    finalUrl: asString(record.finalUrl),
+    expiresAt: typeof record.expiresAt === 'number' ? record.expiresAt : 0,
+    ...(typeof record.beforeScreenshotBase64 === 'string'
+      ? { beforeScreenshotBase64: record.beforeScreenshotBase64 }
+      : {}),
+  };
+}
+
+// Execute: run the ONE approved act. Throws (403) if there is no operator-approved,
+// single-use store entry for this exact action fingerprint (fail-closed).
+export async function runAoiHostBrowserDriveActExecute(
+  sessionPath: string,
+  plan: unknown,
+  targetStepIndex: number,
+): Promise<AoiHostBrowserDriveActExecuteView> {
+  const path = typeof sessionPath === 'string' ? sessionPath.trim() : '';
+  if (!path) {
+    throw new Error('sessionPath is required for browser-drive act execute');
+  }
+  const payload = await sendJson('/browser-drive/execute', 'POST', {
+    sessionPath: path,
+    plan,
+    targetStepIndex,
+  });
+  const result = isRecord(payload.result) ? payload.result : {};
+  const target = isRecord(result.target) ? result.target : {};
+  return {
+    ok: payload.ok === true && result.ok === true,
+    stepIndex: typeof result.stepIndex === 'number' ? result.stepIndex : targetStepIndex,
+    ...(typeof target.stopReason === 'string' ? { stopReason: target.stopReason } : {}),
+    ...(typeof target.finalUrl === 'string' ? { finalUrl: target.finalUrl } : {}),
+  };
+}
+
 // --- Browser-drive domain allowlist (auth-only config CRUD) ------------------
 
 export interface AoiBrowserDriveAllowlistEntryView {

@@ -271,6 +271,12 @@ import {
   getBrowserDriveToolPendingSummary,
   isBrowserDriveTool,
 } from '@/lib/aoiBrowserDriveTools';
+import {
+  executeBrowserDriveActTool,
+  getBrowserDriveActToolDefinitions,
+  getBrowserDriveActToolPendingSummary,
+  isBrowserDriveActTool,
+} from '@/lib/aoiBrowserDriveActTools';
 import { executeUrlTool, getUrlToolDefinitions, isUrlTool } from '@/lib/urlTools';
 import {
   executeAppStateTool,
@@ -6809,6 +6815,7 @@ const ChatPanel: React.FC<{
             ...getHostProcessToolDefinitions(),
             ...getHostBrowserToolDefinitions(),
             ...getBrowserDriveToolDefinitions(),
+            ...getBrowserDriveActToolDefinitions(),
             ...(includeAppTools
               ? [
                   getListAppsToolDefinition(),
@@ -7646,6 +7653,17 @@ const ChatPanel: React.FC<{
               return {
                 toolCallId: tc.id,
                 pendingSummary: getBrowserDriveToolPendingSummary(params),
+                summarizedResult: summarizeToolResultForModel(tc.function.name, result),
+              };
+            }
+
+            if (isBrowserDriveActTool(tc.function.name)) {
+              const result = await executeBrowserDriveActTool(tc.function.name, params, {
+                sessionPath: sessionPathRef.current,
+              });
+              return {
+                toolCallId: tc.id,
+                pendingSummary: getBrowserDriveActToolPendingSummary(tc.function.name, params),
                 summarizedResult: summarizeToolResultForModel(tc.function.name, result),
               };
             }
@@ -8628,6 +8646,36 @@ const ChatPanel: React.FC<{
             ];
           } catch (err) {
             console.error('[ChatPanel] browser_read_auth failed', err);
+            currentMessages = [
+              ...currentMessages,
+              {
+                role: 'tool',
+                content: `error: ${err instanceof Error ? err.message : String(err)}`,
+                tool_call_id: tc.id,
+              },
+            ];
+          }
+          continue;
+        }
+
+        // ---- Browser drive ACT: propose (preview) / run (execute) one action ----
+        // Irreversible on the live browser; run consumes an operator-approved,
+        // single-use approval recorded by propose. Fail-closed server-side.
+        if (isBrowserDriveActTool(tc.function.name)) {
+          pendingToolCallsRef.current.push(
+            getBrowserDriveActToolPendingSummary(tc.function.name, params),
+          );
+          try {
+            const result = await executeBrowserDriveActTool(tc.function.name, params, {
+              sessionPath: sessionPathRef.current,
+            });
+            const summarizedResult = summarizeToolResultForModel(tc.function.name, result);
+            currentMessages = [
+              ...currentMessages,
+              { role: 'tool', content: summarizedResult, tool_call_id: tc.id },
+            ];
+          } catch (err) {
+            console.error('[ChatPanel] browser_drive act failed', err);
             currentMessages = [
               ...currentMessages,
               {

@@ -8,6 +8,8 @@ import {
   fetchAoiHostProcesses,
   fetchAoiHostApprovals,
   approveAoiHostApproval,
+  fetchAoiHostBrowserDriveActPreview,
+  runAoiHostBrowserDriveActExecute,
 } from '../aoiHostBridgeClient';
 
 function mockFetch(payload: unknown, ok = true, status = 200): ReturnType<typeof vi.fn> {
@@ -138,5 +140,49 @@ describe('aoiHostBridgeClient', () => {
     const init = fetchMock.mock.calls[0][1] as { body: string };
     expect(url).toContain('/approvals/approve');
     expect(JSON.parse(init.body)).toEqual({ approvalFingerprint: 'fp123' });
+  });
+
+  it('posts a browser-drive act preview and parses the approval preview', async () => {
+    const fetchMock = mockFetch({
+      ok: true,
+      preview: {
+        capability: 'os_browser_drive',
+        approvalFingerprint: 'ff00aa',
+        targetSummary: 'click #go on example.com',
+        stepIndex: 1,
+        hostname: 'example.com',
+        finalUrl: 'https://example.com/a',
+        expiresAt: 42,
+        beforeScreenshotBase64: 'AAAA',
+      },
+    });
+    const plan = { goal: 'g', steps: [{ action: { kind: 'click', selector: '#go' } }] };
+    const preview = await fetchAoiHostBrowserDriveActPreview('aoi/default', plan, 1);
+    expect(preview.approvalFingerprint).toBe('ff00aa');
+    expect(preview.beforeScreenshotBase64).toBe('AAAA');
+    const [url, init] = fetchMock.mock.calls[0] as [string, { body: string }];
+    expect(url).toContain('/browser-drive/preview');
+    expect(JSON.parse(init.body)).toEqual({ sessionPath: 'aoi/default', plan, targetStepIndex: 1 });
+  });
+
+  it('posts a browser-drive act execute and flattens the target result', async () => {
+    mockFetch({
+      ok: true,
+      result: {
+        ok: true,
+        stepIndex: 1,
+        target: { ok: true, finalUrl: 'https://example.com/done' },
+      },
+    });
+    const view = await runAoiHostBrowserDriveActExecute('aoi/default', { goal: 'g', steps: [] }, 1);
+    expect(view.ok).toBe(true);
+    expect(view.finalUrl).toBe('https://example.com/done');
+  });
+
+  it('throws on an unapproved execute (403 envelope)', async () => {
+    mockFetch({ ok: false, error: 'approval_denied' }, false, 403);
+    await expect(
+      runAoiHostBrowserDriveActExecute('aoi/default', { goal: 'g', steps: [] }, 1),
+    ).rejects.toThrow(/approval_denied/);
   });
 });
