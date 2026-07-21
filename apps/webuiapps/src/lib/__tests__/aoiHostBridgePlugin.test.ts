@@ -474,6 +474,242 @@ describe('resolveAoiHostBridgeRoute /browser-drive-read (BD gate)', () => {
   });
 });
 
+describe('resolveAoiHostBridgeRoute /browser-drive/preview + /execute (BD P2.3)', () => {
+  function enableDriveConsent(sessionsDir: string, home: string): void {
+    const registry = getDefaultAoiEnvironmentSourceRegistry('aoi/default', 1000);
+    saveAoiEnvironmentSourceRegistry(sessionsDir, 'aoi/default', registry);
+    updateAoiEnvironmentSource(sessionsDir, 'aoi/default', {
+      sourceId: 'browser-drive',
+      patch: { enabled: true, consentReason: 'User enabled browser drive for this test.' },
+      now: 1500,
+    });
+    saveAoiHostBridgeKillSwitchState(
+      home,
+      setAoiHostBridgeCapability(null, 'os_browser_drive', true, 1500),
+    );
+    saveAoiBrowserDriveAllowlist(
+      home,
+      addAoiBrowserDriveAllowlistEntry(null, { domain: 'example.com' }, 1000).allowlist,
+    );
+  }
+
+  const PLAN = {
+    goal: 'refresh the dashboard',
+    steps: [
+      { description: 'open', action: { kind: 'navigate', url: 'https://example.com/account' } },
+      { description: 'click refresh', action: { kind: 'click', selector: '#refresh' } },
+    ],
+  };
+
+  it('preview blocks when capability/consent is off', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive/preview',
+      body: { sessionPath: 'aoi/default', plan: PLAN, targetStepIndex: 1 },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+    });
+    expect(result.status).toBe(403);
+  });
+
+  it('preview rejects a non-act target before opening a browser', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    enableDriveConsent(sessionsDir, home);
+    let launched = false;
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive/preview',
+      body: { sessionPath: 'aoi/default', plan: PLAN, targetStepIndex: 0 },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+      browserDrivePreviewImpl: async () => {
+        launched = true;
+        return { ok: false, reason: 'session_start_failed' };
+      },
+    });
+    expect(result.status).toBe(422);
+    expect((result.payload as { code: string }).code).toBe('not_an_act');
+    expect(launched).toBe(false);
+  });
+
+  it('preview records a pending approval and returns the fingerprint + before-screenshot', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    enableDriveConsent(sessionsDir, home);
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive/preview',
+      body: { sessionPath: 'aoi/default', plan: PLAN, targetStepIndex: 1 },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+      browserDrivePreviewImpl: async () => ({
+        ok: true,
+        stepIndex: 1,
+        action: { kind: 'click', selector: '#refresh' },
+        hostname: 'example.com',
+        finalUrl: 'https://example.com/account',
+        beforeScreenshotBase64: 'AAAA',
+        prefix: [],
+      }),
+    });
+    expect(result.status).toBe(200);
+    const preview = (result.payload as { preview: Record<string, unknown> }).preview;
+    expect(preview.capability).toBe('os_browser_drive');
+    expect(preview.beforeScreenshotBase64).toBe('AAAA');
+    const fingerprint = preview.approvalFingerprint as string;
+    expect(fingerprint).toMatch(/^[a-f0-9]+$/i);
+
+    // The pending approval is visible to the operator approve step.
+    const approvals = await resolveAoiHostBridgeRoute({
+      method: 'GET',
+      route: '/approvals',
+      body: {},
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2001,
+    });
+    const list = (
+      approvals.payload as { approvals: Array<{ approvalFingerprint: string; capability: string }> }
+    ).approvals;
+    expect(
+      list.some(
+        (a) => a.approvalFingerprint === fingerprint && a.capability === 'os_browser_drive',
+      ),
+    ).toBe(true);
+  });
+
+  it('preview maps a runner failure to 422', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    enableDriveConsent(sessionsDir, home);
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive/preview',
+      body: { sessionPath: 'aoi/default', plan: PLAN, targetStepIndex: 1 },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+      browserDrivePreviewImpl: async () => ({
+        ok: false,
+        reason: 'prefix_failed',
+        detail: 'drift',
+      }),
+    });
+    expect(result.status).toBe(422);
+    expect((result.payload as { code: string }).code).toBe('prefix_failed');
+  });
+
+  it('execute blocks when capability/consent is off', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive/execute',
+      body: { sessionPath: 'aoi/default', plan: PLAN, targetStepIndex: 1 },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+    });
+    expect(result.status).toBe(403);
+  });
+
+  it('execute rejects a malformed body', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    enableDriveConsent(sessionsDir, home);
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive/execute',
+      body: { sessionPath: 'aoi/default', plan: PLAN },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+    });
+    expect(result.status).toBe(400);
+  });
+
+  it('execute returns 403 when the target act is not approved', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    enableDriveConsent(sessionsDir, home);
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive/execute',
+      body: { sessionPath: 'aoi/default', plan: PLAN, targetStepIndex: 1 },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+      browserDriveExecuteImpl: async () => ({
+        ok: false,
+        stepIndex: 1,
+        action: { kind: 'click', selector: '#refresh' },
+        prefix: [],
+        target: {
+          index: 1,
+          category: 'act',
+          ok: false,
+          stopReason: 'approval_denied',
+          detail: 'not approved',
+        },
+      }),
+    });
+    expect(result.status).toBe(403);
+    expect((result.payload as { code: string }).code).toBe('approval_denied');
+  });
+
+  it('execute maps a runner-level failure to 422', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    enableDriveConsent(sessionsDir, home);
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive/execute',
+      body: { sessionPath: 'aoi/default', plan: PLAN, targetStepIndex: 1 },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+      browserDriveExecuteImpl: async () => ({ ok: false, reason: 'prefix_contains_act' }),
+    });
+    expect(result.status).toBe(422);
+    expect((result.payload as { code: string }).code).toBe('prefix_contains_act');
+  });
+
+  it('execute returns 200 with the result when the approved act runs', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    enableDriveConsent(sessionsDir, home);
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive/execute',
+      body: { sessionPath: 'aoi/default', plan: PLAN, targetStepIndex: 1 },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+      browserDriveExecuteImpl: async () => ({
+        ok: true,
+        stepIndex: 1,
+        action: { kind: 'click', selector: '#refresh' },
+        prefix: [],
+        target: {
+          index: 1,
+          category: 'act',
+          ok: true,
+          finalUrl: 'https://example.com/account',
+        },
+      }),
+    });
+    expect(result.status).toBe(200);
+    expect((result.payload as { ok: boolean }).ok).toBe(true);
+  });
+});
+
 describe('registration CRUD (auth-only)', () => {
   it('adds, lists, and removes a spawn-allowlist entry; rejects a relative path', async () => {
     const { home, sessionsDir, token } = makeDaemonHome();

@@ -53,6 +53,21 @@ import {
   type AoiBrowserDriveReadOutcome,
 } from './aoiBrowserDriveRead';
 import {
+  executeAoiBrowserDriveActStep,
+  previewAoiBrowserDriveActStep,
+  type AoiBrowserDriveActExecuteResult,
+  type AoiBrowserDriveActPreviewResult,
+  type AoiBrowserDriveRunFailure,
+  type AoiBrowserDriveRunnerSession,
+} from './aoiBrowserDriveActRunner';
+import {
+  buildAoiBrowserDriveActApprovalPreview,
+  makeAoiBrowserDriveStoreApprovalGate,
+  recordAoiBrowserDriveActPendingApproval,
+} from './aoiBrowserDriveApproval';
+import type { AoiBrowserDrivePlan } from './aoiBrowserDrivePlan';
+import type { AoiBrowserDriveActablePage } from './aoiBrowserDriveExecutor';
+import {
   AOI_HOST_SPAWN_CAPABILITY,
   addAoiHostSpawnAllowlistEntry,
   evaluateAoiHostSpawnPolicy,
@@ -149,6 +164,19 @@ export interface ResolveAoiHostBridgeRouteParams {
     allowlist: AoiBrowserDriveAllowlist;
     now: number;
   }) => Promise<AoiBrowserDriveReadOutcome>;
+  browserDrivePreviewImpl?: (options: {
+    plan: AoiBrowserDrivePlan;
+    targetStepIndex: number;
+    allowlist: AoiBrowserDriveAllowlist;
+    now: number;
+  }) => Promise<AoiBrowserDriveActPreviewResult | AoiBrowserDriveRunFailure>;
+  browserDriveExecuteImpl?: (options: {
+    plan: AoiBrowserDrivePlan;
+    targetStepIndex: number;
+    allowlist: AoiBrowserDriveAllowlist;
+    now: number;
+    openroomHome: string;
+  }) => Promise<AoiBrowserDriveActExecuteResult | AoiBrowserDriveRunFailure>;
   readProcessImpl?: (pid: number) => AoiHostLiveProcess | null;
   killImpl?: (pid: number) => boolean;
   recycleImpl?: (path: string) => boolean;
@@ -200,6 +228,126 @@ async function runAoiBrowserDriveReadDefault(options: {
   } finally {
     await session.close();
   }
+}
+
+// Shared gate for the browser-drive ACT routes: auth is already verified; this adds
+// the kill-switch + browser-drive consent (fail-closed). preview is reversible;
+// execute is irreversible + approval-satisfied. Returns a denial result, or null
+// when the caller may proceed.
+function requireAoiBrowserDriveActGate(
+  params: ResolveAoiHostBridgeRouteParams,
+  opts: { irreversible: boolean; approvalSatisfied?: boolean },
+): AoiHostBridgeRouteResult | null {
+  const sessionPath = normalizeAoiAutonomySessionPath(
+    typeof params.body.sessionPath === 'string' ? params.body.sessionPath : '',
+  );
+  if (!sessionPath) {
+    return {
+      status: 400,
+      payload: { ok: false, error: 'sessionPath is required', code: 'invalid_session_path' },
+    };
+  }
+  const killSwitch = loadAoiHostBridgeKillSwitchState(params.openroomHome);
+  const registry = loadAoiEnvironmentSourceRegistry(params.sessionsDir, sessionPath, params.now);
+  const consent = checkAoiEnvironmentSourceOperation({
+    registry,
+    sourceId: AOI_BROWSER_DRIVE_SOURCE_ID,
+    operation: 'read_metadata',
+  });
+  const gate = evaluateAoiHostBridgeGate({
+    authenticated: true,
+    killSwitchState: killSwitch,
+    capabilityKey: AOI_BROWSER_DRIVE_CAPABILITY,
+    irreversible: opts.irreversible,
+    ...(opts.approvalSatisfied ? { approvalSatisfied: true } : {}),
+    consent: { allowed: consent.allowed, reasons: consent.reasons },
+  });
+  if (!gate.allowed) {
+    return {
+      status: 403,
+      payload: { ok: false, error: 'blocked', denyReasons: gate.denyReasons, detail: gate.detail },
+    };
+  }
+  return null;
+}
+
+// Parse a { plan, targetStepIndex } ACT request body. Returns null on a malformed
+// request; the plan classifiers normalize the plan shape defensively downstream.
+function parseAoiBrowserDriveActRequest(
+  body: Record<string, unknown>,
+): { plan: AoiBrowserDrivePlan; targetStepIndex: number } | null {
+  const rawPlan = body.plan;
+  if (!rawPlan || typeof rawPlan !== 'object' || Array.isArray(rawPlan)) {
+    return null;
+  }
+  if (!Array.isArray((rawPlan as { steps?: unknown }).steps)) {
+    return null;
+  }
+  const targetStepIndex = body.targetStepIndex;
+  if (
+    typeof targetStepIndex !== 'number' ||
+    !Number.isInteger(targetStepIndex) ||
+    targetStepIndex < 0
+  ) {
+    return null;
+  }
+  return { plan: rawPlan as AoiBrowserDrivePlan, targetStepIndex };
+}
+
+// Production session factory for the ACT runner: a fresh CDP session against the
+// operator's OWN browser, adapted to the runner's minimal { page, close } shape.
+// A start failure surfaces through the runner as session_start_failed.
+async function makeAoiBrowserDriveRunnerSession(): Promise<AoiBrowserDriveRunnerSession> {
+  const session = await startAoiBrowserDriveSession({});
+  return {
+    page: session.page as unknown as AoiBrowserDriveActablePage,
+    close: () => session.close(),
+  };
+}
+
+// Default production browser-drive ACT preview: replay the read prefix in a fresh
+// session and screenshot the page the target act would touch (read-only, no effect).
+async function runAoiBrowserDrivePreviewDefault(options: {
+  plan: AoiBrowserDrivePlan;
+  targetStepIndex: number;
+  allowlist: AoiBrowserDriveAllowlist;
+  now: number;
+}): Promise<AoiBrowserDriveActPreviewResult | AoiBrowserDriveRunFailure> {
+  return previewAoiBrowserDriveActStep({
+    plan: options.plan,
+    targetStepIndex: options.targetStepIndex,
+    allowlist: options.allowlist,
+    now: options.now,
+    sessionFactory: makeAoiBrowserDriveRunnerSession,
+  });
+}
+
+// Default production browser-drive ACT execute: consume the operator-approved,
+// single-use store entry (via the store-backed gate) and run the ONE target act in
+// a fresh session after replaying the read prefix. Without an approved entry the
+// gate is fail-closed and nothing runs.
+async function runAoiBrowserDriveExecuteDefault(options: {
+  plan: AoiBrowserDrivePlan;
+  targetStepIndex: number;
+  allowlist: AoiBrowserDriveAllowlist;
+  now: number;
+  openroomHome: string;
+}): Promise<AoiBrowserDriveActExecuteResult | AoiBrowserDriveRunFailure> {
+  const gate = makeAoiBrowserDriveStoreApprovalGate({
+    loadStore: () => loadAoiHostBridgeApprovalStore(options.openroomHome),
+    saveStore: (store) => {
+      saveAoiHostBridgeApprovalStore(options.openroomHome, store);
+    },
+    now: options.now,
+  });
+  return executeAoiBrowserDriveActStep({
+    plan: options.plan,
+    targetStepIndex: options.targetStepIndex,
+    allowlist: options.allowlist,
+    now: options.now,
+    approvalGate: gate,
+    sessionFactory: makeAoiBrowserDriveRunnerSession,
+  });
 }
 
 // The pure routing core. Auth is enforced first; then the route is dispatched.
@@ -459,6 +607,179 @@ export async function resolveAoiHostBridgeRoute(
           ok: false,
           error: error instanceof Error ? error.message : String(error),
           code: 'browser_drive_read_failed',
+        },
+      };
+    }
+  }
+
+  // --- POST /browser-drive/preview (BD P2.3): replay the plan's read prefix in a
+  //     fresh session and return the per-ACT approval preview (fingerprint + before-
+  //     screenshot). Records a PENDING approval so execute cannot self-approve.
+  //     Read-only: no side effect runs here. ------------------------------------
+  if (params.method === 'POST' && params.route === '/browser-drive/preview') {
+    const denied = requireAoiBrowserDriveActGate(params, { irreversible: false });
+    if (denied) {
+      return denied;
+    }
+    const parsed = parseAoiBrowserDriveActRequest(params.body);
+    if (!parsed) {
+      return {
+        status: 400,
+        payload: { ok: false, error: 'plan and targetStepIndex are required', code: 'bad_request' },
+      };
+    }
+    // Cheap pure reject BEFORE opening a browser: only an admissible plan's ACT step
+    // is approvable (read needs no approval, forbidden can never run).
+    const preValidate = buildAoiBrowserDriveActApprovalPreview({
+      plan: parsed.plan,
+      stepIndex: parsed.targetStepIndex,
+      now: params.now,
+    });
+    if (!preValidate.ok) {
+      return {
+        status: 422,
+        payload: {
+          ok: false,
+          error: preValidate.reason,
+          code: preValidate.reason,
+          detail: preValidate.detail,
+        },
+      };
+    }
+    const allowlist = loadAoiBrowserDriveAllowlist(params.openroomHome);
+    try {
+      const previewImpl = params.browserDrivePreviewImpl ?? runAoiBrowserDrivePreviewDefault;
+      const browserPreview = await previewImpl({
+        plan: parsed.plan,
+        targetStepIndex: parsed.targetStepIndex,
+        allowlist,
+        now: params.now,
+      });
+      if (!browserPreview.ok) {
+        return {
+          status: 422,
+          payload: {
+            ok: false,
+            error: browserPreview.reason,
+            code: browserPreview.reason,
+            detail: browserPreview.detail,
+          },
+        };
+      }
+      const approval = buildAoiBrowserDriveActApprovalPreview({
+        plan: parsed.plan,
+        stepIndex: parsed.targetStepIndex,
+        hostname: browserPreview.hostname,
+        ...(browserPreview.beforeScreenshotBase64
+          ? { beforeScreenshotBase64: browserPreview.beforeScreenshotBase64 }
+          : {}),
+        now: params.now,
+      });
+      if (!approval.ok) {
+        return {
+          status: 422,
+          payload: {
+            ok: false,
+            error: approval.reason,
+            code: approval.reason,
+            detail: approval.detail,
+          },
+        };
+      }
+      const recorded = recordAoiBrowserDriveActPendingApproval(
+        loadAoiHostBridgeApprovalStore(params.openroomHome),
+        approval,
+        params.now,
+      );
+      saveAoiHostBridgeApprovalStore(params.openroomHome, recorded.store);
+      return {
+        status: 200,
+        payload: {
+          ok: true,
+          preview: {
+            capability: approval.capability,
+            approvalFingerprint: approval.fingerprint,
+            targetSummary: approval.targetSummary,
+            stepIndex: approval.stepIndex,
+            hostname: approval.hostname,
+            finalUrl: browserPreview.finalUrl,
+            expiresAt: approval.expiresAt,
+            ...(approval.beforeScreenshotBase64
+              ? { beforeScreenshotBase64: approval.beforeScreenshotBase64 }
+              : {}),
+          },
+        },
+      };
+    } catch (error) {
+      return {
+        status: 500,
+        payload: {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+          code: 'browser_drive_preview_failed',
+        },
+      };
+    }
+  }
+
+  // --- POST /browser-drive/execute (BD P2.3): run the ONE approved target act.
+  //     Reached only after consuming an operator-approved, single-use store entry
+  //     for this exact action fingerprint; the gate is fail-closed otherwise. -----
+  if (params.method === 'POST' && params.route === '/browser-drive/execute') {
+    const denied = requireAoiBrowserDriveActGate(params, {
+      irreversible: true,
+      approvalSatisfied: true,
+    });
+    if (denied) {
+      return denied;
+    }
+    const parsed = parseAoiBrowserDriveActRequest(params.body);
+    if (!parsed) {
+      return {
+        status: 400,
+        payload: { ok: false, error: 'plan and targetStepIndex are required', code: 'bad_request' },
+      };
+    }
+    const allowlist = loadAoiBrowserDriveAllowlist(params.openroomHome);
+    try {
+      const executeImpl = params.browserDriveExecuteImpl ?? runAoiBrowserDriveExecuteDefault;
+      const result = await executeImpl({
+        plan: parsed.plan,
+        targetStepIndex: parsed.targetStepIndex,
+        allowlist,
+        now: params.now,
+        openroomHome: params.openroomHome,
+      });
+      // Runner-level failure (bad plan / prefix / session) -> 422.
+      if ('reason' in result) {
+        return {
+          status: 422,
+          payload: { ok: false, error: result.reason, code: result.reason, detail: result.detail },
+        };
+      }
+      // The target ran (or was gated). A blocked target is 403, a soft failure 422.
+      if (!result.ok) {
+        const stop = result.target.stopReason;
+        const blocked = stop === 'approval_denied' || stop === 'approval_gate_error';
+        return {
+          status: blocked ? 403 : 422,
+          payload: {
+            ok: false,
+            error: stop ?? 'action_failed',
+            code: stop ?? 'action_failed',
+            detail: result.target.detail,
+            result,
+          },
+        };
+      }
+      return { status: 200, payload: { ok: true, result } };
+    } catch (error) {
+      return {
+        status: 500,
+        payload: {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+          code: 'browser_drive_execute_failed',
         },
       };
     }
