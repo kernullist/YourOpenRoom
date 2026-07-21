@@ -204,6 +204,9 @@ importers:
       mermaid:
         specifier: ^11.16.0
         version: 11.16.0
+      playwright-core:
+        specifier: ^1.58.2
+        version: 1.58.2
       react-markdown:
         specifier: ^10.1.0
         version: 10.1.0(@types/react@18.3.27)(react@18.3.1)

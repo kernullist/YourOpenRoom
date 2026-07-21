@@ -40,6 +40,7 @@
     "framer-motion": "^12.34.0",
     "jszip": "^3.10.1",
     "mermaid": "^11.16.0",
+    "playwright-core": "^1.58.2",
     "react-markdown": "^10.1.0",
     "rehype-raw": "^7.0.0",
     "remark-gfm": "^4.0.1",
