@@ -681,24 +681,37 @@
   // right. Wider + taller than the old single-column modal so functional groups fit.
   display: grid;
   grid-template-columns: 216px minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
   grid-template-areas:
     'header header'
-    'nav body';
+    'nav body'
+    'actions actions';
   column-gap: 18px;
   row-gap: 12px;
   overflow: hidden;
+}
+
+// Compact variant (e.g. the loading modal): no sidebar/footer, just header + body
+// in a single column so there is no empty nav gutter.
+.settingsModalCompact {
+  width: 560px;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas:
+    'header'
+    'body';
 }
 
 // Narrow screens: collapse to a single column and let the nav sit above the body.
 @media (max-width: 680px) {
   .settingsModal {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
     grid-template-areas:
       'header'
       'nav'
-      'body';
+      'body'
+      'actions';
   }
 }
 
@@ -1435,11 +1448,14 @@
 }
 
 .settingsActions {
+  grid-area: actions;
   display: flex;
   gap: 8px;
   justify-content: flex-end;
-  margin-top: 16px;
+  margin-top: 4px;
   flex: 0 0 auto;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 12px;
 }
 
 .cancelBtn {

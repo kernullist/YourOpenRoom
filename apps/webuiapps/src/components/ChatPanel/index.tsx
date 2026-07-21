@@ -10799,7 +10799,10 @@ const ChatPanel: React.FC<{
 
       {showSettings && !persistedConfigLoaded && (
         <div className={styles.overlay}>
-          <div className={styles.settingsModal} data-testid="settings-loading-modal">
+          <div
+            className={`${styles.settingsModal} ${styles.settingsModalCompact}`}
+            data-testid="settings-loading-modal"
+          >
             <div className={styles.settingsHeader}>
               <div className={styles.settingsHeading}>
                 <div className={styles.settingsTitle}>Settings</div>
