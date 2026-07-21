@@ -4924,6 +4924,7 @@ function buildAoiBlindSpotsPanel(input: AoiOperatorAcceptanceDashboardInput): Ao
         source.kind !== 'process_activity' &&
         source.kind !== 'desktop_activity' &&
         source.kind !== 'host_browser_read' &&
+        source.kind !== 'browser_drive' &&
         (!source.enabled ||
           (isAoiPersonalSignalSourceKind(source.kind) &&
             !source.allowedOperations.includes('summarize'))),

@@ -421,6 +421,7 @@ describe('Aoi environment source registry storage', () => {
       'process-activity',
       'desktop-activity',
       'host-browser-read',
+      'browser-drive',
       'manual-note',
       'calendar-metadata',
       'gmail-metadata',
@@ -484,13 +485,13 @@ describe('Aoi environment source registry storage', () => {
 
     const status = buildAoiAutonomyStatus(root, 'aoi/default', 4000);
     expect(status).toMatchObject({
-      // +3 host-bridge sources vs the original default set: process-activity
-      // (HP1), desktop-activity (HP4), host-browser-read (HP5) — all high-risk
-      // + private-by-default (each count +1) and default off.
-      environmentSourceCount: 14,
+      // +4 host-bridge sources vs the original default set: process-activity
+      // (HP1), desktop-activity (HP4), host-browser-read (HP5), browser-drive —
+      // all high-risk + private-by-default (each count +1) and default off.
+      environmentSourceCount: 15,
       enabledEnvironmentSourceCount: 5,
-      highRiskEnvironmentSourceCount: 7,
-      privateEnvironmentSourceCount: 7,
+      highRiskEnvironmentSourceCount: 8,
+      privateEnvironmentSourceCount: 8,
       lastEnvironmentSourceObservedAt: 1500,
     });
   });

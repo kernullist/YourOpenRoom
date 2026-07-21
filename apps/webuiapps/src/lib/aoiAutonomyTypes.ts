@@ -28,6 +28,8 @@ export type AoiEnvironmentSourceKind =
   | 'desktop_activity'
   // Headless Chrome/Edge page reads on the operator PC (public http(s) only).
   | 'host_browser_read'
+  // CDP attach to the operator PC's OWN Chrome/Edge to act on logged-in sites.
+  | 'browser_drive'
   | AoiPersonalSignalSourceKind;
 
 export type AoiEnvironmentSourceOperation =

@@ -23,6 +23,7 @@ export const AOI_SALIENCE_HALF_LIVES_MS: Record<AoiSalienceKind, number> = {
   // Real-PC live signals decay on a minutes scale like in-app activity.
   process_activity: 30 * MINUTE_MS,
   host_browser_read: 30 * MINUTE_MS,
+  browser_drive: 30 * MINUTE_MS,
   desktop_activity: 30 * MINUTE_MS,
   chat: 2 * HOUR_MS,
   browser_context: 2 * HOUR_MS,

@@ -21,4 +21,19 @@ describe('aoiHostBridgeConsent', () => {
     expect(link?.sourceId).toBe('desktop-activity');
     expect(buildAoiHostBridgeLinkedSourcePatch(link!, false)).toEqual({ enabled: false });
   });
+
+  it('maps os_browser_read and os_browser_drive to their source consent', () => {
+    expect(getAoiHostBridgeConsentLink('os_browser_read')?.sourceId).toBe('host-browser-read');
+    const drive = getAoiHostBridgeConsentLink('os_browser_drive');
+    expect(drive?.sourceId).toBe('browser-drive');
+    expect(buildAoiHostBridgeLinkedSourcePatch(drive!, true, 2000)).toEqual({
+      enabled: true,
+      consentReason: drive!.consentReason,
+      lastReviewedAt: 2000,
+    });
+  });
+
+  it('returns null for an unknown capability', () => {
+    expect(getAoiHostBridgeConsentLink('nope')).toBeNull();
+  });
 });

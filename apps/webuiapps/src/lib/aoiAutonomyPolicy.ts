@@ -75,6 +75,7 @@ export const AOI_ENVIRONMENT_SOURCE_KINDS: readonly AoiEnvironmentSourceKind[] =
   'process_activity',
   'desktop_activity',
   'host_browser_read',
+  'browser_drive',
   'calendar_metadata',
   'gmail_metadata',
   'notes_metadata',
@@ -219,6 +220,21 @@ const DEFAULT_AOI_ENVIRONMENT_SOURCES: readonly Omit<
     id: 'host-browser-read',
     kind: 'host_browser_read',
     label: 'Host headless browser page read',
+    enabled: false,
+    scope: 'explicit_target',
+    risk: 'high',
+    allowedOperations: ['read_metadata', 'summarize'],
+    privateByDefault: true,
+    quietModeBehavior: 'suppress',
+  },
+  {
+    // Browser-drive: attach to the operator PC's OWN Chrome/Edge over CDP and act
+    // on already-logged-in sites. Read/navigate is consented here; interactions
+    // need per-action approval. Default OFF + kill-switch. Attaching to the MAIN
+    // profile means the domain allowlist is the only containment.
+    id: 'browser-drive',
+    kind: 'browser_drive',
+    label: 'Host browser drive',
     enabled: false,
     scope: 'explicit_target',
     risk: 'high',

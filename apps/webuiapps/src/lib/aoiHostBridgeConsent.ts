@@ -29,6 +29,12 @@ export const AOI_HOST_BRIDGE_CONSENT_LINKS: readonly AoiHostBridgeConsentLink[] 
     label: 'Host headless browser read',
     consentReason: 'Enabled from Host Bridge settings (headless browser page read).',
   },
+  {
+    capabilityKey: 'os_browser_drive',
+    sourceId: 'browser-drive',
+    label: 'Host browser drive',
+    consentReason: 'Enabled from Host Bridge settings (browser drive).',
+  },
 ];
 
 export function getAoiHostBridgeConsentLink(

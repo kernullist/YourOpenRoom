@@ -251,6 +251,7 @@ describe('Aoi environment source policy', () => {
       'process_activity',
       'desktop_activity',
       'host_browser_read',
+      'browser_drive',
       'manual_note',
       'calendar_metadata',
       'gmail_metadata',

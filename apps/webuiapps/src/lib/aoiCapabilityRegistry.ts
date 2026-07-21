@@ -275,6 +275,21 @@ const AOI_CAPABILITY_REGISTRY = {
     policyNotes:
       'Requires Host Bridge os_browser_read capability and host-browser-read consent. Private/local hosts blocked.',
   },
+  os_browser_drive: {
+    name: 'os_browser_drive',
+    label: 'Host browser drive',
+    kind: 'tool',
+    surface: 'web',
+    risk: 'high',
+    description:
+      'Attach to the operator PC Chrome/Edge over CDP and act on already-logged-in sites (navigate + extract; interactions gated per action).',
+    access: ['read', 'write', 'network', 'external'],
+    sandboxEligible: false,
+    approval: 'policy-gated',
+    promptVisible: true,
+    policyNotes:
+      'Requires Host Bridge os_browser_drive capability + browser-drive consent + a domain allowlist. Attaches to the MAIN profile, so the allowlist is the only containment; interactions need per-action approval, and passwords/payments/CAPTCHAs are never entered.',
+  },
   read_url: {
     name: 'read_url',
     label: 'Read URL',
