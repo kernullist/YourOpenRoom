@@ -12,11 +12,15 @@ import {
   removeAoiHostRoot,
   fetchAoiHostApprovals,
   approveAoiHostApproval,
+  fetchAoiBrowserDriveAllowlist,
+  addAoiBrowserDriveAllowlistDomain,
+  removeAoiBrowserDriveAllowlistDomain,
   type AoiHostBridgeStatus,
   type AoiHostSpawnAllowlistEntryView,
   type AoiHostRootView,
   type AoiHostBridgeApprovalView,
   type AoiHostRootKind,
+  type AoiBrowserDriveAllowlistEntryView,
 } from '@/lib/aoiHostBridgeClient';
 import {
   AOI_HOST_BRIDGE_CONSENT_LINKS,
@@ -100,6 +104,10 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
   const [readRoots, setReadRoots] = useState<AoiHostRootView[]>([]);
   const [writeRoots, setWriteRoots] = useState<AoiHostRootView[]>([]);
   const [approvals, setApprovals] = useState<AoiHostBridgeApprovalView[]>([]);
+  const [browserDriveEntries, setBrowserDriveEntries] = useState<
+    AoiBrowserDriveAllowlistEntryView[]
+  >([]);
+  const [browserDriveDraft, setBrowserDriveDraft] = useState({ domain: '', label: '' });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
@@ -109,18 +117,19 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
   const [readDraft, setReadDraft] = useState<RootDraft>(EMPTY_DRAFT);
   const [writeDraft, setWriteDraft] = useState<RootDraft>(EMPTY_DRAFT);
   // Keep Host PC controls short: one role group visible at a time.
-  const [hostSection, setHostSection] = useState<'capabilities' | 'spawn' | 'roots' | 'approvals'>(
-    'capabilities',
-  );
+  const [hostSection, setHostSection] = useState<
+    'capabilities' | 'spawn' | 'roots' | 'approvals' | 'browserDrive'
+  >('capabilities');
   const readPresets = listAoiHostReadRootPresets();
   const spawnPresets = listAoiHostSpawnPresets();
   const HOST_SECTIONS: Array<{
-    id: 'capabilities' | 'spawn' | 'roots' | 'approvals';
+    id: 'capabilities' | 'spawn' | 'roots' | 'approvals' | 'browserDrive';
     label: string;
   }> = [
     { id: 'capabilities', label: 'Capabilities' },
     { id: 'spawn', label: 'Spawn' },
     { id: 'roots', label: 'File roots' },
+    { id: 'browserDrive', label: 'Browser drive' },
     { id: 'approvals', label: 'Approvals' },
   ];
 
@@ -148,18 +157,20 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
     setLoading(true);
     setError('');
     try {
-      const [nextStatus, spawn, read, write, pending] = await Promise.all([
+      const [nextStatus, spawn, read, write, pending, driveAllow] = await Promise.all([
         fetchAoiHostBridgeStatus(),
         fetchAoiHostSpawnAllowlist(),
         fetchAoiHostRoots('read'),
         fetchAoiHostRoots('write'),
         fetchAoiHostApprovals(),
+        fetchAoiBrowserDriveAllowlist(),
       ]);
       setStatus(nextStatus);
       setSpawnEntries(spawn);
       setReadRoots(read);
       setWriteRoots(write);
       setApprovals(pending);
+      setBrowserDriveEntries(driveAllow);
 
       // Repair footgun: capability already ON but session consent never granted.
       const enabledKeys = new Set(nextStatus.killSwitch.enabledCapabilities);
@@ -261,6 +272,21 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
   const removeSpawn = (id: string) =>
     void runAction(`spawn:del:${id}`, async () => {
       setSpawnEntries(await removeAoiHostSpawnAllowlistEntry(id));
+    });
+
+  const addBrowserDriveDomain = () =>
+    void runAction('drive:add', async () => {
+      const entries = await addAoiBrowserDriveAllowlistDomain({
+        domain: browserDriveDraft.domain.trim(),
+        ...(browserDriveDraft.label.trim() ? { label: browserDriveDraft.label.trim() } : {}),
+      });
+      setBrowserDriveEntries(entries);
+      setBrowserDriveDraft({ domain: '', label: '' });
+    });
+
+  const removeBrowserDriveDomain = (id: string) =>
+    void runAction(`drive:del:${id}`, async () => {
+      setBrowserDriveEntries(await removeAoiBrowserDriveAllowlistDomain(id));
     });
 
   const addRoot = (kind: AoiHostRootKind, draft: RootDraft, reset: () => void) =>
@@ -549,6 +575,60 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
                     className={styles.saveBtn}
                     onClick={addSpawn}
                     disabled={!spawnDraft.path.trim() || busy === 'spawn:add'}
+                  >
+                    Add
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {hostSection === 'browserDrive' && (
+              <div className={styles.connectorRow} data-testid="aoi-host-browser-drive-allowlist">
+                <div className={styles.connectorRowHeader}>
+                  <strong>Browser-drive allowlist</strong>
+                  <span className={styles.modelHint}>{browserDriveEntries.length} domains</span>
+                </div>
+                <span className={styles.modelHint}>
+                  Aoi may drive your OWN logged-in browser ONLY on these domains (the exact host and
+                  its subdomains). This is the only containment: attaching to your main browser
+                  exposes every login, so keep this list minimal. Read-only today; interactions will
+                  still need per-action approval.
+                </span>
+                {browserDriveEntries.map((entry) => (
+                  <div key={entry.id} className={styles.connectorToggleRow}>
+                    <span className={styles.modelHint}>
+                      {entry.label && entry.label !== entry.domain ? `${entry.label} · ` : ''}
+                      {entry.domain}
+                    </span>
+                    <button
+                      type="button"
+                      className={styles.cancelBtn}
+                      onClick={() => removeBrowserDriveDomain(entry.id)}
+                      disabled={busy === `drive:del:${entry.id}`}
+                      title="Remove this domain"
+                      data-testid={`aoi-host-drive-remove-${entry.id}`}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                ))}
+                <div className={styles.connectorToggleRow}>
+                  <input
+                    className={styles.fieldInput}
+                    value={browserDriveDraft.domain}
+                    onChange={(event) =>
+                      setBrowserDriveDraft((prev) => ({ ...prev, domain: event.target.value }))
+                    }
+                    placeholder="example.com"
+                    aria-label="Browser-drive allowlist domain"
+                    data-testid="aoi-host-drive-domain-input"
+                  />
+                  <button
+                    type="button"
+                    className={styles.saveBtn}
+                    onClick={addBrowserDriveDomain}
+                    disabled={!browserDriveDraft.domain.trim() || busy === 'drive:add'}
+                    data-testid="aoi-host-drive-add"
                   >
                     Add
                   </button>

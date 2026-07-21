@@ -515,6 +515,57 @@ describe('registration CRUD (auth-only)', () => {
     expect((del.payload as { entries: unknown[] }).entries).toEqual([]);
   });
 
+  it('adds, lists, and removes a browser-drive allowlist domain; rejects junk', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    const add = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive-allowlist',
+      body: { domain: 'GitHub.com', label: 'GitHub' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 1000,
+    });
+    expect(add.status).toBe(200);
+    const entries = (add.payload as { entries: Array<{ id: string; domain: string }> }).entries;
+    expect(entries).toEqual([
+      { id: 'github-com', domain: 'github.com', label: 'GitHub', addedAt: 1000 },
+    ]);
+
+    const bad = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive-allowlist',
+      body: { domain: 'not a domain' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 1000,
+    });
+    expect(bad.status).toBe(400);
+
+    const list = await resolveAoiHostBridgeRoute({
+      method: 'GET',
+      route: '/browser-drive-allowlist',
+      body: {},
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 1500,
+    });
+    expect((list.payload as { entries: unknown[] }).entries).toHaveLength(1);
+
+    const del = await resolveAoiHostBridgeRoute({
+      method: 'DELETE',
+      route: '/browser-drive-allowlist',
+      body: { id: 'github-com' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+    });
+    expect((del.payload as { entries: unknown[] }).entries).toEqual([]);
+  });
+
   it('manages read-roots and write-roots', async () => {
     const { home, sessionsDir, token } = makeDaemonHome();
     const dir = fs.realpathSync.native(fs.mkdtempSync(join(os.tmpdir(), 'aoi-root-')));

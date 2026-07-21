@@ -40,8 +40,11 @@ import {
 import { AOI_BROWSER_DRIVE_CAPABILITY, AOI_BROWSER_DRIVE_SOURCE_ID } from './aoiBrowserDrive';
 import { AoiBrowserDriveStartError, startAoiBrowserDriveSession } from './aoiBrowserDriveSession';
 import {
+  addAoiBrowserDriveAllowlistEntry,
   isAoiBrowserDriveUrlAllowed,
   loadAoiBrowserDriveAllowlist,
+  removeAoiBrowserDriveAllowlistEntry,
+  saveAoiBrowserDriveAllowlist,
   type AoiBrowserDriveAllowlist,
 } from './aoiBrowserDriveAllowlist';
 import {
@@ -500,6 +503,36 @@ export async function resolveAoiHostBridgeRoute(
       const saved = saveAoiHostSpawnAllowlist(
         params.openroomHome,
         removeAoiHostSpawnAllowlistEntry(current, id, params.now),
+      );
+      return { status: 200, payload: { ok: true, entries: saved.entries } };
+    }
+  }
+
+  if (params.route === '/browser-drive-allowlist') {
+    const current = loadAoiBrowserDriveAllowlist(params.openroomHome);
+    if (params.method === 'GET') {
+      return { status: 200, payload: { ok: true, entries: current.entries } };
+    }
+    if (params.method === 'POST') {
+      const id = typeof params.body.id === 'string' ? params.body.id : '';
+      const domain = typeof params.body.domain === 'string' ? params.body.domain : '';
+      const label = typeof params.body.label === 'string' ? params.body.label : undefined;
+      const result = addAoiBrowserDriveAllowlistEntry(
+        current,
+        { ...(id ? { id } : {}), domain, ...(label ? { label } : {}) },
+        params.now,
+      );
+      if (!result.added) {
+        return { status: 400, payload: { ok: false, error: result.reason, code: 'bad_request' } };
+      }
+      const saved = saveAoiBrowserDriveAllowlist(params.openroomHome, result.allowlist);
+      return { status: 200, payload: { ok: true, entries: saved.entries } };
+    }
+    if (params.method === 'DELETE') {
+      const id = typeof params.body.id === 'string' ? params.body.id : '';
+      const saved = saveAoiBrowserDriveAllowlist(
+        params.openroomHome,
+        removeAoiBrowserDriveAllowlistEntry(current, id, params.now),
       );
       return { status: 200, payload: { ok: true, entries: saved.entries } };
     }

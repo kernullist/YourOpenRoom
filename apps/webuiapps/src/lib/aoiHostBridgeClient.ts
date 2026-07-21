@@ -356,6 +356,50 @@ export async function fetchAoiHostBrowserDriveRead(
   return { ...page, hostname: asString(record.hostname) };
 }
 
+// --- Browser-drive domain allowlist (auth-only config CRUD) ------------------
+
+export interface AoiBrowserDriveAllowlistEntryView {
+  id: string;
+  domain: string;
+  label: string;
+  addedAt: number;
+}
+
+function parseBrowserDriveAllowlistEntries(value: unknown): AoiBrowserDriveAllowlistEntryView[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter(isRecord).map((record) => ({
+    id: asString(record.id),
+    domain: asString(record.domain),
+    label: asString(record.label) || asString(record.domain),
+    addedAt: typeof record.addedAt === 'number' ? record.addedAt : 0,
+  }));
+}
+
+export async function fetchAoiBrowserDriveAllowlist(): Promise<
+  AoiBrowserDriveAllowlistEntryView[]
+> {
+  return parseBrowserDriveAllowlistEntries((await getJson('/browser-drive-allowlist')).entries);
+}
+
+export async function addAoiBrowserDriveAllowlistDomain(entry: {
+  domain: string;
+  label?: string;
+}): Promise<AoiBrowserDriveAllowlistEntryView[]> {
+  return parseBrowserDriveAllowlistEntries(
+    (await sendJson('/browser-drive-allowlist', 'POST', { ...entry })).entries,
+  );
+}
+
+export async function removeAoiBrowserDriveAllowlistDomain(
+  id: string,
+): Promise<AoiBrowserDriveAllowlistEntryView[]> {
+  return parseBrowserDriveAllowlistEntries(
+    (await sendJson(`/browser-drive-allowlist?id=${encodeURIComponent(id)}`, 'DELETE')).entries,
+  );
+}
+
 export async function addAoiHostRoot(
   kind: AoiHostRootKind,
   root: { id?: string; path: string; label?: string },
