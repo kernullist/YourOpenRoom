@@ -26,6 +26,10 @@ export type AoiEnvironmentSourceKind =
   // machine-scoped, default OFF, gated by the host-bridge kill switch.
   | 'process_activity'
   | 'desktop_activity'
+  // Live perception of the FOCUSED window's content via a vision model. Pixels
+  // are processed transiently and never persisted; only a redacted, bounded,
+  // structured text summary is stored. Default OFF, gated by the kill switch.
+  | 'screen_vision'
   // Headless Chrome/Edge page reads on the operator PC (public http(s) only).
   | 'host_browser_read'
   // CDP attach to the operator PC's OWN Chrome/Edge to act on logged-in sites.

@@ -74,6 +74,7 @@ export const AOI_ENVIRONMENT_SOURCE_KINDS: readonly AoiEnvironmentSourceKind[] =
   'manual_note',
   'process_activity',
   'desktop_activity',
+  'screen_vision',
   'host_browser_read',
   'browser_drive',
   'calendar_metadata',
@@ -207,6 +208,23 @@ const DEFAULT_AOI_ENVIRONMENT_SOURCES: readonly Omit<
     id: 'desktop-activity',
     kind: 'desktop_activity',
     label: 'Desktop foreground activity (metadata only)',
+    enabled: false,
+    scope: 'explicit_target',
+    risk: 'high',
+    allowedOperations: ['read_metadata', 'summarize_counts'],
+    privateByDefault: true,
+    quietModeBehavior: 'suppress',
+  },
+  {
+    // Screen vision: live perception of the FOCUSED window's content via a
+    // vision model (local by default, cloud opt-in). Raw pixels are processed
+    // transiently and NEVER persisted; only a redacted, bounded, structured
+    // text summary reaches the ledger. Focused window only -- never the full
+    // desktop, other monitors, or other apps. Default OFF, private, gated by
+    // the host-bridge kill switch + this source consent.
+    id: 'screen-vision',
+    kind: 'screen_vision',
+    label: 'Screen vision (redacted summary of the focused window)',
     enabled: false,
     scope: 'explicit_target',
     risk: 'high',

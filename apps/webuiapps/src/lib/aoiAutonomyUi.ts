@@ -4923,6 +4923,7 @@ function buildAoiBlindSpotsPanel(input: AoiOperatorAcceptanceDashboardInput): Ao
         // blind spots here.
         source.kind !== 'process_activity' &&
         source.kind !== 'desktop_activity' &&
+        source.kind !== 'screen_vision' &&
         source.kind !== 'host_browser_read' &&
         source.kind !== 'browser_drive' &&
         (!source.enabled ||

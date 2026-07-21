@@ -250,6 +250,7 @@ describe('Aoi environment source policy', () => {
       'browser_context',
       'process_activity',
       'desktop_activity',
+      'screen_vision',
       'host_browser_read',
       'browser_drive',
       'manual_note',

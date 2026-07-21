@@ -104,10 +104,16 @@ const DEFAULT_STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 // Live activity is only meaningful on a minutes scale; a week-old activity
 // event must never ground a "current" claim.
 const APP_ACTIVITY_STALE_AFTER_MS = 30 * 60 * 1000;
+// A screen-vision summary describes what is on screen right NOW; it decays even
+// faster than app activity, and a stale frame must never ground a live claim.
+const SCREEN_VISION_STALE_AFTER_MS = 5 * 60 * 1000;
 
 function defaultStaleAfterMsForKind(kind: AoiEnvironmentSourceKind): number {
   if (kind === 'app_activity') {
     return APP_ACTIVITY_STALE_AFTER_MS;
+  }
+  if (kind === 'screen_vision') {
+    return SCREEN_VISION_STALE_AFTER_MS;
   }
   return DEFAULT_STALE_AFTER_MS;
 }
@@ -294,6 +300,9 @@ function dataScopeForSource(source: AoiEnvironmentSource): string {
   if (source.kind === 'app_activity') {
     return 'live app open/close/action-type and timestamp metadata only';
   }
+  if (source.kind === 'screen_vision') {
+    return 'a redacted, bounded summary of the focused window only; raw pixels are processed transiently and never stored';
+  }
   if (source.kind === 'browser_context') {
     return 'explicit browser page title, host, redacted URL, and purpose metadata';
   }
@@ -356,6 +365,13 @@ function personalBodyCannotKnow(source: AoiEnvironmentSource): AoiSourceCannotKn
       'app_activity_body_not_read',
       'Aoi cannot know app content, user inputs, or action parameters from app activity; only app ids, action types, and timestamps.',
       [`environment-source:${source.id}`, 'app-activity:metadata'],
+    );
+  }
+  if (source.kind === 'screen_vision') {
+    return makeCannotKnow(
+      'screen_vision_pixels_not_persisted',
+      'Aoi cannot know raw screen pixels, off-screen or other-window content, or anything redaction removed (secrets, full paths, emails); only a bounded redacted summary of the single focused window.',
+      [`environment-source:${source.id}`, 'screen-vision:redacted-summary'],
     );
   }
   return null;
