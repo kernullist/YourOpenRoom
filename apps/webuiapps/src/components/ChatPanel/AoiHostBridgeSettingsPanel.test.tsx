@@ -40,6 +40,28 @@ function installFetch(statusBody: Record<string, unknown>) {
     if (target.includes('/browser-drive/standing-grants')) {
       return Promise.resolve(jsonResponse({ ok: true, grants: [] }));
     }
+    if (target.includes('/browser-drive/audit')) {
+      return Promise.resolve(
+        jsonResponse({
+          ok: true,
+          entries: [
+            {
+              id: 'a1',
+              runId: 'run-1',
+              stepIndex: 1,
+              actionKind: 'click',
+              actionSummary: 'click #refresh on example.com',
+              category: 'act',
+              ok: true,
+              viaStanding: true,
+              url: 'https://example.com/a',
+              recordedAt: 5,
+              beforeScreenshotRef: 'run-1/step-1-before.png',
+            },
+          ],
+        }),
+      );
+    }
     if (target.includes('/browser-drive-allowlist')) {
       return Promise.resolve(jsonResponse({ ok: true, entries: [] }));
     }
@@ -152,6 +174,19 @@ describe('AoiHostBridgeSettingsPanel', () => {
         maxActions: 5,
       });
     });
+  });
+
+  it('shows recorded browser-drive activity with a standing mark', async () => {
+    installFetch({
+      tokenConfigured: true,
+      killSwitch: { globalPanic: false, enabledCapabilities: [], updatedAt: 0 },
+    });
+    render(<AoiHostBridgeSettingsPanel sessionPath="aoi/default" />);
+    fireEvent.click(await screen.findByText('Activity'));
+    const row = await screen.findByTestId('aoi-host-activity-a1');
+    expect(row.textContent).toContain('click #refresh on example.com');
+    expect(row.textContent).toContain('standing');
+    expect(row.textContent).toContain('shot');
   });
 
   it('warns when the daemon has not minted a token', async () => {

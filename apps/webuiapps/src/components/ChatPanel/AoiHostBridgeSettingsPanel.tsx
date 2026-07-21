@@ -18,6 +18,7 @@ import {
   fetchAoiBrowserDriveStandingGrants,
   addAoiBrowserDriveStandingGrant,
   removeAoiBrowserDriveStandingGrant,
+  fetchAoiBrowserDriveAudit,
   type AoiHostBridgeStatus,
   type AoiHostSpawnAllowlistEntryView,
   type AoiHostRootView,
@@ -25,6 +26,7 @@ import {
   type AoiHostRootKind,
   type AoiBrowserDriveAllowlistEntryView,
   type AoiBrowserDriveStandingGrantView,
+  type AoiBrowserDriveAuditEntryView,
 } from '@/lib/aoiHostBridgeClient';
 import {
   AOI_HOST_BRIDGE_CONSENT_LINKS,
@@ -128,6 +130,7 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
     ttlMin: '30',
     maxActions: '20',
   });
+  const [auditEntries, setAuditEntries] = useState<AoiBrowserDriveAuditEntryView[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
@@ -138,12 +141,12 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
   const [writeDraft, setWriteDraft] = useState<RootDraft>(EMPTY_DRAFT);
   // Keep Host PC controls short: one role group visible at a time.
   const [hostSection, setHostSection] = useState<
-    'capabilities' | 'spawn' | 'roots' | 'approvals' | 'browserDrive' | 'standing'
+    'capabilities' | 'spawn' | 'roots' | 'approvals' | 'browserDrive' | 'standing' | 'activity'
   >('capabilities');
   const readPresets = listAoiHostReadRootPresets();
   const spawnPresets = listAoiHostSpawnPresets();
   const HOST_SECTIONS: Array<{
-    id: 'capabilities' | 'spawn' | 'roots' | 'approvals' | 'browserDrive' | 'standing';
+    id: 'capabilities' | 'spawn' | 'roots' | 'approvals' | 'browserDrive' | 'standing' | 'activity';
     label: string;
   }> = [
     { id: 'capabilities', label: 'Capabilities' },
@@ -151,6 +154,7 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
     { id: 'roots', label: 'File roots' },
     { id: 'browserDrive', label: 'Browser drive' },
     { id: 'standing', label: 'Standing grants' },
+    { id: 'activity', label: 'Activity' },
     { id: 'approvals', label: 'Approvals' },
   ];
 
@@ -178,15 +182,17 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
     setLoading(true);
     setError('');
     try {
-      const [nextStatus, spawn, read, write, pending, driveAllow, grants] = await Promise.all([
-        fetchAoiHostBridgeStatus(),
-        fetchAoiHostSpawnAllowlist(),
-        fetchAoiHostRoots('read'),
-        fetchAoiHostRoots('write'),
-        fetchAoiHostApprovals(),
-        fetchAoiBrowserDriveAllowlist(),
-        fetchAoiBrowserDriveStandingGrants(),
-      ]);
+      const [nextStatus, spawn, read, write, pending, driveAllow, grants, audit] =
+        await Promise.all([
+          fetchAoiHostBridgeStatus(),
+          fetchAoiHostSpawnAllowlist(),
+          fetchAoiHostRoots('read'),
+          fetchAoiHostRoots('write'),
+          fetchAoiHostApprovals(),
+          fetchAoiBrowserDriveAllowlist(),
+          fetchAoiBrowserDriveStandingGrants(),
+          fetchAoiBrowserDriveAudit(),
+        ]);
       setStatus(nextStatus);
       setSpawnEntries(spawn);
       setReadRoots(read);
@@ -194,6 +200,7 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
       setApprovals(pending);
       setBrowserDriveEntries(driveAllow);
       setStandingGrants(grants);
+      setAuditEntries(audit);
 
       // Repair footgun: capability already ON but session consent never granted.
       const enabledKeys = new Set(nextStatus.killSwitch.enabledCapabilities);
@@ -762,6 +769,39 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
                     Add
                   </button>
                 </div>
+              </div>
+            )}
+
+            {hostSection === 'activity' && (
+              <div className={styles.connectorRow} data-testid="aoi-host-browser-drive-activity">
+                <div className={styles.connectorRowHeader}>
+                  <strong>Browser-drive activity</strong>
+                  <span className={styles.modelHint}>{auditEntries.length} recent</span>
+                </div>
+                <span className={styles.modelHint}>
+                  Every driven step Aoi performed on your browser (newest first), with the outcome
+                  and a mark when a step ran under a standing grant rather than a per-action
+                  approval. Read-only audit.
+                </span>
+                {auditEntries.length === 0 ? (
+                  <span className={styles.modelHint}>No browser-drive activity recorded yet.</span>
+                ) : (
+                  auditEntries.map((entry) => (
+                    <div
+                      key={entry.id}
+                      className={styles.connectorToggleRow}
+                      data-testid={`aoi-host-activity-${entry.id}`}
+                    >
+                      <span className={styles.modelHint}>
+                        {entry.ok ? 'ok' : `stop:${entry.stopReason ?? 'failed'}`} ·{' '}
+                        {entry.category}
+                        {entry.viaStanding ? ' · standing' : ''}
+                        {entry.hasScreenshot ? ' · shot' : ''} ·{' '}
+                        {entry.actionSummary || entry.actionKind}
+                      </span>
+                    </div>
+                  ))
+                )}
               </div>
             )}
 
