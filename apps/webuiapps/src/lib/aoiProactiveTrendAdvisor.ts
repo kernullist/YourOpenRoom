@@ -2561,6 +2561,7 @@ function cardFromSnapshot(
     interestDriftLabel: interestDriftLabel(snapshot.interestDrift),
     deliveryMode: snapshot.delivery.mode,
     deliverySummary: snapshot.delivery.summary,
+    risk: snapshot.risk,
     controlSummary: controlSummary(snapshot.delivery.controls),
     sourceHosts,
     sources: snapshot.sources.slice(0, 6),

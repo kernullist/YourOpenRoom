@@ -892,6 +892,9 @@ export interface AoiProactiveTrendOpinionCard {
   interestDriftLabel: string;
   deliveryMode: AoiProactiveTrendDeliveryMode;
   deliverySummary: string;
+  // The card's real risk (carried from the snapshot) so the proactive-push gate
+  // can keep high-risk cards blocked instead of treating every card as 'medium'.
+  risk: AoiAutonomyRisk;
   controlSummary: string;
   sourceHosts: string[];
   sources: AoiProactiveBriefSource[];

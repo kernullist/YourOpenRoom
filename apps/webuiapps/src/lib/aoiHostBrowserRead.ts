@@ -15,7 +15,7 @@
 //
 // Server-only (child_process / fs / os). Pure helpers are exported for tests.
 
-import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
+import { spawn, type ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import { dirname, join } from 'path';
@@ -451,13 +451,15 @@ export async function runAoiHostBrowserRead(
       let stdout = '';
       let stderr = '';
       let bytes = 0;
-      let child: ChildProcessWithoutNullStreams;
+      // stdio 'ignore' for stdin -> ChildProcessByStdio<null,...>; the base
+      // ChildProcess type covers stdout?/stderr?/on/kill used below (guarded via ?.).
+      let child: ChildProcess;
       try {
         child = spawnImpl(browser.path, args, {
           shell: false,
           windowsHide: true,
           stdio: ['ignore', 'pipe', 'pipe'],
-        }) as ChildProcessWithoutNullStreams;
+        });
       } catch (error) {
         rejectHtml(error instanceof Error ? error : new Error(String(error)));
         return;

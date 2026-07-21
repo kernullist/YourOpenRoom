@@ -26,6 +26,7 @@ function makeTrendCard(
     candidateId: partial.candidateId ?? 'brief-re',
     topicId: partial.topicId ?? 'topic-re',
     topicLabel: partial.topicLabel ?? 'Reverse Engineering',
+    risk: partial.risk ?? 'low',
     title: partial.title ?? 'Fresh reversing writeup trend',
     whatChanged: partial.whatChanged ?? 'Two independent reversing writeups appeared.',
     whyItMatters: partial.whyItMatters ?? 'It maps to a pinned RE interest.',
