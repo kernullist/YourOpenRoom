@@ -36,6 +36,25 @@ import {
   type AoiBrowserDriveAllowlist,
 } from './aoiBrowserDriveAllowlist';
 import { classifyAoiBrowserDrivePlan, type AoiBrowserDrivePlan } from './aoiBrowserDrivePlan';
+import {
+  makeAoiBrowserDriveAuditObserver,
+  type AoiBrowserDriveArtifactWriter,
+} from './aoiBrowserDriveAuditObserver';
+import type { AoiBrowserDriveAuditEntry } from './aoiBrowserDriveAuditStore';
+
+export type AoiBrowserDriveAuditEntryInput = Omit<
+  AoiBrowserDriveAuditEntry,
+  'version' | 'id' | 'recordedAt'
+>;
+
+// Audit sink for the execute path: capture writes before/after artifacts via
+// writeArtifact (refs land on each step result), and the runner records one ledger
+// entry per step via recordEntry. Optional -- omitted in tests / read-only preview.
+export interface AoiBrowserDriveRunAudit {
+  runId: string;
+  writeArtifact: AoiBrowserDriveArtifactWriter;
+  recordEntry: (entry: AoiBrowserDriveAuditEntryInput) => void;
+}
 
 // A denying gate: read steps ignore the gate, so the prefix replay uses this to be
 // certain no act can slip through the prefix (they are refused before we get here).
@@ -93,6 +112,9 @@ export interface AoiBrowserDriveActRunParams {
   observer?: AoiBrowserDriveObserver;
   maxPlanSteps?: number;
   sleep?: (ms: number) => Promise<void>;
+  // When present (execute path), each step is captured + recorded to the audit
+  // ledger. Omitted for preview / tests.
+  audit?: AoiBrowserDriveRunAudit;
 }
 
 // Shared guard: validate the plan + target index and ensure every prefix step is a
@@ -273,8 +295,23 @@ export async function executeAoiBrowserDriveActStep(
     return opened;
   }
   const session = opened as AoiBrowserDriveRunnerSession;
+  // On the execute path an audit sink captures before/after artifacts (via an
+  // observer bound to this session page) and records one ledger entry per step.
+  const observer = params.audit
+    ? makeAoiBrowserDriveAuditObserver({
+        page: session.page,
+        runId: params.audit.runId,
+        writeArtifact: params.audit.writeArtifact,
+      })
+    : params.observer;
+  const stepParams: AoiBrowserDriveActRunParams = observer ? { ...params, observer } : params;
   try {
-    const prefix = await replayReadPrefix(session.page, params);
+    const prefix = await replayReadPrefix(session.page, stepParams);
+    if (params.audit) {
+      for (const result of prefix.results) {
+        recordAuditStep(params.audit, params.plan, result);
+      }
+    }
     if (!prefix.ok) {
       return {
         ok: false,
@@ -291,10 +328,13 @@ export async function executeAoiBrowserDriveActStep(
       approvalGate: params.approvalGate,
       now: params.now,
       ...(params.timeoutMs ? { timeoutMs: params.timeoutMs } : {}),
-      ...(params.observer ? { observer: params.observer } : {}),
+      ...(observer ? { observer } : {}),
       ...(params.maxPlanSteps ? { maxPlanSteps: params.maxPlanSteps } : {}),
       ...(params.sleep ? { sleep: params.sleep } : {}),
     });
+    if (params.audit) {
+      recordAuditStep(params.audit, params.plan, target);
+    }
     return {
       ok: target.ok,
       stepIndex: params.targetStepIndex,
@@ -304,6 +344,49 @@ export async function executeAoiBrowserDriveActStep(
     };
   } finally {
     await safeClose(session);
+  }
+}
+
+function summarizeAuditAction(action: AoiBrowserDriveActionRequest): string {
+  const target = action?.selector || action?.url || action?.targetText || '';
+  return `${action?.kind ?? 'unknown'}${target ? ` ${target}` : ''}`.slice(0, 200);
+}
+
+// Record ONE ledger entry for a completed step, pulling before/after artifact refs
+// from the observation the audit observer attached to the result. Best-effort: a
+// recorder failure never propagates (auditing must not fail a driven step).
+function recordAuditStep(
+  audit: AoiBrowserDriveRunAudit,
+  plan: AoiBrowserDrivePlan,
+  result: AoiBrowserDriveStepResult,
+): void {
+  try {
+    const action =
+      plan.steps[result.index]?.action ?? ({ kind: 'wait' } as AoiBrowserDriveActionRequest);
+    audit.recordEntry({
+      runId: audit.runId,
+      stepIndex: result.index,
+      actionKind: action.kind,
+      actionSummary: summarizeAuditAction(action),
+      category: result.category,
+      ok: result.ok,
+      ...(result.stopReason ? { stopReason: result.stopReason } : {}),
+      url: result.finalUrl ?? '',
+      ...(result.observation?.before?.screenshotRef
+        ? { beforeScreenshotRef: result.observation.before.screenshotRef }
+        : {}),
+      ...(result.observation?.after?.screenshotRef
+        ? { afterScreenshotRef: result.observation.after.screenshotRef }
+        : {}),
+      ...(result.observation?.before?.domRef
+        ? { beforeDomRef: result.observation.before.domRef }
+        : {}),
+      ...(result.observation?.after?.domRef
+        ? { afterDomRef: result.observation.after.domRef }
+        : {}),
+    });
+  } catch {
+    // best-effort audit; never fail a step because recording failed
   }
 }
 

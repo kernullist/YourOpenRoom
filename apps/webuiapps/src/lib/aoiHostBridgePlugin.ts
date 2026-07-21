@@ -16,6 +16,7 @@
 // mocking; the middleware is a thin req/res adapter.
 import { type IncomingMessage, type ServerResponse } from 'http';
 import { resolve } from 'path';
+import { randomUUID } from 'crypto';
 import {
   AOI_HOST_BRIDGE_AUTH_HEADER,
   loadAoiHostBridgeToken,
@@ -65,6 +66,8 @@ import {
   makeAoiBrowserDriveStoreApprovalGate,
   recordAoiBrowserDriveActPendingApproval,
 } from './aoiBrowserDriveApproval';
+import { recordAoiBrowserDriveAuditEntry } from './aoiBrowserDriveAuditStore';
+import { writeAoiBrowserDriveArtifact } from './aoiBrowserDriveAuditObserver';
 import type { AoiBrowserDrivePlan } from './aoiBrowserDrivePlan';
 import type { AoiBrowserDriveActablePage } from './aoiBrowserDriveExecutor';
 import {
@@ -340,6 +343,10 @@ async function runAoiBrowserDriveExecuteDefault(options: {
     },
     now: options.now,
   });
+  // One run id per execute call groups its steps in the audit ledger; artifacts are
+  // written under host-bridge/browser-drive-artifacts/<runId>/. Auditing is best-
+  // effort (never fails the run).
+  const runId = `run-${options.now.toString(36)}-${randomUUID().slice(0, 8)}`;
   return executeAoiBrowserDriveActStep({
     plan: options.plan,
     targetStepIndex: options.targetStepIndex,
@@ -347,6 +354,14 @@ async function runAoiBrowserDriveExecuteDefault(options: {
     now: options.now,
     approvalGate: gate,
     sessionFactory: makeAoiBrowserDriveRunnerSession,
+    audit: {
+      runId,
+      writeArtifact: (relPath, data) =>
+        writeAoiBrowserDriveArtifact(options.openroomHome, relPath, data),
+      recordEntry: (entry) => {
+        recordAoiBrowserDriveAuditEntry(options.openroomHome, entry, options.now);
+      },
+    },
   });
 }
 

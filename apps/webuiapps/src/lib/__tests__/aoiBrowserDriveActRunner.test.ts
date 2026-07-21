@@ -276,4 +276,57 @@ describe('executeAoiBrowserDriveActStep', () => {
     expect(result).toMatchObject({ ok: false, reason: 'prefix_failed' });
     expect(close).toHaveBeenCalledTimes(1);
   });
+
+  it('records an audit entry per step with before/after artifact refs', async () => {
+    const page = fakePage();
+    const { factory } = sessionFactory(page);
+    const artifacts: string[] = [];
+    const entries: Array<Record<string, unknown>> = [];
+    const result = await executeAoiBrowserDriveActStep({
+      plan: plan(navStep, clickStep),
+      targetStepIndex: 1,
+      allowlist: ALLOWLIST,
+      sessionFactory: factory,
+      approvalGate: allowGate,
+      now: 1,
+      audit: {
+        runId: 'run-x',
+        writeArtifact: (relPath) => {
+          artifacts.push(relPath);
+        },
+        recordEntry: (entry) => entries.push(entry as unknown as Record<string, unknown>),
+      },
+    });
+    expect(result.ok).toBe(true);
+    // One entry for the prefix navigate (step 0) and one for the target click (step 1).
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toMatchObject({ runId: 'run-x', stepIndex: 0, category: 'read', ok: true });
+    expect(entries[1]).toMatchObject({ runId: 'run-x', stepIndex: 1, category: 'act', ok: true });
+    // The target act carries before/after screenshot refs from the audit observer.
+    expect(entries[1].beforeScreenshotRef).toBe('run-x/step-1-before.png');
+    expect(entries[1].afterScreenshotRef).toBe('run-x/step-1-after.png');
+    expect(artifacts).toContain('run-x/step-1-before.png');
+    expect(artifacts).toContain('run-x/step-1-after.html');
+  });
+
+  it('records the denied target step in the audit ledger too', async () => {
+    const page = fakePage();
+    const { factory } = sessionFactory(page);
+    const entries: Array<Record<string, unknown>> = [];
+    await executeAoiBrowserDriveActStep({
+      plan: plan(navStep, clickStep),
+      targetStepIndex: 1,
+      allowlist: ALLOWLIST,
+      sessionFactory: factory,
+      approvalGate: denyGate,
+      now: 1,
+      audit: {
+        runId: 'run-y',
+        writeArtifact: () => {},
+        recordEntry: (entry) => entries.push(entry as unknown as Record<string, unknown>),
+      },
+    });
+    const target = entries.find((e) => e.stepIndex === 1);
+    expect(target).toMatchObject({ ok: false, stopReason: 'approval_denied' });
+  });
 });
