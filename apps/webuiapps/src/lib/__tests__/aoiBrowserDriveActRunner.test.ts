@@ -1,0 +1,279 @@
+import { describe, expect, it, vi } from 'vitest';
+import {
+  executeAoiBrowserDriveActStep,
+  previewAoiBrowserDriveActStep,
+  type AoiBrowserDriveRunnerSession,
+  type AoiBrowserDriveSessionFactory,
+} from '../aoiBrowserDriveActRunner';
+import {
+  type AoiBrowserDriveActablePage,
+  type AoiBrowserDriveApprovalGate,
+} from '../aoiBrowserDriveExecutor';
+import {
+  addAoiBrowserDriveAllowlistEntry,
+  type AoiBrowserDriveAllowlist,
+} from '../aoiBrowserDriveAllowlist';
+import type { AoiBrowserDrivePlan } from '../aoiBrowserDrivePlan';
+import type { AoiBrowserDriveActionRequest } from '../aoiBrowserDriveAction';
+
+const ALLOWLIST: AoiBrowserDriveAllowlist = addAoiBrowserDriveAllowlistEntry(
+  { version: 1, entries: [], updatedAt: 0 },
+  { domain: 'example.com' },
+  1,
+).allowlist;
+
+function fakePage(options: { landingUrl?: string; actLandingUrl?: string } = {}) {
+  let current = 'about:blank';
+  const landingUrl = options.landingUrl ?? 'https://example.com/account';
+  const page = {
+    url: () => current,
+    goto: vi.fn(async (target: string) => {
+      current = target === 'about:blank' ? 'about:blank' : landingUrl;
+    }),
+    content: vi.fn(async () => '<html><body><p>ok</p></body></html>'),
+    title: vi.fn(async () => 'T'),
+    click: vi.fn(async () => {
+      if (options.actLandingUrl) {
+        current = options.actLandingUrl;
+      }
+    }),
+    fill: vi.fn(async () => {}),
+    selectOption: vi.fn(async () => []),
+    press: vi.fn(async () => {}),
+    goBack: vi.fn(async () => null),
+    screenshot: vi.fn(async () => new Uint8Array([9, 9, 9])),
+    mouse: { wheel: vi.fn(async () => {}) },
+  };
+  return page as unknown as AoiBrowserDriveActablePage;
+}
+
+function sessionFactory(page: AoiBrowserDriveActablePage) {
+  const close = vi.fn(async () => {});
+  const factory: AoiBrowserDriveSessionFactory = async () =>
+    ({ page, close }) as AoiBrowserDriveRunnerSession;
+  return { factory, close };
+}
+
+const allowGate: AoiBrowserDriveApprovalGate = async () => ({ approved: true });
+const denyGate: AoiBrowserDriveApprovalGate = async () => ({ approved: false, reason: 'nope' });
+
+function plan(...actions: AoiBrowserDriveActionRequest[]): AoiBrowserDrivePlan {
+  return {
+    goal: 'do it',
+    steps: actions.map((action, index) => ({ description: `step ${index}`, action })),
+  };
+}
+
+const navStep: AoiBrowserDriveActionRequest = {
+  kind: 'navigate',
+  url: 'https://example.com/account',
+};
+const clickStep: AoiBrowserDriveActionRequest = { kind: 'click', selector: '#go' };
+
+describe('runner guards', () => {
+  it('rejects an out-of-range target', async () => {
+    const { factory } = sessionFactory(fakePage());
+    const result = await executeAoiBrowserDriveActStep({
+      plan: plan(clickStep),
+      targetStepIndex: 4,
+      allowlist: ALLOWLIST,
+      sessionFactory: factory,
+      approvalGate: allowGate,
+      now: 1,
+    });
+    expect(result).toMatchObject({ ok: false, reason: 'step_out_of_range' });
+  });
+
+  it('rejects a prefix that contains an act (stateless model allows one act)', async () => {
+    const { factory, close } = sessionFactory(fakePage());
+    const result = await executeAoiBrowserDriveActStep({
+      plan: plan(navStep, clickStep, clickStep),
+      targetStepIndex: 2,
+      allowlist: ALLOWLIST,
+      sessionFactory: factory,
+      approvalGate: allowGate,
+      now: 1,
+    });
+    expect(result).toMatchObject({ ok: false, reason: 'prefix_contains_act' });
+    // Guard runs before opening a session.
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  it('reports session_start_failed when the factory throws', async () => {
+    const factory: AoiBrowserDriveSessionFactory = async () => {
+      throw new Error('SingletonLock');
+    };
+    const result = await executeAoiBrowserDriveActStep({
+      plan: plan(clickStep),
+      targetStepIndex: 0,
+      allowlist: ALLOWLIST,
+      sessionFactory: factory,
+      approvalGate: allowGate,
+      now: 1,
+    });
+    expect(result).toMatchObject({ ok: false, reason: 'session_start_failed' });
+  });
+});
+
+describe('previewAoiBrowserDriveActStep', () => {
+  it('replays the read prefix and captures a before-screenshot', async () => {
+    const page = fakePage();
+    const { factory, close } = sessionFactory(page);
+    const result = await previewAoiBrowserDriveActStep({
+      plan: plan(navStep, clickStep),
+      targetStepIndex: 1,
+      allowlist: ALLOWLIST,
+      sessionFactory: factory,
+      now: 1,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.hostname).toBe('example.com');
+      expect(result.finalUrl).toBe('https://example.com/account');
+      expect(result.beforeScreenshotBase64).toBe(Buffer.from([9, 9, 9]).toString('base64'));
+      expect(result.prefix).toHaveLength(1);
+    }
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails when a prefix read drifts off-allowlist', async () => {
+    const page = fakePage({ landingUrl: 'https://evil.test/x' });
+    const { factory, close } = sessionFactory(page);
+    const result = await previewAoiBrowserDriveActStep({
+      plan: plan(navStep, clickStep),
+      targetStepIndex: 1,
+      allowlist: ALLOWLIST,
+      sessionFactory: factory,
+      now: 1,
+    });
+    expect(result).toMatchObject({ ok: false, reason: 'prefix_failed' });
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a bad target index before opening a session', async () => {
+    const { factory, close } = sessionFactory(fakePage());
+    const result = await previewAoiBrowserDriveActStep({
+      plan: plan(clickStep),
+      targetStepIndex: 7,
+      allowlist: ALLOWLIST,
+      sessionFactory: factory,
+      now: 1,
+    });
+    expect(result).toMatchObject({ ok: false, reason: 'step_out_of_range' });
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  it('reports session_start_failed on factory error', async () => {
+    const factory: AoiBrowserDriveSessionFactory = async () => {
+      throw new Error('locked');
+    };
+    const result = await previewAoiBrowserDriveActStep({
+      plan: plan(navStep, clickStep),
+      targetStepIndex: 1,
+      allowlist: ALLOWLIST,
+      sessionFactory: factory,
+      now: 1,
+    });
+    expect(result).toMatchObject({ ok: false, reason: 'session_start_failed' });
+  });
+
+  it('returns ok without a screenshot when the capture throws (best-effort)', async () => {
+    const page = fakePage();
+    (page as unknown as { screenshot: () => Promise<Uint8Array> }).screenshot = vi.fn(async () => {
+      throw new Error('surface lost');
+    });
+    const { factory } = sessionFactory(page);
+    const observer = { onStep: vi.fn(async () => ({ screenshotRef: 'r' })) };
+    const result = await previewAoiBrowserDriveActStep({
+      plan: plan(navStep, clickStep),
+      targetStepIndex: 1,
+      allowlist: ALLOWLIST,
+      sessionFactory: factory,
+      now: 1,
+      timeoutMs: 5_000,
+      observer,
+      maxPlanSteps: 10,
+      sleep: async () => {},
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.beforeScreenshotBase64).toBeUndefined();
+    }
+  });
+});
+
+describe('executeAoiBrowserDriveActStep', () => {
+  it('replays the read prefix then runs the approved target act', async () => {
+    const page = fakePage();
+    const { factory, close } = sessionFactory(page);
+    const result = await executeAoiBrowserDriveActStep({
+      plan: plan(navStep, clickStep),
+      targetStepIndex: 1,
+      allowlist: ALLOWLIST,
+      sessionFactory: factory,
+      approvalGate: allowGate,
+      now: 1,
+    });
+    expect(result.ok).toBe(true);
+    if ('target' in result) {
+      expect(result.target.ok).toBe(true);
+      expect(result.target.category).toBe('act');
+      expect(result.prefix).toHaveLength(1);
+    }
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not run the act when the gate denies (target result carries the reason)', async () => {
+    const page = fakePage();
+    const { factory, close } = sessionFactory(page);
+    const result = await executeAoiBrowserDriveActStep({
+      plan: plan(navStep, clickStep),
+      targetStepIndex: 1,
+      allowlist: ALLOWLIST,
+      sessionFactory: factory,
+      approvalGate: denyGate,
+      now: 1,
+    });
+    expect(result.ok).toBe(false);
+    if ('target' in result) {
+      expect(result.target.stopReason).toBe('approval_denied');
+    }
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs a single-act plan with no prefix', async () => {
+    const page = fakePage({ landingUrl: 'https://example.com/account' });
+    // Seed the page onto an allowlisted url via a nav-free plan: the act step must
+    // find the page already allowlisted, so start it there.
+    (page as unknown as { goto: (u: string) => Promise<void> }).goto('https://example.com/account');
+    const { factory } = sessionFactory(page);
+    const result = await executeAoiBrowserDriveActStep({
+      plan: plan(clickStep),
+      targetStepIndex: 0,
+      allowlist: ALLOWLIST,
+      sessionFactory: factory,
+      approvalGate: allowGate,
+      now: 1,
+    });
+    // No prefix; the page is already on an allowlisted url.
+    if ('target' in result) {
+      expect(result.prefix).toHaveLength(0);
+      expect(result.target.ok).toBe(true);
+    }
+  });
+
+  it('stops with prefix_failed when a prefix read fails', async () => {
+    const page = fakePage({ landingUrl: 'https://evil.test/x' });
+    const { factory, close } = sessionFactory(page);
+    const result = await executeAoiBrowserDriveActStep({
+      plan: plan(navStep, clickStep),
+      targetStepIndex: 1,
+      allowlist: ALLOWLIST,
+      sessionFactory: factory,
+      approvalGate: allowGate,
+      now: 1,
+    });
+    expect(result).toMatchObject({ ok: false, reason: 'prefix_failed' });
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+});
