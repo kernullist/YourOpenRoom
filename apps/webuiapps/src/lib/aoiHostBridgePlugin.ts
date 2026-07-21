@@ -37,6 +37,18 @@ import {
   runAoiHostBrowserRead,
   type AoiHostBrowserReadOutcome,
 } from './aoiHostBrowserRead';
+import { AOI_BROWSER_DRIVE_CAPABILITY, AOI_BROWSER_DRIVE_SOURCE_ID } from './aoiBrowserDrive';
+import { AoiBrowserDriveStartError, startAoiBrowserDriveSession } from './aoiBrowserDriveSession';
+import {
+  isAoiBrowserDriveUrlAllowed,
+  loadAoiBrowserDriveAllowlist,
+  type AoiBrowserDriveAllowlist,
+} from './aoiBrowserDriveAllowlist';
+import {
+  navigateAndExtractAoiBrowserDrive,
+  type AoiBrowserDriveNavigablePage,
+  type AoiBrowserDriveReadOutcome,
+} from './aoiBrowserDriveRead';
 import {
   AOI_HOST_SPAWN_CAPABILITY,
   addAoiHostSpawnAllowlistEntry,
@@ -129,6 +141,11 @@ export interface ResolveAoiHostBridgeRouteParams {
   // / recycles a real file. Production uses the real OS impls by default.
   listProcessesImpl?: (options: { now: number }) => Promise<AoiHostProcessListing>;
   browserReadImpl?: (options: { url: string; now: number }) => Promise<AoiHostBrowserReadOutcome>;
+  browserDriveReadImpl?: (options: {
+    url: string;
+    allowlist: AoiBrowserDriveAllowlist;
+    now: number;
+  }) => Promise<AoiBrowserDriveReadOutcome>;
   readProcessImpl?: (pid: number) => AoiHostLiveProcess | null;
   killImpl?: (pid: number) => boolean;
   recycleImpl?: (path: string) => boolean;
@@ -144,6 +161,42 @@ function summarizeKillSwitch(state: AoiHostBridgeKillSwitchState): {
     enabledCapabilities: Object.keys(state.entries).sort(),
     updatedAt: state.updatedAt,
   };
+}
+
+// Default production browser-drive read: per-request CDP session against the
+// operator's OWN browser -> navigate the allowlisted page -> extract -> close ONLY
+// the Aoi tab. A start failure (browser not found, or the main browser is already
+// running without the debug port -> SingletonLock -> attach_timeout) is mapped to a
+// navigation failure so the caller gets a clean 422 with the real cause in detail.
+// (Session pooling is a later optimization.)
+async function runAoiBrowserDriveReadDefault(options: {
+  url: string;
+  allowlist: AoiBrowserDriveAllowlist;
+  now: number;
+}): Promise<AoiBrowserDriveReadOutcome> {
+  let session;
+  try {
+    session = await startAoiBrowserDriveSession({});
+  } catch (error) {
+    if (error instanceof AoiBrowserDriveStartError) {
+      return {
+        ok: false,
+        reason: 'navigation_failed',
+        detail: `${error.reason}: ${error.message}`,
+      };
+    }
+    throw error;
+  }
+  try {
+    return await navigateAndExtractAoiBrowserDrive({
+      page: session.page as unknown as AoiBrowserDriveNavigablePage,
+      allowlist: options.allowlist,
+      url: options.url,
+      now: options.now,
+    });
+  } finally {
+    await session.close();
+  }
 }
 
 // The pure routing core. Auth is enforced first; then the route is dispatched.
@@ -321,6 +374,88 @@ export async function resolveAoiHostBridgeRoute(
           ok: false,
           error: error instanceof Error ? error.message : String(error),
           code: 'browser_read_failed',
+        },
+      };
+    }
+  }
+
+  // --- POST /browser-drive-read (BD P1.3): drive the operator's OWN logged-in
+  //     browser over CDP and extract an allowlisted page (read-only) -----------
+  if (params.method === 'POST' && params.route === '/browser-drive-read') {
+    const sessionPath = normalizeAoiAutonomySessionPath(
+      typeof params.body.sessionPath === 'string' ? params.body.sessionPath : '',
+    );
+    if (!sessionPath) {
+      return {
+        status: 400,
+        payload: { ok: false, error: 'sessionPath is required', code: 'invalid_session_path' },
+      };
+    }
+    const url = typeof params.body.url === 'string' ? params.body.url : '';
+    const killSwitch = loadAoiHostBridgeKillSwitchState(params.openroomHome);
+    const registry = loadAoiEnvironmentSourceRegistry(params.sessionsDir, sessionPath, params.now);
+    const consent = checkAoiEnvironmentSourceOperation({
+      registry,
+      sourceId: AOI_BROWSER_DRIVE_SOURCE_ID,
+      operation: 'read_metadata',
+    });
+    const gate = evaluateAoiHostBridgeGate({
+      authenticated: true,
+      killSwitchState: killSwitch,
+      capabilityKey: AOI_BROWSER_DRIVE_CAPABILITY,
+      irreversible: false,
+      consent: { allowed: consent.allowed, reasons: consent.reasons },
+    });
+    if (!gate.allowed) {
+      return {
+        status: 403,
+        payload: {
+          ok: false,
+          error: 'blocked',
+          denyReasons: gate.denyReasons,
+          detail: gate.detail,
+        },
+      };
+    }
+    // Containment pre-check: refuse a non-allowlisted URL BEFORE launching a
+    // browser. navigateAndExtract re-checks (incl. redirect drift) fail-closed.
+    const allowlist = loadAoiBrowserDriveAllowlist(params.openroomHome);
+    const allowed = isAoiBrowserDriveUrlAllowed(allowlist, url);
+    if (!allowed.allowed) {
+      return {
+        status: 403,
+        payload: {
+          ok: false,
+          error: 'url_not_allowlisted',
+          code: 'url_not_allowlisted',
+          denyReasons: [allowed.reason ?? 'host_not_allowlisted'],
+          detail: allowed.hostname,
+        },
+      };
+    }
+    try {
+      const driveRead = params.browserDriveReadImpl ?? runAoiBrowserDriveReadDefault;
+      const result = await driveRead({ url, allowlist, now: params.now });
+      if (!result.ok) {
+        return {
+          status: 422,
+          payload: {
+            ok: false,
+            error: result.reason,
+            code: result.reason,
+            detail: result.detail,
+            hostname: result.hostname,
+          },
+        };
+      }
+      return { status: 200, payload: { ok: true, page: result } };
+    } catch (error) {
+      return {
+        status: 500,
+        payload: {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+          code: 'browser_drive_read_failed',
         },
       };
     }

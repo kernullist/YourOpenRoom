@@ -329,6 +329,33 @@ export async function fetchAoiHostBrowserRead(
   return parseBrowserPage(payload.page);
 }
 
+// --- Browser drive: read an allowlisted, logged-in page (BD P1.3) ------------
+
+export interface AoiHostBrowserDrivePageView extends AoiHostBrowserPageView {
+  hostname: string;
+}
+
+export async function fetchAoiHostBrowserDriveRead(
+  sessionPath: string,
+  url: string,
+): Promise<AoiHostBrowserDrivePageView> {
+  const path = typeof sessionPath === 'string' ? sessionPath.trim() : '';
+  if (!path) {
+    throw new Error('sessionPath is required for host browser drive read');
+  }
+  const target = typeof url === 'string' ? url.trim() : '';
+  if (!target) {
+    throw new Error('url is required for host browser drive read');
+  }
+  const payload = await sendJson('/browser-drive-read', 'POST', {
+    sessionPath: path,
+    url: target,
+  });
+  const page = parseBrowserPage(payload.page);
+  const record = isRecord(payload.page) ? payload.page : {};
+  return { ...page, hostname: asString(record.hostname) };
+}
+
 export async function addAoiHostRoot(
   kind: AoiHostRootKind,
   root: { id?: string; path: string; label?: string },

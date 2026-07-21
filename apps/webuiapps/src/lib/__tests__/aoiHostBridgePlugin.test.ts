@@ -19,6 +19,10 @@ import { saveAoiEnvironmentSourceRegistry, updateAoiEnvironmentSource } from '..
 import { addAoiHostReadRoot, saveAoiHostReadRoots } from '../aoiHostFileRead';
 import { addAoiHostSpawnAllowlistEntry, saveAoiHostSpawnAllowlist } from '../aoiHostProcessSpawn';
 import { addAoiHostWriteRoot, saveAoiHostWriteRoots } from '../aoiHostFileWrite';
+import {
+  addAoiBrowserDriveAllowlistEntry,
+  saveAoiBrowserDriveAllowlist,
+} from '../aoiBrowserDriveAllowlist';
 
 function saveAoiHostSpawnAllowlistEntryHelper(home: string): void {
   saveAoiHostSpawnAllowlist(
@@ -352,6 +356,121 @@ describe('resolveAoiHostBridgeRoute /browser-read (HP5 gate)', () => {
     });
     expect(result.status).toBe(200);
     expect((result.payload as { page: { title: string } }).page.title).toBe('Example Article');
+  });
+});
+
+describe('resolveAoiHostBridgeRoute /browser-drive-read (BD gate)', () => {
+  function enableDriveConsent(sessionsDir: string, home: string): void {
+    const registry = getDefaultAoiEnvironmentSourceRegistry('aoi/default', 1000);
+    saveAoiEnvironmentSourceRegistry(sessionsDir, 'aoi/default', registry);
+    updateAoiEnvironmentSource(sessionsDir, 'aoi/default', {
+      sourceId: 'browser-drive',
+      patch: { enabled: true, consentReason: 'User enabled browser drive for this test.' },
+      now: 1500,
+    });
+    saveAoiHostBridgeKillSwitchState(
+      home,
+      setAoiHostBridgeCapability(null, 'os_browser_drive', true, 1500),
+    );
+  }
+
+  function allowExample(home: string): void {
+    saveAoiBrowserDriveAllowlist(
+      home,
+      addAoiBrowserDriveAllowlistEntry(null, { domain: 'example.com' }, 1000).allowlist,
+    );
+  }
+
+  it('blocks when capability/consent is off', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    allowExample(home);
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive-read',
+      body: { sessionPath: 'aoi/default', url: 'https://example.com/account' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+      browserDriveReadImpl: async () => ({ ok: false, reason: 'navigation_failed' }),
+    });
+    expect(result.status).toBe(403);
+  });
+
+  it('blocks a non-allowlisted URL before launching a browser', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    enableDriveConsent(sessionsDir, home);
+    let launched = false;
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive-read',
+      body: { sessionPath: 'aoi/default', url: 'https://evil.com/x' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+      browserDriveReadImpl: async () => {
+        launched = true;
+        return { ok: false, reason: 'navigation_failed' };
+      },
+    });
+    expect(result.status).toBe(403);
+    expect((result.payload as { code: string }).code).toBe('url_not_allowlisted');
+    expect(launched).toBe(false);
+  });
+
+  it('returns an allowlisted authenticated page extract', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    enableDriveConsent(sessionsDir, home);
+    allowExample(home);
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive-read',
+      body: { sessionPath: 'aoi/default', url: 'https://example.com/account' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+      browserDriveReadImpl: async ({ url }) => ({
+        ok: true,
+        url,
+        finalUrl: url,
+        hostname: 'example.com',
+        title: 'My Dashboard',
+        excerpt: 'Welcome back',
+        siteName: 'example.com',
+        blocks: [{ type: 'paragraph', text: 'Three new messages in the inbox today.' }],
+        text: 'Three new messages in the inbox today.',
+        sampledAt: 2000,
+      }),
+    });
+    expect(result.status).toBe(200);
+    expect((result.payload as { page: { title: string; hostname: string } }).page).toMatchObject({
+      title: 'My Dashboard',
+      hostname: 'example.com',
+    });
+  });
+
+  it('maps a drive failure to 422', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    enableDriveConsent(sessionsDir, home);
+    allowExample(home);
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive-read',
+      body: { sessionPath: 'aoi/default', url: 'https://example.com/x' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+      browserDriveReadImpl: async () => ({
+        ok: false,
+        reason: 'drift_off_allowlist',
+        hostname: 'tracker.evil.com',
+      }),
+    });
+    expect(result.status).toBe(422);
+    expect((result.payload as { code: string }).code).toBe('drift_off_allowlist');
   });
 });
 
