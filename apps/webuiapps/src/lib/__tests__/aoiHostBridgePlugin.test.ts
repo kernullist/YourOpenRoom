@@ -664,6 +664,23 @@ describe('resolveAoiHostBridgeRoute /browser-drive/preview + /execute (BD P2.3)'
     expect((result.payload as { code: string }).code).toBe('approval_denied');
   });
 
+  it('execute maps a panic abort to 403', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    enableDriveConsent(sessionsDir, home);
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive/execute',
+      body: { sessionPath: 'aoi/default', plan: PLAN, targetStepIndex: 1 },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+      browserDriveExecuteImpl: async () => ({ ok: false, reason: 'panicked' }),
+    });
+    expect(result.status).toBe(403);
+    expect((result.payload as { code: string }).code).toBe('panicked');
+  });
+
   it('execute maps a runner-level failure to 422', async () => {
     const { home, sessionsDir, token } = makeDaemonHome();
     enableDriveConsent(sessionsDir, home);

@@ -309,6 +309,62 @@ describe('executeAoiBrowserDriveActStep', () => {
     expect(artifacts).toContain('run-x/step-1-after.html');
   });
 
+  it('aborts before opening a session when panic is already engaged', async () => {
+    const page = fakePage();
+    const { factory, close } = sessionFactory(page);
+    const result = await executeAoiBrowserDriveActStep({
+      plan: plan(navStep, clickStep),
+      targetStepIndex: 1,
+      allowlist: ALLOWLIST,
+      sessionFactory: factory,
+      approvalGate: allowGate,
+      now: 1,
+      isPanicked: () => true,
+    });
+    expect(result).toMatchObject({ ok: false, reason: 'panicked' });
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  it('aborts before the act when panic engages during the read prefix (act not run)', async () => {
+    const page = fakePage();
+    const raw = page as unknown as { click: ReturnType<typeof vi.fn> };
+    const { factory, close } = sessionFactory(page);
+    let calls = 0;
+    // Not panicked at the entry check; panicked by the pre-act re-check.
+    const result = await executeAoiBrowserDriveActStep({
+      plan: plan(navStep, clickStep),
+      targetStepIndex: 1,
+      allowlist: ALLOWLIST,
+      sessionFactory: factory,
+      approvalGate: allowGate,
+      now: 1,
+      isPanicked: () => {
+        calls += 1;
+        return calls > 1;
+      },
+    });
+    expect(result).toMatchObject({ ok: false, reason: 'panicked' });
+    expect(raw.click).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it('is fail-closed when the panic check throws', async () => {
+    const page = fakePage();
+    const { factory } = sessionFactory(page);
+    const result = await executeAoiBrowserDriveActStep({
+      plan: plan(clickStep),
+      targetStepIndex: 0,
+      allowlist: ALLOWLIST,
+      sessionFactory: factory,
+      approvalGate: allowGate,
+      now: 1,
+      isPanicked: () => {
+        throw new Error('kill-switch read failed');
+      },
+    });
+    expect(result).toMatchObject({ ok: false, reason: 'panicked' });
+  });
+
   it('records the denied target step in the audit ledger too', async () => {
     const page = fakePage();
     const { factory } = sessionFactory(page);

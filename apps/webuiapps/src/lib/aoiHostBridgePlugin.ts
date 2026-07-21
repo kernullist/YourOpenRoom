@@ -354,6 +354,9 @@ async function runAoiBrowserDriveExecuteDefault(options: {
     now: options.now,
     approvalGate: gate,
     sessionFactory: makeAoiBrowserDriveRunnerSession,
+    // Cooperative panic abort during the read-prefix replay (the entry gate already
+    // blocks a call that starts while panicked).
+    isPanicked: () => loadAoiHostBridgeKillSwitchState(options.openroomHome).globalPanic === true,
     audit: {
       runId,
       writeArtifact: (relPath, data) =>
@@ -765,10 +768,10 @@ export async function resolveAoiHostBridgeRoute(
         now: params.now,
         openroomHome: params.openroomHome,
       });
-      // Runner-level failure (bad plan / prefix / session) -> 422.
+      // Runner-level failure (bad plan / prefix / session) -> 422; panic -> 403.
       if ('reason' in result) {
         return {
-          status: 422,
+          status: result.reason === 'panicked' ? 403 : 422,
           payload: { ok: false, error: result.reason, code: result.reason, detail: result.detail },
         };
       }

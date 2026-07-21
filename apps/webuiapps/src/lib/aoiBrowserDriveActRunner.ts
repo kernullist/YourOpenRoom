@@ -75,7 +75,8 @@ export type AoiBrowserDriveRunDenyReason =
   | 'step_out_of_range'
   | 'prefix_contains_act'
   | 'prefix_failed'
-  | 'session_start_failed';
+  | 'session_start_failed'
+  | 'panicked';
 
 export interface AoiBrowserDriveActPreviewResult {
   ok: true;
@@ -115,6 +116,10 @@ export interface AoiBrowserDriveActRunParams {
   // When present (execute path), each step is captured + recorded to the audit
   // ledger. Omitted for preview / tests.
   audit?: AoiBrowserDriveRunAudit;
+  // Cooperative panic check. The route gate already blocks a call that STARTS while
+  // panicked; this re-check catches a panic engaged DURING the (possibly slow) read-
+  // prefix replay, so the irreversible act is aborted before it runs. Optional.
+  isPanicked?: () => boolean;
 }
 
 // Shared guard: validate the plan + target index and ensure every prefix step is a
@@ -290,6 +295,10 @@ export async function executeAoiBrowserDriveActStep(
   if (guard) {
     return guard;
   }
+  // Don't even open a session if panic is already engaged.
+  if (safeIsPanicked(params.isPanicked)) {
+    return { ok: false, reason: 'panicked', detail: 'host-bridge panic engaged' };
+  }
   const opened = await openSession(params.sessionFactory);
   if ('ok' in opened && opened.ok === false) {
     return opened;
@@ -317,6 +326,16 @@ export async function executeAoiBrowserDriveActStep(
         ok: false,
         reason: 'prefix_failed',
         detail: prefix.failure?.stopReason ?? 'prefix step failed',
+        prefix: prefix.results,
+      };
+    }
+    // Panic re-check right before the irreversible act: a panic engaged during the
+    // read-prefix replay aborts here (fail-closed), and finally closes the session.
+    if (safeIsPanicked(params.isPanicked)) {
+      return {
+        ok: false,
+        reason: 'panicked',
+        detail: 'host-bridge panic engaged before the action ran',
         prefix: prefix.results,
       };
     }
@@ -395,5 +414,18 @@ async function safeClose(session: AoiBrowserDriveRunnerSession): Promise<void> {
     await session.close();
   } catch {
     // best-effort teardown
+  }
+}
+
+// A throwing panic check is treated as PANICKED (fail-closed): if we cannot confirm
+// it is safe to act, we do not act.
+function safeIsPanicked(isPanicked: (() => boolean) | undefined): boolean {
+  if (!isPanicked) {
+    return false;
+  }
+  try {
+    return isPanicked() === true;
+  } catch {
+    return true;
   }
 }
