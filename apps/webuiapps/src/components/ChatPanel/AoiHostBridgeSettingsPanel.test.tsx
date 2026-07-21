@@ -120,6 +120,40 @@ describe('AoiHostBridgeSettingsPanel', () => {
     );
   });
 
+  it('creates a standing grant from the Standing grants tab', async () => {
+    const fetchMock = installFetch({
+      tokenConfigured: true,
+      killSwitch: { globalPanic: false, enabledCapabilities: [], updatedAt: 0 },
+    });
+    render(<AoiHostBridgeSettingsPanel sessionPath="aoi/default" />);
+
+    // Move to the Standing grants sub-section.
+    const tab = await screen.findByText('Standing grants');
+    fireEvent.click(tab);
+
+    const domain = await screen.findByTestId('aoi-host-standing-domain-input');
+    fireEvent.change(domain, { target: { value: 'example.com' } });
+    fireEvent.change(screen.getByTestId('aoi-host-standing-ttl-input'), {
+      target: { value: '15' },
+    });
+    fireEvent.change(screen.getByTestId('aoi-host-standing-max-input'), { target: { value: '5' } });
+    fireEvent.click(screen.getByTestId('aoi-host-standing-add'));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        (c) =>
+          String(c[0]).includes('/browser-drive/standing-grants') &&
+          (c[1] as { method?: string } | undefined)?.method === 'POST',
+      );
+      expect(call).toBeTruthy();
+      expect(JSON.parse((call?.[1] as { body: string }).body)).toEqual({
+        domain: 'example.com',
+        ttlMs: 15 * 60_000,
+        maxActions: 5,
+      });
+    });
+  });
+
   it('warns when the daemon has not minted a token', async () => {
     installFetch({
       tokenConfigured: false,

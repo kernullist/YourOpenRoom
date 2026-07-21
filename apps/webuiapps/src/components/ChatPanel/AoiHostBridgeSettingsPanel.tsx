@@ -15,12 +15,16 @@ import {
   fetchAoiBrowserDriveAllowlist,
   addAoiBrowserDriveAllowlistDomain,
   removeAoiBrowserDriveAllowlistDomain,
+  fetchAoiBrowserDriveStandingGrants,
+  addAoiBrowserDriveStandingGrant,
+  removeAoiBrowserDriveStandingGrant,
   type AoiHostBridgeStatus,
   type AoiHostSpawnAllowlistEntryView,
   type AoiHostRootView,
   type AoiHostBridgeApprovalView,
   type AoiHostRootKind,
   type AoiBrowserDriveAllowlistEntryView,
+  type AoiBrowserDriveStandingGrantView,
 } from '@/lib/aoiHostBridgeClient';
 import {
   AOI_HOST_BRIDGE_CONSENT_LINKS,
@@ -58,6 +62,11 @@ const CAPABILITIES: { key: string; label: string; hint: string }[] = [
     key: 'os_browser_drive',
     label: 'Browser drive (my logged-in browser)',
     hint: 'Let Aoi attach to your own Chrome/Edge over CDP and act on already-logged-in sites. Also grants browser-drive consent. Interactions still need per-action approval; passwords/payments/CAPTCHAs are never entered.',
+  },
+  {
+    key: 'os_browser_drive_standing',
+    label: 'Browser drive: standing approval',
+    hint: 'HIGH RISK. While ON, an active standing grant lets Aoi act on its domain WITHOUT a per-action approval, up to the grant TTL + quota. Add grants under Standing grants. Panic and this toggle instantly disable it; forbidden actions and the domain allowlist still apply.',
   },
   { key: 'os_process_spawn', label: 'Start process', hint: 'Launch an allowlisted executable' },
   { key: 'os_file_read', label: 'Read files', hint: 'Read within registered read-roots' },
@@ -108,6 +117,12 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
     AoiBrowserDriveAllowlistEntryView[]
   >([]);
   const [browserDriveDraft, setBrowserDriveDraft] = useState({ domain: '', label: '' });
+  const [standingGrants, setStandingGrants] = useState<AoiBrowserDriveStandingGrantView[]>([]);
+  const [standingDraft, setStandingDraft] = useState({
+    domain: '',
+    ttlMin: '30',
+    maxActions: '20',
+  });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
@@ -118,18 +133,19 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
   const [writeDraft, setWriteDraft] = useState<RootDraft>(EMPTY_DRAFT);
   // Keep Host PC controls short: one role group visible at a time.
   const [hostSection, setHostSection] = useState<
-    'capabilities' | 'spawn' | 'roots' | 'approvals' | 'browserDrive'
+    'capabilities' | 'spawn' | 'roots' | 'approvals' | 'browserDrive' | 'standing'
   >('capabilities');
   const readPresets = listAoiHostReadRootPresets();
   const spawnPresets = listAoiHostSpawnPresets();
   const HOST_SECTIONS: Array<{
-    id: 'capabilities' | 'spawn' | 'roots' | 'approvals' | 'browserDrive';
+    id: 'capabilities' | 'spawn' | 'roots' | 'approvals' | 'browserDrive' | 'standing';
     label: string;
   }> = [
     { id: 'capabilities', label: 'Capabilities' },
     { id: 'spawn', label: 'Spawn' },
     { id: 'roots', label: 'File roots' },
     { id: 'browserDrive', label: 'Browser drive' },
+    { id: 'standing', label: 'Standing grants' },
     { id: 'approvals', label: 'Approvals' },
   ];
 
@@ -157,13 +173,14 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
     setLoading(true);
     setError('');
     try {
-      const [nextStatus, spawn, read, write, pending, driveAllow] = await Promise.all([
+      const [nextStatus, spawn, read, write, pending, driveAllow, grants] = await Promise.all([
         fetchAoiHostBridgeStatus(),
         fetchAoiHostSpawnAllowlist(),
         fetchAoiHostRoots('read'),
         fetchAoiHostRoots('write'),
         fetchAoiHostApprovals(),
         fetchAoiBrowserDriveAllowlist(),
+        fetchAoiBrowserDriveStandingGrants(),
       ]);
       setStatus(nextStatus);
       setSpawnEntries(spawn);
@@ -171,6 +188,7 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
       setWriteRoots(write);
       setApprovals(pending);
       setBrowserDriveEntries(driveAllow);
+      setStandingGrants(grants);
 
       // Repair footgun: capability already ON but session consent never granted.
       const enabledKeys = new Set(nextStatus.killSwitch.enabledCapabilities);
@@ -287,6 +305,24 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
   const removeBrowserDriveDomain = (id: string) =>
     void runAction(`drive:del:${id}`, async () => {
       setBrowserDriveEntries(await removeAoiBrowserDriveAllowlistDomain(id));
+    });
+
+  const addStandingGrant = () =>
+    void runAction('standing:add', async () => {
+      const ttlMin = Number.parseFloat(standingDraft.ttlMin);
+      const maxActions = Number.parseInt(standingDraft.maxActions, 10);
+      const grants = await addAoiBrowserDriveStandingGrant({
+        domain: standingDraft.domain.trim(),
+        ...(Number.isFinite(ttlMin) && ttlMin > 0 ? { ttlMs: Math.round(ttlMin * 60_000) } : {}),
+        ...(Number.isFinite(maxActions) && maxActions > 0 ? { maxActions } : {}),
+      });
+      setStandingGrants(grants);
+      setStandingDraft({ domain: '', ttlMin: '30', maxActions: '20' });
+    });
+
+  const removeStandingGrant = (id: string) =>
+    void runAction(`standing:del:${id}`, async () => {
+      setStandingGrants(await removeAoiBrowserDriveStandingGrant(id));
     });
 
   const addRoot = (kind: AoiHostRootKind, draft: RootDraft, reset: () => void) =>
@@ -629,6 +665,94 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
                     onClick={addBrowserDriveDomain}
                     disabled={!browserDriveDraft.domain.trim() || busy === 'drive:add'}
                     data-testid="aoi-host-drive-add"
+                  >
+                    Add
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {hostSection === 'standing' && (
+              <div className={styles.connectorRow} data-testid="aoi-host-standing-grants">
+                <div className={styles.connectorRowHeader}>
+                  <strong>Standing grants</strong>
+                  <span className={styles.modelHint}>{standingGrants.length} active</span>
+                </div>
+                <span className={styles.modelHint}>
+                  HIGH RISK. A grant lets Aoi act on its domain WITHOUT a per-action approval, up to
+                  the TTL and action quota. Honored only while the &quot;Browser drive: standing
+                  approval&quot; capability is ON (Capabilities tab); panic disables it instantly.
+                  The domain must also be on the browser-drive allowlist; forbidden actions
+                  (passwords/payments/CAPTCHA) are never performed.
+                </span>
+                {!status?.killSwitch.enabledCapabilities.includes('os_browser_drive_standing') && (
+                  <span className={styles.modelHint} data-testid="aoi-host-standing-off-hint">
+                    Standing approval is currently OFF — grants below are inert until you enable it
+                    in the Capabilities tab.
+                  </span>
+                )}
+                {standingGrants.map((grant) => {
+                  const minutesLeft = Math.max(
+                    0,
+                    Math.round((grant.expiresAt - Date.now()) / 60_000),
+                  );
+                  return (
+                    <div key={grant.id} className={styles.connectorToggleRow}>
+                      <span className={styles.modelHint}>
+                        {grant.label && grant.label !== grant.domain ? `${grant.label} · ` : ''}
+                        {grant.domain} · {grant.usedActions}/{grant.maxActions} used · ~
+                        {minutesLeft}m left
+                      </span>
+                      <button
+                        type="button"
+                        className={styles.cancelBtn}
+                        onClick={() => removeStandingGrant(grant.id)}
+                        disabled={busy === `standing:del:${grant.id}`}
+                        title="Revoke this grant"
+                        data-testid={`aoi-host-standing-remove-${grant.id}`}
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  );
+                })}
+                <div className={styles.connectorToggleRow}>
+                  <input
+                    className={styles.fieldInput}
+                    value={standingDraft.domain}
+                    onChange={(event) =>
+                      setStandingDraft((prev) => ({ ...prev, domain: event.target.value }))
+                    }
+                    placeholder="example.com"
+                    aria-label="Standing grant domain"
+                    data-testid="aoi-host-standing-domain-input"
+                  />
+                  <input
+                    className={styles.fieldInput}
+                    value={standingDraft.ttlMin}
+                    onChange={(event) =>
+                      setStandingDraft((prev) => ({ ...prev, ttlMin: event.target.value }))
+                    }
+                    placeholder="TTL min"
+                    aria-label="Standing grant TTL minutes"
+                    data-testid="aoi-host-standing-ttl-input"
+                  />
+                  <input
+                    className={styles.fieldInput}
+                    value={standingDraft.maxActions}
+                    onChange={(event) =>
+                      setStandingDraft((prev) => ({ ...prev, maxActions: event.target.value }))
+                    }
+                    placeholder="Max actions"
+                    aria-label="Standing grant max actions"
+                    data-testid="aoi-host-standing-max-input"
+                  />
+                  <button
+                    type="button"
+                    className={styles.saveBtn}
+                    onClick={addStandingGrant}
+                    disabled={!standingDraft.domain.trim() || busy === 'standing:add'}
+                    data-testid="aoi-host-standing-add"
                   >
                     Add
                   </button>
