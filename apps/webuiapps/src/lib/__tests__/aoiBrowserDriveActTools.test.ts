@@ -2,11 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   BROWSER_DRIVE_PROPOSE_TOOL,
   BROWSER_DRIVE_RUN_TOOL,
+  BROWSER_DRIVE_TASK_TOOL,
   executeBrowserDriveActTool,
   getBrowserDriveActToolDefinitions,
   getBrowserDriveActToolPendingSummary,
   isBrowserDriveActTool,
   parseBrowserDriveActParams,
+  parseBrowserDriveTaskParams,
 } from '../aoiBrowserDriveActTools';
 
 const PLAN_PARAMS = {
@@ -178,6 +180,82 @@ describe('run (browser_drive_run)', () => {
         { sessionPath: 'aoi/default' },
       ),
     ).toMatch(/needs goal, steps/);
+  });
+});
+
+describe('task tool (browser_drive_task)', () => {
+  const taskParams = {
+    goal: 'refresh twice',
+    steps: [
+      {
+        plan: { goal: 'p', steps: [{ action: { kind: 'click', selector: '#a' } }] },
+        target_step_index: 0,
+      },
+      {
+        plan: { goal: 'p', steps: [{ action: { kind: 'click', selector: '#b' } }] },
+        target_step_index: 0,
+      },
+    ],
+    max_acts: 5,
+  };
+
+  it('is recognized and summarized by step count', () => {
+    expect(isBrowserDriveActTool(BROWSER_DRIVE_TASK_TOOL)).toBe(true);
+    expect(getBrowserDriveActToolPendingSummary(BROWSER_DRIVE_TASK_TOOL, taskParams)).toContain(
+      '2 steps',
+    );
+  });
+
+  it('parses params into an owner=user task + budget', () => {
+    const parsed = parseBrowserDriveTaskParams(taskParams);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.task.owner).toBe('user');
+    expect(parsed?.task.steps).toHaveLength(2);
+    expect(parsed?.budget.maxActs).toBe(5);
+  });
+
+  it('rejects malformed task steps', () => {
+    expect(parseBrowserDriveTaskParams({ goal: 'x', steps: [] })).toBeNull();
+    expect(parseBrowserDriveTaskParams({ goal: 'x', steps: [{ plan: { steps: [] } }] })).toBeNull();
+  });
+
+  it('runs the task and reports completion (owner forced to user)', async () => {
+    const taskFetcher = vi.fn(async () => ({
+      ok: true,
+      goal: 'refresh twice',
+      stopReason: 'completed',
+      actsRun: 2,
+      stepsRun: 4,
+      steps: [
+        { index: 0, ok: true },
+        { index: 1, ok: true },
+      ],
+    }));
+    const result = await executeBrowserDriveActTool(BROWSER_DRIVE_TASK_TOOL, taskParams, {
+      sessionPath: 'aoi/default',
+      taskFetcher,
+    });
+    const parsed = JSON.parse(result);
+    expect(parsed.status).toBe('done');
+    expect(parsed.acts_run).toBe(2);
+    const call = taskFetcher.mock.calls[0] as unknown as [
+      string,
+      { owner: string },
+      { maxActs: number },
+    ];
+    expect(call[1].owner).toBe('user');
+    expect(call[2].maxActs).toBe(5);
+  });
+
+  it('maps a disabled-toggle 403 to an enable hint', async () => {
+    const taskFetcher = vi.fn(async () => {
+      throw new Error('task_capability_disabled');
+    });
+    const result = await executeBrowserDriveActTool(BROWSER_DRIVE_TASK_TOOL, taskParams, {
+      sessionPath: 'aoi/default',
+      taskFetcher,
+    });
+    expect(result).toMatch(/bounded tasks are off/i);
   });
 });
 

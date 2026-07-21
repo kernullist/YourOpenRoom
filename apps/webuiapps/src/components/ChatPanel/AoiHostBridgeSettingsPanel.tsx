@@ -68,6 +68,11 @@ const CAPABILITIES: { key: string; label: string; hint: string }[] = [
     label: 'Browser drive: standing approval',
     hint: 'HIGH RISK. While ON, an active standing grant lets Aoi act on its domain WITHOUT a per-action approval, up to the grant TTL + quota. Add grants under Standing grants. Panic and this toggle instantly disable it; forbidden actions and the domain allowlist still apply.',
   },
+  {
+    key: 'os_browser_drive_task',
+    label: 'Browser drive: bounded tasks',
+    hint: 'HIGHEST RISK. While ON, Aoi may run a bounded multi-act task (<=10 acts / <=40 steps, fail-stop) you asked for. Each act still needs a standing grant or per-action approval; panic and this toggle disable it. Leave OFF unless you want autonomous multi-step browser tasks.',
+  },
   { key: 'os_process_spawn', label: 'Start process', hint: 'Launch an allowlisted executable' },
   { key: 'os_file_read', label: 'Read files', hint: 'Read within registered read-roots' },
   { key: 'os_file_write', label: 'Write files', hint: 'Write within registered write-roots' },

@@ -24,12 +24,15 @@ import type { ToolDef } from './llmClient';
 import {
   fetchAoiHostBrowserDriveActPreview,
   runAoiHostBrowserDriveActExecute,
+  runAoiHostBrowserDriveTask,
   type AoiHostBrowserDriveActExecuteView,
   type AoiHostBrowserDriveActPreviewView,
+  type AoiHostBrowserDriveTaskResultView,
 } from './aoiHostBridgeClient';
 
 export const BROWSER_DRIVE_PROPOSE_TOOL = 'browser_drive_act';
 export const BROWSER_DRIVE_RUN_TOOL = 'browser_drive_run';
+export const BROWSER_DRIVE_TASK_TOOL = 'browser_drive_task';
 
 export interface BrowserDriveActToolContext {
   sessionPath: string;
@@ -43,6 +46,11 @@ export interface BrowserDriveActToolContext {
     plan: unknown,
     targetStepIndex: number,
   ) => Promise<AoiHostBrowserDriveActExecuteView>;
+  taskFetcher?: (
+    sessionPath: string,
+    task: unknown,
+    budget?: { maxActs?: number; maxSteps?: number },
+  ) => Promise<AoiHostBrowserDriveTaskResultView>;
 }
 
 const PLAN_PARAM_SCHEMA = {
@@ -127,17 +135,67 @@ export function getBrowserDriveActToolDefinitions(): ToolDef[] {
         },
       },
     },
+    {
+      type: 'function',
+      function: {
+        name: BROWSER_DRIVE_TASK_TOOL,
+        description:
+          "Run a bounded, operator-authored MULTI-ACT task on the user's logged-in browser: an ordered " +
+          'list of single-act steps, each executed in turn and fail-stopped on the first failure. Use ONLY ' +
+          'when the user asked for a repeated/multi-step browser action. Requires the "Browser drive: ' +
+          'standing approval" AND "Browser drive: bounded tasks" toggles ON and a standing grant for each ' +
+          "domain (otherwise each act blocks). Bounded to <=10 acts / <=40 steps. Don't invent tasks -- only " +
+          'run what the user explicitly asked for.',
+        parameters: {
+          type: 'object',
+          properties: {
+            goal: { type: 'string', description: 'One-line description of the whole task.' },
+            steps: {
+              type: 'array',
+              description: 'Ordered single-act steps; each is a plan + the index of its one act.',
+              items: {
+                type: 'object',
+                properties: {
+                  plan: {
+                    type: 'object',
+                    description: 'A single-act plan (read prefix + one act).',
+                    properties: PLAN_PARAM_SCHEMA,
+                    required: ['goal', 'steps'],
+                  },
+                  target_step_index: {
+                    type: 'number',
+                    description: 'Index of the single act step within this plan.',
+                  },
+                },
+                required: ['plan', 'target_step_index'],
+              },
+            },
+            max_acts: { type: 'number', description: 'Optional cap on acts (<=10).' },
+            max_steps: { type: 'number', description: 'Optional cap on total steps (<=40).' },
+          },
+          required: ['goal', 'steps'],
+        },
+      },
+    },
   ];
 }
 
 export function isBrowserDriveActTool(toolName: string): boolean {
-  return toolName === BROWSER_DRIVE_PROPOSE_TOOL || toolName === BROWSER_DRIVE_RUN_TOOL;
+  return (
+    toolName === BROWSER_DRIVE_PROPOSE_TOOL ||
+    toolName === BROWSER_DRIVE_RUN_TOOL ||
+    toolName === BROWSER_DRIVE_TASK_TOOL
+  );
 }
 
 export function getBrowserDriveActToolPendingSummary(
   toolName: string,
   params: Record<string, unknown>,
 ): string {
+  if (toolName === BROWSER_DRIVE_TASK_TOOL) {
+    const count = Array.isArray(params.steps) ? params.steps.length : 0;
+    return `${toolName}(${count} steps)`;
+  }
   const index = typeof params.target_step_index === 'number' ? params.target_step_index : '?';
   return `${toolName}(step ${index})`;
 }
@@ -181,6 +239,15 @@ function formatActGateError(error: unknown): string {
       `error: that action is permanently blocked (passwords/payments/transfers/CAPTCHA are never ` +
       `performed by Aoi): ${message}. The user must do it themselves.`
     );
+  }
+  if (lowered.includes('task_capability_disabled')) {
+    return (
+      `error: bounded tasks are off: ${message}. ` +
+      'Ask the user to enable "Browser drive: bounded tasks" in Settings -> Advanced -> Host PC, then retry.'
+    );
+  }
+  if (lowered.includes('not_operator_authored')) {
+    return `error: the task was refused as not operator-authored: ${message}. Only run tasks the user explicitly asked for.`;
   }
   if (lowered.includes('prefix_contains_act')) {
     return (
@@ -287,11 +354,88 @@ export async function executeBrowserDriveRunTool(
   }
 }
 
+// Parse the task tool params into { owner:'user', goal, steps } + budget. Returns
+// null when unusable; the server orchestrator + step runner re-validate everything.
+export function parseBrowserDriveTaskParams(params: Record<string, unknown>): {
+  task: { owner: 'user'; goal: string; steps: Array<{ plan: unknown; targetStepIndex: number }> };
+  budget: { maxActs?: number; maxSteps?: number };
+} | null {
+  const goal = typeof params.goal === 'string' ? params.goal : '';
+  const rawSteps = Array.isArray(params.steps) ? params.steps : null;
+  if (!rawSteps || rawSteps.length === 0) {
+    return null;
+  }
+  const steps: Array<{ plan: unknown; targetStepIndex: number }> = [];
+  for (const raw of rawSteps) {
+    if (!raw || typeof raw !== 'object') {
+      return null;
+    }
+    const step = raw as { plan?: unknown; target_step_index?: unknown };
+    const plan = step.plan;
+    const target = step.target_step_index;
+    if (
+      !plan ||
+      typeof plan !== 'object' ||
+      !Array.isArray((plan as { steps?: unknown }).steps) ||
+      typeof target !== 'number' ||
+      !Number.isInteger(target) ||
+      target < 0
+    ) {
+      return null;
+    }
+    steps.push({ plan, targetStepIndex: target });
+  }
+  const budget: { maxActs?: number; maxSteps?: number } = {};
+  if (typeof params.max_acts === 'number') {
+    budget.maxActs = params.max_acts;
+  }
+  if (typeof params.max_steps === 'number') {
+    budget.maxSteps = params.max_steps;
+  }
+  // owner is fixed to 'user': this tool runs a user-requested task. The real
+  // provenance gate is the human-only os_browser_drive_task toggle on the daemon.
+  return { task: { owner: 'user', goal, steps }, budget };
+}
+
+export async function executeBrowserDriveTaskTool(
+  params: Record<string, unknown>,
+  context: BrowserDriveActToolContext,
+): Promise<string> {
+  const sessionPath = typeof context.sessionPath === 'string' ? context.sessionPath.trim() : '';
+  if (!sessionPath) {
+    return 'error: browser drive needs an active Aoi session (sessionPath missing).';
+  }
+  const parsed = parseBrowserDriveTaskParams(params);
+  if (!parsed) {
+    return 'error: browser_drive_task needs goal and steps (each with a plan + target_step_index).';
+  }
+  const taskFetcher = context.taskFetcher ?? runAoiHostBrowserDriveTask;
+  try {
+    const result = await taskFetcher(sessionPath, parsed.task, parsed.budget);
+    return JSON.stringify({
+      status: result.ok ? 'done' : 'stopped',
+      ok: result.ok,
+      stop_reason: result.stopReason,
+      acts_run: result.actsRun,
+      steps_run: result.stepsRun,
+      ...(result.detail ? { detail: result.detail } : {}),
+      note: result.ok
+        ? 'The bounded task completed; every act was gated (standing grant / approval) and audited.'
+        : 'The task stopped early; see stop_reason. Nothing ran past the stopping step.',
+    });
+  } catch (error) {
+    return formatActGateError(error);
+  }
+}
+
 export async function executeBrowserDriveActTool(
   toolName: string,
   params: Record<string, unknown>,
   context: BrowserDriveActToolContext,
 ): Promise<string> {
+  if (toolName === BROWSER_DRIVE_TASK_TOOL) {
+    return executeBrowserDriveTaskTool(params, context);
+  }
   if (toolName === BROWSER_DRIVE_RUN_TOOL) {
     return executeBrowserDriveRunTool(params, context);
   }
