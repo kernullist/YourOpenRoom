@@ -37,6 +37,12 @@ function installFetch(statusBody: Record<string, unknown>) {
     if (target.includes('/read-roots') || target.includes('/write-roots')) {
       return Promise.resolve(jsonResponse({ ok: true, roots: [] }));
     }
+    if (target.includes('/browser-drive/standing-grants')) {
+      return Promise.resolve(jsonResponse({ ok: true, grants: [] }));
+    }
+    if (target.includes('/browser-drive-allowlist')) {
+      return Promise.resolve(jsonResponse({ ok: true, entries: [] }));
+    }
     if (target.includes('/approvals')) {
       return Promise.resolve(jsonResponse({ ok: true, approvals: [] }));
     }
