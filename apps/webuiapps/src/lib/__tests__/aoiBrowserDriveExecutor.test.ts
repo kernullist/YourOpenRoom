@@ -31,6 +31,9 @@ interface FakePageOptions {
   actLandingUrl?: string;
   content?: string;
   failClick?: boolean;
+  // Live-DOM values the executor reads to re-check the forbidden hard-block.
+  domTextContent?: string;
+  domAttributes?: Record<string, string>;
 }
 
 function fakePage(options: FakePageOptions = {}) {
@@ -73,6 +76,12 @@ function fakePage(options: FakePageOptions = {}) {
     }),
     screenshot: vi.fn(async () => new Uint8Array([1, 2, 3, 4])),
     mouse: { wheel: vi.fn(async () => calls.push('wheel')) },
+    textContent: vi.fn(async () =>
+      typeof options.domTextContent === 'string' ? options.domTextContent : null,
+    ),
+    getAttribute: vi.fn(
+      async (_selector: string, name: string) => options.domAttributes?.[name] ?? null,
+    ),
   };
   return { page: page as unknown as AoiBrowserDriveActablePage, raw: page, calls };
 }
@@ -169,6 +178,45 @@ describe('executeAoiBrowserDriveStep - guards', () => {
     expect(result.detail).toContain('too_many_steps');
   });
 
+  it('hard-blocks a financial-commit click discovered from the LIVE DOM even when the model omits targetText', async () => {
+    // Model supplies an innocuous-looking click with NO targetText, but the real
+    // element text is a money button -> the DOM re-check must forbid it.
+    const { page, raw } = fakePage({
+      startUrl: 'https://example.com/x',
+      domTextContent: 'Place order',
+    });
+    const result = await executeAoiBrowserDriveStep({
+      page,
+      plan: plan({ kind: 'click', selector: '#submit-order' }),
+      stepIndex: 0,
+      allowlist: ALLOWLIST,
+      approvalGate: allowGate,
+      now: 1,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.stopReason).toBe('forbidden');
+    expect(raw.click).not.toHaveBeenCalled();
+  });
+
+  it('hard-blocks typing into a password field discovered from the LIVE DOM (model omitted field.type)', async () => {
+    const { page, raw } = fakePage({
+      startUrl: 'https://example.com/x',
+      domAttributes: { type: 'password' },
+    });
+    const result = await executeAoiBrowserDriveStep({
+      page,
+      // No field metadata supplied by the model; the DOM says type=password.
+      plan: plan({ kind: 'type', selector: '#pw', text: 'secret' }),
+      stepIndex: 0,
+      allowlist: ALLOWLIST,
+      approvalGate: allowGate,
+      now: 1,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.stopReason).toBe('forbidden');
+    expect(raw.fill).not.toHaveBeenCalled();
+  });
+
   it('refuses to act on a page that is not allowlisted', async () => {
     const { page, raw } = fakePage({ startUrl: 'https://evil.test/x' });
     const result = await executeAoiBrowserDriveStep({
@@ -237,7 +285,8 @@ describe('executeAoiBrowserDriveStep - approval gating', () => {
       approvalGate: gate,
       now: 1,
     });
-    expect(seen[0]).toBe(computeAoiBrowserDriveActionFingerprint(p.goal, 0, action));
+    // Fingerprint is bound to the acting host (example.com from the start URL).
+    expect(seen[0]).toBe(computeAoiBrowserDriveActionFingerprint(p.goal, 0, action, 'example.com'));
   });
 });
 

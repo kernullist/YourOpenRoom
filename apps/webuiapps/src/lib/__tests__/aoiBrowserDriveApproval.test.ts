@@ -42,7 +42,7 @@ describe('buildAoiBrowserDriveActApprovalPreview', () => {
     if (outcome.ok) {
       expect(outcome.capability).toBe(AOI_BROWSER_DRIVE_CAPABILITY);
       expect(outcome.fingerprint).toBe(
-        computeAoiBrowserDriveActionFingerprint(p.goal, 0, clickStep),
+        computeAoiBrowserDriveActionFingerprint(p.goal, 0, clickStep, 'example.com'),
       );
       expect(outcome.hostname).toBe('example.com');
       expect(outcome.targetSummary).toContain('#refresh');

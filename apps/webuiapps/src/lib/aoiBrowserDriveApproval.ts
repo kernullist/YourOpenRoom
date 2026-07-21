@@ -138,7 +138,16 @@ export function buildAoiBrowserDriveActApprovalPreview(params: {
 
   const hostname = typeof params.hostname === 'string' ? params.hostname.trim().toLowerCase() : '';
   const ttlMs = Math.max(1_000, params.ttlMs ?? AOI_BROWSER_DRIVE_APPROVAL_TTL_MS);
-  const fingerprint = computeAoiBrowserDriveActionFingerprint(plan.goal, stepIndex, step.action);
+  // Bind the acting host into the fingerprint so this approval can only be consumed
+  // to act on the host the operator previewed (matches the executor, which computes
+  // it from the live page host at act time). Empty host on both sides stays
+  // consistent for the pre-browser reject pass.
+  const fingerprint = computeAoiBrowserDriveActionFingerprint(
+    plan.goal,
+    stepIndex,
+    step.action,
+    hostname,
+  );
 
   return {
     ok: true,

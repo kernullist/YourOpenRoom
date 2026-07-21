@@ -52,6 +52,7 @@ const MAX_ACT_TIMEOUT_MS = 45_000;
 const DEFAULT_WAIT_MS = 500;
 const MAX_WAIT_MS = 10_000;
 const DEFAULT_SCROLL_DELTA = 600;
+const DOM_READ_TIMEOUT_MS = 3_000;
 const BLANK_URL = 'about:blank';
 
 // The subset of a Playwright Page the executor drives. All members exist on a real
@@ -65,6 +66,15 @@ export interface AoiBrowserDriveActablePage extends AoiBrowserDriveNavigablePage
   goBack(options?: { waitUntil?: string; timeout?: number }): Promise<unknown>;
   screenshot(options?: { timeout?: number }): Promise<Uint8Array>;
   mouse: { wheel(deltaX: number, deltaY: number): Promise<void> };
+  // Read-only DOM introspection used to derive the target's REAL accessible text +
+  // field metadata from the live page, so the forbidden hard-block does not rely on
+  // model-supplied action.targetText/field (which an injected model could omit).
+  textContent(selector: string, options?: { timeout?: number }): Promise<string | null>;
+  getAttribute(
+    selector: string,
+    name: string,
+    options?: { timeout?: number },
+  ): Promise<string | null>;
 }
 
 // Per-ACT approval. Returns whether THIS exact action (by content-addressed
@@ -159,10 +169,17 @@ function fnv1a(value: string, seed: number): string {
 // Canonical serialization of an action for content addressing. Only the fields that
 // change the effect are included, in a fixed order, so the same action always maps
 // to the same fingerprint (the P2.3 preview route derives it identically).
+//
+// `hostname` BINDS the approval to the page the act lands on: the preview records it
+// from the replayed prefix's final host, and the executor computes it from the live
+// page host at act time. An approval shown for one allowlisted host therefore cannot
+// be consumed to act on a DIFFERENT allowlisted host (the "approve what you saw"
+// guarantee), even though both hosts pass the allowlist.
 export function computeAoiBrowserDriveActionFingerprint(
   goal: string,
   stepIndex: number,
   action: AoiBrowserDriveActionRequest,
+  hostname = '',
 ): string {
   const canonical = [
     (typeof goal === 'string' ? goal : '').trim(),
@@ -174,6 +191,7 @@ export function computeAoiBrowserDriveActionFingerprint(
     action?.value ?? '',
     action?.key ?? '',
     action?.targetText ?? '',
+    (typeof hostname === 'string' ? hostname : '').trim().toLowerCase(),
   ].join('\n');
   return `${fnv1a(canonical, 0x811c9dc5)}${fnv1a(canonical, 0x9e3779b1)}`;
 }
@@ -299,7 +317,27 @@ export async function executeAoiBrowserDriveStep(
   let approvalFingerprint: string | undefined;
   let approvalViaStanding = false;
   if (decision.category === 'act') {
-    approvalFingerprint = computeAoiBrowserDriveActionFingerprint(plan.goal, stepIndex, action);
+    // Defense-in-depth against a model that hides a forbidden control by omitting
+    // targetText/field: derive the REAL accessible text + field metadata from the
+    // live DOM and re-run the (deterministic) forbidden classifier. This matters
+    // most on the autonomous standing-grant path, where no human sees the summary.
+    const domForbidden = await classifyActFromLiveDom(page, action);
+    if (domForbidden) {
+      return finish(params.observer, stepIndex, action, before, {
+        index: stepIndex,
+        category: 'forbidden',
+        ok: false,
+        stopReason: 'forbidden',
+        detail: domForbidden,
+      });
+    }
+    // Bind the approval to the host the act actually lands on (see fingerprint doc).
+    approvalFingerprint = computeAoiBrowserDriveActionFingerprint(
+      plan.goal,
+      stepIndex,
+      action,
+      hostnameOf(beforeUrl),
+    );
     let verdict: { approved: boolean; reason?: string; viaStanding?: boolean };
     try {
       verdict = await approvalGate({
@@ -566,6 +604,71 @@ function hostnameOf(url: string): string {
   } catch {
     return '';
   }
+}
+
+// Read one DOM string best-effort: any throw/timeout/absent element -> ''.
+function safeDomRead(read: () => Promise<string | null>): Promise<string> {
+  return Promise.resolve()
+    .then(read)
+    .then((value) => (typeof value === 'string' ? value : ''))
+    .catch(() => '');
+}
+
+// Defense-in-depth for the forbidden hard-block: enrich the action with the target's
+// REAL accessible text (click/submit) or field metadata (type) read from the live
+// DOM, then run the deterministic forbidden classifier. Returns the forbid reason if
+// the DOM-derived action is forbidden, else undefined. Best-effort: a DOM read
+// failure yields undefined, so this only ADDS blocks (a model cannot dodge the
+// financial-commit/CAPTCHA/sensitive-field block by omitting targetText/field).
+async function classifyActFromLiveDom(
+  page: AoiBrowserDriveActablePage,
+  action: AoiBrowserDriveActionRequest,
+): Promise<string | undefined> {
+  const selector = typeof action.selector === 'string' ? action.selector : '';
+  if (!selector) {
+    return undefined;
+  }
+  const opts = { timeout: DOM_READ_TIMEOUT_MS };
+  let enriched: AoiBrowserDriveActionRequest = action;
+  if (action.kind === 'click' || action.kind === 'submit') {
+    const [text, aria, value] = await Promise.all([
+      safeDomRead(() => page.textContent(selector, opts)),
+      safeDomRead(() => page.getAttribute(selector, 'aria-label', opts)),
+      safeDomRead(() => page.getAttribute(selector, 'value', opts)),
+    ]);
+    const domText = [action.targetText, text, aria, value]
+      .filter((part): part is string => Boolean(part))
+      .join(' ')
+      .trim();
+    if (!domText) {
+      return undefined;
+    }
+    enriched = { ...action, targetText: domText };
+  } else if (action.kind === 'type') {
+    const [type, name, autocomplete, ariaLabel, id] = await Promise.all([
+      safeDomRead(() => page.getAttribute(selector, 'type', opts)),
+      safeDomRead(() => page.getAttribute(selector, 'name', opts)),
+      safeDomRead(() => page.getAttribute(selector, 'autocomplete', opts)),
+      safeDomRead(() => page.getAttribute(selector, 'aria-label', opts)),
+      safeDomRead(() => page.getAttribute(selector, 'id', opts)),
+    ]);
+    enriched = {
+      ...action,
+      field: {
+        ...action.field,
+        ...(type ? { type } : {}),
+        ...(name ? { name } : {}),
+        ...(autocomplete ? { autocomplete } : {}),
+        ...(ariaLabel ? { ariaLabel } : {}),
+        ...(id ? { id } : {}),
+      },
+    };
+  } else {
+    // select/press carry no financial/captcha/sensitive DOM signal to add.
+    return undefined;
+  }
+  const decision = classifyAoiBrowserDriveAction(enriched);
+  return decision.category === 'forbidden' ? decision.reason : undefined;
 }
 
 export interface AoiBrowserDriveRunResult {

@@ -454,7 +454,10 @@ async function runAoiBrowserDriveTaskDefault(options: {
         plan: step.plan,
         targetStepIndex: step.targetStepIndex,
         allowlist: options.allowlist,
-        now: options.now,
+        // Fresh wall-clock per step so a standing grant's TTL/expiry is measured
+        // against the moment each step runs, not frozen at task start (a long task
+        // must not keep honoring a grant that expired mid-run).
+        now: Date.now(),
         openroomHome: options.openroomHome,
       }),
   });
