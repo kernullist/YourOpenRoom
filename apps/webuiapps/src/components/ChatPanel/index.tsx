@@ -13368,7 +13368,7 @@ const SettingsModal: React.FC<{
           <div className={styles.settingsHeading}>
             <div className={styles.settingsTitle}>Settings</div>
             <div className={styles.settingsSubtitle}>
-              Grouped by task so the window stays shorter and easier to scan.
+              Pick a section on the left; each groups related settings by function.
             </div>
           </div>
           <button className={styles.cancelBtn} onClick={onClose}>
@@ -13376,20 +13376,45 @@ const SettingsModal: React.FC<{
           </button>
         </div>
 
-        <div className={styles.settingsTabs}>
+        <nav
+          className={styles.settingsTabs}
+          data-testid="settings-nav"
+          aria-label="Settings sections"
+        >
           {settingsTabs.map((tab) => (
-            <button
-              key={tab.key}
-              type="button"
-              className={`${styles.settingsTab} ${
-                activeTab === tab.key ? styles.settingsTabActive : ''
-              }`}
-              onClick={() => setActiveTab(tab.key)}
-            >
-              {tab.label}
-            </button>
+            <React.Fragment key={tab.key}>
+              <button
+                type="button"
+                className={`${styles.settingsTab} ${
+                  activeTab === tab.key ? styles.settingsTabActive : ''
+                }`}
+                onClick={() => setActiveTab(tab.key)}
+              >
+                {tab.label}
+              </button>
+              {tab.key === 'advanced' && activeTab === 'advanced' && (
+                <div className={styles.settingsNavSub} data-testid="advanced-settings-subnav">
+                  {ADVANCED_SETTINGS_SECTIONS.map((section) => (
+                    <button
+                      key={section.id}
+                      type="button"
+                      className={
+                        advancedSection === section.id
+                          ? `${styles.settingsNavSubItem} ${styles.settingsNavSubItemActive}`
+                          : styles.settingsNavSubItem
+                      }
+                      data-testid={`advanced-section-${section.id}`}
+                      onClick={() => setAdvancedSection(section.id)}
+                      title={section.hint}
+                    >
+                      {section.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </React.Fragment>
           ))}
-        </div>
+        </nav>
 
         <div className={styles.settingsBody}>
           {activeTab === 'chat' && (
@@ -14307,23 +14332,7 @@ const SettingsModal: React.FC<{
 
           {activeTab === 'advanced' && (
             <div className={styles.settingsSection} data-testid="advanced-settings">
-              <div className={styles.advancedSubnav} data-testid="advanced-settings-subnav">
-                {ADVANCED_SETTINGS_SECTIONS.map((section) => (
-                  <button
-                    key={section.id}
-                    type="button"
-                    className={
-                      advancedSection === section.id
-                        ? `${styles.settingsTab} ${styles.settingsTabActive}`
-                        : styles.settingsTab
-                    }
-                    data-testid={`advanced-section-${section.id}`}
-                    onClick={() => setAdvancedSection(section.id)}
-                  >
-                    {section.label}
-                  </button>
-                ))}
-              </div>
+              {/* Section nav lives in the left sidebar now (see settingsNavSub). */}
               <p className={styles.advancedSectionHint} data-testid="advanced-section-hint">
                 {ADVANCED_SETTINGS_SECTIONS.find((section) => section.id === advancedSection)
                   ?.hint ?? ''}

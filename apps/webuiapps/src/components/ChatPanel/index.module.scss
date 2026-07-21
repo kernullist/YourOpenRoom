@@ -674,16 +674,36 @@
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 12px;
   padding: 18px;
-  width: 560px;
+  width: 960px;
   max-width: 94vw;
-  max-height: 76vh;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
+  max-height: 88vh;
+  // Two-pane: header spans the top; the tab list is a left sidebar; content on the
+  // right. Wider + taller than the old single-column modal so functional groups fit.
+  display: grid;
+  grid-template-columns: 216px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas:
+    'header header'
+    'nav body';
+  column-gap: 18px;
+  row-gap: 12px;
   overflow: hidden;
 }
 
+// Narrow screens: collapse to a single column and let the nav sit above the body.
+@media (max-width: 680px) {
+  .settingsModal {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-areas:
+      'header'
+      'nav'
+      'body';
+  }
+}
+
 .settingsHeader {
+  grid-area: header;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -709,13 +729,70 @@
 }
 
 .settingsTabs {
+  grid-area: nav;
   display: flex;
-  gap: 8px;
-  overflow-x: auto;
-  overflow-y: hidden;
-  padding: 2px 0 8px;
-  min-height: 38px;
-  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 2px 12px 8px 0;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+
+  // Full-width, left-aligned pills in the sidebar. Scoped to this container so the
+  // shared .settingsTab pill stays horizontal inside nested panels (Host PC subnav).
+  .settingsTab {
+    width: 100%;
+    justify-content: flex-start;
+    text-align: left;
+  }
+}
+
+@media (max-width: 680px) {
+  .settingsTabs {
+    flex-direction: row;
+    flex-wrap: wrap;
+    border-right: none;
+    padding-right: 0;
+
+    .settingsTab {
+      width: auto;
+    }
+  }
+}
+
+// Nested functional sub-groups inside the sidebar (e.g. Advanced's sections).
+.settingsNavSub {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 2px 0 6px 8px;
+  padding-left: 8px;
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.settingsNavSubItem {
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.6);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+
+  &:hover {
+    color: rgba(255, 255, 255, 0.9);
+    background: rgba(255, 255, 255, 0.04);
+  }
+}
+
+.settingsNavSubItemActive {
+  color: #faea5f;
+  background: rgba(250, 234, 95, 0.12);
 }
 
 /* Role-based sub-nav for the long Advanced settings page. Sticky so operators
@@ -768,7 +845,7 @@
 }
 
 .settingsBody {
-  flex: 1 1 auto;
+  grid-area: body;
   min-height: 0;
   overflow-y: auto;
   padding-right: 4px;
