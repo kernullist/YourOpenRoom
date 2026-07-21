@@ -727,6 +727,128 @@ describe('resolveAoiHostBridgeRoute /browser-drive/preview + /execute (BD P2.3)'
   });
 });
 
+describe('resolveAoiHostBridgeRoute /browser-drive/task (BD P3.2)', () => {
+  function enableDriveConsent(sessionsDir: string, home: string): void {
+    const registry = getDefaultAoiEnvironmentSourceRegistry('aoi/default', 1000);
+    saveAoiEnvironmentSourceRegistry(sessionsDir, 'aoi/default', registry);
+    updateAoiEnvironmentSource(sessionsDir, 'aoi/default', {
+      sourceId: 'browser-drive',
+      patch: { enabled: true, consentReason: 'test' },
+      now: 1500,
+    });
+    saveAoiHostBridgeKillSwitchState(
+      home,
+      setAoiHostBridgeCapability(null, 'os_browser_drive', true, 1500),
+    );
+  }
+  function enableTaskToggle(home: string): void {
+    const current = loadAoiHostBridgeKillSwitchState(home);
+    saveAoiHostBridgeKillSwitchState(
+      home,
+      setAoiHostBridgeCapability(current, 'os_browser_drive_task', true, 1600),
+    );
+  }
+
+  const TASK = {
+    owner: 'user',
+    goal: 'refresh twice',
+    steps: [
+      {
+        plan: {
+          goal: 'refresh twice',
+          steps: [
+            { description: 'open', action: { kind: 'navigate', url: 'https://example.com/a' } },
+            { description: 'click', action: { kind: 'click', selector: '#refresh' } },
+          ],
+        },
+        targetStepIndex: 1,
+      },
+    ],
+  };
+
+  it('blocks when the os_browser_drive_task toggle is off (even with base consent)', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    enableDriveConsent(sessionsDir, home);
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive/task',
+      body: { sessionPath: 'aoi/default', task: TASK },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+    });
+    expect(result.status).toBe(403);
+    expect((result.payload as { code: string }).code).toBe('task_capability_disabled');
+  });
+
+  it('runs the bounded task when the toggle is on', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    enableDriveConsent(sessionsDir, home);
+    enableTaskToggle(home);
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive/task',
+      body: { sessionPath: 'aoi/default', task: TASK },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+      browserDriveTaskImpl: async (opts) => ({
+        ok: true,
+        goal: opts.task.goal,
+        stopReason: 'completed',
+        actsRun: 1,
+        stepsRun: 2,
+        results: [{ index: 0, ok: true, finalUrl: 'https://example.com/done' }],
+      }),
+    });
+    expect(result.status).toBe(200);
+    expect((result.payload as { result: { actsRun: number } }).result.actsRun).toBe(1);
+  });
+
+  it('maps a not_operator_authored refusal to 403', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    enableDriveConsent(sessionsDir, home);
+    enableTaskToggle(home);
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive/task',
+      body: { sessionPath: 'aoi/default', task: { ...TASK, owner: 'aoi' } },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+      browserDriveTaskImpl: async () => ({
+        ok: false,
+        goal: 'x',
+        stopReason: 'not_operator_authored',
+        actsRun: 0,
+        stepsRun: 0,
+        results: [],
+      }),
+    });
+    expect(result.status).toBe(403);
+    expect((result.payload as { code: string }).code).toBe('not_operator_authored');
+  });
+
+  it('rejects a malformed task body', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    enableDriveConsent(sessionsDir, home);
+    enableTaskToggle(home);
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive/task',
+      body: { sessionPath: 'aoi/default', task: { owner: 'user', steps: [] } },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+    });
+    expect(result.status).toBe(400);
+  });
+});
+
 describe('standing-grant CRUD (BD P3.1c, auth-only)', () => {
   it('adds, lists (live only), and removes a standing grant; rejects a bad domain', async () => {
     const { home, sessionsDir, token } = makeDaemonHome();

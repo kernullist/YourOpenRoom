@@ -77,6 +77,12 @@ import {
   removeAoiBrowserDriveStandingGrant,
   saveAoiBrowserDriveStandingGrantStore,
 } from './aoiBrowserDriveStandingGrant';
+import {
+  AOI_BROWSER_DRIVE_TASK_CAPABILITY,
+  executeAoiBrowserDriveTask,
+  type AoiBrowserDriveTask,
+  type AoiBrowserDriveTaskResult,
+} from './aoiBrowserDriveTaskRunner';
 import type { AoiBrowserDrivePlan } from './aoiBrowserDrivePlan';
 import type { AoiBrowserDriveActablePage } from './aoiBrowserDriveExecutor';
 import {
@@ -189,6 +195,14 @@ export interface ResolveAoiHostBridgeRouteParams {
     now: number;
     openroomHome: string;
   }) => Promise<AoiBrowserDriveActExecuteResult | AoiBrowserDriveRunFailure>;
+  browserDriveTaskImpl?: (options: {
+    task: AoiBrowserDriveTask;
+    allowlist: AoiBrowserDriveAllowlist;
+    now: number;
+    openroomHome: string;
+    maxActs?: number;
+    maxSteps?: number;
+  }) => Promise<AoiBrowserDriveTaskResult>;
   readProcessImpl?: (pid: number) => AoiHostLiveProcess | null;
   killImpl?: (pid: number) => boolean;
   recycleImpl?: (path: string) => boolean;
@@ -306,6 +320,33 @@ function parseAoiBrowserDriveActRequest(
   return { plan: rawPlan as AoiBrowserDrivePlan, targetStepIndex };
 }
 
+// Parse a bounded task body: { owner, goal, steps:[{plan, targetStepIndex}] }.
+// Returns null on a malformed request; the orchestrator + step runner re-validate
+// (owner='user', budget, per-step admissibility) downstream.
+function parseAoiBrowserDriveTaskRequest(
+  body: Record<string, unknown>,
+): AoiBrowserDriveTask | null {
+  const rawTask = body.task;
+  if (!rawTask || typeof rawTask !== 'object' || Array.isArray(rawTask)) {
+    return null;
+  }
+  const t = rawTask as { owner?: unknown; goal?: unknown; steps?: unknown };
+  if (typeof t.owner !== 'string' || !Array.isArray(t.steps) || t.steps.length === 0) {
+    return null;
+  }
+  const steps: AoiBrowserDriveTask['steps'] = [];
+  for (const rawStep of t.steps) {
+    const parsed = parseAoiBrowserDriveActRequest(
+      (rawStep && typeof rawStep === 'object' ? rawStep : {}) as Record<string, unknown>,
+    );
+    if (!parsed) {
+      return null;
+    }
+    steps.push({ plan: parsed.plan, targetStepIndex: parsed.targetStepIndex });
+  }
+  return { owner: t.owner, goal: typeof t.goal === 'string' ? t.goal : '', steps };
+}
+
 // Production session factory for the ACT runner: a fresh CDP session against the
 // operator's OWN browser, adapted to the runner's minimal { page, close } shape.
 // A start failure surfaces through the runner as session_start_failed.
@@ -387,6 +428,32 @@ async function runAoiBrowserDriveExecuteDefault(options: {
         recordAoiBrowserDriveAuditEntry(options.openroomHome, entry, options.now);
       },
     },
+  });
+}
+
+// Default production browser-drive TASK run (P3.2): the bounded orchestrator over the
+// per-step execute default. Each step still opens its own stateless session and
+// passes every gate; the orchestrator only bounds acts/steps + fail-stops.
+async function runAoiBrowserDriveTaskDefault(options: {
+  task: AoiBrowserDriveTask;
+  allowlist: AoiBrowserDriveAllowlist;
+  now: number;
+  openroomHome: string;
+  maxActs?: number;
+  maxSteps?: number;
+}): Promise<AoiBrowserDriveTaskResult> {
+  return executeAoiBrowserDriveTask({
+    task: options.task,
+    ...(typeof options.maxActs === 'number' ? { maxActs: options.maxActs } : {}),
+    ...(typeof options.maxSteps === 'number' ? { maxSteps: options.maxSteps } : {}),
+    runStep: (step) =>
+      runAoiBrowserDriveExecuteDefault({
+        plan: step.plan,
+        targetStepIndex: step.targetStepIndex,
+        allowlist: options.allowlist,
+        now: options.now,
+        openroomHome: options.openroomHome,
+      }),
   });
 }
 
@@ -820,6 +887,80 @@ export async function resolveAoiHostBridgeRoute(
           ok: false,
           error: error instanceof Error ? error.message : String(error),
           code: 'browser_drive_execute_failed',
+        },
+      };
+    }
+  }
+
+  // --- POST /browser-drive/task (BD P3.2): run a bounded, operator-authored multi-
+  //     act task. Gated like execute PLUS a distinct os_browser_drive_task toggle
+  //     (autonomy opts in separately). Each step still passes every gate; the
+  //     orchestrator only bounds acts/steps + fail-stops. ------------------------
+  if (params.method === 'POST' && params.route === '/browser-drive/task') {
+    const denied = requireAoiBrowserDriveActGate(params, {
+      irreversible: true,
+      approvalSatisfied: true,
+    });
+    if (denied) {
+      return denied;
+    }
+    // The multi-act autonomy toggle is a separate, human-only opt-in.
+    const taskEnabled = isAoiHostBridgeCapabilityEnabled(
+      loadAoiHostBridgeKillSwitchState(params.openroomHome),
+      AOI_BROWSER_DRIVE_TASK_CAPABILITY,
+    );
+    if (!taskEnabled) {
+      return {
+        status: 403,
+        payload: {
+          ok: false,
+          error: 'blocked',
+          code: 'task_capability_disabled',
+          denyReasons: ['os_browser_drive_task disabled'],
+        },
+      };
+    }
+    const task = parseAoiBrowserDriveTaskRequest(params.body);
+    if (!task) {
+      return {
+        status: 400,
+        payload: { ok: false, error: 'task with owner+steps is required', code: 'bad_request' },
+      };
+    }
+    const allowlist = loadAoiBrowserDriveAllowlist(params.openroomHome);
+    const maxActs = typeof params.body.maxActs === 'number' ? params.body.maxActs : undefined;
+    const maxSteps = typeof params.body.maxSteps === 'number' ? params.body.maxSteps : undefined;
+    try {
+      const taskImpl = params.browserDriveTaskImpl ?? runAoiBrowserDriveTaskDefault;
+      const result = await taskImpl({
+        task,
+        allowlist,
+        now: params.now,
+        openroomHome: params.openroomHome,
+        ...(maxActs !== undefined ? { maxActs } : {}),
+        ...(maxSteps !== undefined ? { maxSteps } : {}),
+      });
+      if (result.ok) {
+        return { status: 200, payload: { ok: true, result } };
+      }
+      // not_operator_authored is a provenance refusal -> 403; other stops -> 422.
+      return {
+        status: result.stopReason === 'not_operator_authored' ? 403 : 422,
+        payload: {
+          ok: false,
+          error: result.stopReason,
+          code: result.stopReason,
+          detail: result.detail,
+          result,
+        },
+      };
+    } catch (error) {
+      return {
+        status: 500,
+        payload: {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+          code: 'browser_drive_task_failed',
         },
       };
     }

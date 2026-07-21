@@ -24,6 +24,12 @@ import type {
 } from './aoiBrowserDriveActRunner';
 import type { AoiBrowserDrivePlan } from './aoiBrowserDrivePlan';
 
+// The kill-switch capability toggle that must be ON for the autonomous multi-act
+// task route to run at all (a human-only control, distinct from single-act standing
+// approval; default OFF, panic forces off). A multi-act loop is materially riskier
+// than approving acts one at a time, so it opts in separately.
+export const AOI_BROWSER_DRIVE_TASK_CAPABILITY = 'os_browser_drive_task';
+
 // Hard ceilings. The caller may request smaller budgets but never larger.
 export const AOI_BROWSER_DRIVE_TASK_MAX_ACTS = 10;
 export const AOI_BROWSER_DRIVE_TASK_MAX_STEPS = 40;

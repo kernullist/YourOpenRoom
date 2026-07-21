@@ -13,6 +13,7 @@ import {
   fetchAoiBrowserDriveStandingGrants,
   addAoiBrowserDriveStandingGrant,
   removeAoiBrowserDriveStandingGrant,
+  runAoiHostBrowserDriveTask,
 } from '../aoiHostBridgeClient';
 
 function mockFetch(payload: unknown, ok = true, status = 200): ReturnType<typeof vi.fn> {
@@ -187,6 +188,36 @@ describe('aoiHostBridgeClient', () => {
     await expect(
       runAoiHostBrowserDriveActExecute('aoi/default', { goal: 'g', steps: [] }, 1),
     ).rejects.toThrow(/approval_denied/);
+  });
+
+  it('runs a bounded task and flattens the result', async () => {
+    const fetchMock = mockFetch({
+      ok: true,
+      result: {
+        ok: true,
+        goal: 'g',
+        stopReason: 'completed',
+        actsRun: 2,
+        stepsRun: 4,
+        results: [
+          { index: 0, ok: true, finalUrl: 'https://example.com/1' },
+          { index: 1, ok: true },
+        ],
+      },
+    });
+    const view = await runAoiHostBrowserDriveTask(
+      'aoi/default',
+      { owner: 'user', goal: 'g', steps: [] },
+      {
+        maxActs: 3,
+      },
+    );
+    expect(view.ok).toBe(true);
+    expect(view.actsRun).toBe(2);
+    expect(view.steps).toHaveLength(2);
+    const [url, init] = fetchMock.mock.calls[0] as [string, { body: string }];
+    expect(url).toContain('/browser-drive/task');
+    expect(JSON.parse(init.body)).toMatchObject({ sessionPath: 'aoi/default', maxActs: 3 });
   });
 
   it('lists, adds, and removes standing grants', async () => {

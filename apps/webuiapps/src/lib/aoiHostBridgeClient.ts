@@ -433,6 +433,61 @@ export async function runAoiHostBrowserDriveActExecute(
   };
 }
 
+// --- Browser-drive bounded task (BD P3.2) ------------------------------------
+
+export interface AoiHostBrowserDriveTaskStepView {
+  index: number;
+  ok: boolean;
+  reason?: string;
+  finalUrl?: string;
+}
+
+export interface AoiHostBrowserDriveTaskResultView {
+  ok: boolean;
+  goal: string;
+  stopReason: string;
+  actsRun: number;
+  stepsRun: number;
+  steps: AoiHostBrowserDriveTaskStepView[];
+  detail?: string;
+}
+
+// Run a bounded, operator-authored multi-act task. Throws (403) when the
+// os_browser_drive_task toggle is off or the task is refused as not operator-
+// authored; the daemon fail-stops on the first non-ok step.
+export async function runAoiHostBrowserDriveTask(
+  sessionPath: string,
+  task: unknown,
+  budget?: { maxActs?: number; maxSteps?: number },
+): Promise<AoiHostBrowserDriveTaskResultView> {
+  const path = typeof sessionPath === 'string' ? sessionPath.trim() : '';
+  if (!path) {
+    throw new Error('sessionPath is required for browser-drive task');
+  }
+  const payload = await sendJson('/browser-drive/task', 'POST', {
+    sessionPath: path,
+    task,
+    ...(typeof budget?.maxActs === 'number' ? { maxActs: budget.maxActs } : {}),
+    ...(typeof budget?.maxSteps === 'number' ? { maxSteps: budget.maxSteps } : {}),
+  });
+  const result = isRecord(payload.result) ? payload.result : {};
+  const stepsRaw = Array.isArray(result.results) ? result.results : [];
+  return {
+    ok: payload.ok === true && result.ok === true,
+    goal: asString(result.goal),
+    stopReason: asString(result.stopReason),
+    actsRun: typeof result.actsRun === 'number' ? result.actsRun : 0,
+    stepsRun: typeof result.stepsRun === 'number' ? result.stepsRun : 0,
+    steps: stepsRaw.filter(isRecord).map((record) => ({
+      index: typeof record.index === 'number' ? record.index : 0,
+      ok: record.ok === true,
+      ...(typeof record.reason === 'string' ? { reason: record.reason } : {}),
+      ...(typeof record.finalUrl === 'string' ? { finalUrl: record.finalUrl } : {}),
+    })),
+    ...(typeof result.detail === 'string' ? { detail: result.detail } : {}),
+  };
+}
+
 // --- Browser-drive standing grants (auth-only config CRUD, BD P3.1) ----------
 
 export interface AoiBrowserDriveStandingGrantView {
