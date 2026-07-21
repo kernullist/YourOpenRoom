@@ -67,7 +67,10 @@ import {
   makeAoiBrowserDriveStoreApprovalGate,
   recordAoiBrowserDriveActPendingApproval,
 } from './aoiBrowserDriveApproval';
-import { recordAoiBrowserDriveAuditEntry } from './aoiBrowserDriveAuditStore';
+import {
+  loadAoiBrowserDriveAuditEntries,
+  recordAoiBrowserDriveAuditEntry,
+} from './aoiBrowserDriveAuditStore';
 import { writeAoiBrowserDriveArtifact } from './aoiBrowserDriveAuditObserver';
 import {
   AOI_BROWSER_DRIVE_STANDING_CAPABILITY,
@@ -1088,6 +1091,15 @@ export async function resolveAoiHostBridgeRoute(
       );
       return { status: 200, payload: { ok: true, grants: saved.grants } };
     }
+  }
+
+  // --- GET /browser-drive/audit (BD P3.3, auth-only): the read-only step-audit
+  //     ledger for the observability dashboard. Newest-first, pruned to live TTL.
+  if (params.method === 'GET' && params.route === '/browser-drive/audit') {
+    const entries = loadAoiBrowserDriveAuditEntries(params.openroomHome, params.now);
+    // Newest-first for the dashboard; cap the payload defensively.
+    const recent = entries.slice(-200).reverse();
+    return { status: 200, payload: { ok: true, entries: recent } };
   }
 
   if (params.route === '/read-roots') {

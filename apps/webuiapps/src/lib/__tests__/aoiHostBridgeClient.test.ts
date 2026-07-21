@@ -14,6 +14,7 @@ import {
   addAoiBrowserDriveStandingGrant,
   removeAoiBrowserDriveStandingGrant,
   runAoiHostBrowserDriveTask,
+  fetchAoiBrowserDriveAudit,
 } from '../aoiHostBridgeClient';
 
 function mockFetch(payload: unknown, ok = true, status = 200): ReturnType<typeof vi.fn> {
@@ -188,6 +189,31 @@ describe('aoiHostBridgeClient', () => {
     await expect(
       runAoiHostBrowserDriveActExecute('aoi/default', { goal: 'g', steps: [] }, 1),
     ).rejects.toThrow(/approval_denied/);
+  });
+
+  it('fetches the audit ledger and flags standing + screenshot', async () => {
+    mockFetch({
+      ok: true,
+      entries: [
+        {
+          id: 'a1',
+          runId: 'run-1',
+          stepIndex: 1,
+          actionKind: 'click',
+          actionSummary: 'click #go',
+          category: 'act',
+          ok: true,
+          viaStanding: true,
+          url: 'https://example.com/a',
+          recordedAt: 5,
+          beforeScreenshotRef: 'run-1/step-1-before.png',
+        },
+      ],
+    });
+    const entries = await fetchAoiBrowserDriveAudit();
+    expect(entries[0].viaStanding).toBe(true);
+    expect(entries[0].hasScreenshot).toBe(true);
+    expect(entries[0].category).toBe('act');
   });
 
   it('runs a bounded task and flattens the result', async () => {

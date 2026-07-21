@@ -488,6 +488,44 @@ export async function runAoiHostBrowserDriveTask(
   };
 }
 
+// --- Browser-drive step audit ledger (auth-only read, BD P3.3) ---------------
+
+export interface AoiBrowserDriveAuditEntryView {
+  id: string;
+  runId: string;
+  stepIndex: number;
+  actionKind: string;
+  actionSummary: string;
+  category: string;
+  ok: boolean;
+  stopReason?: string;
+  viaStanding: boolean;
+  url: string;
+  recordedAt: number;
+  hasScreenshot: boolean;
+}
+
+export async function fetchAoiBrowserDriveAudit(): Promise<AoiBrowserDriveAuditEntryView[]> {
+  const payload = await getJson('/browser-drive/audit');
+  const raw = Array.isArray(payload.entries) ? payload.entries : [];
+  return raw.filter(isRecord).map((record) => ({
+    id: asString(record.id),
+    runId: asString(record.runId),
+    stepIndex: typeof record.stepIndex === 'number' ? record.stepIndex : 0,
+    actionKind: asString(record.actionKind),
+    actionSummary: asString(record.actionSummary),
+    category: asString(record.category) || 'read',
+    ok: record.ok === true,
+    ...(typeof record.stopReason === 'string' ? { stopReason: record.stopReason } : {}),
+    viaStanding: record.viaStanding === true,
+    url: asString(record.url),
+    recordedAt: typeof record.recordedAt === 'number' ? record.recordedAt : 0,
+    hasScreenshot:
+      typeof record.beforeScreenshotRef === 'string' ||
+      typeof record.afterScreenshotRef === 'string',
+  }));
+}
+
 // --- Browser-drive standing grants (auth-only config CRUD, BD P3.1) ----------
 
 export interface AoiBrowserDriveStandingGrantView {

@@ -23,6 +23,7 @@ import {
   addAoiBrowserDriveAllowlistEntry,
   saveAoiBrowserDriveAllowlist,
 } from '../aoiBrowserDriveAllowlist';
+import { recordAoiBrowserDriveAuditEntry } from '../aoiBrowserDriveAuditStore';
 
 function saveAoiHostSpawnAllowlistEntryHelper(home: string): void {
   saveAoiHostSpawnAllowlist(
@@ -846,6 +847,70 @@ describe('resolveAoiHostBridgeRoute /browser-drive/task (BD P3.2)', () => {
       now: 2000,
     });
     expect(result.status).toBe(400);
+  });
+});
+
+describe('/browser-drive/audit (BD P3.3, auth-only read)', () => {
+  it('returns the recorded step-audit ledger newest-first', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    // Seed two audit entries directly via the store.
+    recordAoiBrowserDriveAuditEntry(
+      home,
+      {
+        runId: 'run-1',
+        stepIndex: 0,
+        actionKind: 'navigate',
+        actionSummary: 'navigate example.com',
+        category: 'read',
+        ok: true,
+        url: 'https://example.com/a',
+      },
+      1000,
+    );
+    recordAoiBrowserDriveAuditEntry(
+      home,
+      {
+        runId: 'run-1',
+        stepIndex: 1,
+        actionKind: 'click',
+        actionSummary: 'click #go on example.com',
+        category: 'act',
+        ok: true,
+        viaStanding: true,
+        url: 'https://example.com/a',
+      },
+      1100,
+    );
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'GET',
+      route: '/browser-drive/audit',
+      body: {},
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+    });
+    expect(result.status).toBe(200);
+    const entries = (result.payload as { entries: Array<Record<string, unknown>> }).entries;
+    expect(entries).toHaveLength(2);
+    // newest-first
+    expect(entries[0].stepIndex).toBe(1);
+    expect(entries[0].viaStanding).toBe(true);
+    expect(entries[0].category).toBe('act');
+  });
+
+  it('requires a valid token', async () => {
+    const { home, sessionsDir } = makeDaemonHome();
+    const res = await resolveAoiHostBridgeRoute({
+      method: 'GET',
+      route: '/browser-drive/audit',
+      body: {},
+      token: 'b'.repeat(64),
+      openroomHome: home,
+      sessionsDir,
+      now: 1,
+    });
+    expect(res.status).toBe(401);
   });
 });
 
