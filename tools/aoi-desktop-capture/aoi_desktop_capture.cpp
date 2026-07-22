@@ -38,12 +38,30 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <winhttp.h>
+#include <wincrypt.h>
+// GDI+ needs the COM interface types (IStream, PROPID, ...) that
+// WIN32_LEAN_AND_MEAN omits; pull them in before <gdiplus.h>.
+#include <unknwn.h>
+#include <objidl.h>
+#include <gdiplus.h>
 #include <string>
+#include <vector>
 #include <cstdio>
 #include <cstdarg>
+#include <cstring>
+
+// PW_RENDERFULLCONTENT (Win8.1+) is not declared at _WIN32_WINNT 0x0601; define
+// it so PrintWindow can render GPU-composited window content where available.
+#ifndef PW_RENDERFULLCONTENT
+#define PW_RENDERFULLCONTENT 0x00000002
+#endif
 
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "user32.lib")
+#pragma comment(lib, "gdi32.lib")
+#pragma comment(lib, "gdiplus.lib")
+#pragma comment(lib, "crypt32.lib")
+#pragma comment(lib, "ole32.lib")
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -60,6 +78,11 @@ struct CaptureConfig
     bool once;                 // capture one sample and exit (for verification)
     bool hideConsole;          // hide the console window at startup (resident mode)
     bool showHelp;
+    // SV4.1a: capture the focused window once, encode PNG, write it to this path
+    // and exit (empty = disabled). Verification hook for the screen-vision path;
+    // never POSTs or calls a model.
+    std::wstring captureScreenOncePath;
+    int screenMaxLongSide;     // downscale cap for the captured frame's long side
 };
 
 // One normalized foreground observation.
@@ -170,6 +193,209 @@ static unsigned long long EpochMillis()
         return 0;
     }
     return (value.QuadPart - EPOCH_DIFF_100NS) / 10000ULL;
+}
+
+// ---------------------------------------------------------------------------
+// Focused-window capture (SV4.1a): capture ONLY the foreground window, encode a
+// downscaled, opaque PNG in memory. Uses GDI PrintWindow (falls back to BitBlt);
+// GPU-composited surfaces (some games / hardware video) may render black -- a
+// WGC upgrade is tracked separately. No pixels are written anywhere except the
+// explicit --capture-screen-once file; the resident path (SV4.1b) hands the PNG
+// straight to a local model and never persists it.
+// ---------------------------------------------------------------------------
+static int GetPngEncoderClsid(CLSID& clsid)
+{
+    UINT count = 0;
+    UINT size = 0;
+    Gdiplus::GetImageEncodersSize(&count, &size);
+    if (size == 0)
+    {
+        return -1;
+    }
+    std::vector<unsigned char> buffer((size_t)size);
+    Gdiplus::ImageCodecInfo* codecs = reinterpret_cast<Gdiplus::ImageCodecInfo*>(buffer.data());
+    if (Gdiplus::GetImageEncoders(count, size, codecs) != Gdiplus::Ok)
+    {
+        return -1;
+    }
+    for (UINT i = 0; i < count; ++i)
+    {
+        if (codecs[i].MimeType != NULL && wcscmp(codecs[i].MimeType, L"image/png") == 0)
+        {
+            clsid = codecs[i].Clsid;
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+// Capture the foreground window into an opaque PNG (outPng). maxLongSide > 0
+// caps the longest edge (downscaled with high-quality interpolation). Returns
+// false on any failure. Single-exit with full GDI/GDI+ cleanup.
+static bool CaptureFocusedWindowPng(int maxLongSide, std::string& outPng)
+{
+    outPng.clear();
+    bool ok = false;
+    HWND hwnd = GetForegroundWindow();
+    if (hwnd == NULL)
+    {
+        LogLine("no foreground window to capture");
+        return false;
+    }
+    RECT rc;
+    if (!GetWindowRect(hwnd, &rc))
+    {
+        return false;
+    }
+    int width = (int)(rc.right - rc.left);
+    int height = (int)(rc.bottom - rc.top);
+    if (width <= 0 || height <= 0)
+    {
+        return false;
+    }
+    if (width > 16384)
+    {
+        width = 16384;
+    }
+    if (height > 16384)
+    {
+        height = 16384;
+    }
+
+    HDC screenDc = GetDC(NULL);
+    HDC memDc = CreateCompatibleDC(screenDc);
+    BITMAPINFO bmi;
+    ZeroMemory(&bmi, sizeof(bmi));
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = width;
+    bmi.bmiHeader.biHeight = -height; // top-down
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    void* bits = NULL;
+    HBITMAP dib = CreateDIBSection(memDc, &bmi, DIB_RGB_COLORS, &bits, NULL, 0);
+    do
+    {
+        if (dib == NULL || bits == NULL)
+        {
+            break;
+        }
+        HGDIOBJ oldObj = SelectObject(memDc, dib);
+        BOOL printed = PrintWindow(hwnd, memDc, PW_RENDERFULLCONTENT);
+        if (!printed)
+        {
+            BitBlt(memDc, 0, 0, width, height, screenDc, rc.left, rc.top, SRCCOPY);
+        }
+        // Force the alpha channel opaque: PrintWindow/BitBlt leave it undefined,
+        // and GDI+ would otherwise composite a 0-alpha frame to black.
+        unsigned char* px = (unsigned char*)bits;
+        const long long pixelCount = (long long)width * (long long)height;
+        for (long long i = 0; i < pixelCount; ++i)
+        {
+            px[i * 4 + 3] = 0xFF;
+        }
+        SelectObject(memDc, oldObj);
+
+        Gdiplus::Bitmap captured(dib, (HPALETTE)NULL);
+        if (captured.GetLastStatus() != Gdiplus::Ok)
+        {
+            break;
+        }
+        int longSide = width > height ? width : height;
+        int outW = width;
+        int outH = height;
+        if (maxLongSide > 0 && longSide > maxLongSide)
+        {
+            double ratio = (double)maxLongSide / (double)longSide;
+            outW = (int)(width * ratio);
+            outH = (int)(height * ratio);
+            if (outW < 1)
+            {
+                outW = 1;
+            }
+            if (outH < 1)
+            {
+                outH = 1;
+            }
+        }
+        // Draw into a 24bpp RGB target so the saved PNG is flat/opaque.
+        Gdiplus::Bitmap target(outW, outH, PixelFormat24bppRGB);
+        {
+            Gdiplus::Graphics graphics(&target);
+            graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+            graphics.DrawImage(&captured, 0, 0, outW, outH);
+        }
+        CLSID pngClsid;
+        if (GetPngEncoderClsid(pngClsid) < 0)
+        {
+            break;
+        }
+        IStream* stream = NULL;
+        if (CreateStreamOnHGlobal(NULL, TRUE, &stream) != S_OK || stream == NULL)
+        {
+            break;
+        }
+        if (target.Save(stream, &pngClsid, NULL) == Gdiplus::Ok)
+        {
+            HGLOBAL hg = NULL;
+            if (GetHGlobalFromStream(stream, &hg) == S_OK && hg != NULL)
+            {
+                SIZE_T byteCount = GlobalSize(hg);
+                void* ptr = GlobalLock(hg);
+                if (ptr != NULL && byteCount > 0)
+                {
+                    outPng.assign((const char*)ptr, (size_t)byteCount);
+                    ok = true;
+                }
+                if (ptr != NULL)
+                {
+                    GlobalUnlock(hg);
+                }
+            }
+        }
+        stream->Release();
+    }
+    while (false);
+
+    if (dib != NULL)
+    {
+        DeleteObject(dib);
+    }
+    DeleteDC(memDc);
+    ReleaseDC(NULL, screenDc);
+    return ok;
+}
+
+// Write raw bytes to a path. Returns true on success.
+static bool WriteFileBytes(const std::wstring& path, const std::string& bytes)
+{
+    HANDLE handle = CreateFileW(
+        path.c_str(),
+        GENERIC_WRITE,
+        0,
+        NULL,
+        CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL);
+    if (handle == INVALID_HANDLE_VALUE)
+    {
+        return false;
+    }
+    bool ok = true;
+    size_t offset = 0;
+    while (offset < bytes.size())
+    {
+        DWORD chunk = (DWORD)((bytes.size() - offset) > 0x100000 ? 0x100000 : (bytes.size() - offset));
+        DWORD written = 0;
+        if (!WriteFile(handle, bytes.data() + offset, chunk, &written, NULL) || written == 0)
+        {
+            ok = false;
+            break;
+        }
+        offset += written;
+    }
+    CloseHandle(handle);
+    return ok;
 }
 
 // ---------------------------------------------------------------------------
@@ -569,6 +795,8 @@ static void PrintUsage()
         "  --capture-titles       include window titles (daemon still gates/redacts)\n"
         "  --dry-run              print the JSON body instead of POSTing\n"
         "  --once                 capture a single sample and exit\n"
+        "  --capture-screen-once <file>  capture the focused window to a PNG and exit (no POST)\n"
+        "  --screen-max-longside <n>     downscale cap for the captured frame (default: 1280)\n"
         "  --hide-console         hide the console window at startup (resident mode)\n"
         "  --help                 show this help\n");
 }
@@ -584,6 +812,8 @@ static bool ParseArgs(int argc, wchar_t** argv, CaptureConfig& cfg)
     cfg.once = false;
     cfg.hideConsole = false;
     cfg.showHelp = false;
+    cfg.captureScreenOncePath = L"";
+    cfg.screenMaxLongSide = 1280;
     std::wstring explicitHome;
     for (int i = 1; i < argc; ++i)
     {
@@ -628,6 +858,14 @@ static bool ParseArgs(int argc, wchar_t** argv, CaptureConfig& cfg)
         {
             cfg.heartbeatMs = (unsigned int)_wtoi(argv[++i]);
         }
+        else if (arg == L"--capture-screen-once" && i + 1 < argc)
+        {
+            cfg.captureScreenOncePath = argv[++i];
+        }
+        else if (arg == L"--screen-max-longside" && i + 1 < argc)
+        {
+            cfg.screenMaxLongSide = _wtoi(argv[++i]);
+        }
         else
         {
             LogLine("unknown or incomplete argument");
@@ -662,6 +900,33 @@ int wmain(int argc, wchar_t** argv)
         {
             ShowWindow(console, SW_HIDE);
         }
+    }
+    // SV4.1a verification mode: capture the focused window to a PNG and exit.
+    // Standalone -- no daemon, token, or hook needed.
+    if (!g_cfg.captureScreenOncePath.empty())
+    {
+        Gdiplus::GdiplusStartupInput gdiInput;
+        ULONG_PTR gdiToken = 0;
+        if (Gdiplus::GdiplusStartup(&gdiToken, &gdiInput, NULL) != Gdiplus::Ok)
+        {
+            LogLine("GDI+ startup failed");
+            return 1;
+        }
+        std::string png;
+        bool captured = CaptureFocusedWindowPng(g_cfg.screenMaxLongSide, png);
+        int rc = 1;
+        if (captured && WriteFileBytes(g_cfg.captureScreenOncePath, png))
+        {
+            std::string pathUtf8 = WideToUtf8(g_cfg.captureScreenOncePath);
+            LogLine("captured focused window -> %s (%zu bytes PNG)", pathUtf8.c_str(), png.size());
+            rc = 0;
+        }
+        else
+        {
+            LogLine("focused-window capture failed");
+        }
+        Gdiplus::GdiplusShutdown(gdiToken);
+        return rc;
     }
     if (!g_cfg.dryRun)
     {
