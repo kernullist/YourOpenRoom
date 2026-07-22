@@ -3333,6 +3333,7 @@ export async function runAoiAutonomyTick(
     mission: missionForAttention,
     intentState,
     activitySummary,
+    screenVisionSummary,
     workspaceSnapshot,
     personalMetadata: personalMetadataSummaries,
     researchRuns: bundle.researchRuns,

@@ -14,6 +14,11 @@ import {
   normalizeAoiActivityEvent,
   type AoiActivityEvent,
 } from '../aoiActivityStream';
+import {
+  buildAoiScreenVisionStreamSummary,
+  normalizeAoiScreenVisionEvent,
+  type AoiScreenVisionEvent,
+} from '../aoiScreenVisionStream';
 import type {
   AoiMissionState,
   AoiPersonalSignalMetadataSummary,
@@ -88,6 +93,21 @@ function makeActivitySummary(now: number) {
     ).event,
   ].filter((event): event is AoiActivityEvent => event !== null);
   return buildAoiActivityStreamSummary({ sessionPath: SESSION_PATH, events, now });
+}
+
+function makeScreenVisionSummary(now: number) {
+  const events = [
+    normalizeAoiScreenVisionEvent(
+      {
+        summaryText: 'Editing an anti-cheat driver in the editor',
+        appId: 'code',
+        observedAt: now - 60 * 1000,
+      },
+      SESSION_PATH,
+      now - 60 * 1000,
+    ).event,
+  ].filter((event): event is AoiScreenVisionEvent => event !== null);
+  return buildAoiScreenVisionStreamSummary({ sessionPath: SESSION_PATH, events, now });
 }
 
 function makeCalendarSummary(): AoiPersonalSignalMetadataSummary {
@@ -206,6 +226,34 @@ describe('buildAoiCurrentSituation', () => {
     expect(situation.segments.some((segment) => segment.kind === 'workspace')).toBe(false);
     expect(situation.cannotKnow.join(' ')).toContain('mission');
     expect(situation.cannotKnow.join(' ')).toContain('workspace');
+  });
+
+  it('fuses a consented screen-vision summary as an evidence-cited segment (SV5.1b)', () => {
+    const situation = buildAoiCurrentSituation({
+      sessionPath: SESSION_PATH,
+      now: NOW,
+      screenVisionSummary: makeScreenVisionSummary(NOW),
+    });
+    const segment = situation.segments.find((item) => item.kind === 'screen_vision');
+    expect(segment).toBeDefined();
+    expect(segment?.freshness).toBe('fresh');
+    expect(segment?.evidenceRefs.length).toBeGreaterThan(0);
+    expect(segment?.evidenceRefs.some((ref) => ref.startsWith('screen:'))).toBe(true);
+  });
+
+  it('states a cannotKnow when the screen-vision source is not consented (SV5.1b)', () => {
+    const situation = buildAoiCurrentSituation({
+      sessionPath: SESSION_PATH,
+      now: NOW,
+      screenVisionSummary: buildAoiScreenVisionStreamSummary({
+        sessionPath: SESSION_PATH,
+        events: [],
+        consented: false,
+        now: NOW,
+      }),
+    });
+    expect(situation.segments.some((segment) => segment.kind === 'screen_vision')).toBe(false);
+    expect(situation.cannotKnow.join(' ')).toContain('screen-vision source is not consented');
   });
 
   it('describes a fully dark session honestly', () => {

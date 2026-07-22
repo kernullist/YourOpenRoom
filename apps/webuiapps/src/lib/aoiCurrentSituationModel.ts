@@ -27,6 +27,10 @@ import {
   describeAoiActivityStreamSummary,
   type AoiActivityStreamSummary,
 } from './aoiActivityStream';
+import {
+  describeAoiScreenVisionStreamSummary,
+  type AoiScreenVisionStreamSummary,
+} from './aoiScreenVisionStream';
 import type { AoiIntentHypothesis, AoiIntentState } from './aoiIntentInference';
 import { scoreAoiSalience, type AoiSalienceKind } from './aoiSalienceModel';
 
@@ -44,6 +48,7 @@ export type AoiCurrentSituationSegmentKind =
   | 'mission'
   | 'intent'
   | 'activity'
+  | 'screen_vision'
   | 'workspace'
   | 'calendar'
   | 'conversation'
@@ -92,6 +97,7 @@ export interface AoiCurrentSituationInput {
   mission?: AoiMissionState | null;
   intentState?: AoiIntentState | null;
   activitySummary?: AoiActivityStreamSummary | null;
+  screenVisionSummary?: AoiScreenVisionStreamSummary | null;
   workspaceSnapshot?: AoiWorkspaceSnapshot | null;
   personalMetadata?: AoiPersonalSignalMetadataSummary[];
   researchRuns?: AoiResearchRunSummary[];
@@ -281,6 +287,34 @@ export function buildAoiCurrentSituation(input: AoiCurrentSituationInput): AoiCu
     );
   }
 
+  // --- Screen vision (redacted focused-window summary).
+  const screen = input.screenVisionSummary ?? null;
+  if (screen?.consented === true && screen.activeEventCount > 0) {
+    admit(
+      makeSegment({
+        kind: 'screen_vision',
+        label: 'Screen vision',
+        summary: describeAoiScreenVisionStreamSummary(screen),
+        freshness:
+          screen.lastEventAgeMs !== null && screen.lastEventAgeMs <= 5 * 60 * 1000
+            ? 'fresh'
+            : 'stale',
+        salienceKind: 'screen_vision',
+        observedAt: screen.lastEventAt ?? now,
+        baseWeight: 0.65,
+        evidenceRefs: screen.evidenceRefs,
+        now,
+      }),
+      null,
+    );
+  } else {
+    cannotKnow.push(
+      screen?.consented === false
+        ? 'Aoi cannot know the screen because the screen-vision source is not consented.'
+        : 'Aoi cannot know the current screen because no screen summary has been observed.',
+    );
+  }
+
   // --- Workspace.
   const workspace = input.workspaceSnapshot ?? null;
   if (workspace?.git) {
@@ -451,6 +485,9 @@ export function buildAoiCurrentSituation(input: AoiCurrentSituationInput): AoiCu
 function segmentSalienceKind(kind: AoiCurrentSituationSegmentKind): AoiSalienceKind {
   if (kind === 'activity') {
     return 'app_activity';
+  }
+  if (kind === 'screen_vision') {
+    return 'screen_vision';
   }
   if (kind === 'workspace') {
     return 'workspace_git';
