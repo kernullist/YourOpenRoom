@@ -24,6 +24,12 @@ export const AOI_HOST_BRIDGE_CONSENT_LINKS: readonly AoiHostBridgeConsentLink[] 
     consentReason: 'Enabled from Host Bridge settings (desktop activity).',
   },
   {
+    capabilityKey: 'screen_vision',
+    sourceId: 'screen-vision',
+    label: 'Screen vision',
+    consentReason: 'Enabled from Host Bridge settings (screen vision).',
+  },
+  {
     capabilityKey: 'os_browser_read',
     sourceId: 'host-browser-read',
     label: 'Host headless browser read',

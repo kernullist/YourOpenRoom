@@ -134,6 +134,11 @@ import {
   loadAoiHostDesktopActivitySummary,
 } from './aoiHostDesktopActivityStore';
 import {
+  loadAoiScreenVisionStreamSummary,
+  recordAoiScreenVisionEvent,
+  type AoiScreenVisionEventInput,
+} from './aoiScreenVisionStream';
+import {
   readAoiHostProcessByPid,
   killAoiHostProcess,
   recycleAoiHostFile,
@@ -1856,6 +1861,108 @@ export async function resolveAoiHostBridgeRoute(
       };
     }
     const summary = loadAoiHostDesktopActivitySummary(params.openroomHome, params.now);
+    return { status: 200, payload: { ok: true, summary } };
+  }
+
+  // --- POST /screen-vision (SV3.2 ingest): the capture helper posts one
+  // REDACTED focused-window summary. Gate auth (already checked) + kill-switch
+  // capability screen_vision + the screen-vision env-source consent. The ledger
+  // re-checks consent and re-redacts at the record boundary (defense in depth);
+  // the kill switch is enforced HERE (the ledger does not know about it).
+  if (params.method === 'POST' && params.route === '/screen-vision') {
+    const sessionPath = normalizeAoiAutonomySessionPath(
+      typeof params.body.sessionPath === 'string' ? params.body.sessionPath : '',
+    );
+    if (!sessionPath) {
+      return {
+        status: 400,
+        payload: { ok: false, error: 'sessionPath is required', code: 'invalid_session_path' },
+      };
+    }
+    const registry = loadAoiEnvironmentSourceRegistry(params.sessionsDir, sessionPath, params.now);
+    const consent = checkAoiEnvironmentSourceOperation({
+      registry,
+      sourceId: 'screen-vision',
+      operation: 'read_metadata',
+    });
+    const gate = evaluateAoiHostBridgeGate({
+      authenticated: true,
+      killSwitchState: loadAoiHostBridgeKillSwitchState(params.openroomHome),
+      capabilityKey: 'screen_vision',
+      irreversible: false,
+      consent: { allowed: consent.allowed, reasons: consent.reasons },
+    });
+    if (!gate.allowed) {
+      return {
+        status: 403,
+        payload: {
+          ok: false,
+          error: 'blocked',
+          denyReasons: gate.denyReasons,
+          detail: gate.detail,
+        },
+      };
+    }
+    const rawSample =
+      params.body.sample && typeof params.body.sample === 'object'
+        ? (params.body.sample as AoiScreenVisionEventInput)
+        : {};
+    const result = recordAoiScreenVisionEvent(
+      params.sessionsDir,
+      sessionPath,
+      rawSample,
+      params.now,
+    );
+    if (!result.recorded) {
+      return {
+        status: 400,
+        payload: {
+          ok: false,
+          error: 'sample was not recorded',
+          code: result.reasons[0] ?? 'bad_sample',
+          reasons: result.reasons,
+        },
+      };
+    }
+    return { status: 200, payload: { ok: true, eventId: result.event?.id } };
+  }
+
+  // --- GET /screen-vision/summary?sessionPath: the redacted screen-vision read.
+  if (params.method === 'GET' && params.route === '/screen-vision/summary') {
+    const sessionPath = normalizeAoiAutonomySessionPath(
+      typeof params.body.sessionPath === 'string' ? params.body.sessionPath : '',
+    );
+    if (!sessionPath) {
+      return {
+        status: 400,
+        payload: { ok: false, error: 'sessionPath is required', code: 'invalid_session_path' },
+      };
+    }
+    const registry = loadAoiEnvironmentSourceRegistry(params.sessionsDir, sessionPath, params.now);
+    const consent = checkAoiEnvironmentSourceOperation({
+      registry,
+      sourceId: 'screen-vision',
+      operation: 'summarize_counts',
+    });
+    const gate = evaluateAoiHostBridgeGate({
+      authenticated: true,
+      killSwitchState: loadAoiHostBridgeKillSwitchState(params.openroomHome),
+      capabilityKey: 'screen_vision',
+      irreversible: false,
+      consent: { allowed: consent.allowed, reasons: consent.reasons },
+    });
+    if (!gate.allowed) {
+      return {
+        status: 403,
+        payload: {
+          ok: false,
+          error: 'blocked',
+          denyReasons: gate.denyReasons,
+          detail: gate.detail,
+        },
+      };
+    }
+    const summary = loadAoiScreenVisionStreamSummary(params.sessionsDir, sessionPath, params.now);
     return { status: 200, payload: { ok: true, summary } };
   }
 

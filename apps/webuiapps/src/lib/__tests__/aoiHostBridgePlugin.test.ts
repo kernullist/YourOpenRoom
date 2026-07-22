@@ -1719,6 +1719,113 @@ describe('desktop-activity ingest + summary', () => {
   });
 });
 
+describe('screen-vision ingest + summary (SV3.2)', () => {
+  function enableScreenVision(sessionsDir: string, home: string, capability = true): void {
+    const registry = getDefaultAoiEnvironmentSourceRegistry('aoi/default', 1000);
+    saveAoiEnvironmentSourceRegistry(sessionsDir, 'aoi/default', registry);
+    updateAoiEnvironmentSource(sessionsDir, 'aoi/default', {
+      sourceId: 'screen-vision',
+      patch: { enabled: true, consentReason: 'User enabled screen vision for this test.' },
+      now: 1500,
+    });
+    if (capability) {
+      saveAoiHostBridgeKillSwitchState(
+        home,
+        setAoiHostBridgeCapability(null, 'screen_vision', true, 1500),
+      );
+    }
+  }
+
+  it('blocks without consent, then records a redacted summary and summarizes it', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    const post = (summaryText: string, now: number, appId = 'code') =>
+      resolveAoiHostBridgeRoute({
+        method: 'POST',
+        route: '/screen-vision',
+        body: {
+          sessionPath: 'aoi/default',
+          sample: {
+            summaryText,
+            appId,
+            channel: 'local',
+            modelId: 'local-vlm',
+            confidence: 0.9,
+            observedAt: now,
+          },
+        },
+        token,
+        openroomHome: home,
+        sessionsDir,
+        now,
+      });
+
+    expect((await post('editing code', 2000)).status).toBe(403);
+
+    enableScreenVision(sessionsDir, home);
+    expect(
+      (await post('reading gloryo@naver.com at https://mail.example.com', 2100, 'mail')).status,
+    ).toBe(200);
+
+    const summary = await resolveAoiHostBridgeRoute({
+      method: 'GET',
+      route: '/screen-vision/summary',
+      body: { sessionPath: 'aoi/default' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2200,
+    });
+    expect(summary.status).toBe(200);
+    const payload = summary.payload as {
+      summary: {
+        latestSummaryText: string | null;
+        activeEventCount: number;
+        activeAppId: string | null;
+      };
+    };
+    expect(payload.summary.activeEventCount).toBe(1);
+    expect(payload.summary.activeAppId).toBe('mail');
+    expect(payload.summary.latestSummaryText).toContain('[email]');
+    expect(payload.summary.latestSummaryText).toContain('[url]');
+    expect(payload.summary.latestSummaryText).not.toContain('gloryo@naver.com');
+  });
+
+  it('enforces the host-bridge kill switch at the route even when the source is consented', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    // Consent the env source but leave the screen_vision kill-switch capability OFF.
+    enableScreenVision(sessionsDir, home, false);
+    const res = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/screen-vision',
+      body: {
+        sessionPath: 'aoi/default',
+        sample: { summaryText: 'editing code', observedAt: 2100 },
+      },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2100,
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it('rejects a sample whose summary is empty after redaction', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    enableScreenVision(sessionsDir, home);
+    const res = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/screen-vision',
+      body: { sessionPath: 'aoi/default', sample: { summaryText: '   ', observedAt: 2100 } },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2100,
+    });
+    expect(res.status).toBe(400);
+    expect((res.payload as { code: string }).code).toBe('empty_summary');
+  });
+});
+
 describe('createAoiHostBridgeMiddleware loopback token trust', () => {
   interface MockRes {
     status: number;
