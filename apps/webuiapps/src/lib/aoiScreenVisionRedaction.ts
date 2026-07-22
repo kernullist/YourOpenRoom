@@ -29,9 +29,16 @@ const WINDOWS_PATH_PATTERN = /(?:[A-Za-z]:\\|\\\\)[^\s'"<>|]+/g;
 const UNIX_PATH_PATTERN =
   /(?:\/(?:Users|home|mnt|tmp|var|Volumes|workspace|etc|opt|root)\/[^\s'"<>|]+)/g;
 const EMAIL_PATTERN = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
-// A run that contains 10+ digits ignoring spaces/dashes -- card / account /
-// phone numbers. Guarded so ordinary short numbers ("42 files") are untouched.
-const LONG_NUMBER_PATTERN = /\b\d(?:[\d -]{8,})\d\b/g;
+// Bare high-entropy secrets the shared redactor misses when they appear on
+// screen WITHOUT a `Bearer`/`key=` prefix: JWTs, AWS access keys, and Google
+// API keys. These are realistic on a DevTools / config-editor / terminal view.
+const JWT_PATTERN = /\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{4,}/g;
+const CLOUD_KEY_PATTERN = /\b(?:AKIA|ASIA|AGPA|AIDA|AROA|ANPA|AIza)[0-9A-Za-z_-]{16,}/g;
+// A run that contains 9+ digits ignoring spaces / dashes / dots / parens --
+// card / account / phone / SSN numbers. The digit-count guard keeps ordinary
+// short numbers ("42 files", version "1.2.3") untouched.
+const LONG_NUMBER_PATTERN = /\b\d[\d ().-]{6,}\d\b/g;
+const LONG_NUMBER_MIN_DIGITS = 9;
 
 export interface AoiScreenVisionRedactedSummary {
   version: 1;
@@ -66,14 +73,19 @@ export function redactAoiScreenVisionText(value: unknown, maxChars: number): str
   }
   let text = stripAoiSourceInstructions(value);
   text = redactAoiSensitiveContent(text);
+  text = text.replace(JWT_PATTERN, '[redacted_secret]');
+  text = text.replace(CLOUD_KEY_PATTERN, '[redacted_secret]');
   text = text.replace(URL_PATTERN, '[url]');
   text = text.replace(WINDOWS_PATH_PATTERN, '[local path]');
   text = text.replace(UNIX_PATH_PATTERN, '[local path]');
   text = text.replace(EMAIL_PATTERN, '[email]');
   text = text.replace(LONG_NUMBER_PATTERN, (match) =>
-    (match.match(/\d/g)?.length ?? 0) >= 10 ? '[number]' : match,
+    (match.match(/\d/g)?.length ?? 0) >= LONG_NUMBER_MIN_DIGITS ? '[number]' : match,
   );
   text = text.replace(/\s+/g, ' ').trim();
+  // Second injection pass: a multi-line injection that survived the per-line
+  // strip is now a single line -- re-strip so it cannot rejoin into clean prose.
+  text = stripAoiSourceInstructions(text).replace(/\s+/g, ' ').trim();
   if (text.length <= maxChars) {
     return text;
   }

@@ -179,6 +179,47 @@ describe('SV3.1 event shape + normalization', () => {
     expect(event).toBeNull();
     expect(reasons).toContain('invalid_session_path');
   });
+
+  it('drops a non-slug modelId to unknown (untrusted modelId cannot smuggle text)', () => {
+    // Free text / spaces -> fails the slug test.
+    expect(
+      normalizeAoiScreenVisionEvent(
+        { summaryText: 'coding', modelId: 'ghp_secret token here' },
+        SESSION_PATH,
+        NOW,
+      ).event?.modelId,
+    ).toBe('unknown');
+    // An all-slug secret (AWS key shape) is caught by redaction, not charset.
+    expect(
+      normalizeAoiScreenVisionEvent(
+        { summaryText: 'coding', modelId: 'AKIAIOSFODNN7EXAMPLE' },
+        SESSION_PATH,
+        NOW,
+      ).event?.modelId,
+    ).toBe('unknown');
+    // A genuine slug id survives.
+    expect(
+      normalizeAoiScreenVisionEvent(
+        { summaryText: 'coding', modelId: 'local-florence2' },
+        SESSION_PATH,
+        NOW,
+      ).event?.modelId,
+    ).toBe('local-florence2');
+  });
+
+  it('clamps a future observedAt so it cannot pin latest or dodge the TTL', () => {
+    const farFuture = NOW + 10 * 365 * 24 * 60 * 60 * 1000;
+    const { event } = normalizeAoiScreenVisionEvent(
+      { summaryText: 'coding', observedAt: farFuture },
+      SESSION_PATH,
+      NOW,
+    );
+    expect(event).not.toBeNull();
+    expect((event as AoiScreenVisionEvent).observedAt).toBeLessThanOrEqual(NOW + 60_000);
+    expect((event as AoiScreenVisionEvent).expiresAt).toBeLessThanOrEqual(
+      NOW + 60_000 + 2 * HOUR_MS,
+    );
+  });
 });
 
 describe('SV3.1 summary + retention', () => {
@@ -223,6 +264,15 @@ describe('SV3.1 summary + retention', () => {
 
     const retained = pruneAoiScreenVisionEvents(root, SESSION_PATH, later);
     expect(retained).toHaveLength(0);
+  });
+
+  it('does not return past-TTL events from the raw loader (retention on the read path)', () => {
+    const root = makeTempRoot();
+    consentScreenVision(root);
+    recordAoiScreenVisionEvent(root, SESSION_PATH, { summaryText: 'old frame' }, NOW);
+    // Within the window it loads; past the 2h TTL it must not.
+    expect(loadAoiScreenVisionEvents(root, SESSION_PATH, NOW + 1000)).toHaveLength(1);
+    expect(loadAoiScreenVisionEvents(root, SESSION_PATH, NOW + 3 * HOUR_MS)).toHaveLength(0);
   });
 
   it('builds a dark summary when not consented', () => {

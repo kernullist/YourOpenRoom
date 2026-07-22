@@ -89,6 +89,11 @@ export const AOI_INERT_SCREEN_VISION_BACKEND: AoiScreenVisionBackend = {
 };
 
 const APP_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
+// A model id is an identifier slug, not free text. raw.modelId is UNTRUSTED
+// model output, so anything that is not a conservative slug is dropped -- this
+// closes the "untrusted modelId carries a secret / injection" hole. Underscore
+// is deliberately excluded so token shapes like `ghp_...` fail the slug test.
+const MODEL_ID_PATTERN = /^[a-z0-9][a-z0-9.:/-]{0,79}$/i;
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MIN_CONFIDENCE = 0.35;
 const DEFAULT_MAX_SUMMARY_CHARS = 400;
@@ -140,6 +145,13 @@ function clampConfidence(value: unknown): number {
     return 0;
   }
   return Math.min(1, Math.max(0, value));
+}
+
+// Accept an untrusted model id only if it is a conservative slug; otherwise use
+// the backend's own id. Never lets free text / secrets ride in via modelId.
+function sanitizeModelId(value: unknown, fallback: string): string {
+  const bounded = boundedString(value, 80);
+  return MODEL_ID_PATTERN.test(bounded) ? bounded : fallback;
 }
 
 function boundedString(value: unknown, maxChars: number): string {
@@ -226,7 +238,7 @@ export async function describeAoiScreenVisionFrame(
   if (confidence < minConfidence) {
     return { status: 'unavailable', reason: 'low_confidence' };
   }
-  const modelId = boundedString(raw.modelId, 80) || backend.modelId;
+  const modelId = sanitizeModelId(raw.modelId, backend.modelId);
   const appLabel = boundedString(raw.appLabel, 120);
   const result: AoiScreenVisionResult = {
     version: 1,

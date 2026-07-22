@@ -44,6 +44,16 @@ const MAX_DETAIL_CHARS = 160;
 // for a much shorter window (2h vs 24h) before it expires from the ledger.
 const DEFAULT_SCREEN_VISION_TTL_MS = 2 * 60 * 60 * 1000;
 const APP_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+// A model id is an identifier slug, not free text. It is redacted (secrets
+// become placeholders) and then required to be a conservative slug; anything
+// else is dropped to 'unknown', so an untrusted model-supplied modelId cannot
+// smuggle a secret / injection into the store. Underscore is excluded so token
+// shapes like `ghp_...` fail the slug test even before redaction.
+const MODEL_ID_PATTERN = /^[a-z0-9][a-z0-9.:/-]{0,79}$/i;
+// Tolerate small forward clock skew; a further-future observedAt is clamped to
+// now so a bogus/attacker timestamp cannot pin a permanent "current" summary
+// or dodge the TTL.
+const CLOCK_SKEW_MS = 60 * 1000;
 const CHANNELS: readonly AoiScreenVisionChannel[] = ['local', 'cloud'];
 
 export type AoiScreenVisionEventKind = 'screen_summary';
@@ -194,8 +204,10 @@ function normalizeModelId(value: unknown): string {
   if (typeof value !== 'string') {
     return 'unknown';
   }
-  const bounded = value.replace(/\s+/g, ' ').trim().slice(0, 80);
-  return bounded.length > 0 ? bounded : 'unknown';
+  // Redact first (a secret that rode in becomes a placeholder), then require a
+  // conservative slug -- a redacted or free-text value fails and becomes unknown.
+  const redacted = redactAoiScreenVisionText(value, 80);
+  return MODEL_ID_PATTERN.test(redacted) ? redacted : 'unknown';
 }
 
 function normalizeConfidence(value: unknown): number {
@@ -274,7 +286,9 @@ export function normalizeAoiScreenVisionEvent(
   const modelId = normalizeModelId(input.modelId);
   const details = normalizeDetails(input.details);
   const confidence = normalizeConfidence(input.confidence);
-  const observedAt = normalizeTimestamp(input.observedAt, now);
+  // Clamp a future timestamp to now (+ small skew) so it cannot become a
+  // permanent "latest" summary or outlive the TTL.
+  const observedAt = Math.min(normalizeTimestamp(input.observedAt, now), now + CLOCK_SKEW_MS);
   const event: AoiScreenVisionEvent = {
     version: 1,
     id: makeScreenVisionEventId({
@@ -405,6 +419,21 @@ function compactScreenVisionEventsIfNeeded(
   writeJsonLines(paths.root, paths.events, retained);
 }
 
+// Internal: read + normalize all persisted events newest-first, WITHOUT the
+// TTL filter. The summary builder needs the expired ones to report
+// expiredEventCount; the public loader below filters them out.
+function readNormalizedScreenVisionEvents(
+  sessionsDir: string,
+  normalizedSessionPath: string,
+  now: number,
+): AoiScreenVisionEvent[] {
+  const paths = resolveAoiScreenVisionStreamPaths(sessionsDir, normalizedSessionPath);
+  return readJsonLines(paths.events)
+    .map((item) => normalizeLoadedScreenVisionEvent(item, normalizedSessionPath, now))
+    .filter((item): item is AoiScreenVisionEvent => item !== null)
+    .sort((left, right) => right.observedAt - left.observedAt || left.id.localeCompare(right.id));
+}
+
 export function loadAoiScreenVisionEvents(
   sessionsDir: string,
   sessionPath: string,
@@ -420,12 +449,13 @@ export function loadAoiScreenVisionEvents(
   if (!consent.allowed) {
     return [];
   }
-  const paths = resolveAoiScreenVisionStreamPaths(sessionsDir, normalizedSessionPath);
-  return readJsonLines(paths.events)
-    .map((item) => normalizeLoadedScreenVisionEvent(item, normalizedSessionPath, now))
-    .filter((item): item is AoiScreenVisionEvent => item !== null)
-    .sort((left, right) => right.observedAt - left.observedAt || left.id.localeCompare(right.id))
-    .slice(0, Math.max(1, Math.min(MAX_SCREEN_VISION_EVENTS, Math.trunc(limit))));
+  return (
+    readNormalizedScreenVisionEvents(sessionsDir, normalizedSessionPath, now)
+      // Enforce the retention boundary on the public read path too: a past-TTL
+      // summary must never be handed to a reader for grounding "now".
+      .filter((item) => item.expiresAt > now)
+      .slice(0, Math.max(0, Math.min(MAX_SCREEN_VISION_EVENTS, Math.trunc(limit))))
+  );
 }
 
 export function pruneAoiScreenVisionEvents(
@@ -576,7 +606,9 @@ export function loadAoiScreenVisionStreamSummary(
   }
   return buildAoiScreenVisionStreamSummary({
     sessionPath: normalizedSessionPath,
-    events: loadAoiScreenVisionEvents(sessionsDir, normalizedSessionPath, now),
+    // Unfiltered read so the summary can still partition + report expired
+    // (past-TTL) events; the summary itself only surfaces the active ones.
+    events: readNormalizedScreenVisionEvents(sessionsDir, normalizedSessionPath, now),
     consented: true,
     now,
   });
