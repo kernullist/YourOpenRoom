@@ -83,6 +83,15 @@ struct CaptureConfig
     // never POSTs or calls a model.
     std::wstring captureScreenOncePath;
     int screenMaxLongSide;     // downscale cap for the captured frame's long side
+    // SV4.1b: resident screen-vision path. Off by default. When on, a periodic
+    // timer captures the focused window, asks a LOCAL vision model to describe
+    // it, and POSTs the (server-redacted) summary to /api/aoi-host/screen-vision.
+    bool captureScreen;        // enable the resident screen-vision timer
+    bool screenVisionOnce;     // run one screen-vision cycle and exit
+    unsigned int screenIntervalMs; // min gap between screen-vision cycles
+    std::wstring vlmHost;      // local vision model host (loopback default)
+    int vlmPort;               // local vision model port (Ollama 11434)
+    std::wstring vlmModel;     // model tag, e.g. qwen2.5-vl
 };
 
 // One normalized foreground observation.
@@ -398,6 +407,180 @@ static bool WriteFileBytes(const std::wstring& path, const std::string& bytes)
     return ok;
 }
 
+// Base64-encode bytes (no line breaks) for the model request body.
+static bool Base64Encode(const std::string& bytes, std::string& outB64)
+{
+    outB64.clear();
+    if (bytes.empty())
+    {
+        return false;
+    }
+    DWORD needed = 0;
+    if (!CryptBinaryToStringA(
+            (const BYTE*)bytes.data(),
+            (DWORD)bytes.size(),
+            CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF,
+            NULL,
+            &needed) ||
+        needed == 0)
+    {
+        return false;
+    }
+    std::string buf((size_t)needed, '\0');
+    if (!CryptBinaryToStringA(
+            (const BYTE*)bytes.data(),
+            (DWORD)bytes.size(),
+            CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF,
+            &buf[0],
+            &needed))
+    {
+        return false;
+    }
+    buf.resize(strlen(buf.c_str()));
+    outB64.swap(buf);
+    return true;
+}
+
+// Extract a top-level JSON string field's value (unescaped) from a response
+// body. Minimal + defensive -- handles \" \\ \n \r \t \/ and \uXXXX (BMP).
+// Returns false if the field or a well-formed string value is not found.
+static bool ExtractJsonStringField(const std::string& body, const char* field, std::string& out)
+{
+    out.clear();
+    std::string needle = std::string("\"") + field + "\"";
+    size_t pos = body.find(needle);
+    if (pos == std::string::npos)
+    {
+        return false;
+    }
+    pos += needle.size();
+    while (pos < body.size() && (body[pos] == ' ' || body[pos] == '\t' || body[pos] == '\r' || body[pos] == '\n'))
+    {
+        ++pos;
+    }
+    if (pos >= body.size() || body[pos] != ':')
+    {
+        return false;
+    }
+    ++pos;
+    while (pos < body.size() && (body[pos] == ' ' || body[pos] == '\t' || body[pos] == '\r' || body[pos] == '\n'))
+    {
+        ++pos;
+    }
+    if (pos >= body.size() || body[pos] != '"')
+    {
+        return false;
+    }
+    ++pos;
+    std::string value;
+    while (pos < body.size())
+    {
+        char c = body[pos];
+        if (c == '"')
+        {
+            out.swap(value);
+            return true;
+        }
+        if (c == '\\' && pos + 1 < body.size())
+        {
+            char esc = body[pos + 1];
+            if (esc == 'n')
+            {
+                value += '\n';
+            }
+            else if (esc == 'r')
+            {
+                value += '\r';
+            }
+            else if (esc == 't')
+            {
+                value += '\t';
+            }
+            else if (esc == 'u' && pos + 5 < body.size())
+            {
+                // Decode a BMP code point to UTF-8 (best effort).
+                unsigned int code = 0;
+                bool okHex = true;
+                for (int k = 0; k < 4; ++k)
+                {
+                    char h = body[pos + 2 + k];
+                    code <<= 4;
+                    if (h >= '0' && h <= '9') { code |= (unsigned int)(h - '0'); }
+                    else if (h >= 'a' && h <= 'f') { code |= (unsigned int)(h - 'a' + 10); }
+                    else if (h >= 'A' && h <= 'F') { code |= (unsigned int)(h - 'A' + 10); }
+                    else { okHex = false; break; }
+                }
+                if (okHex)
+                {
+                    if (code < 0x80)
+                    {
+                        value += (char)code;
+                    }
+                    else if (code < 0x800)
+                    {
+                        value += (char)(0xC0 | (code >> 6));
+                        value += (char)(0x80 | (code & 0x3F));
+                    }
+                    else
+                    {
+                        value += (char)(0xE0 | (code >> 12));
+                        value += (char)(0x80 | ((code >> 6) & 0x3F));
+                        value += (char)(0x80 | (code & 0x3F));
+                    }
+                    pos += 6;
+                    continue;
+                }
+                value += esc;
+            }
+            else
+            {
+                // \" \\ \/ and any other escaped char -> literal.
+                value += esc;
+            }
+            pos += 2;
+            continue;
+        }
+        value += c;
+        ++pos;
+    }
+    return false; // unterminated string
+}
+
+// Derive a lowercase [a-z0-9_-] app-id slug from a foreground image name
+// (e.g. "Code.exe" -> "code"). Empty when nothing usable remains.
+static std::string DeriveAppIdSlug(const std::string& imageName)
+{
+    std::string base = imageName;
+    size_t dot = base.find_last_of('.');
+    if (dot != std::string::npos && dot > 0)
+    {
+        std::string ext = base.substr(dot + 1);
+        if (ext == "exe" || ext == "EXE" || ext == "Exe")
+        {
+            base = base.substr(0, dot);
+        }
+    }
+    std::string slug;
+    for (size_t i = 0; i < base.size() && slug.size() < 64; ++i)
+    {
+        char c = base[i];
+        if (c >= 'A' && c <= 'Z')
+        {
+            c = (char)(c - 'A' + 'a');
+        }
+        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-')
+        {
+            slug += c;
+        }
+    }
+    // The slug must start with an alphanumeric to satisfy the server pattern.
+    while (!slug.empty() && (slug[0] == '_' || slug[0] == '-'))
+    {
+        slug.erase(slug.begin());
+    }
+    return slug;
+}
+
 // ---------------------------------------------------------------------------
 // Home + token resolution
 // ---------------------------------------------------------------------------
@@ -610,7 +793,7 @@ static std::string BuildRequestBody(const CaptureConfig& cfg, const ForegroundSa
 
 // POST the body to the daemon. Returns true when a response status was read (in
 // outStatus); false on any transport failure. Single-exit with handle cleanup.
-static bool PostSample(const CaptureConfig& cfg, const std::wstring& token, const std::string& body, DWORD& outStatus)
+static bool PostSample(const CaptureConfig& cfg, const std::wstring& token, const std::string& body, const wchar_t* route, DWORD& outStatus)
 {
     outStatus = 0;
     bool ok = false;
@@ -639,7 +822,7 @@ static bool PostSample(const CaptureConfig& cfg, const std::wstring& token, cons
         request = WinHttpOpenRequest(
             connection,
             L"POST",
-            L"/api/aoi-host/desktop-activity",
+            route,
             NULL,
             WINHTTP_NO_REFERER,
             WINHTTP_DEFAULT_ACCEPT_TYPES,
@@ -732,12 +915,12 @@ static void SendForeground(bool force)
         g_token = ReadAuthToken(g_cfg.openroomHome);
     }
     DWORD status = 0;
-    bool ok = PostSample(g_cfg, g_token, body, status);
+    bool ok = PostSample(g_cfg, g_token, body, L"/api/aoi-host/desktop-activity", status);
     if (ok && status == 401)
     {
         // Token rotated on the daemon side; reload and retry exactly once.
         g_token = ReadAuthToken(g_cfg.openroomHome);
-        ok = PostSample(g_cfg, g_token, body, status);
+        ok = PostSample(g_cfg, g_token, body, L"/api/aoi-host/desktop-activity", status);
     }
     if (ok && status == 200)
     {
@@ -752,6 +935,238 @@ static void SendForeground(bool force)
     else
     {
         LogLine("post failed (daemon unreachable?)");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Screen-vision path (SV4.1b): capture -> local vision model -> POST summary
+// ---------------------------------------------------------------------------
+static ULONGLONG g_lastScreenTick = 0;
+
+// POST the PNG (base64) to the local vision model's generate endpoint and
+// collect the response body. No token (the model is a separate local service).
+// Longer timeouts than the daemon POST -- a VLM inference can take seconds.
+static bool CallLocalVlm(const CaptureConfig& cfg, const std::string& requestBody, std::string& outBody)
+{
+    outBody.clear();
+    bool ok = false;
+    HINTERNET session = NULL;
+    HINTERNET connection = NULL;
+    HINTERNET request = NULL;
+    do
+    {
+        session = WinHttpOpen(L"AoiDesktopCapture/1.0", WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+        if (session == NULL)
+        {
+            break;
+        }
+        // Generous receive/read timeout: model inference is slow.
+        WinHttpSetTimeouts(session, 5000, 5000, 60000, 60000);
+        connection = WinHttpConnect(session, cfg.vlmHost.c_str(), (INTERNET_PORT)cfg.vlmPort, 0);
+        if (connection == NULL)
+        {
+            break;
+        }
+        request = WinHttpOpenRequest(connection, L"POST", L"/api/generate", NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
+        if (request == NULL)
+        {
+            break;
+        }
+        std::wstring headers = L"Content-Type: application/json";
+        if (!WinHttpAddRequestHeaders(request, headers.c_str(), (DWORD)-1L, WINHTTP_ADDREQ_FLAG_ADD))
+        {
+            break;
+        }
+        if (!WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, (LPVOID)requestBody.data(), (DWORD)requestBody.size(), (DWORD)requestBody.size(), 0))
+        {
+            break;
+        }
+        if (!WinHttpReceiveResponse(request, NULL))
+        {
+            break;
+        }
+        std::string body;
+        for (;;)
+        {
+            DWORD available = 0;
+            if (!WinHttpQueryDataAvailable(request, &available) || available == 0)
+            {
+                break;
+            }
+            std::string chunk((size_t)available, '\0');
+            DWORD read = 0;
+            if (!WinHttpReadData(request, &chunk[0], available, &read) || read == 0)
+            {
+                break;
+            }
+            body.append(chunk.data(), read);
+            if (body.size() > 4 * 1024 * 1024)
+            {
+                break; // defensive cap
+            }
+        }
+        outBody.swap(body);
+        ok = !outBody.empty();
+    }
+    while (false);
+    if (request != NULL)
+    {
+        WinHttpCloseHandle(request);
+    }
+    if (connection != NULL)
+    {
+        WinHttpCloseHandle(connection);
+    }
+    if (session != NULL)
+    {
+        WinHttpCloseHandle(session);
+    }
+    return ok;
+}
+
+// Build the Ollama /api/generate request body: model + fixed prompt + the
+// base64 PNG. stream:false so the whole response arrives as one JSON object.
+static std::string BuildVlmRequestBody(const CaptureConfig& cfg, const std::string& pngB64)
+{
+    static const char* PROMPT =
+        "You are describing a single application window for a local activity log. "
+        "In one concise sentence, say what the user is doing -- the app and the task. "
+        "Do not transcribe secrets, tokens, passwords, or full URLs.";
+    std::string model = WideToUtf8(cfg.vlmModel);
+    std::string body;
+    body += "{\"model\":\"" + JsonEscape(model) + "\",";
+    body += "\"prompt\":\"" + JsonEscape(PROMPT) + "\",";
+    body += "\"stream\":false,";
+    body += "\"images\":[\"" + pngB64 + "\"]}";
+    return body;
+}
+
+// Build the /api/aoi-host/screen-vision request body. summaryText is the raw
+// model sentence; the daemon redacts it at the boundary before storing.
+static std::string BuildScreenVisionBody(
+    const CaptureConfig& cfg,
+    const std::string& appId,
+    const std::string& summaryText,
+    unsigned long long observedAt)
+{
+    std::string sessionUtf8 = WideToUtf8(cfg.sessionPath);
+    std::string model = WideToUtf8(cfg.vlmModel);
+    char numBuf[32];
+    std::string body;
+    body += "{";
+    body += "\"sessionPath\":\"" + JsonEscape(sessionUtf8) + "\",";
+    body += "\"sample\":{";
+    body += "\"summaryText\":\"" + JsonEscape(summaryText) + "\",";
+    if (!appId.empty())
+    {
+        body += "\"appId\":\"" + JsonEscape(appId) + "\",";
+    }
+    body += "\"channel\":\"local\",";
+    body += "\"modelId\":\"" + JsonEscape(model) + "\",";
+    body += "\"confidence\":0.7,";
+    sprintf_s(numBuf, sizeof(numBuf), "%llu", observedAt);
+    body += "\"observedAt\":";
+    body += numBuf;
+    body += "}}";
+    return body;
+}
+
+// One screen-vision cycle: capture the focused window, describe it with the
+// local model, and POST the summary. `force` bypasses the interval throttle.
+static void SendScreenVision(bool force)
+{
+    ULONGLONG nowTick = GetTickCount64();
+    if (!force && g_lastScreenTick != 0 && (nowTick - g_lastScreenTick) < g_cfg.screenIntervalMs)
+    {
+        return;
+    }
+
+    ForegroundSample fg = CaptureForegroundSample(g_cfg);
+    std::string appId = fg.valid ? DeriveAppIdSlug(fg.imageName) : std::string();
+    unsigned long long observedAt = EpochMillis();
+
+    std::string summaryText;
+    if (g_cfg.dryRun)
+    {
+        // Fully offline: do not touch the model. Emit a placeholder so the body
+        // format can be verified without a running vision service.
+        summaryText = "dry-run screen summary for ";
+        summaryText += appId.empty() ? "unknown-app" : appId;
+    }
+    else
+    {
+        std::string png;
+        if (!CaptureFocusedWindowPng(g_cfg.screenMaxLongSide, png))
+        {
+            return;
+        }
+        std::string pngB64;
+        if (!Base64Encode(png, pngB64))
+        {
+            LogLine("screen-vision: base64 encode failed");
+            return;
+        }
+        std::string vlmBody = BuildVlmRequestBody(g_cfg, pngB64);
+        std::string vlmResponse;
+        if (!CallLocalVlm(g_cfg, vlmBody, vlmResponse))
+        {
+            LogLine("screen-vision: local vision model unreachable (%s:%d)", WideToUtf8(g_cfg.vlmHost).c_str(), g_cfg.vlmPort);
+            return;
+        }
+        if (!ExtractJsonStringField(vlmResponse, "response", summaryText))
+        {
+            LogLine("screen-vision: could not parse model response");
+            return;
+        }
+        // Trim surrounding whitespace/newlines from the model sentence.
+        size_t s = 0;
+        while (s < summaryText.size() && (unsigned char)summaryText[s] <= 0x20)
+        {
+            ++s;
+        }
+        size_t e = summaryText.size();
+        while (e > s && (unsigned char)summaryText[e - 1] <= 0x20)
+        {
+            --e;
+        }
+        summaryText = summaryText.substr(s, e - s);
+        if (summaryText.empty())
+        {
+            LogLine("screen-vision: empty model summary");
+            return;
+        }
+    }
+
+    std::string body = BuildScreenVisionBody(g_cfg, appId, summaryText, observedAt);
+    if (g_cfg.dryRun)
+    {
+        fprintf(stdout, "%s\n", body.c_str());
+        fflush(stdout);
+        g_lastScreenTick = nowTick;
+        return;
+    }
+    if (g_token.empty())
+    {
+        g_token = ReadAuthToken(g_cfg.openroomHome);
+    }
+    DWORD status = 0;
+    bool ok = PostSample(g_cfg, g_token, body, L"/api/aoi-host/screen-vision", status);
+    if (ok && status == 401)
+    {
+        g_token = ReadAuthToken(g_cfg.openroomHome);
+        ok = PostSample(g_cfg, g_token, body, L"/api/aoi-host/screen-vision", status);
+    }
+    if (ok && status == 200)
+    {
+        g_lastScreenTick = nowTick;
+    }
+    else if (ok)
+    {
+        LogLine("daemon rejected screen summary (status=%lu)", (unsigned long)status);
+    }
+    else
+    {
+        LogLine("screen-vision post failed (daemon unreachable?)");
     }
 }
 
@@ -778,6 +1193,15 @@ static void CALLBACK HeartbeatTimerProc(HWND /*hwnd*/, UINT /*message*/, UINT_PT
     SendForeground(true);
 }
 
+static void CALLBACK ScreenVisionTimerProc(HWND /*hwnd*/, UINT /*message*/, UINT_PTR /*timerId*/, DWORD /*tick*/)
+{
+    // The model call can take seconds; it runs on the message-loop thread, so
+    // foreground metadata events are briefly delayed during inference. Interval
+    // is throttled by SendScreenVision itself. A worker thread is a future
+    // refinement if the stall becomes noticeable.
+    SendScreenVision(false);
+}
+
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
@@ -797,6 +1221,12 @@ static void PrintUsage()
         "  --once                 capture a single sample and exit\n"
         "  --capture-screen-once <file>  capture the focused window to a PNG and exit (no POST)\n"
         "  --screen-max-longside <n>     downscale cap for the captured frame (default: 1280)\n"
+        "  --capture-screen       enable the resident screen-vision path (local model + POST)\n"
+        "  --screen-vision-once   run one screen-vision cycle and exit\n"
+        "  --screen-interval-ms <n>      min gap between screen-vision cycles (default: 20000)\n"
+        "  --vlm-host <host>      local vision model host (default: 127.0.0.1)\n"
+        "  --vlm-port <n>         local vision model port (default: 11434, Ollama)\n"
+        "  --vlm-model <tag>      vision model tag (default: qwen2.5-vl)\n"
         "  --hide-console         hide the console window at startup (resident mode)\n"
         "  --help                 show this help\n");
 }
@@ -814,6 +1244,12 @@ static bool ParseArgs(int argc, wchar_t** argv, CaptureConfig& cfg)
     cfg.showHelp = false;
     cfg.captureScreenOncePath = L"";
     cfg.screenMaxLongSide = 1280;
+    cfg.captureScreen = false;
+    cfg.screenVisionOnce = false;
+    cfg.screenIntervalMs = 20000;
+    cfg.vlmHost = L"127.0.0.1";
+    cfg.vlmPort = 11434;
+    cfg.vlmModel = L"qwen2.5-vl";
     std::wstring explicitHome;
     for (int i = 1; i < argc; ++i)
     {
@@ -866,6 +1302,30 @@ static bool ParseArgs(int argc, wchar_t** argv, CaptureConfig& cfg)
         {
             cfg.screenMaxLongSide = _wtoi(argv[++i]);
         }
+        else if (arg == L"--capture-screen")
+        {
+            cfg.captureScreen = true;
+        }
+        else if (arg == L"--screen-vision-once")
+        {
+            cfg.screenVisionOnce = true;
+        }
+        else if (arg == L"--screen-interval-ms" && i + 1 < argc)
+        {
+            cfg.screenIntervalMs = (unsigned int)_wtoi(argv[++i]);
+        }
+        else if (arg == L"--vlm-host" && i + 1 < argc)
+        {
+            cfg.vlmHost = argv[++i];
+        }
+        else if (arg == L"--vlm-port" && i + 1 < argc)
+        {
+            cfg.vlmPort = _wtoi(argv[++i]);
+        }
+        else if (arg == L"--vlm-model" && i + 1 < argc)
+        {
+            cfg.vlmModel = argv[++i];
+        }
         else
         {
             LogLine("unknown or incomplete argument");
@@ -875,6 +1335,11 @@ static bool ParseArgs(int argc, wchar_t** argv, CaptureConfig& cfg)
     if (cfg.port <= 0 || cfg.port > 65535)
     {
         LogLine("invalid --port");
+        return false;
+    }
+    if (cfg.vlmPort <= 0 || cfg.vlmPort > 65535)
+    {
+        LogLine("invalid --vlm-port");
         return false;
     }
     cfg.openroomHome = ResolveOpenroomHome(explicitHome);
@@ -928,6 +1393,30 @@ int wmain(int argc, wchar_t** argv)
         Gdiplus::GdiplusShutdown(gdiToken);
         return rc;
     }
+    // SV4.1b one-shot: run a single screen-vision cycle and exit. In --dry-run
+    // this prints the /screen-vision body with a placeholder summary (no model,
+    // fully offline); otherwise it captures, describes, and POSTs.
+    if (g_cfg.screenVisionOnce)
+    {
+        ULONG_PTR gdiToken = 0;
+        Gdiplus::GdiplusStartupInput gdiInput;
+        bool gdiUp = false;
+        if (!g_cfg.dryRun)
+        {
+            if (Gdiplus::GdiplusStartup(&gdiToken, &gdiInput, NULL) != Gdiplus::Ok)
+            {
+                LogLine("GDI+ startup failed");
+                return 1;
+            }
+            gdiUp = true;
+        }
+        SendScreenVision(true);
+        if (gdiUp)
+        {
+            Gdiplus::GdiplusShutdown(gdiToken);
+        }
+        return 0;
+    }
     if (!g_cfg.dryRun)
     {
         g_token = ReadAuthTokenWithWait(g_cfg.openroomHome, g_cfg.once ? 0 : 15);
@@ -960,8 +1449,37 @@ int wmain(int argc, wchar_t** argv)
     {
         heartbeat = SetTimer(NULL, 0, g_cfg.heartbeatMs, HeartbeatTimerProc);
     }
+    // Resident screen-vision path (opt-in). GDI+ stays up for the process
+    // lifetime; a timer drives periodic capture -> local model -> POST. In
+    // --dry-run no model/GDI+ is needed (placeholder bodies are printed).
+    ULONG_PTR screenGdiToken = 0;
+    bool screenGdiUp = false;
+    UINT_PTR screenTimer = 0;
+    if (g_cfg.captureScreen)
+    {
+        if (!g_cfg.dryRun)
+        {
+            Gdiplus::GdiplusStartupInput gdiInput;
+            if (Gdiplus::GdiplusStartup(&screenGdiToken, &gdiInput, NULL) == Gdiplus::Ok)
+            {
+                screenGdiUp = true;
+            }
+            else
+            {
+                LogLine("GDI+ startup failed; screen-vision disabled");
+            }
+        }
+        if (g_cfg.dryRun || screenGdiUp)
+        {
+            screenTimer = SetTimer(NULL, 0, g_cfg.screenIntervalMs, ScreenVisionTimerProc);
+        }
+    }
     // Send an initial sample so we do not wait for the first foreground switch.
     SendForeground(true);
+    if (g_cfg.captureScreen && (g_cfg.dryRun || screenGdiUp))
+    {
+        SendScreenVision(true);
+    }
     {
         std::string hostUtf8 = WideToUtf8(g_cfg.host);
         std::string sessionUtf8 = WideToUtf8(g_cfg.sessionPath);
@@ -979,10 +1497,18 @@ int wmain(int argc, wchar_t** argv)
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+    if (screenTimer != 0)
+    {
+        KillTimer(NULL, screenTimer);
+    }
     if (heartbeat != 0)
     {
         KillTimer(NULL, heartbeat);
     }
     UnhookWinEvent(hook);
+    if (screenGdiUp)
+    {
+        Gdiplus::GdiplusShutdown(screenGdiToken);
+    }
     return 0;
 }
