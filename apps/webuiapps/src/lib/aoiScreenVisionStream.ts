@@ -26,6 +26,7 @@ import {
 import { checkAoiEnvironmentSourceOperation } from './aoiAutonomyPolicy';
 import { redactAoiScreenVisionText } from './aoiScreenVisionRedaction';
 import type { AoiScreenVisionChannel } from './aoiScreenVisionBackend';
+import type { AoiObservation } from './aoiAutonomyTypes';
 
 export const AOI_SCREEN_VISION_SOURCE_ID = 'screen-vision';
 // A screen summary grounds "now" on a minutes scale only (matches the
@@ -583,6 +584,37 @@ export function describeAoiScreenVisionStreamSummary(
     `Screen vision: active app=${summary.activeAppId ?? 'none'}; ` +
     `summaries=${summary.activeEventCount}; last=${lastAge}${latest}.`
   );
+}
+
+// Derive tick observations from the (already consent-gated) screen-vision
+// summary. Observation-only: feeds cognition context, never authority. Buckets
+// by the fresh window so an unchanged screen does not re-observe each tick.
+export function createAoiScreenVisionObservations(params: {
+  summary: AoiScreenVisionStreamSummary;
+  now?: number;
+}): AoiObservation[] {
+  const summary = params.summary;
+  if (!summary.consented || summary.activeEventCount === 0 || summary.lastEventAt === null) {
+    return [];
+  }
+  const bucket = Math.floor(summary.lastEventAt / AOI_SCREEN_VISION_FRESH_WINDOW_MS);
+  const dedupeKey = `screen:${summary.activeAppId ?? 'none'}:${bucket}`;
+  return [
+    {
+      version: 1,
+      id: `aoi-obs-screen-${hashText(`${summary.sessionPath}:${dedupeKey}`)}`,
+      source: 'app',
+      sessionPath: summary.sessionPath,
+      createdAt: summary.lastEventAt,
+      summary: describeAoiScreenVisionStreamSummary(summary),
+      payloadRef: `environment-source:${AOI_SCREEN_VISION_SOURCE_ID}`,
+      memoryIds: [],
+      artifactRefs: summary.evidenceRefs.slice(0, 8),
+      proposalIds: [],
+      riskSignals: ['screen-vision-signal'],
+      dedupeKey,
+    },
+  ];
 }
 
 export function loadAoiScreenVisionStreamSummary(

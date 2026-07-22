@@ -53,6 +53,12 @@ import {
   loadAoiActivityStreamSummary,
   type AoiActivityStreamSummary,
 } from './aoiActivityStream';
+import {
+  AOI_SCREEN_VISION_FRESH_WINDOW_MS,
+  describeAoiScreenVisionStreamSummary,
+  loadAoiScreenVisionStreamSummary,
+  type AoiScreenVisionStreamSummary,
+} from './aoiScreenVisionStream';
 import { loadAoiIntentState, type AoiIntentKind, type AoiIntentState } from './aoiIntentInference';
 import { salienceFreshnessAdjustment, scoreAoiSalience } from './aoiSalienceModel';
 
@@ -121,6 +127,9 @@ export interface AoiContextRouterInput {
   queryEmbeddingModel?: string | null;
   workspaceSnapshot?: AoiWorkspaceSnapshot | null;
   activitySummary?: AoiActivityStreamSummary | null;
+  // SV5.1: the redacted screen-vision summary. Undefined -> loaded from disk
+  // (consent-gated); null -> no screen-vision candidate (test/tick injection).
+  screenVisionSummary?: AoiScreenVisionStreamSummary | null;
   // SA2.2: the current-intent state. Undefined -> loaded from disk; null ->
   // no intent alignment (injection for tests/tick reuse). Stale states are
   // treated as absent.
@@ -1226,12 +1235,12 @@ function applySalienceDecay(params: {
 // Alignment is a bounded, additive boost -- it never resurrects a source the
 // consent/freshness penalties rejected (those still dominate the score).
 const INTENT_ALIGNED_SOURCE_KINDS: Record<AoiIntentKind, readonly AoiContextSourceKind[]> = {
-  coding: ['workspace_git', 'workspace_build'],
-  debugging: ['workspace_git', 'workspace_build'],
-  researching: ['research_runs'],
-  writing: ['app_activity', 'app_state'],
-  communicating: ['app_activity', 'app_state'],
-  media: ['app_activity', 'app_state'],
+  coding: ['workspace_git', 'workspace_build', 'screen_vision'],
+  debugging: ['workspace_git', 'workspace_build', 'screen_vision'],
+  researching: ['research_runs', 'screen_vision'],
+  writing: ['app_activity', 'app_state', 'screen_vision'],
+  communicating: ['app_activity', 'app_state', 'screen_vision'],
+  media: ['app_activity', 'app_state', 'screen_vision'],
   planning: ['kira_board', 'app_activity'],
   meeting_prep: ['calendar_metadata'],
   idle: [],
@@ -1319,6 +1328,60 @@ function buildActivityCandidates(params: {
       ],
       updatedAt: summary.lastEventAt ?? params.now,
       displayName: 'Live app activity',
+      redactionState: 'redacted',
+    }),
+  ];
+}
+
+// SV5.1: the redacted screen-vision summary as a ranked context candidate. Same
+// consent/freshness discipline as activity -- a dark/revoked/stale source yields
+// no candidate. The summary is already redacted at the record boundary.
+function buildScreenVisionCandidates(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  summary?: AoiScreenVisionStreamSummary | null;
+  latestUserMessage: string;
+  registry: AoiEnvironmentSourceRegistry;
+  now: number;
+}): AoiContextSourceSummary[] {
+  if (!sourceAllowed(params.registry, SOURCE_ID_BY_KIND.screen_vision, 'summarize_counts')) {
+    return [];
+  }
+  const summary =
+    params.summary === undefined
+      ? loadAoiScreenVisionStreamSummary(params.sessionsDir, params.sessionPath, params.now)
+      : params.summary;
+  if (!summary || !summary.consented || summary.activeEventCount === 0) {
+    return [];
+  }
+  const freshness: AoiSignalFreshness =
+    summary.lastEventAgeMs !== null && summary.lastEventAgeMs <= AOI_SCREEN_VISION_FRESH_WINDOW_MS
+      ? 'fresh'
+      : 'stale';
+  const activeAppMentioned =
+    summary.activeAppId !== null &&
+    params.latestUserMessage.toLowerCase().includes(summary.activeAppId);
+  return [
+    makeSummary({
+      sourceId: SOURCE_ID_BY_KIND.screen_vision,
+      kind: 'screen_vision',
+      label: 'Screen vision',
+      summary: describeAoiScreenVisionStreamSummary(summary),
+      evidenceRefs: summary.evidenceRefs,
+      relevanceScore: clamp(
+        0.24 + (activeAppMentioned ? 0.2 : 0) + scoreFreshness(freshness),
+        0,
+        1,
+      ),
+      confidence: freshness === 'fresh' ? 0.7 : 0.5,
+      freshness,
+      scoreReasons: [
+        'screen-vision-summary',
+        ...(activeAppMentioned ? ['active-app-mentioned'] : []),
+        freshness === 'fresh' ? 'screen-fresh-window' : 'screen-outside-fresh-window',
+      ],
+      updatedAt: summary.lastEventAt ?? params.now,
+      displayName: 'Screen vision',
       redactionState: 'redacted',
     }),
   ];
@@ -1549,6 +1612,14 @@ export function buildAoiContextRouterResult(params: AoiContextRouterInput): AoiC
       sessionsDir: params.sessionsDir,
       sessionPath,
       summary: params.activitySummary,
+      latestUserMessage,
+      registry,
+      now,
+    }),
+    ...buildScreenVisionCandidates({
+      sessionsDir: params.sessionsDir,
+      sessionPath,
+      summary: params.screenVisionSummary,
       latestUserMessage,
       registry,
       now,

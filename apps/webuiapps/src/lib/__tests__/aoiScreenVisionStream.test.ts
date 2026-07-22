@@ -9,6 +9,7 @@ import {
   AOI_SCREEN_VISION_SOURCE_ID,
   buildAoiScreenVisionStreamSummary,
   checkAoiScreenVisionStreamConsent,
+  createAoiScreenVisionObservations,
   describeAoiScreenVisionStreamSummary,
   loadAoiScreenVisionEvents,
   loadAoiScreenVisionStreamSummary,
@@ -286,6 +287,31 @@ describe('SV3.1 summary + retention', () => {
     expect(summary.consented).toBe(false);
     expect(summary.latestSummaryText).toBeNull();
     expect(summary.cannotKnow.join(' ')).toContain('not consented');
+  });
+
+  it('derives one deduped tick observation when consented, none when dark (SV5.1)', () => {
+    const root = makeTempRoot();
+    consentScreenVision(root);
+    recordAoiScreenVisionEvent(
+      root,
+      SESSION_PATH,
+      { summaryText: 'editing code', appId: 'code' },
+      NOW,
+    );
+    const summary = loadAoiScreenVisionStreamSummary(root, SESSION_PATH, NOW + 1000);
+    const observations = createAoiScreenVisionObservations({ summary, now: NOW + 1000 });
+    expect(observations).toHaveLength(1);
+    expect(observations[0].dedupeKey).toContain('screen:code');
+    expect(observations[0].payloadRef).toBe(`environment-source:${AOI_SCREEN_VISION_SOURCE_ID}`);
+    expect(observations[0].riskSignals).toContain('screen-vision-signal');
+
+    const dark = buildAoiScreenVisionStreamSummary({
+      sessionPath: SESSION_PATH,
+      events: [],
+      consented: false,
+      now: NOW,
+    });
+    expect(createAoiScreenVisionObservations({ summary: dark, now: NOW })).toHaveLength(0);
   });
 
   it('caps details to the maximum and drops empty ones', () => {

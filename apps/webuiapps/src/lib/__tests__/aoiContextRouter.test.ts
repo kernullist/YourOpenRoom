@@ -6,6 +6,7 @@ import { buildAoiContextRouterResult, buildDurableMemoryCandidates } from '../ao
 import { getDefaultAoiEnvironmentSourceRegistry } from '../aoiAutonomyPolicy';
 import { updateAoiEnvironmentSource } from '../aoiAutonomyStore';
 import { loadAoiActivityStreamSummary, recordAoiActivityEvent } from '../aoiActivityStream';
+import { recordAoiScreenVisionEvent } from '../aoiScreenVisionStream';
 import { buildAoiIntentState, saveAoiIntentState } from '../aoiIntentInference';
 import type { AoiMemoryEntry } from '../aoiMemoryShared';
 
@@ -414,5 +415,53 @@ describe('live activity context candidates (SA1.4)', () => {
     });
 
     expect(result.candidateSources.some((item) => item.sourceId === 'app-activity')).toBe(false);
+  });
+
+  function consentScreenVision(root: string): void {
+    updateAoiEnvironmentSource(root, SESSION_PATH, {
+      sourceId: 'screen-vision',
+      patch: {
+        enabled: true,
+        consentReason: 'User enabled screen vision for this session.',
+        lastReviewedAt: NOW,
+      },
+      now: NOW,
+    });
+  }
+
+  it('surfaces a fresh screen-vision candidate and boosts when the app is mentioned (SV5.1)', () => {
+    const root = makeTempRoot();
+    consentScreenVision(root);
+    recordAoiScreenVisionEvent(
+      root,
+      SESSION_PATH,
+      { summaryText: 'Editing an anti-cheat driver in the editor', appId: 'code' },
+      NOW,
+    );
+
+    const result = buildAoiContextRouterResult({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      latestUserMessage: 'what is happening in code right now?',
+      now: NOW + 1000,
+    });
+    const candidate = result.candidateSources.find((item) => item.sourceId === 'screen-vision');
+    expect(candidate).toBeDefined();
+    expect(candidate?.kind).toBe('screen_vision');
+    expect(candidate?.scoreReasons).toContain('screen-vision-summary');
+    expect(candidate?.scoreReasons).toContain('active-app-mentioned');
+    expect(candidate?.scoreReasons).toContain('screen-fresh-window');
+    expect(candidate?.redactionState).toBe('redacted');
+  });
+
+  it('yields no screen-vision candidate while the source is dark (fail-closed)', () => {
+    const root = makeTempRoot();
+    const result = buildAoiContextRouterResult({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      latestUserMessage: 'what am I doing?',
+      now: NOW + 1000,
+    });
+    expect(result.candidateSources.some((item) => item.sourceId === 'screen-vision')).toBe(false);
   });
 });

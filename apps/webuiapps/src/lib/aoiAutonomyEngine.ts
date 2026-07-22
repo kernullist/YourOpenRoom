@@ -137,6 +137,10 @@ import {
   createAoiWorkspaceObservations,
 } from './aoiWorkspaceSignals';
 import { createAoiActivityObservations, loadAoiActivityStreamSummary } from './aoiActivityStream';
+import {
+  createAoiScreenVisionObservations,
+  loadAoiScreenVisionStreamSummary,
+} from './aoiScreenVisionStream';
 import { buildAoiIntentState, saveAoiIntentState, type AoiIntentState } from './aoiIntentInference';
 import {
   buildAoiCurrentSituation,
@@ -3276,6 +3280,19 @@ export async function runAoiAutonomyTick(
   bundle.observations.push(
     ...createAoiActivityObservations({
       summary: activitySummary,
+      now,
+    }),
+  );
+  // SV5.1: redacted screen-vision awareness. Same consent-gated fail-closed
+  // loader; a dark/revoked source yields no observation. Observation-only.
+  const screenVisionSummary = loadAoiScreenVisionStreamSummary(
+    params.sessionsDir,
+    sessionPath,
+    now,
+  );
+  bundle.observations.push(
+    ...createAoiScreenVisionObservations({
+      summary: screenVisionSummary,
       now,
     }),
   );
