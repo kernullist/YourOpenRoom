@@ -13,8 +13,9 @@
 //     rejects both a symlinked parent and an overwrite-through-symlink escape.
 //     The basename is rejected if it contains a separator or "..".
 //   - CONTENT-ADDRESSED APPROVAL: the exact { path, contentHash } is
-//     fingerprinted via the approval sandbox; the runner re-verifies it, so an
-//     approval for one write can never apply different bytes or a different path.
+//     fingerprinted (sha256) via the approval sandbox and bound by the caller's
+//     single-use store-consume, so an approval for one write can never apply
+//     different bytes or a different path.
 //   - ATOMIC: a temp file in the same directory is renamed into place, so a
 //     crash never leaves a half-written file.
 //   - The HP0 gate (auth + kill switch capability `os_file_write` + approval) is

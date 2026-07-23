@@ -1,20 +1,29 @@
 // Aoi host-bridge approval store (wiring slice 3): the server-side binding that
 // makes a mutate approval REAL instead of a self-approve.
 //
-// Why it exists: without it, a preview returns an approval sandbox and execute
-// re-verifies the fingerprint -- but any caller holding the daemon token could
-// just echo the preview back and "self-approve". This store forces an explicit
-// operator APPROVE step to be recorded server-side between preview and execute:
+// Why it exists: it makes a mutate approval an explicit, recorded, single-use,
+// time-bounded step BOUND to the content-addressed (sha256) fingerprint, sitting
+// between preview and execute:
 //
 //   1. POST /<cap>/preview   -> server records a PENDING approval (fingerprint,
 //                               capability, target, expiresAt, approved=false).
-//   2. operator approves      -> POST /approvals/approve marks it approved=true.
+//   2. approve                -> POST /approvals/approve marks it approved=true.
 //   3. POST /<cap>/execute    -> the runner is reached ONLY when the store has a
 //                               matching approved, unexpired, unconsumed entry;
 //                               execution CONSUMES it (single-use).
 //
-// A consumed or expired entry cannot execute again -- so an approval is
-// one-shot and time-bounded, and echoing a preview never runs anything.
+// A consumed or expired entry cannot execute again -- so an approval is one-shot
+// and time-bounded, and echoing a preview never runs anything.
+//
+// POSTURE (do not overstate -- keep code and comments honest): /approvals/approve
+// uses the SAME daemon token as execute, so this store does NOT by itself prove
+// the approve came from a human rather than the executor. A token holder -- or,
+// on the dev loopback-trust mount, any local process -- can walk preview ->
+// approve -> execute. What actually stops the AI executor from self-approving
+// today is that its TOOL SURFACE exposes only the operation routes (process /
+// file / browser), NOT /approvals/approve or /killswitch set, plus the token
+// requirement in production. A separate human-origin approval credential is the
+// remaining hardening for a strict human-in-the-loop guarantee.
 //
 // Machine-scoped under ~/.openroom/host-bridge/approvals.json. Server-only (fs).
 // The pure state helpers are exported for unit testing without the filesystem.

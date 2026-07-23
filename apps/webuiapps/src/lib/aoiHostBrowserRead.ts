@@ -7,8 +7,13 @@
 // Safety posture (load-bearing):
 //   - CAPABILITY + CONSENT: kill-switch key `os_browser_read` and environment
 //     source `host-browser-read` (caller enforces; this module is the data layer).
-//   - SSRF FAIL-CLOSED: only http/https; blocks loopback, private, link-local,
-//     and metadata IPs. file:/javascript:/data: never accepted.
+//   - SSRF FAIL-CLOSED on the REQUESTED URL: only http/https; blocks loopback,
+//     private, link-local, metadata, and the IPv4-mapped-IPv6 forms of those.
+//     file:/javascript:/data: never accepted. KNOWN RESIDUAL: Chrome --dump-dom
+//     follows top-frame 3xx redirects and the landing URL is NOT observable from
+//     stdout, so a redirect to a private/metadata host is not re-validated here.
+//     This path stays behind its default-OFF capability + consent; it is not
+//     redirect-SSRF-proof.
 //   - FIXED CHROME ARGV: shell:false, fixed headless dump-dom flags, URL is the
 //     only caller-controlled string and is revalidated before spawn.
 //   - BOUNDS: timeout, stdout byte cap, text/block caps.
@@ -50,6 +55,9 @@ export interface AoiHostBrowserReadBlock {
 export interface AoiHostBrowserReadResult {
   ok: true;
   url: string;
+  // The REQUESTED URL. Chrome --dump-dom does not expose the post-redirect
+  // landing URL, so this is NOT necessarily where the DOM was actually read
+  // from -- do not treat it as a verified origin (see the SSRF note above).
   finalUrl: string;
   title: string;
   excerpt: string;
@@ -579,6 +587,7 @@ export async function runAoiHostBrowserRead(
     return {
       ok: true,
       url: resolved.url,
+      // Requested URL, not the (unobservable via --dump-dom) landing URL.
       finalUrl: resolved.url,
       title: readable.title,
       excerpt: readable.excerpt,

@@ -10,12 +10,16 @@
 //   - shell:false + a validated ARGUMENT VECTOR (no shell metacharacters,
 //     bounded count/length). There is no string command line, so there is no
 //     shell-injection surface.
-//   - Content-addressed approval: the exact { path, args } is fingerprinted via
-//     the approval sandbox; the runner re-verifies the fingerprint at execution
-//     time, so an approval for one command can never launch another.
-//   - The HP0 gate (auth + kill switch capability `os_process_spawn` + approval)
-//     is enforced by the CALLER before the runner runs; the runner re-checks the
-//     approval fingerprint as defense in depth and audits every attempt.
+//   - Content-addressed approval: the exact { path, args } is fingerprinted
+//     (sha256) via the approval sandbox and bound by the CALLER's single-use
+//     store-consume before the runner runs, so an approval for one command can
+//     never launch another.
+//   - The HP0 gate (auth + kill switch capability `os_process_spawn` + the
+//     single-use approval store-consume) is enforced by the CALLER before the
+//     runner runs; the runner re-evaluates the allowlist policy and audits every
+//     attempt. (The runner's sandbox compare is a local consistency guard against
+//     the freshly-evaluated policy -- the plugin currently feeds it that same
+//     policy -- not an independent re-check of the operator-approved artifact.)
 //   - Spawn is recorded (pid + image) so a later kill capability can reclaim an
 //     Aoi-spawned process; that audit is the ownership record.
 //
@@ -569,8 +573,9 @@ function makeSpawnAuditId(allowlistId: string, startedAt: number): string {
 export interface RunAoiHostSpawnOptions {
   request: AoiHostSpawnRequest;
   allowlist: AoiHostSpawnAllowlist | null | undefined;
-  // The operator-approved sandbox preview + its expiry (from the approval
-  // decision). The runner re-verifies it against the freshly evaluated policy.
+  // The approved sandbox preview + its expiry. The runner compares it against
+  // the freshly evaluated policy as a local consistency guard; the authoritative
+  // approval binding is the caller's single-use store-consume + fingerprint.
   approvedSandbox: AoiApprovalSandboxPreview | null | undefined;
   approvedExpiresAt?: number | null;
   now?: number;
@@ -607,8 +612,9 @@ function blockedSpawnResult(
   };
 }
 
-// Spawn an allowlisted process, detached, after re-verifying the approval
-// fingerprint. Never runs a shell; the argument vector is fixed by the policy.
+// Spawn an allowlisted process, detached, after re-evaluating the allowlist
+// policy (the content-addressed approval is bound by the caller's single-use
+// store-consume). Never runs a shell; the argument vector is fixed by the policy.
 // The caller MUST have already passed the HP0 gate (auth + kill switch +
 // approval); this re-check is defense in depth.
 export function runAoiHostSpawn(options: RunAoiHostSpawnOptions): AoiHostSpawnResult {

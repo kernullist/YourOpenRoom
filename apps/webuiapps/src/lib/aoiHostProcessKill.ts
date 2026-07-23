@@ -12,16 +12,21 @@
 //       * The daemon itself and its parent/children (self-protection).
 //   - ALLOWLIST TO KILL (decision 10-2): a target is killable only when it is a
 //     process Aoi itself spawned (tracked by the spawn audit) OR its image is on
-//     the operator's kill allowlist. Everything else is refused.
+//     the kill allowlist supplied WITH THE REQUEST. NOTE: that allowlist is
+//     currently caller-declared, not an operator-persisted server-side list, so
+//     the protected-image hard-block above (not the allowlist) is the load-bearing
+//     guard for critical / anti-cheat processes. Everything else is refused.
 //   - TOCTOU GUARD: a kill request pins { pid, expectedImageName,
 //     expectedStartTime }. At execution the process is re-read by pid and the
 //     image (+ start time when provided) must still match; a mismatch means the
 //     pid was reused and the kill is aborted.
-//   - Content-addressed approval (irreversible): the exact target is
-//     fingerprinted; the runner re-verifies it. No automatic recovery -- a killed
-//     process is gone.
-//   - The HP0 gate (auth + kill switch capability `os_process_kill` + approval)
-//     is enforced by the caller; this re-checks as defense in depth and audits.
+//   - Content-addressed approval (irreversible): the exact target is fingerprinted
+//     (sha256) and bound by the caller's single-use store-consume; the runner
+//     re-checks the TOCTOU identity (above) before terminating. No automatic
+//     recovery -- a killed process is gone.
+//   - The HP0 gate (auth + kill switch capability `os_process_kill` + the
+//     single-use approval store-consume) is enforced by the caller; the runner
+//     re-checks the TOCTOU identity and audits.
 //
 // Server-only (child_process). The protected-list + policy + TOCTOU checks are
 // PURE and exhaustively unit-tested; the runner is exercised with injected

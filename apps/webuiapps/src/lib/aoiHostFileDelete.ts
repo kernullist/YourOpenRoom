@@ -13,9 +13,11 @@
 //     inside a root).
 //   - FILES ONLY: this step deletes files, never directory trees (a recursive
 //     delete is a far larger blast radius and is out of scope here).
-//   - Content-addressed approval; the runner re-verifies it before recycling.
-//   - The HP0 gate (auth + kill switch capability `os_file_delete` + approval)
-//     is enforced by the caller; this re-checks and audits every attempt.
+//   - Content-addressed approval (sha256), bound by the caller's single-use
+//     store-consume before recycling.
+//   - The HP0 gate (auth + kill switch capability `os_file_delete` + the
+//     single-use approval store-consume) is enforced by the caller; the runner
+//     re-evaluates the path policy and audits every attempt.
 //
 // Server-only. The path guard + policy are unit-tested with an injectable
 // realpath; the runner is exercised with an injected recycle implementation (the
