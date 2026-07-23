@@ -1257,7 +1257,11 @@ export async function resolveAoiHostBridgeRoute(
         {
           capability: AOI_HOST_SPAWN_CAPABILITY,
           approvalFingerprint: policy.approvalFingerprint,
-          targetSummary: `spawn ${policy.label} (${policy.program})`,
+          // Show the argument vector (bounded) so the operator approves what will
+          // actually run, not just the program name. The full args are bound in
+          // the fingerprint (aoiHostProcessSpawn), so a hidden tail cannot slip in.
+          targetSummary:
+            `spawn ${policy.label} (${policy.program} ${policy.args.join(' ').slice(0, 200)})`.trim(),
           expiresAt: policy.expiresAt,
           now: params.now,
         },
