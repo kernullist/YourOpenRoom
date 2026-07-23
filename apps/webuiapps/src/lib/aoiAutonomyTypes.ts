@@ -946,6 +946,14 @@ export type AoiProactiveBriefStatus =
 
 export type AoiProactiveBriefDeliveryMode = 'dashboard' | 'digest' | 'inline_card' | 'chat_hook';
 
+// Coarse media classification for a public source. Used to group proactive
+// briefs into things worth watching, listening to, or reading.
+export type AoiProactiveBriefMediaKind = 'video' | 'podcast' | 'music' | 'article';
+
+// Candidate-level bucket derived from the dominant media kind of its sources.
+// 'mixed' means no single bucket dominates.
+export type AoiProactiveBriefMediaBucket = 'watch' | 'listen' | 'read' | 'mixed';
+
 export interface AoiProactiveBriefSource {
   title: string;
   url: string;
@@ -953,6 +961,8 @@ export interface AoiProactiveBriefSource {
   publishedAt?: string;
   retrievedAt: number;
   snippet: string;
+  // Optional so previously persisted sources remain valid.
+  mediaKind?: AoiProactiveBriefMediaKind;
 }
 
 export interface AoiProactiveBriefCandidate {
@@ -968,6 +978,8 @@ export interface AoiProactiveBriefCandidate {
   whyForOperator: string;
   noveltyReason: string;
   sources: AoiProactiveBriefSource[];
+  // Optional so previously persisted candidates remain valid.
+  mediaBucket?: AoiProactiveBriefMediaBucket;
   evidenceRefs: string[];
   memoryIds: string[];
   researchRunId?: string;

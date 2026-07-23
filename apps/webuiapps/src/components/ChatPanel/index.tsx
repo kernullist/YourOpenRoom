@@ -15870,6 +15870,15 @@ const SettingsModal: React.FC<{
                                   <div className={styles.aoiAutonomyProposalMeta}>
                                     <span>{card.status}</span>
                                     <span>{card.sourceCountLabel}</span>
+                                    <span data-testid="aoi-proactive-brief-media-bucket">
+                                      {card.mediaBucket === 'watch'
+                                        ? 'Watch / 볼 것'
+                                        : card.mediaBucket === 'listen'
+                                          ? 'Listen / 들을 것'
+                                          : card.mediaBucket === 'read'
+                                            ? 'Read / 읽을 것'
+                                            : 'Mixed / 혼합'}
+                                    </span>
                                     <span>{card.delivery.selectedMode ?? 'dashboard'}</span>
                                     <span>{card.delivery.deliveryScore.toFixed(2)}</span>
                                   </div>
@@ -15938,7 +15947,7 @@ const SettingsModal: React.FC<{
                                           <div key={`brief-${card.id}-source-${index}`}>
                                             Source {index + 1}:{' '}
                                             {sanitizeAoiProposalDisplayText(
-                                              `${source.host} | ${source.title} | published ${source.publishedAtLabel} | retrieved ${source.retrievedAtLabel} | ${source.url} | ${source.snippet}`,
+                                              `[${source.mediaKindLabel}] ${source.host} | ${source.title} | published ${source.publishedAtLabel} | retrieved ${source.retrievedAtLabel} | ${source.url} | ${source.snippet}`,
                                               520,
                                             )}
                                           </div>

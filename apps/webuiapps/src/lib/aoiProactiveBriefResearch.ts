@@ -8,6 +8,10 @@ import type {
   AoiProactiveBriefSource,
 } from './aoiAutonomyTypes';
 import { createAoiAutonomyId } from './aoiAutonomyStore';
+import {
+  classifyAoiProactiveBriefMediaKind,
+  deriveAoiProactiveBriefMediaBucket,
+} from './aoiProactiveMediaKind';
 
 const DEFAULT_MAX_RESULTS = 5;
 const DEFAULT_MIN_SOURCES = 2;
@@ -352,6 +356,12 @@ export function normalizeAoiProactiveBriefSearchResults(params: {
       ...(getPublishedAt(result) ? { publishedAt: getPublishedAt(result) } : {}),
       retrievedAt: params.retrievedAt,
       snippet,
+      mediaKind: classifyAoiProactiveBriefMediaKind({
+        url: normalizedUrl.url,
+        host: normalizedUrl.host,
+        title,
+        snippet,
+      }),
     });
     seenUrls.add(normalizedUrl.url);
     if (sources.length >= maxSources) {
@@ -400,6 +410,7 @@ export function buildAoiProactiveBriefCandidateFromEvidence(
       ? `${primary?.host ?? 'A public source'} is corroborated by ${otherHosts}.`
       : `${primary?.host ?? 'A public source'} is the primary source surfaced by the scout.`,
     sources,
+    mediaBucket: deriveAoiProactiveBriefMediaBucket(sources),
     evidenceRefs: [...sources.map(buildEvidenceRef), ...input.topic.evidenceRefs.slice(0, 6)].slice(
       0,
       16,

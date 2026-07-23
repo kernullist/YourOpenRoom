@@ -11,7 +11,14 @@ import type {
   AoiProactiveBriefCalibrationTuning,
   AoiProactiveBriefCooldownState,
   AoiProactiveBriefFeedback,
+  AoiProactiveBriefMediaBucket,
 } from './aoiAutonomyTypes';
+import {
+  aoiProactiveBriefMediaBucketLabel,
+  aoiProactiveBriefMediaKindLabel,
+  classifyAoiProactiveBriefMediaKind,
+  deriveAoiProactiveBriefMediaBucket,
+} from './aoiProactiveMediaKind';
 
 const MAX_CARD_COUNT = 5;
 
@@ -39,6 +46,7 @@ export interface AoiProactiveBriefSourceDisplay {
   publishedAtLabel: string;
   retrievedAtLabel: string;
   snippet: string;
+  mediaKindLabel: string;
 }
 
 export interface AoiProactiveBriefFeedbackActionDisplay {
@@ -59,6 +67,8 @@ export interface AoiProactiveBriefCardModel {
   summary: string;
   sourceCountLabel: string;
   sourceHostLabel: string;
+  mediaBucket: AoiProactiveBriefMediaBucket;
+  mediaBucketLabel: string;
   freshnessLabel: string;
   cannotKnowLabels: string[];
   evidenceRefs: string[];
@@ -165,6 +175,9 @@ function buildSources(candidate: AoiProactiveBriefCandidate): AoiProactiveBriefS
     publishedAtLabel: formatDate(source.publishedAt),
     retrievedAtLabel: formatTimestamp(source.retrievedAt),
     snippet: truncateText(source.snippet, 240),
+    mediaKindLabel: aoiProactiveBriefMediaKindLabel(
+      source.mediaKind ?? classifyAoiProactiveBriefMediaKind(source),
+    ),
   }));
 }
 
@@ -232,6 +245,8 @@ function buildCard(params: {
     candidate.sources.map((source) => source.host),
     4,
   );
+  const mediaBucket =
+    candidate.mediaBucket ?? deriveAoiProactiveBriefMediaBucket(candidate.sources);
   const evidenceRefs = uniqueLabels(
     [...candidate.evidenceRefs, ...candidate.sources.map((source) => `source:${source.host}`)],
     12,
@@ -257,6 +272,8 @@ function buildCard(params: {
       candidate.sources.length === 1 ? '' : 's'
     }`,
     sourceHostLabel: sourceHosts.length > 0 ? sourceHosts.join(', ') : 'no public sources',
+    mediaBucket,
+    mediaBucketLabel: aoiProactiveBriefMediaBucketLabel(mediaBucket),
     freshnessLabel: freshnessLabel(candidate),
     cannotKnowLabels: candidate.freshness.cannotKnow.map((item) => truncateText(item, 260)),
     evidenceRefs,

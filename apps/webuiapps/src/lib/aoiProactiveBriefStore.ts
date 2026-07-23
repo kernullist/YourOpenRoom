@@ -14,6 +14,10 @@ import {
 } from './aoiAutonomyStore';
 import { buildAoiFollowThroughEventFromProactiveBriefFeedback } from './aoiFollowThroughLearning';
 import { buildAoiInterestProfileFromMemories } from './aoiInterestProfile';
+import {
+  classifyAoiProactiveBriefMediaKind,
+  deriveAoiProactiveBriefMediaBucket,
+} from './aoiProactiveMediaKind';
 import type {
   AoiAutonomyRisk,
   AoiInterestProfile,
@@ -562,15 +566,28 @@ function normalizeBriefSource(value: unknown, now: number): AoiProactiveBriefSou
 
   const title = normalizeRequiredText(raw.title, parsed.hostname, 160);
   const snippet = normalizeRequiredText(raw.snippet, '', 500);
+  const host = normalizeText(raw.host, 120) ?? parsed.hostname;
+  const canonicalUrl = parsed.toString();
+  const storedMediaKind =
+    raw.mediaKind === 'video' ||
+    raw.mediaKind === 'podcast' ||
+    raw.mediaKind === 'music' ||
+    raw.mediaKind === 'article'
+      ? raw.mediaKind
+      : undefined;
   return {
     title,
-    url: parsed.toString(),
-    host: normalizeText(raw.host, 120) ?? parsed.hostname,
+    url: canonicalUrl,
+    host,
     ...(normalizeText(raw.publishedAt, 64)
       ? { publishedAt: normalizeText(raw.publishedAt, 64) }
       : {}),
     retrievedAt: normalizeTimestamp(raw.retrievedAt, now),
     snippet,
+    // Preserve a valid stored kind; backfill legacy sources by classifying.
+    mediaKind:
+      storedMediaKind ??
+      classifyAoiProactiveBriefMediaKind({ url: canonicalUrl, host, title, snippet }),
   };
 }
 
@@ -660,6 +677,14 @@ export function normalizeAoiProactiveBriefCandidate(
   const createdAt = normalizeTimestamp(raw.createdAt, now);
   const updatedAt = normalizeTimestamp(raw.updatedAt, createdAt);
   const expiresAt = normalizeTimestamp(raw.expiresAt, createdAt + DEFAULT_BRIEF_TTL_MS);
+  const sources = normalizeBriefSources(raw.sources, now);
+  const storedMediaBucket =
+    raw.mediaBucket === 'watch' ||
+    raw.mediaBucket === 'listen' ||
+    raw.mediaBucket === 'read' ||
+    raw.mediaBucket === 'mixed'
+      ? raw.mediaBucket
+      : undefined;
   const candidate: AoiProactiveBriefCandidate = {
     version: 1,
     id: normalizeAutonomyId(raw.id, 'aoi-brief', `${sessionPath}:${topicId}:${title}`),
@@ -672,7 +697,9 @@ export function normalizeAoiProactiveBriefCandidate(
     summary: normalizeRequiredText(raw.summary, '', 1000),
     whyForOperator: normalizeRequiredText(raw.whyForOperator, '', 500),
     noveltyReason: normalizeRequiredText(raw.noveltyReason, '', 360),
-    sources: normalizeBriefSources(raw.sources, now),
+    sources,
+    // Preserve a valid stored bucket; otherwise derive from the source kinds.
+    mediaBucket: storedMediaBucket ?? deriveAoiProactiveBriefMediaBucket(sources),
     evidenceRefs: normalizeStringList(raw.evidenceRefs, 24, 180),
     memoryIds: normalizeStringList(raw.memoryIds, 24, 120),
     ...(normalizeText(raw.researchRunId, 120)
