@@ -2,6 +2,7 @@ import { createHash } from 'crypto';
 import { containsAoiSensitiveContent, type AoiMemoryEntry } from './aoiMemoryShared';
 import { normalizeAoiAutonomySessionPath } from './aoiAutonomyStore';
 import type {
+  AoiInterestKind,
   AoiInterestProfile,
   AoiInterestTopic,
   AoiInterestTopicSource,
@@ -56,6 +57,41 @@ const INTEREST_LIKE_TAGS = new Set([
   'review',
 ]);
 
+// Personal / lifestyle interest tags. These make a fact memory eligible even
+// without a professional tag, and help mark a topic as personal.
+const PERSONAL_INTEREST_TAGS = new Set([
+  'hobby',
+  'hobbies',
+  'entertainment',
+  'music',
+  'film',
+  'movie',
+  'movies',
+  'tv',
+  'show',
+  'series',
+  'game',
+  'games',
+  'gaming',
+  'sports',
+  'sport',
+  'food',
+  'cooking',
+  'travel',
+  'book',
+  'books',
+  'reading',
+  'art',
+  'anime',
+  'manga',
+  'webtoon',
+  'fashion',
+  'fitness',
+  'photography',
+  'pet',
+  'pets',
+]);
+
 interface TopicAliasRule {
   label: string;
   aliases: string[];
@@ -67,6 +103,7 @@ interface ExtractedTopicSeed {
   label: string;
   aliases: string[];
   source: AoiInterestTopicSource;
+  kind: AoiInterestKind;
 }
 
 interface TopicAccumulator {
@@ -74,6 +111,7 @@ interface TopicAccumulator {
   normalizedLabel: string;
   aliases: Set<string>;
   source: AoiInterestTopicSource;
+  kind: AoiInterestKind;
   memoryIds: Set<string>;
   evidenceRefs: Set<string>;
   confidenceTotal: number;
@@ -203,10 +241,12 @@ function hashText(value: string): string {
 }
 
 function normalizeTopicKey(value: string): string {
+  // Keep any Unicode letter/number (Hangul, CJK, etc.) so non-English personal
+  // interests are not stripped to an empty key.
   return normalizeWhitespace(value)
     .toLowerCase()
     .replace(/&/g, ' and ')
-    .replace(/[^a-z0-9+#._ -]+/g, ' ')
+    .replace(/[^\p{L}\p{N}+#._ -]+/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .replace(/\s+/g, '-');
@@ -225,6 +265,10 @@ function hasExcludedTag(memory: AoiMemoryEntry): boolean {
 
 function hasInterestLikeTag(memory: AoiMemoryEntry): boolean {
   return memory.tags.some((tag) => INTEREST_LIKE_TAGS.has(normalizeTag(tag)));
+}
+
+function hasPersonalInterestTag(memory: AoiMemoryEntry): boolean {
+  return memory.tags.some((tag) => PERSONAL_INTEREST_TAGS.has(normalizeTag(tag)));
 }
 
 function looksPrivateOrSensitiveText(value: string): boolean {
@@ -250,7 +294,8 @@ function isSafeTopicLabel(value: string): boolean {
   if (/https?:\/\//i.test(normalized) || /\bprivate\b/i.test(normalized)) {
     return false;
   }
-  return /[A-Za-z0-9]/.test(normalized);
+  // Any Unicode letter/number so non-English (e.g. Korean) labels are allowed.
+  return /[\p{L}\p{N}]/u.test(normalized);
 }
 
 function toTitleCaseLabel(value: string): string {
@@ -316,7 +361,12 @@ function scoreMemoryConfidence(memory: AoiMemoryEntry): number {
 function scoreMemoryImportance(memory: AoiMemoryEntry): number {
   const permanentBoost = memory.permanent ? 0.06 : 0;
   const hitBoost = Math.min(0.08, Math.max(0, memory.hits) * 0.01);
-  const interestBoost = hasInterestLikeTag(memory) ? 0.04 : 0;
+  // Treat professional tags, personal interest tags, and stated preferences
+  // equally so non-work interests are not ranked out of the top topics.
+  const interestBoost =
+    hasInterestLikeTag(memory) || hasPersonalInterestTag(memory) || memory.type === 'preference'
+      ? 0.04
+      : 0;
   return clampScore(memory.importance + permanentBoost + hitBoost + interestBoost, 0.5);
 }
 
@@ -364,7 +414,7 @@ export function isAoiMemoryEligibleForInterestProfile(
   if (memory.type === 'preference') {
     return true;
   }
-  if (memory.type === 'fact' && hasInterestLikeTag(memory)) {
+  if (memory.type === 'fact' && (hasInterestLikeTag(memory) || hasPersonalInterestTag(memory))) {
     return true;
   }
   return false;
@@ -385,6 +435,7 @@ function findAliasRuleSeeds(memory: AoiMemoryEntry): ExtractedTopicSeed[] {
       label: rule.label,
       aliases: rule.aliases,
       source: 'memory',
+      kind: 'professional',
     });
   }
 
@@ -403,6 +454,7 @@ function findTagSeeds(memory: AoiMemoryEntry): ExtractedTopicSeed[] {
       label,
       aliases: [rawTag],
       source: 'memory',
+      kind: 'professional',
     });
   }
   return seeds;
@@ -416,7 +468,11 @@ function splitInterestPhrase(value: string): string[] {
 }
 
 function findContentPhraseSeeds(memory: AoiMemoryEntry): ExtractedTopicSeed[] {
-  if (!hasInterestLikeTag(memory) && memory.type !== 'preference') {
+  if (
+    !hasInterestLikeTag(memory) &&
+    !hasPersonalInterestTag(memory) &&
+    memory.type !== 'preference'
+  ) {
     return [];
   }
   const seeds: ExtractedTopicSeed[] = [];
@@ -425,6 +481,14 @@ function findContentPhraseSeeds(memory: AoiMemoryEntry): ExtractedTopicSeed[] {
     /\binterest in\s+([^.;:"']{3,100})/iu,
     /\bprefers?\s+([^.;:"']{3,100})/iu,
     /\blikes?\s+([^.;:"']{3,100})/iu,
+    /\bloves?\s+([^.;:"']{3,100})/iu,
+    /\benjoys?\s+([^.;:"']{3,100})/iu,
+    /\b(?:a )?(?:huge |big )?fan of\s+([^.;:"']{3,100})/iu,
+    /\binto\s+([^.;:"']{3,100})/iu,
+    /\bobsessed with\s+([^.;:"']{3,100})/iu,
+    /\bhobby (?:is|are)\s+([^.;:"']{3,100})/iu,
+    // Korean object-before-verb taste patterns (subject and particle optional).
+    /(?:나는|저는|전|제가)?\s*([^.;:"'\n]{2,60}?)(?:을|를|이|가|에)?\s*(?:정말\s*|완전\s*|엄청\s*|되게\s*)?(?:좋아하는|좋아해요?|좋아합니다|사랑하는|사랑해요?|사랑합니다|선호하는|선호해요?|선호합니다|즐겨\s?(?:듣|봐|보|해|하)|빠져\s?있어요?|팬이(?:에|예)?요?|팬입니다|관심\s?(?:이\s?)?(?:많|있))/u,
   ];
   for (const pattern of patterns) {
     const match = pattern.exec(memory.content);
@@ -440,6 +504,7 @@ function findContentPhraseSeeds(memory: AoiMemoryEntry): ExtractedTopicSeed[] {
         label,
         aliases: [phrase],
         source: 'memory',
+        kind: 'personal',
       });
       if (seeds.length >= 4) {
         return seeds;
@@ -450,7 +515,11 @@ function findContentPhraseSeeds(memory: AoiMemoryEntry): ExtractedTopicSeed[] {
 }
 
 function findEntitySeeds(memory: AoiMemoryEntry): ExtractedTopicSeed[] {
-  if (!hasInterestLikeTag(memory) && memory.type !== 'preference') {
+  if (
+    !hasInterestLikeTag(memory) &&
+    !hasPersonalInterestTag(memory) &&
+    memory.type !== 'preference'
+  ) {
     return [];
   }
   return memory.entities
@@ -462,6 +531,7 @@ function findEntitySeeds(memory: AoiMemoryEntry): ExtractedTopicSeed[] {
       label,
       aliases: [label],
       source: 'memory' as const,
+      kind: 'personal' as const,
     }));
 }
 
@@ -480,6 +550,7 @@ function canonicalizeTopicSeed(seed: ExtractedTopicSeed): ExtractedTopicSeed {
     label: rule.label,
     aliases: normalizeAliases([...rule.aliases, ...seed.aliases, seed.label]),
     source: seed.source,
+    kind: 'professional',
   };
 }
 
@@ -502,6 +573,10 @@ export function extractAoiInterestTopicSeeds(memory: AoiMemoryEntry): ExtractedT
       label: current?.label ?? seed.label,
       aliases: normalizeAliases([...(current?.aliases ?? []), ...seed.aliases, seed.label]),
       source: current?.source ?? seed.source,
+      kind:
+        current?.kind === 'professional' || seed.kind === 'professional'
+          ? 'professional'
+          : 'personal',
     });
   }
   return [...byKey.values()];
@@ -528,6 +603,7 @@ function addTopicSeed(
       normalizedLabel,
       aliases: new Set<string>(),
       source: seed.source,
+      kind: seed.kind,
       memoryIds: new Set<string>(),
       evidenceRefs: new Set<string>(),
       confidenceTotal: 0,
@@ -542,6 +618,10 @@ function addTopicSeed(
   for (const alias of normalizeAliases([seed.label, ...seed.aliases])) {
     accumulator.aliases.add(alias);
   }
+  accumulator.kind =
+    accumulator.kind === 'professional' || seed.kind === 'professional'
+      ? 'professional'
+      : 'personal';
   accumulator.memoryIds.add(memory.id);
   accumulator.evidenceRefs.add(`memory:${memory.id}`);
   accumulator.confidenceTotal += confidence;
@@ -571,6 +651,7 @@ function topicFromAccumulator(
     normalizedLabel: accumulator.normalizedLabel,
     aliases: uniqueSorted(accumulator.aliases, MAX_TOPIC_ALIASES),
     source: accumulator.source,
+    interestKind: accumulator.kind,
     memoryIds: uniqueSorted(accumulator.memoryIds, MAX_TOPIC_MEMORY_IDS),
     evidenceRefs: uniqueSorted(accumulator.evidenceRefs, MAX_TOPIC_EVIDENCE_REFS),
     confidence,

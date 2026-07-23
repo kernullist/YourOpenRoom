@@ -732,8 +732,11 @@ export function extractHeuristicAoiMemoryCandidates(params: {
   }
 
   const preferencePatterns = [
-    /(?:나는|저는|전)\s+(.{2,120}?)(?:을|를|이|가)?\s*(?:좋아해|좋아합니다|선호해|선호합니다|싫어해|싫어합니다)/u,
-    /\b(?:i like|i prefer|i dislike|i hate|i always prefer)\s+(.{2,120})/i,
+    // Korean taste/preference verbs. Subject and object particle are optional so
+    // casual statements ("로그라이크 게임 완전 좋아해") are still captured.
+    /(?:나는|저는|전|제가)?\s*(.{2,120}?)(?:을|를|이|가|에)?\s*(?:정말\s*|완전\s*|엄청\s*|되게\s*)?(?:좋아해|좋아합니다|좋아하는|사랑해|사랑합니다|선호해|선호합니다|싫어해|싫어합니다|즐겨\s?(?:듣|봐|보|해|하)|빠져\s?있(?:어|습니다)|팬이(?:야|에요|예요)|팬입니다|관심(?:이)?\s?(?:많아|있어|있습니다))/u,
+    // English taste/preference verbs.
+    /\b(?:i like|i really like|i love|i enjoy|i'?m into|i am into|i'?m a (?:huge |big )?fan of|i am a (?:huge |big )?fan of|i'?m obsessed with|i prefer|i dislike|i hate|i always prefer)\s+(.{2,120})/i,
   ];
   const preferenceMatched = preferencePatterns.some((pattern) => pattern.test(user));
 

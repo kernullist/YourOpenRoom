@@ -319,7 +319,14 @@ export function buildAoiProactiveBriefSearchQuery(topic: AoiInterestTopic): stri
     )
     .slice(0, 3);
   const base = terms.length > 0 ? terms.join(' OR ') : topic.normalizedLabel || topic.id;
-  return clampText(`${base} security research recent developments`, 220);
+  // Keep a single network call but widen intent beyond written articles. Personal
+  // interests lean toward reviews/recommendations/new releases; professional ones
+  // toward talks, podcasts, and writeups.
+  const suffix =
+    topic.interestKind === 'personal'
+      ? 'latest news, reviews, recommendations, new releases, or videos worth checking out'
+      : 'latest developments, talks, videos, podcasts, or writeups';
+  return clampText(`${base} ${suffix}`, 220);
 }
 
 export function normalizeAoiProactiveBriefSearchResults(params: {

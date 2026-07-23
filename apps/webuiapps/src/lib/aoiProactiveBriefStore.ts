@@ -433,6 +433,9 @@ function normalizeInterestTopic(
     normalizedLabel,
     aliases: normalizeStringList(raw.aliases, 12, 80),
     source: normalizeTopicSource(raw.source),
+    ...(raw.interestKind === 'professional' || raw.interestKind === 'personal'
+      ? { interestKind: raw.interestKind }
+      : {}),
     memoryIds: normalizeStringList(raw.memoryIds, 24, 120),
     evidenceRefs: normalizeStringList(raw.evidenceRefs, 24, 180),
     confidence: clampScore(raw.confidence, 0.55),

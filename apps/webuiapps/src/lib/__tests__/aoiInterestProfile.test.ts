@@ -163,3 +163,77 @@ describe('Aoi interest profile builder', () => {
     );
   });
 });
+
+describe('Aoi interest profile - non-work interests', () => {
+  it('extracts a personal interest from an English preference memory', () => {
+    const topics = extractAoiInterestTopicsFromMemories({
+      sessionPath: 'aoi/default',
+      now: 1000,
+      memories: [
+        makeMemory({
+          id: 'memory-personal-en',
+          type: 'preference',
+          content: 'I love roguelike games.',
+          tags: ['preference'],
+        }),
+      ],
+    });
+    const topic = topics.find((item) => item.label === 'Roguelike Games');
+    expect(topic).toBeDefined();
+    expect(topic?.interestKind).toBe('personal');
+  });
+
+  it('extracts a Korean personal interest and keeps a non-empty Hangul key', () => {
+    const topics = extractAoiInterestTopicsFromMemories({
+      sessionPath: 'aoi/default',
+      now: 1000,
+      memories: [
+        makeMemory({
+          id: 'memory-personal-ko',
+          type: 'preference',
+          content: '나는 로그라이크 게임을 좋아해',
+          tags: ['preference'],
+        }),
+      ],
+    });
+    const topic = topics.find((item) => item.label.includes('로그라이크'));
+    expect(topic).toBeDefined();
+    expect(topic?.interestKind).toBe('personal');
+    expect((topic?.normalizedLabel.length ?? 0) > 0).toBe(true);
+  });
+
+  it('classifies professional topics as professional', () => {
+    const topics = extractAoiInterestTopicsFromMemories({
+      sessionPath: 'aoi/default',
+      now: 1000,
+      memories: [
+        makeMemory({
+          id: 'memory-pro',
+          content: 'The user is interested in reverse engineering.',
+          tags: ['interest', 'reverse-engineering'],
+        }),
+      ],
+    });
+    const topic = topics.find((item) => item.label === 'Reverse Engineering');
+    expect(topic?.interestKind).toBe('professional');
+  });
+
+  it('makes a personal fact eligible via a personal-interest tag and entity', () => {
+    const memory = makeMemory({
+      id: 'fact-personal',
+      type: 'fact',
+      content: 'The user follows the band Radiohead.',
+      tags: ['music'],
+      entities: ['Radiohead'],
+    });
+    expect(isAoiMemoryEligibleForInterestProfile(memory, 2000)).toBe(true);
+    const topics = extractAoiInterestTopicsFromMemories({
+      sessionPath: 'aoi/default',
+      now: 2000,
+      memories: [memory],
+    });
+    const topic = topics.find((item) => item.label === 'Radiohead');
+    expect(topic).toBeDefined();
+    expect(topic?.interestKind).toBe('personal');
+  });
+});

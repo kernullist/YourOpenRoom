@@ -506,14 +506,27 @@ function topicCadence(topic: AoiInterestTopic): AoiProactiveTrendWatchCadence {
 }
 
 function trendQueryTerms(topic: AoiInterestTopic): string[] {
-  const seeds = unique([
-    topic.label,
-    ...topic.aliases,
-    `${topic.label} latest research`,
-    `${topic.label} security trend`,
-    `${topic.label} technical writeup`,
-    `${topic.label} case study`,
-  ]);
+  // Cover things worth watching, listening to, and reading so the display watch
+  // queries are not biased toward written articles. Personal interests use an
+  // entertainment framing; professional ones keep the talk/writeup framing.
+  // Format seeds are ordered ahead of aliases so they survive the slice.
+  const label = topic.label;
+  const formatSeeds =
+    topic.interestKind === 'personal'
+      ? [
+          `${label} review`,
+          `${label} recommendations`,
+          `${label} new release`,
+          `${label} trailer or video`,
+          `${label} latest news`,
+        ]
+      : [
+          `${label} conference talk or video`,
+          `${label} podcast episode`,
+          `${label} latest developments`,
+          `${label} technical writeup`,
+        ];
+  const seeds = unique([label, ...formatSeeds, ...topic.aliases]);
   return seeds
     .map((item) => sanitizeText(item, 120))
     .filter(Boolean)

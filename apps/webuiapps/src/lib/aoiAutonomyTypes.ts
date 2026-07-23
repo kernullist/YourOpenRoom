@@ -637,6 +637,10 @@ export type AoiInterestTopicSource =
   | 'research_run'
   | 'project_context';
 
+// Coarse domain for an interest topic: work-related vs personal/lifestyle.
+// Optional so previously persisted topics remain valid.
+export type AoiInterestKind = 'professional' | 'personal';
+
 export interface AoiInterestTopic {
   version: 1;
   id: string;
@@ -645,6 +649,7 @@ export interface AoiInterestTopic {
   normalizedLabel: string;
   aliases: string[];
   source: AoiInterestTopicSource;
+  interestKind?: AoiInterestKind;
   memoryIds: string[];
   evidenceRefs: string[];
   confidence: number;
