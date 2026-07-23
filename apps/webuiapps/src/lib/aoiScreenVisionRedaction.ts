@@ -25,9 +25,14 @@ const DEFAULT_MAX_DETAILS = 6;
 const DEFAULT_MAX_DETAIL_CHARS = 160;
 
 const URL_PATTERN = /\bhttps?:\/\/[^\s'"<>]+/gi;
-const WINDOWS_PATH_PATTERN = /(?:[A-Za-z]:\\|\\\\)[^\s'"<>|]+/g;
+// Windows / UNC paths. Directory segments routinely contain spaces
+// ("C:\Program Files\...", "C:\Users\Bob Smith\..."), so a segment is consumed
+// across a space up to the next backslash; only the FINAL segment stops at
+// whitespace. A first-space-terminated pattern leaked the sensitive tail (e.g.
+// "C:\Users\Bob Smith\keys.txt" redacted to "[local path] Smith\keys.txt").
+const WINDOWS_PATH_PATTERN = /(?:[A-Za-z]:\\|\\\\)(?:[^\\\r\n"'|<>]*\\)*[^\s\\\r\n"'|<>]*/g;
 const UNIX_PATH_PATTERN =
-  /(?:\/(?:Users|home|mnt|tmp|var|Volumes|workspace|etc|opt|root)\/[^\s'"<>|]+)/g;
+  /\/(?:Users|home|mnt|tmp|var|Volumes|workspace|etc|opt|root)\/(?:[^/\r\n"'|<>]*\/)*[^\s/\r\n"'|<>]*/g;
 const EMAIL_PATTERN = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 // Bare high-entropy secrets the shared redactor misses when they appear on
 // screen WITHOUT a `Bearer`/`key=` prefix: JWTs, AWS access keys, and Google
@@ -39,6 +44,10 @@ const CLOUD_KEY_PATTERN = /\b(?:AKIA|ASIA|AGPA|AIDA|AROA|ANPA|AIza)[0-9A-Za-z_-]
 // short numbers ("42 files", version "1.2.3") untouched.
 const LONG_NUMBER_PATTERN = /\b\d[\d ().-]{6,}\d\b/g;
 const LONG_NUMBER_MIN_DIGITS = 9;
+// A model id is a bounded slug (mirrors the backend/stream validators). Anything
+// else is coerced to 'unknown' so an untrusted modelId (e.g. from a compromised
+// local VLM response) cannot smuggle free text through this redaction boundary.
+const MODEL_ID_PATTERN = /^[a-z0-9][a-z0-9.:/-]{0,79}$/i;
 
 export interface AoiScreenVisionRedactedSummary {
   version: 1;
@@ -155,7 +164,9 @@ export function redactAoiScreenVisionResult(
     version: 1,
     channel: result.channel,
     modelId:
-      typeof result.modelId === 'string' && result.modelId.length > 0 ? result.modelId : 'unknown',
+      typeof result.modelId === 'string' && MODEL_ID_PATTERN.test(result.modelId)
+        ? result.modelId
+        : 'unknown',
     summary,
     details,
     appLabel: appLabel.length > 0 ? appLabel : null,

@@ -86,7 +86,7 @@ export function redactAoiDesktopTitle(value: string): string {
   return redactAoiSensitiveContent(value)
     .replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, REDACTED_TITLE_TOKEN)
     .replace(/\bhttps?:\/\/[^\s]+/gi, REDACTED_TITLE_TOKEN)
-    .replace(/\b[A-Za-z]:\\[^\s|<>]*/g, REDACTED_TITLE_TOKEN)
+    .replace(/\b[A-Za-z]:\\(?:[^\\\r\n|<>]*\\)*[^\s\\\r\n|<>]*/g, REDACTED_TITLE_TOKEN)
     .replace(/(?:^|\s)\/(?:[^\s/|<>]+\/)+[^\s/|<>]*/g, ' ' + REDACTED_TITLE_TOKEN);
 }
 

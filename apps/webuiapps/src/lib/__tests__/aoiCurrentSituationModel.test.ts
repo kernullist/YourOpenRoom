@@ -107,7 +107,12 @@ function makeScreenVisionSummary(now: number) {
       now - 60 * 1000,
     ).event,
   ].filter((event): event is AoiScreenVisionEvent => event !== null);
-  return buildAoiScreenVisionStreamSummary({ sessionPath: SESSION_PATH, events, now });
+  return buildAoiScreenVisionStreamSummary({
+    sessionPath: SESSION_PATH,
+    events,
+    consented: true,
+    now,
+  });
 }
 
 function makeCalendarSummary(): AoiPersonalSignalMetadataSummary {

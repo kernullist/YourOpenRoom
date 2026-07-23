@@ -56,6 +56,11 @@ const CAPABILITIES: { key: string; label: string; hint: string }[] = [
     hint: 'Learn interests from foreground app usage. Also grants session desktop-activity consent.',
   },
   {
+    key: 'screen_vision',
+    label: 'Screen vision',
+    hint: 'Redacted summary of the FOCUSED window via a local vision model. Also grants screen-vision consent. Pixels are never persisted and never leave the local process.',
+  },
+  {
     key: 'os_browser_read',
     label: 'Headless browser read',
     hint: 'Open public pages with local Chrome/Edge headless and extract text. Also grants host-browser-read consent.',

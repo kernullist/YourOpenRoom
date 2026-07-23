@@ -510,7 +510,10 @@ export function buildAoiScreenVisionStreamSummary(params: {
     throw new Error('Invalid or missing sessionPath.');
   }
   const now = params.now ?? Date.now();
-  const consented = params.consented !== false;
+  // Fail-closed: only an explicit true is treated as consented. A missing flag
+  // must never surface events as consented (defense in depth behind the route
+  // and loader consent gates, which always pass this explicitly).
+  const consented = params.consented === true;
   const normalizedEvents = consented
     ? params.events
         .map((event) => normalizeLoadedScreenVisionEvent(event, sessionPath, now))

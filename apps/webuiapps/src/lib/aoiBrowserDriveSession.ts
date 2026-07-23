@@ -296,6 +296,9 @@ export async function startAoiBrowserDriveSession(
     }
     closed = true;
     // Close ONLY Aoi's page; the shared browser stays up (the user is using it).
+    // We deliberately never call browser.close(): over connectOverCDP that would
+    // clear the user's existing contexts / disconnect their real logged-in
+    // browser. The CDP transport is released when the daemon process exits.
     try {
       await page.close();
     } catch {
