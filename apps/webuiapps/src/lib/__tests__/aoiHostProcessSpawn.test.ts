@@ -157,6 +157,24 @@ describe('evaluateAoiHostSpawnPolicy', () => {
     expect(policy.approvalSandbox.expectedMutationCount).toBe(1);
   });
 
+  it('binds the FULL argument vector -- args differing past the 240-char summary get distinct fingerprints (fix)', () => {
+    const baseArgs = Array.from({ length: 19 }, (_u, i) => `arg-padding-${i}`);
+    const build = (tail: string) =>
+      evaluateAoiHostSpawnPolicy({
+        request: { allowlistId: 'notepad', args: [...baseArgs, tail], requestedAt: 1000 },
+        allowlist,
+        now: 1000,
+      });
+    const a = build('TAILVALUEA');
+    const b = build('TAILVALUEB');
+    expect(a.allowed).toBe(true);
+    expect(b.allowed).toBe(true);
+    // The readable summary truncates at 240 -- before the differing tail -- so both
+    // share it; the fingerprint must NOT (it now covers every arg via the digest).
+    expect(a.args.join(' ').slice(0, 240)).toBe(b.args.join(' ').slice(0, 240));
+    expect(a.approvalFingerprint).not.toBe(b.approvalFingerprint);
+  });
+
   it('blocks an unknown entry and a missing id', () => {
     expect(
       evaluateAoiHostSpawnPolicy({

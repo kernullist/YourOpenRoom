@@ -113,18 +113,26 @@ export function recycleAoiHostFile(path: string): boolean {
     // permanently delete (the design forbids a permanent-delete path).
     return false;
   }
-  // -LiteralPath avoids glob/wildcard interpretation; the VisualBasic call sends
-  // the file to the Recycle Bin (OnlyErrorDialogs, DeleteToRecycleBin, DoNothing).
+  // A path passed AFTER -Command is NOT bound to param() (verified: $p stays
+  // empty), so the previous form both broke every recycle AND left the path
+  // concatenated into the command text (a latent injection). Embed the path as a
+  // single-quoted PowerShell literal instead: inside a single-quoted string
+  // PowerShell performs no interpolation or subexpression evaluation, so ; & $ `
+  // ( ) are inert and only an embedded quote needs escaping (' -> ''). Reject
+  // control chars / newlines up front -- never valid in a real file path, and the
+  // only way to break out of the single-quoted literal.
+  if (/[\r\n]/.test(path) || path.includes(String.fromCharCode(0))) {
+    return false;
+  }
+  const literal = path.replace(/'/g, "''");
   const script =
-    'param([string]$p)' +
     'Add-Type -AssemblyName Microsoft.VisualBasic;' +
-    '[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile(' +
-    '$p,' +
-    "'OnlyErrorDialogs','SendToRecycleBin','ThrowException')";
-  const result = spawnSync(
-    'powershell',
-    ['-NoProfile', '-NonInteractive', '-Command', script, path],
-    { windowsHide: true, encoding: 'utf-8' },
-  );
+    "[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('" +
+    literal +
+    "','OnlyErrorDialogs','SendToRecycleBin','ThrowException')";
+  const result = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
+    windowsHide: true,
+    encoding: 'utf-8',
+  });
   return result.status === 0;
 }

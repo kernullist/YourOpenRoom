@@ -34,6 +34,7 @@ import {
   normalizeAoiApprovalSandboxPreview,
   type AoiApprovalSandboxPreview,
 } from './aoiApprovalSandbox';
+import { aoiSyncSha256Hex } from './aoiSyncSha256';
 
 export const AOI_HOST_SPAWN_CAPABILITY = 'os_process_spawn';
 export const AOI_HOST_SPAWN_APPROVAL_TTL_MS = 5 * 60 * 1000;
@@ -479,6 +480,13 @@ export function evaluateAoiHostSpawnPolicy(params: {
   const resolvedAllowlistId = entry?.id ?? allowlistId;
   const label = entry?.label ?? (resolvedAllowlistId || 'unknown');
   const argsSummary = args.join(' ').slice(0, 240);
+  // Bind the FULL argument vector into the fingerprint. The readable argsSummary
+  // is capped at 240 and the sandbox `command` is capped at 320, so two spawns
+  // whose args differ only PAST the cap would otherwise share a fingerprint --
+  // letting a longer, unshown tail slip in under an approval for a shorter one.
+  // The digest (order-sensitive, covers every arg) goes at the FRONT of `command`
+  // so it always survives the length cap.
+  const argsDigest = aoiSyncSha256Hex(JSON.stringify(args));
   const approvalSandbox = createAoiApprovalSandboxPreview({
     targetKind: 'command',
     targetId: `host-spawn:${resolvedAllowlistId}:${normalizePathKey(program || 'unknown')}`,
@@ -505,7 +513,7 @@ export function evaluateAoiHostSpawnPolicy(params: {
       check: 'Spawn audit receipt is recorded after execution.',
       evidenceRefs,
     },
-    command: `${program} ${argsSummary}`.trim(),
+    command: `${program} args#${argsDigest} ${argsSummary}`.trim(),
     evidenceRefs,
   });
   const blockReasons = [...new Set(reasons)];

@@ -25,4 +25,13 @@ describe('aoiHostBridgeOsImpl input guards', () => {
   it('recycleAoiHostFile refuses an empty path', () => {
     expect(recycleAoiHostFile('')).toBe(false);
   });
+
+  it('recycleAoiHostFile refuses a path with a newline or NUL (injection guard)', () => {
+    // A newline or NUL can never appear in a real Windows path and is the only
+    // way to break out of the single-quoted PowerShell literal the path is
+    // embedded in; reject it up front (no powershell spawn / side effect).
+    expect(recycleAoiHostFile('C:' + String.fromCharCode(10) + 'x')).toBe(false);
+    expect(recycleAoiHostFile('C:' + String.fromCharCode(13) + 'x')).toBe(false);
+    expect(recycleAoiHostFile('C:' + String.fromCharCode(0) + 'x')).toBe(false);
+  });
 });

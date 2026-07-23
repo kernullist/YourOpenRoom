@@ -417,20 +417,42 @@ export function readAoiHostFileContent(params: {
     return { ok: false, reason: 'not_a_file' };
   }
   const cap = Math.max(1, Math.min(MAX_READ_BYTES, params.maxBytes ?? MAX_READ_BYTES));
+  const fileSize = stat.size;
   try {
-    const buffer = fs.readFileSync(resolution.resolvedPath);
-    const truncated = buffer.byteLength > cap;
-    const slice = truncated ? buffer.subarray(0, cap) : buffer;
-    return {
-      ok: true,
-      content: {
-        version: 1,
-        path: resolution.resolvedPath,
-        content: slice.toString('utf-8'),
-        byteLength: buffer.byteLength,
-        truncated,
-      },
-    };
+    // Never load more than the cap into memory. Applying the cap AFTER a full
+    // readFileSync let a multi-hundred-MB / GB file inside a read root spike (or
+    // exhaust) daemon memory before truncation. Small files take the simple path;
+    // a large file is read through a bounded descriptor read of only `cap` bytes.
+    if (fileSize <= cap) {
+      const buffer = fs.readFileSync(resolution.resolvedPath);
+      return {
+        ok: true,
+        content: {
+          version: 1,
+          path: resolution.resolvedPath,
+          content: buffer.toString('utf-8'),
+          byteLength: buffer.byteLength,
+          truncated: false,
+        },
+      };
+    }
+    const fd = fs.openSync(resolution.resolvedPath, 'r');
+    try {
+      const buffer = Buffer.alloc(cap);
+      const bytesRead = fs.readSync(fd, buffer, 0, cap, 0);
+      return {
+        ok: true,
+        content: {
+          version: 1,
+          path: resolution.resolvedPath,
+          content: buffer.subarray(0, bytesRead).toString('utf-8'),
+          byteLength: fileSize,
+          truncated: true,
+        },
+      };
+    } finally {
+      fs.closeSync(fd);
+    }
   } catch {
     return { ok: false, reason: 'read_failed' };
   }

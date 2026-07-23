@@ -27,6 +27,19 @@ describe('resolveAoiHostBrowserUrl', () => {
     expect(resolveAoiHostBrowserUrl('javascript:alert(1)').ok).toBe(false);
     expect(resolveAoiHostBrowserUrl('').ok).toBe(false);
   });
+
+  it('rejects IPv4-mapped IPv6 loopback/private/metadata hosts (SSRF bypass fix)', () => {
+    // The WHATWG URL parser compresses ::ffff:127.0.0.1 to the hex form
+    // ::ffff:7f00:1, which a dotted "::ffff:127." prefix check never matched, so
+    // it slipped through and reached IPv4 loopback on a dual-stack host.
+    expect(resolveAoiHostBrowserUrl('http://[::ffff:127.0.0.1]:8080/admin').ok).toBe(false);
+    expect(resolveAoiHostBrowserUrl('http://[::ffff:192.168.1.1]/').ok).toBe(false);
+    expect(resolveAoiHostBrowserUrl('http://[::ffff:10.0.0.5]/').ok).toBe(false);
+    expect(resolveAoiHostBrowserUrl('http://[::ffff:169.254.169.254]/latest').ok).toBe(false);
+    expect(resolveAoiHostBrowserUrl('http://[::ffff:172.16.0.1]/').ok).toBe(false);
+    // A public IPv4-mapped address is still allowed (only private ranges blocked).
+    expect(resolveAoiHostBrowserUrl('http://[::ffff:8.8.8.8]/').ok).toBe(true);
+  });
 });
 
 describe('extractAoiHostBrowserReadable', () => {
