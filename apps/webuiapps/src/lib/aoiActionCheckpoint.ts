@@ -361,6 +361,15 @@ function rollbackEntry(
   if (stat && stat.isSymbolicLink()) {
     return { pathLabel: entry.pathLabel, outcome: 'failed', reason: 'unexpected_symlink' };
   }
+  // Re-validate ANCESTORS too (capture-time check at assertAncestorInsideRoot): a
+  // parent directory that became a symlink AFTER capture would be silently
+  // followed by mkdirSync/writeFileSync below, redirecting the restore write
+  // outside the workspace root. Rollback must re-check the same TOCTOU window.
+  try {
+    assertAncestorInsideRoot(realRoot, absolutePath, entry.pathLabel);
+  } catch {
+    return { pathLabel: entry.pathLabel, outcome: 'failed', reason: 'path_escapes_workspace' };
+  }
 
   if (entry.existedBefore) {
     if (typeof entry.content !== 'string') {

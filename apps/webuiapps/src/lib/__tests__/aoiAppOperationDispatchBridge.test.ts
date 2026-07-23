@@ -69,6 +69,37 @@ describe('runAoiAppOperationDispatchBridge()', () => {
     expect(summary.outcomes[0].result).toBe('dispatched');
   });
 
+  it('refuses to publish a record whose action was tampered to differ from the approval (A4)', async () => {
+    const { deps, reports, dispatchToApp } = makeHarness({
+      // Fingerprint still matches, but the derived approved action differs from the
+      // record's stored actionType/params -> a tampered record must NOT be published.
+      deriveApprovedAction: () => ({ actionType: 'PLAY_TRACK', params: { trackId: '999' } }),
+    });
+    const summary = await runAoiAppOperationDispatchBridge(
+      [makeDispatch({ params: { trackId: '123' } })],
+      deps,
+    );
+    expect(dispatchToApp).not.toHaveBeenCalled();
+    expect(reports).toEqual([
+      {
+        id: 'app-op-dispatch-1700-7-PLAY_TRACK',
+        status: 'failed',
+        failureReason: 'action_mismatch',
+      },
+    ]);
+    expect(summary.outcomes[0].result).toBe('approval_mismatch');
+    expect(summary.outcomes[0].detail).toBe('action_mismatch');
+  });
+
+  it('publishes when the derived approved action matches the record (A4)', async () => {
+    const { deps, dispatchToApp } = makeHarness({
+      deriveApprovedAction: () => ({ actionType: 'PLAY_TRACK', params: { trackId: '123' } }),
+    });
+    const summary = await runAoiAppOperationDispatchBridge([makeDispatch()], deps);
+    expect(dispatchToApp).toHaveBeenCalledTimes(1);
+    expect(summary.dispatched).toBe(1);
+  });
+
   it("maps an 'error:' app result to a failed report (the app handler failure convention)", async () => {
     const { deps, reports } = makeHarness({
       dispatchToApp: vi.fn(async () => 'error: track not found'),

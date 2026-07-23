@@ -138,4 +138,38 @@ describe('selectAoiServerValidatedAppDispatches (P2.2 server-side re-check)', ()
     });
     expect(result.eligible.map((r) => r.id)).toEqual(['dispatch-1']);
   });
+
+  it('keeps a record whose stored action matches the re-derived approved action (A4)', () => {
+    const result = selectAoiServerValidatedAppDispatches({
+      records: [makeDispatch({ actionType: 'CREATE_NOTE', params: { title: 'x' } })],
+      lookupProposal,
+      recomputeApprovalFingerprint: matchingFingerprint,
+      deriveApprovedAction: () => ({ actionType: 'CREATE_NOTE', params: { title: 'x' } }),
+    });
+    expect(result.eligible.map((r) => r.id)).toEqual(['dispatch-1']);
+    expect(result.rejected).toEqual([]);
+  });
+
+  it('drops a record whose stored action was tampered to differ from the approval (A4)', () => {
+    // The fingerprint still matches (the proposal is unchanged), but the record's
+    // stored action fields were swapped for a DIFFERENT action than the approval.
+    const result = selectAoiServerValidatedAppDispatches({
+      records: [makeDispatch({ actionType: 'DELETE_ALL', params: { scope: 'everything' } })],
+      lookupProposal,
+      recomputeApprovalFingerprint: matchingFingerprint,
+      deriveApprovedAction: () => ({ actionType: 'CREATE_NOTE', params: {} }),
+    });
+    expect(result.eligible).toEqual([]);
+    expect(result.rejected).toEqual([{ id: 'dispatch-1', reason: 'action_mismatch' }]);
+  });
+
+  it('drops a record when the approved action cannot be re-derived (fail closed, A4)', () => {
+    const result = selectAoiServerValidatedAppDispatches({
+      records: [makeDispatch()],
+      lookupProposal,
+      recomputeApprovalFingerprint: matchingFingerprint,
+      deriveApprovedAction: () => null,
+    });
+    expect(result.rejected).toEqual([{ id: 'dispatch-1', reason: 'action_mismatch' }]);
+  });
 });

@@ -205,17 +205,21 @@ export async function dispatchAgentAction(action: {
     };
 
     let resolved = false;
+    const originalSend = mockManager.sendAgentMessage;
     const timeout = setTimeout(
       () => {
         if (!resolved) {
           resolved = true;
+          // Restore the patched sendAgentMessage on timeout too. The success path
+          // restores it at resolve; without this a timed-out dispatch leaks its
+          // monkeypatch layer and later dispatches nest on the stale patch.
+          mockManager.sendAgentMessage = originalSend;
           resolve('timeout: no response from app');
         }
       },
       needsListenerWait ? 20000 : 10000,
     );
 
-    const originalSend = mockManager.sendAgentMessage;
     mockManager.sendAgentMessage = (event: unknown) => {
       const evt = event as { action_result?: string; app_action?: { action_id?: number } };
       if (evt.action_result !== undefined && evt.app_action?.action_id === fullAction.action_id) {

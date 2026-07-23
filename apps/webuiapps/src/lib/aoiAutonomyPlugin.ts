@@ -69,6 +69,7 @@ import {
 import { loadAoiStrategicBrief } from './aoiStrategicBrief';
 import { getAoiApprovedAppActionPolicyForProposal } from './aoiAutonomyPolicy';
 import { selectAoiServerValidatedAppDispatches } from './aoiServerAppDispatchValidation';
+import { deriveAoiApprovedAppActionDispatchTarget } from './aoiApprovedAppActionPolicy';
 import { recordAoiAppOperationDispatchResult } from './aoiAppOperationDispatchServer';
 import { recordAoiFieldFeedbackLearningAction } from './aoiFieldFeedbackLearning';
 import { buildAoiOperatorFeedbackInbox } from './aoiOperatorFeedbackInbox';
@@ -723,6 +724,8 @@ export async function handleAoiAutonomyRequest(
             expiresAt: policy.expiresAt,
           };
         },
+        deriveApprovedAction: (proposal) =>
+          deriveAoiApprovedAppActionDispatchTarget(proposal.acceptAction?.params),
         now: Date.now(),
       });
       writeJson(res, 200, {

@@ -507,10 +507,17 @@ const YouTubeApp: React.FC = () => {
     [activePlayback, persistState, searchQuery],
   );
 
-  const openHome = useCallback(() => {
-    reportAction(APP_ID, 'OPEN_HOME', {});
+  // Effect-only home open (no reportAction). The Agent handler reuses this so it
+  // does NOT double-report: useAgentActionListener's sendResult already reports
+  // the action back to the Agent. The user-facing openHome wraps this + reports.
+  const doOpenHome = useCallback(() => {
     window.open(buildHomeUrl(), '_blank', 'noopener,noreferrer');
   }, []);
+
+  const openHome = useCallback(() => {
+    reportAction(APP_ID, 'OPEN_HOME', {});
+    doOpenHome();
+  }, [doOpenHome]);
 
   const addFavoriteTopic = useCallback(() => {
     const topic = searchQuery.trim();
@@ -931,7 +938,7 @@ const YouTubeApp: React.FC = () => {
             return playLastPlayedPlaylist();
           }
           case 'OPEN_HOME': {
-            openHome();
+            doOpenHome();
             return 'success';
           }
           case 'OPEN_VIDEO': {
@@ -963,7 +970,7 @@ const YouTubeApp: React.FC = () => {
       },
       [
         applyCloudState,
-        openHome,
+        doOpenHome,
         openResultsViewer,
         playLastPlayedPlaylist,
         resultsAutoHide,

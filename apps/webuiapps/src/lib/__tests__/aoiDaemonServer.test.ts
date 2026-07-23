@@ -1102,7 +1102,14 @@ describe('daemon app-operation-dispatch route (B3-1 client-mediated dispatch)', 
       riskSignals: [],
       acceptAction: {
         kind: 'app_action',
-        params: { appName: 'musicApp', actionType: 'PLAY_TRACK', trackId: '123' },
+        // Operation params live under operationParams (where the real queue reads
+        // them), so the server-side action re-check (A4) derives the same
+        // { trackId: '123' } the dispatch record carries.
+        params: {
+          appName: 'musicApp',
+          actionType: 'PLAY_TRACK',
+          operationParams: { trackId: '123' },
+        },
       },
     };
   }

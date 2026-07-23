@@ -67,6 +67,12 @@ export interface AoiAppOperationDispatchBridgeDeps {
     | ((proposal: AoiProposal) => AoiAppOperationDispatchBridgeApprovalSnapshot);
   // Optional clock for expiry checks (tests inject a fixed now).
   now?: () => number;
+  // Re-derive the action the proposal (and thus the fingerprint) approves. When
+  // provided, a record whose stored actionType/params diverge from it is NOT
+  // dispatched. Optional so older callers/tests keep the fingerprint-only check.
+  deriveApprovedAction?: (
+    proposal: AoiProposal,
+  ) => { actionType: string; params: Record<string, string> } | null;
   // Publish the action to the target app over the agent->app bus and capture its
   // action_result. Resolve a string = the app's action_result; resolve null = the app is
   // NOT loaded in this client (leave the record pending); throw = a transport / dispatch
@@ -88,6 +94,29 @@ function clampDetail(value: string): string {
 // so an action_result that starts with "error" is recorded as a failed dispatch.
 function isAppErrorResult(actionResult: string): boolean {
   return /^\s*error\b/i.test(actionResult);
+}
+
+// Whether a re-derived approved action equals what the stored record would publish.
+// The fingerprint proves the PROPOSAL is unchanged; this proves the RECORD's own
+// actionType/params were not swapped for a different action under the same approval.
+function actionTargetMatches(
+  expected: { actionType: string; params: Record<string, string> },
+  record: AoiAppOperationDispatch,
+): boolean {
+  if (expected.actionType !== record.actionType) {
+    return false;
+  }
+  const recordParams = record.params ?? {};
+  const expectedKeys = Object.keys(expected.params);
+  if (expectedKeys.length !== Object.keys(recordParams).length) {
+    return false;
+  }
+  for (const key of expectedKeys) {
+    if (expected.params[key] !== recordParams[key]) {
+      return false;
+    }
+  }
+  return true;
 }
 
 async function safeReport(
@@ -188,6 +217,18 @@ async function processOne(
       result: 'approval_mismatch',
       detail: 'approval_expired',
     };
+  }
+
+  // Bind the DISPATCHED action to the approval: the fingerprint match above only
+  // proves the proposal is unchanged, not that this record's stored actionType/
+  // params still equal what the proposal (and fingerprint) approve. A record whose
+  // action fields were edited to a different action is NOT published.
+  if (deps.deriveApprovedAction) {
+    const expected = deps.deriveApprovedAction(proposal);
+    if (!expected || !actionTargetMatches(expected, record)) {
+      await safeReport(deps, { id: record.id, status: 'failed', failureReason: 'action_mismatch' });
+      return { recordId: record.id, result: 'approval_mismatch', detail: 'action_mismatch' };
+    }
   }
 
   let actionResult: string | null;

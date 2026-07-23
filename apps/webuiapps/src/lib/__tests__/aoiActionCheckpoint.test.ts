@@ -215,6 +215,29 @@ describe('rollbackAoiActionCheckpoint', () => {
     expect(fs.readFileSync(file, 'utf8')).toBe('keepme');
   });
 
+  it.skipIf(!SYMLINK_SUPPORTED)(
+    'refuses rollback when an ancestor became a symlink escaping the root (TOCTOU)',
+    () => {
+      const root = makeTempRoot();
+      const outside = makeTempRoot();
+      fs.mkdirSync(join(root, 'sub'), { recursive: true });
+      fs.writeFileSync(join(root, 'sub', 'data.json'), 'original');
+      const checkpoint = createAoiActionCheckpoint({
+        workspaceRoot: root,
+        paths: ['sub/data.json'],
+        now: 1000,
+      });
+      // TOCTOU: after capture, swap the ancestor dir for a symlink to outside.
+      fs.rmSync(join(root, 'sub'), { recursive: true, force: true });
+      fs.symlinkSync(outside, join(root, 'sub'), 'junction');
+      const result = rollbackAoiActionCheckpoint(checkpoint, { workspaceRoot: root, now: 2000 });
+      expect(result.entries[0].outcome).toBe('failed');
+      expect(result.entries[0].reason).toBe('path_escapes_workspace');
+      // The restore write never landed in the escaped location.
+      expect(fs.existsSync(join(outside, 'data.json'))).toBe(false);
+    },
+  );
+
   it('reports unchanged when an absent-before file is still absent', () => {
     const root = makeTempRoot();
     const checkpoint = createAoiActionCheckpoint({

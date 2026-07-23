@@ -224,6 +224,34 @@ export function createAoiApprovedAppActionRequest(params: {
   };
 }
 
+// Derive the EXACT { actionType, params } a queued app-operation dispatch carries,
+// straight from the source proposal's acceptAction params. Mirrors the queue-time
+// builder (maybeQueueAppOperationDispatch -> buildApprovedAppActionRequestFromProposal):
+// actionType + operationParams both derive SOLELY from acceptAction params through
+// this same createAoiApprovedAppActionRequest normalization, so the result is exactly
+// what the record stored -- deterministic, no false mismatch. A dispatch validator
+// uses this to confirm a stored record's action fields were not tampered to differ
+// from what the content-addressed approval fingerprint actually covered.
+export function deriveAoiApprovedAppActionDispatchTarget(
+  acceptActionParams: Record<string, unknown> | undefined,
+): { actionType: string; params: Record<string, string> } {
+  const actionParams = acceptActionParams ?? {};
+  const request = createAoiApprovedAppActionRequest({
+    sessionPath: '',
+    appReference: actionParams.appReference ?? actionParams.appName ?? actionParams.app,
+    capabilityId: actionParams.capabilityId,
+    intentReference: actionParams.intentReference ?? actionParams.intent,
+    actionType: actionParams.actionType ?? actionParams.action,
+    requestedOperation: actionParams.requestedOperation ?? actionParams.operation,
+    operationParams: actionParams.operationParams ?? actionParams.actionParams,
+    path: actionParams.path,
+    content: actionParams.content,
+    patchOps: actionParams.patchOps ?? actionParams.patch_ops,
+    requestedAt: 0,
+  });
+  return { actionType: (request.actionType ?? '').trim(), params: request.operationParams ?? {} };
+}
+
 function hasCapabilityReference(request: AoiApprovedAppActionRequest): boolean {
   return Boolean(
     request.capabilityId ||

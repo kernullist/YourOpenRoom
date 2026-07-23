@@ -511,6 +511,7 @@ import {
   getAoiApprovedAppActionPolicyForProposal,
   isAoiToolAllowedAtLevel,
 } from '@/lib/aoiAutonomyPolicy';
+import { deriveAoiApprovedAppActionDispatchTarget } from '@/lib/aoiApprovedAppActionPolicy';
 import { runAoiAppOperationDispatchBridge } from '@/lib/aoiAppOperationDispatchBridge';
 import {
   useAoiDurableDispatchBridge,
@@ -4102,6 +4103,8 @@ const ChatPanel: React.FC<{
             expiresAt: policy.expiresAt,
           };
         },
+        deriveApprovedAction: (proposal) =>
+          deriveAoiApprovedAppActionDispatchTarget(proposal.acceptAction?.params),
         now: () => Date.now(),
         dispatchToApp: async (record) => {
           // Only dispatch to an app already loaded in this client; otherwise leave the

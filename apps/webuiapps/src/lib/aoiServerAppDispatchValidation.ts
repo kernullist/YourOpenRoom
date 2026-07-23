@@ -14,13 +14,39 @@
 // missing proposal, a recompute error, or a fingerprint mismatch each drops the record.
 import type { AoiAppOperationDispatch, AoiProposal } from './aoiAutonomyTypes';
 
+// Whether a re-derived approved action equals what the stored record would dispatch.
+// The fingerprint proves the PROPOSAL is unchanged; this proves the RECORD's own
+// actionType/params were not swapped for a different action under the same approval.
+function actionTargetMatches(
+  expected: { actionType: string; params: Record<string, string> },
+  record: AoiAppOperationDispatch,
+): boolean {
+  if (expected.actionType !== record.actionType) {
+    return false;
+  }
+  const recordParams = record.params ?? {};
+  const expectedKeys = Object.keys(expected.params);
+  if (expectedKeys.length !== Object.keys(recordParams).length) {
+    return false;
+  }
+  for (const key of expectedKeys) {
+    if (expected.params[key] !== recordParams[key]) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export type AoiServerDispatchRejectReason =
   | 'not_pending'
   | 'missing_proposal_reference'
   | 'proposal_not_found'
   | 'approval_recheck_failed'
   | 'approval_fingerprint_mismatch'
-  | 'approval_expired';
+  | 'approval_expired'
+  // The record's stored actionType/params no longer match the action the source
+  // proposal (and thus the fingerprint) covers -- a tampered dispatch record.
+  | 'action_mismatch';
 
 export interface AoiServerDispatchRejected {
   id: string;
@@ -50,6 +76,12 @@ export function selectAoiServerValidatedAppDispatches(params: {
   recomputeApprovalFingerprint:
     | ((proposal: AoiProposal) => string)
     | ((proposal: AoiProposal) => AoiServerDispatchApprovalSnapshot);
+  // Re-derive the action the proposal (and thus the fingerprint) approves. When
+  // provided, a record whose stored actionType/params diverge from it is dropped
+  // as tampered. Optional so older callers/tests keep the fingerprint-only check.
+  deriveApprovedAction?: (
+    proposal: AoiProposal,
+  ) => { actionType: string; params: Record<string, string> } | null;
   now?: number;
 }): AoiServerValidatedAppDispatchSelection {
   const eligible: AoiAppOperationDispatch[] = [];
@@ -107,6 +139,17 @@ export function selectAoiServerValidatedAppDispatches(params: {
     if (standingExpiresAt < now) {
       rejected.push({ id: record.id, reason: 'approval_expired' });
       continue;
+    }
+    // Bind the DISPATCHED action to the approval: the fingerprint match above only
+    // proves the proposal is unchanged, not that this record's stored actionType/
+    // params still equal what the proposal (and fingerprint) approve. A record
+    // whose action fields were edited to a different action is dropped.
+    if (params.deriveApprovedAction) {
+      const expected = params.deriveApprovedAction(proposal);
+      if (!expected || !actionTargetMatches(expected, record)) {
+        rejected.push({ id: record.id, reason: 'action_mismatch' });
+        continue;
+      }
     }
     eligible.push(record);
   }
