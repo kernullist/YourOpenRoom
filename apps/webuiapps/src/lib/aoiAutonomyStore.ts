@@ -8,6 +8,7 @@ import {
   normalizeAoiEnvironmentSourceRegistry,
   normalizeAoiAutonomyPolicy,
 } from './aoiAutonomyPolicy';
+import { AOI_DEFAULT_AUTONOMY_MODE, applyAoiAutonomyModeToPolicy } from './aoiAutonomyMode';
 import { normalizeAoiAutonomySessionPath } from './aoiAutonomySessionPath';
 import type { AoiAutonomyLevelPromotionGateState } from './aoiAutonomyLevelPromotion';
 import type { AoiTracePromotionDecision } from './aoiTracePromotion';
@@ -601,11 +602,19 @@ export function resolveAoiAutonomyPaths(
 
 export function loadAoiAutonomyPolicy(sessionsDir: string, sessionPath: string): AoiAutonomyPolicy {
   const paths = resolveAoiAutonomyPaths(sessionsDir, sessionPath);
-  return normalizeAoiAutonomyPolicy(
-    readJson<Partial<AoiAutonomyPolicy>>(paths.policy),
-    DEFAULT_AOI_AUTONOMY_POLICY,
-    readJson<Partial<AoiAutonomyPolicy>>(paths.policy)?.updatedAt || 0,
-  );
+  const raw = readJson<Partial<AoiAutonomyPolicy>>(paths.policy);
+  // Seed the full autonomy mode ONLY on a genuine first run -- the policy file
+  // does not exist yet. readJson also returns null when the file EXISTS but is
+  // unreadable (parse error, or a transient Windows lock/AV read failure), and
+  // that case must fall back to the fail-closed baseline so a lost or corrupt
+  // config never silently opens network/capture. The DEFAULT_AOI_AUTONOMY_POLICY
+  // constant stays the safe baseline (and the per-field fallback for an existing
+  // partial policy). Safety guards (approval/preview/evidence) are preserved.
+  const firstRun = !raw && !fs.existsSync(paths.policy);
+  const fallback = firstRun
+    ? applyAoiAutonomyModeToPolicy(DEFAULT_AOI_AUTONOMY_POLICY, AOI_DEFAULT_AUTONOMY_MODE, 0)
+    : DEFAULT_AOI_AUTONOMY_POLICY;
+  return normalizeAoiAutonomyPolicy(raw, fallback, raw?.updatedAt || 0);
 }
 
 export function saveAoiAutonomyPolicy(

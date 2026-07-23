@@ -3356,8 +3356,10 @@ export interface AoiAutonomyPolicy {
   proactiveSuggestionsEnabled: boolean;
   // P5.4: operator opt-in to field-shadow capture (grows the readiness DENOMINATOR so
   // the trust on-ramp can accrue) tied to the settings UI instead of only an env var.
-  // Optional + default off -> behavior is byte-identical until the operator enables it;
-  // the env ceiling still applies and loop-written records never auto-promote.
+  // Optional; the DEFAULT_AOI_AUTONOMY_POLICY constant leaves it off, but a fresh install
+  // seeds the full autonomy mode (loadAoiAutonomyPolicy / aoiAutonomyMode), so a brand-new
+  // session captures by default. The env var remains a hard OFF ceiling, and loop-written
+  // records only grow the readiness denominator (never auto-promote).
   fieldShadowCaptureEnabled?: boolean;
   // P3.1: operator opt-in to the bounded reason-act-observe reflection loop. When on, the
   // reflection MAY inspect the already-loaded working set in more detail (read-only, pure

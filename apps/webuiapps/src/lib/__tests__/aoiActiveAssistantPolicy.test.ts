@@ -11,7 +11,7 @@ import {
   sleepAoiActiveAssistant,
 } from '../aoiActiveAssistantPolicy';
 import { DEFAULT_AOI_AUTONOMY_POLICY, isAoiFieldShadowCaptureEnabled } from '../aoiAutonomyPolicy';
-import { loadAoiAutonomyPolicy } from '../aoiAutonomyStore';
+import { loadAoiAutonomyPolicy, saveAoiAutonomyPolicy } from '../aoiAutonomyStore';
 
 const NOW = 1_800_000_000_000;
 const SESSION = 'aoi/default';
@@ -112,7 +112,9 @@ describe('buildAoiDormantPolicy', () => {
 describe('igniteAoiActiveAssistant / sleepAoiActiveAssistant', () => {
   it('persists the active policy, then reverts it (round-trip)', () => {
     const root = makeRoot();
-    // Fresh session -> the default policy is inert.
+    // A fresh install now seeds the full autonomy mode, so establish the dormant
+    // (disabled) precondition explicitly to exercise the ignite/sleep round-trip.
+    saveAoiAutonomyPolicy(root, SESSION, DEFAULT_AOI_AUTONOMY_POLICY, NOW - 1);
     expect(loadAoiAutonomyPolicy(root, SESSION).enabled).toBe(false);
 
     const ignited = igniteAoiActiveAssistant({ sessionsDir: root, sessionPath: SESSION, now: NOW });

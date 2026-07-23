@@ -1,7 +1,9 @@
 // "Wake Aoi into active-assistant mode" -- the Tier 1-3 ignition.
 //
-// Out of the box every autonomy layer is OFF (policy.enabled=false): Aoi is inert. This turns on
-// the SAFE active tier -- it proposes, reaches out, reasons, and starts earning trust -- while
+// NOTE: a fresh install now seeds the full autonomy mode (see loadAoiAutonomyPolicy /
+// aoiAutonomyMode), so a brand-new session is already awake. This ignition still explicitly wakes
+// a DORMANT session -- one the operator slept, or a persisted policy with enabled=false. It turns
+// on the SAFE active tier -- it proposes, reaches out, reasons, and starts earning trust -- while
 // keeping EVERY real action behind human approval. It provably cannot enable autonomous
 // self-execution (Tier 4): that is gated by the AOI_AUTONOMY_SELF_EXECUTE env var + trusted_operator
 // readiness, both entirely outside the policy, so no policy value can reach it.
@@ -11,8 +13,9 @@
 //   * previewMode: true               -- prepare/preview only, never auto-apply
 //   * requireApprovalForHighRisk: true -- a human always clears high-risk
 //   * requireEvidenceRefs: true        -- every proposal must cite evidence
-// allowNetwork + level are left at the caller's base: outward web-scouting and higher autonomy
-// levels are separate, deliberate opt-ins, not part of waking up.
+// allowNetwork + level are left at the caller's base -- ignition itself never toggles them. (With
+// the full-mode fresh-install default the base already has allowNetwork on; from a dormant base
+// they stay exactly as the operator left them.)
 import { DEFAULT_AOI_AUTONOMY_POLICY } from './aoiAutonomyPolicy';
 import { loadAoiAutonomyPolicy, saveAoiAutonomyPolicy } from './aoiAutonomyStore';
 import type { AoiAutonomyPolicy } from './aoiAutonomyTypes';

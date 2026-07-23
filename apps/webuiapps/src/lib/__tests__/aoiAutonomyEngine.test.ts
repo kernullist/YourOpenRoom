@@ -124,6 +124,9 @@ function enablePolicy(root: string, level: 'L3' | 'L4' = 'L4'): void {
       confidenceFloor: 0.55,
       maxActiveProposals: 8,
       maxProposalsPerTick: 4,
+      // Explicit so this shared helper is independent of the fresh-install
+      // default (which now seeds the full autonomy mode with capture on).
+      fieldShadowCaptureEnabled: false,
     },
     NOW,
   );
@@ -3781,6 +3784,9 @@ describe('runAoiAutonomyWakeup()', () => {
   it('persists field-shadow decision records when field-shadow capture is enabled', async () => {
     const root = makeTempRoot();
     enablePolicy(root, 'L4');
+    // Policy is the authority for capture (isAoiFieldShadowCaptureEnabled); the
+    // env var is only a ceiling. Enable it explicitly so the wakeup captures.
+    saveAoiAutonomyPolicy(root, SESSION_PATH, { fieldShadowCaptureEnabled: true }, NOW);
     // Seed an active opportunity so the tick has something for the shadow bridge.
     upsertAoiOpportunity(root, SESSION_PATH, makeFieldShadowOpportunityInput(), NOW);
     expect(loadAoiFieldShadowDecisionRecords(root, SESSION_PATH, NOW).length).toBe(0);

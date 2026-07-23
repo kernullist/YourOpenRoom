@@ -21,11 +21,16 @@ test.describe('Chat settings – Aoi autonomy thinking toggle', () => {
 
     await modal.getByRole('button', { name: 'Advanced', exact: true }).click();
 
+    // Individual toggles now sit under a collapsed "Advanced" details section (the
+    // Autonomy mode preset is the primary control); expand it to reach them.
+    await modal.getByText('Advanced (individual toggles)', { exact: true }).click();
+
     // The label + the toggle button both live in the autonomy controls block.
     await expect(modal.getByText('Thinking (network)', { exact: true })).toBeVisible();
     const toggle = modal.locator('[data-testid="aoi-autonomy-thinking-toggle"]');
     await expect(toggle).toBeVisible();
-    // The button reflects policy.allowNetwork as On/Off (default off in a fresh session).
+    // The button reflects policy.allowNetwork as On/Off (a fresh session now seeds
+    // the full autonomy mode, so this reads On).
     await expect(toggle).toHaveText(/^(On|Off)$/);
 
     // Close without acting; nothing is written.

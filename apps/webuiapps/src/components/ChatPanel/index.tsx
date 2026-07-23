@@ -466,6 +466,20 @@ import {
   type AoiOperatorFeedbackInboxPanelItem,
 } from '@/lib/aoiAutonomyUi';
 import {
+  AOI_AUTONOMY_MODES,
+  aoiAutonomyModeHostCapabilities,
+  aoiAutonomyModeLabel,
+  applyAoiAutonomyModeToPanel,
+  applyAoiAutonomyModeToPolicy,
+  inferAoiAutonomyMode,
+  type AoiAutonomyMode,
+} from '@/lib/aoiAutonomyMode';
+import { setAoiHostBridgeKillSwitch } from '@/lib/aoiHostBridgeClient';
+import {
+  buildAoiHostBridgeLinkedSourcePatch,
+  getAoiHostBridgeConsentLink,
+} from '@/lib/aoiHostBridgeConsent';
+import {
   aoiCardChromeLabel,
   aoiCardEvidenceLabel,
   aoiCardFeedbackLabel,
@@ -15242,282 +15256,359 @@ const SettingsModal: React.FC<{
                       )}
 
                       <div className={styles.aoiAutonomyControls}>
-                        <div className={styles.promptBudgetMetric}>
-                          <span className={styles.promptBudgetLabel}>Autonomy policy</span>
-                          <button
-                            type="button"
-                            className={
-                              aoiAutonomyPolicy?.enabled ? styles.saveBtn : styles.cancelBtn
-                            }
-                            onClick={() =>
-                              void onUpdateAoiAutonomyPolicy({
-                                enabled: !aoiAutonomyPolicy?.enabled,
-                              })
-                            }
-                            disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
-                          >
-                            {aoiAutonomyPolicy?.enabled ? 'Enabled' : 'Disabled'}
-                          </button>
-                        </div>
-                        <div className={styles.promptBudgetMetric}>
-                          <span className={styles.promptBudgetLabel}>Thinking (network)</span>
-                          <button
-                            type="button"
-                            className={
-                              aoiAutonomyPolicy?.allowNetwork ? styles.saveBtn : styles.cancelBtn
-                            }
-                            onClick={() =>
-                              void onUpdateAoiAutonomyPolicy({
-                                allowNetwork: !aoiAutonomyPolicy?.allowNetwork,
-                              })
-                            }
-                            disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
-                            data-testid="aoi-autonomy-thinking-toggle"
-                          >
-                            {aoiAutonomyPolicy?.allowNetwork ? 'On' : 'Off'}
-                          </button>
-                        </div>
                         <div className={styles.field}>
-                          <label className={styles.label}>Autonomy level</label>
+                          <label className={styles.label}>Autonomy mode</label>
                           <select
                             className={styles.select}
-                            value={aoiAutonomyPolicy?.level ?? 'L1'}
-                            onChange={(event) =>
-                              void onUpdateAoiAutonomyPolicy({
-                                level: event.target.value as AoiAutonomyLevel,
-                              })
+                            value={
+                              aoiAutonomyPolicy ? inferAoiAutonomyMode(aoiAutonomyPolicy) : 'off'
                             }
+                            onChange={(event) => {
+                              const mode = event.target.value as AoiAutonomyMode;
+                              void (async () => {
+                                if (aoiAutonomyPolicy) {
+                                  await onUpdateAoiAutonomyPolicy(
+                                    applyAoiAutonomyModeToPolicy(
+                                      aoiAutonomyPolicy,
+                                      mode,
+                                      Date.now(),
+                                    ),
+                                  );
+                                }
+                                onUpdateAoiAutonomyPanelSettings(
+                                  applyAoiAutonomyModeToPanel(aoiAutonomyPanelSettings, mode),
+                                );
+                              })();
+                            }}
                             disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
+                            data-testid="aoi-autonomy-mode-select"
                           >
-                            {AOI_AUTONOMY_UI_LEVELS.map((level) => (
-                              <option key={level} value={level}>
-                                {level}
+                            {AOI_AUTONOMY_MODES.map((mode) => (
+                              <option key={mode} value={mode}>
+                                {aoiAutonomyModeLabel(mode)}
                               </option>
                             ))}
                           </select>
                         </div>
-                        <div className={styles.promptBudgetMetric}>
-                          <span className={styles.promptBudgetLabel}>Inline suggestions</span>
-                          <button
-                            type="button"
-                            className={
-                              aoiAutonomyPolicy?.proactiveSuggestionsEnabled
-                                ? styles.saveBtn
-                                : styles.cancelBtn
-                            }
-                            onClick={() => {
-                              const enabled = !aoiAutonomyPolicy?.proactiveSuggestionsEnabled;
-                              void onUpdateAoiAutonomyPolicy({
-                                proactiveSuggestionsEnabled: enabled,
-                                ...(aoiAutonomyPolicy
-                                  ? {
-                                      proactiveBriefing: {
-                                        ...aoiAutonomyPolicy.proactiveBriefing,
-                                        enabled,
-                                      },
+                        {aoiAutonomyPolicy &&
+                          inferAoiAutonomyMode(aoiAutonomyPolicy) === 'full' && (
+                            <div className={styles.promptBudgetMetric}>
+                              <span className={styles.promptBudgetLabel}>Host-PC capabilities</span>
+                              <button
+                                type="button"
+                                className={styles.cancelBtn}
+                                title="Enable host-PC capabilities (screen capture, process kill, file delete). This is the explicit confirmation; irreversible actions still require per-action approval."
+                                data-testid="aoi-autonomy-enable-host-caps"
+                                onClick={() => {
+                                  void (async () => {
+                                    for (const capability of aoiAutonomyModeHostCapabilities(
+                                      'full',
+                                    )) {
+                                      try {
+                                        await setAoiHostBridgeKillSwitch('set', {
+                                          capability,
+                                          enabled: true,
+                                        });
+                                        const link = getAoiHostBridgeConsentLink(capability);
+                                        if (link) {
+                                          await onUpdateAoiEnvironmentSource(
+                                            link.sourceId,
+                                            buildAoiHostBridgeLinkedSourcePatch(link, true),
+                                          );
+                                        }
+                                      } catch {
+                                        // Host-bridge daemon may be unavailable; leave that
+                                        // capability disabled (fail-closed).
+                                      }
                                     }
-                                  : {}),
-                              });
-                            }}
-                            disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
-                          >
-                            {aoiAutonomyPolicy?.proactiveSuggestionsEnabled ? 'On' : 'Off'}
-                          </button>
-                        </div>
-                        <div className={styles.promptBudgetMetric}>
-                          <span className={styles.promptBudgetLabel}>Field-shadow capture</span>
-                          <button
-                            type="button"
-                            className={
-                              aoiAutonomyPolicy?.fieldShadowCaptureEnabled
-                                ? styles.saveBtn
-                                : styles.cancelBtn
-                            }
-                            onClick={() =>
-                              void onUpdateAoiAutonomyPolicy({
-                                fieldShadowCaptureEnabled:
-                                  !aoiAutonomyPolicy?.fieldShadowCaptureEnabled,
-                              })
-                            }
-                            disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
-                            data-testid="aoi-field-shadow-capture-toggle"
-                          >
-                            {aoiAutonomyPolicy?.fieldShadowCaptureEnabled ? 'On' : 'Off'}
-                          </button>
-                        </div>
-                        <div className={styles.promptBudgetMetric}>
-                          <span className={styles.promptBudgetLabel}>Scout policy</span>
-                          <button
-                            type="button"
-                            className={
-                              aoiAutonomyPolicy?.proactiveBriefing.enabled
-                                ? styles.saveBtn
-                                : styles.cancelBtn
-                            }
-                            onClick={() => {
-                              if (!aoiAutonomyPolicy) {
-                                return;
+                                  })();
+                                }}
+                              >
+                                Enable
+                              </button>
+                            </div>
+                          )}
+                        <details className={styles.field}>
+                          <summary className={styles.label}>Advanced (individual toggles)</summary>
+                          <div className={styles.promptBudgetMetric}>
+                            <span className={styles.promptBudgetLabel}>Autonomy policy</span>
+                            <button
+                              type="button"
+                              className={
+                                aoiAutonomyPolicy?.enabled ? styles.saveBtn : styles.cancelBtn
                               }
-                              void onUpdateAoiAutonomyPolicy({
-                                proactiveBriefing: {
-                                  ...aoiAutonomyPolicy.proactiveBriefing,
-                                  enabled: !aoiAutonomyPolicy.proactiveBriefing.enabled,
-                                },
-                              });
-                            }}
-                            disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
-                            title="Pause or resume proactive current-info scouting"
-                          >
-                            {aoiAutonomyPolicy?.proactiveBriefing.enabled ? 'Resumed' : 'Paused'}
-                          </button>
-                        </div>
-                        <div className={styles.promptBudgetMetric}>
-                          <span className={styles.promptBudgetLabel}>Background scout</span>
-                          <button
-                            type="button"
-                            className={
-                              aoiAutonomyPolicy?.proactiveBriefing.allowBackgroundScout
-                                ? styles.saveBtn
-                                : styles.cancelBtn
-                            }
-                            onClick={() => {
-                              if (!aoiAutonomyPolicy) {
-                                return;
+                              onClick={() =>
+                                void onUpdateAoiAutonomyPolicy({
+                                  enabled: !aoiAutonomyPolicy?.enabled,
+                                })
                               }
-                              void onUpdateAoiAutonomyPolicy({
-                                proactiveBriefing: {
-                                  ...aoiAutonomyPolicy.proactiveBriefing,
-                                  allowBackgroundScout:
-                                    !aoiAutonomyPolicy.proactiveBriefing.allowBackgroundScout,
-                                },
-                              });
-                            }}
-                            disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
-                            title="Allow scheduler wakeups to scout current public sources"
-                          >
-                            {aoiAutonomyPolicy?.proactiveBriefing.allowBackgroundScout
-                              ? 'On'
-                              : 'Off'}
-                          </button>
-                        </div>
-                        <div className={styles.promptBudgetMetric}>
-                          <span className={styles.promptBudgetLabel}>Direct chat hooks</span>
-                          <button
-                            type="button"
-                            className={
-                              aoiAutonomyPolicy?.proactiveBriefing.directChatHookOptIn
-                                ? styles.saveBtn
-                                : styles.cancelBtn
-                            }
-                            onClick={() => {
-                              if (!aoiAutonomyPolicy) {
-                                return;
+                              disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
+                            >
+                              {aoiAutonomyPolicy?.enabled ? 'Enabled' : 'Disabled'}
+                            </button>
+                          </div>
+                          <div className={styles.promptBudgetMetric}>
+                            <span className={styles.promptBudgetLabel}>Thinking (network)</span>
+                            <button
+                              type="button"
+                              className={
+                                aoiAutonomyPolicy?.allowNetwork ? styles.saveBtn : styles.cancelBtn
                               }
-                              void onUpdateAoiAutonomyPolicy({
-                                proactiveBriefing: {
-                                  ...aoiAutonomyPolicy.proactiveBriefing,
-                                  directChatHookOptIn:
-                                    !aoiAutonomyPolicy.proactiveBriefing.directChatHookOptIn,
-                                },
-                              });
-                            }}
-                            disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
-                            title="Opt in or out of compact proactive chat hooks"
-                          >
-                            {aoiAutonomyPolicy?.proactiveBriefing.directChatHookOptIn
-                              ? 'Opt-in'
-                              : 'Off'}
-                          </button>
-                        </div>
-                        <div className={styles.promptBudgetMetric}>
-                          <span className={styles.promptBudgetLabel}>Run scout now</span>
-                          <button
-                            type="button"
-                            className={styles.inlineActionBtn}
-                            onClick={() => void onRunAoiProactiveBriefScout()}
-                            disabled={
-                              !aoiAutonomyPolicy ||
-                              aoiAutonomyLoading ||
-                              aoiAutonomyActionId === 'proactive-scout'
-                            }
-                            title="Run a budgeted proactive scout through scheduler gates"
-                          >
-                            {aoiAutonomyActionId === 'proactive-scout' ? 'Running' : 'Run'}
-                          </button>
-                        </div>
-                        <div className={styles.promptBudgetMetric}>
-                          <span className={styles.promptBudgetLabel}>Scout cooldown</span>
-                          <button
-                            type="button"
-                            className={styles.inlineActionBtn}
-                            onClick={() => void onResetAoiProactiveBriefCooldown()}
-                            disabled={
-                              !aoiAutonomyPolicy?.enabled ||
-                              !aoiAutonomyPolicy.proactiveBriefing.enabled ||
-                              aoiAutonomyActionId === 'proactive-cooldown-reset'
-                            }
-                            title="Reset global proactive scout cooldown when policy allows it"
-                          >
-                            {aoiAutonomyActionId === 'proactive-cooldown-reset'
-                              ? 'Resetting'
-                              : 'Reset'}
-                          </button>
-                        </div>
-                        <div className={styles.promptBudgetMetric}>
-                          <span className={styles.promptBudgetLabel}>Quiet mode</span>
-                          <button
-                            type="button"
-                            className={
-                              aoiAutonomyPanelSettings.quietMode ? styles.cancelBtn : styles.saveBtn
-                            }
-                            onClick={() =>
-                              onUpdateAoiAutonomyPanelSettings({
-                                quietMode: !aoiAutonomyPanelSettings.quietMode,
-                              })
-                            }
-                            title="Pause proactive UI indicators while keeping observations"
-                          >
-                            {aoiAutonomyPanelSettings.quietMode ? 'Quiet' : 'Normal'}
-                          </button>
-                        </div>
-                        <div className={styles.promptBudgetMetric}>
-                          <span className={styles.promptBudgetLabel}>Desktop toast</span>
-                          <button
-                            type="button"
-                            className={
-                              aoiAutonomyPanelSettings.notificationsEnabled
-                                ? styles.saveBtn
-                                : styles.cancelBtn
-                            }
-                            onClick={() =>
-                              onUpdateAoiAutonomyPanelSettings({
-                                notificationsEnabled:
-                                  !aoiAutonomyPanelSettings.notificationsEnabled,
-                              })
-                            }
-                            title="Desktop notifications stay opt-in and high-risk proposals are excluded"
-                          >
-                            {aoiAutonomyPanelSettings.notificationsEnabled ? 'Opt-in' : 'Off'}
-                          </button>
-                        </div>
-                        <div className={styles.field}>
-                          <label className={styles.label}>Max suggestions</label>
-                          <select
-                            className={styles.select}
-                            value={String(aoiAutonomyPanelSettings.maxSuggestionsPerSession)}
-                            onChange={(event) =>
-                              onUpdateAoiAutonomyPanelSettings({
-                                maxSuggestionsPerSession: Number(event.target.value),
-                              })
-                            }
-                          >
-                            {[0, 1, 2, 3, 5].map((value) => (
-                              <option key={value} value={value}>
-                                {value}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
+                              onClick={() =>
+                                void onUpdateAoiAutonomyPolicy({
+                                  allowNetwork: !aoiAutonomyPolicy?.allowNetwork,
+                                })
+                              }
+                              disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
+                              data-testid="aoi-autonomy-thinking-toggle"
+                            >
+                              {aoiAutonomyPolicy?.allowNetwork ? 'On' : 'Off'}
+                            </button>
+                          </div>
+                          <div className={styles.field}>
+                            <label className={styles.label}>Autonomy level</label>
+                            <select
+                              className={styles.select}
+                              value={aoiAutonomyPolicy?.level ?? 'L1'}
+                              onChange={(event) =>
+                                void onUpdateAoiAutonomyPolicy({
+                                  level: event.target.value as AoiAutonomyLevel,
+                                })
+                              }
+                              disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
+                            >
+                              {AOI_AUTONOMY_UI_LEVELS.map((level) => (
+                                <option key={level} value={level}>
+                                  {level}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className={styles.promptBudgetMetric}>
+                            <span className={styles.promptBudgetLabel}>Inline suggestions</span>
+                            <button
+                              type="button"
+                              className={
+                                aoiAutonomyPolicy?.proactiveSuggestionsEnabled
+                                  ? styles.saveBtn
+                                  : styles.cancelBtn
+                              }
+                              onClick={() => {
+                                const enabled = !aoiAutonomyPolicy?.proactiveSuggestionsEnabled;
+                                void onUpdateAoiAutonomyPolicy({
+                                  proactiveSuggestionsEnabled: enabled,
+                                  ...(aoiAutonomyPolicy
+                                    ? {
+                                        proactiveBriefing: {
+                                          ...aoiAutonomyPolicy.proactiveBriefing,
+                                          enabled,
+                                        },
+                                      }
+                                    : {}),
+                                });
+                              }}
+                              disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
+                            >
+                              {aoiAutonomyPolicy?.proactiveSuggestionsEnabled ? 'On' : 'Off'}
+                            </button>
+                          </div>
+                          <div className={styles.promptBudgetMetric}>
+                            <span className={styles.promptBudgetLabel}>Field-shadow capture</span>
+                            <button
+                              type="button"
+                              className={
+                                aoiAutonomyPolicy?.fieldShadowCaptureEnabled
+                                  ? styles.saveBtn
+                                  : styles.cancelBtn
+                              }
+                              onClick={() =>
+                                void onUpdateAoiAutonomyPolicy({
+                                  fieldShadowCaptureEnabled:
+                                    !aoiAutonomyPolicy?.fieldShadowCaptureEnabled,
+                                })
+                              }
+                              disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
+                              data-testid="aoi-field-shadow-capture-toggle"
+                            >
+                              {aoiAutonomyPolicy?.fieldShadowCaptureEnabled ? 'On' : 'Off'}
+                            </button>
+                          </div>
+                          <div className={styles.promptBudgetMetric}>
+                            <span className={styles.promptBudgetLabel}>Scout policy</span>
+                            <button
+                              type="button"
+                              className={
+                                aoiAutonomyPolicy?.proactiveBriefing.enabled
+                                  ? styles.saveBtn
+                                  : styles.cancelBtn
+                              }
+                              onClick={() => {
+                                if (!aoiAutonomyPolicy) {
+                                  return;
+                                }
+                                void onUpdateAoiAutonomyPolicy({
+                                  proactiveBriefing: {
+                                    ...aoiAutonomyPolicy.proactiveBriefing,
+                                    enabled: !aoiAutonomyPolicy.proactiveBriefing.enabled,
+                                  },
+                                });
+                              }}
+                              disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
+                              title="Pause or resume proactive current-info scouting"
+                            >
+                              {aoiAutonomyPolicy?.proactiveBriefing.enabled ? 'Resumed' : 'Paused'}
+                            </button>
+                          </div>
+                          <div className={styles.promptBudgetMetric}>
+                            <span className={styles.promptBudgetLabel}>Background scout</span>
+                            <button
+                              type="button"
+                              className={
+                                aoiAutonomyPolicy?.proactiveBriefing.allowBackgroundScout
+                                  ? styles.saveBtn
+                                  : styles.cancelBtn
+                              }
+                              onClick={() => {
+                                if (!aoiAutonomyPolicy) {
+                                  return;
+                                }
+                                void onUpdateAoiAutonomyPolicy({
+                                  proactiveBriefing: {
+                                    ...aoiAutonomyPolicy.proactiveBriefing,
+                                    allowBackgroundScout:
+                                      !aoiAutonomyPolicy.proactiveBriefing.allowBackgroundScout,
+                                  },
+                                });
+                              }}
+                              disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
+                              title="Allow scheduler wakeups to scout current public sources"
+                            >
+                              {aoiAutonomyPolicy?.proactiveBriefing.allowBackgroundScout
+                                ? 'On'
+                                : 'Off'}
+                            </button>
+                          </div>
+                          <div className={styles.promptBudgetMetric}>
+                            <span className={styles.promptBudgetLabel}>Direct chat hooks</span>
+                            <button
+                              type="button"
+                              className={
+                                aoiAutonomyPolicy?.proactiveBriefing.directChatHookOptIn
+                                  ? styles.saveBtn
+                                  : styles.cancelBtn
+                              }
+                              onClick={() => {
+                                if (!aoiAutonomyPolicy) {
+                                  return;
+                                }
+                                void onUpdateAoiAutonomyPolicy({
+                                  proactiveBriefing: {
+                                    ...aoiAutonomyPolicy.proactiveBriefing,
+                                    directChatHookOptIn:
+                                      !aoiAutonomyPolicy.proactiveBriefing.directChatHookOptIn,
+                                  },
+                                });
+                              }}
+                              disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
+                              title="Opt in or out of compact proactive chat hooks"
+                            >
+                              {aoiAutonomyPolicy?.proactiveBriefing.directChatHookOptIn
+                                ? 'Opt-in'
+                                : 'Off'}
+                            </button>
+                          </div>
+                          <div className={styles.promptBudgetMetric}>
+                            <span className={styles.promptBudgetLabel}>Run scout now</span>
+                            <button
+                              type="button"
+                              className={styles.inlineActionBtn}
+                              onClick={() => void onRunAoiProactiveBriefScout()}
+                              disabled={
+                                !aoiAutonomyPolicy ||
+                                aoiAutonomyLoading ||
+                                aoiAutonomyActionId === 'proactive-scout'
+                              }
+                              title="Run a budgeted proactive scout through scheduler gates"
+                            >
+                              {aoiAutonomyActionId === 'proactive-scout' ? 'Running' : 'Run'}
+                            </button>
+                          </div>
+                          <div className={styles.promptBudgetMetric}>
+                            <span className={styles.promptBudgetLabel}>Scout cooldown</span>
+                            <button
+                              type="button"
+                              className={styles.inlineActionBtn}
+                              onClick={() => void onResetAoiProactiveBriefCooldown()}
+                              disabled={
+                                !aoiAutonomyPolicy?.enabled ||
+                                !aoiAutonomyPolicy.proactiveBriefing.enabled ||
+                                aoiAutonomyActionId === 'proactive-cooldown-reset'
+                              }
+                              title="Reset global proactive scout cooldown when policy allows it"
+                            >
+                              {aoiAutonomyActionId === 'proactive-cooldown-reset'
+                                ? 'Resetting'
+                                : 'Reset'}
+                            </button>
+                          </div>
+                          <div className={styles.promptBudgetMetric}>
+                            <span className={styles.promptBudgetLabel}>Quiet mode</span>
+                            <button
+                              type="button"
+                              className={
+                                aoiAutonomyPanelSettings.quietMode
+                                  ? styles.cancelBtn
+                                  : styles.saveBtn
+                              }
+                              onClick={() =>
+                                onUpdateAoiAutonomyPanelSettings({
+                                  quietMode: !aoiAutonomyPanelSettings.quietMode,
+                                })
+                              }
+                              title="Pause proactive UI indicators while keeping observations"
+                            >
+                              {aoiAutonomyPanelSettings.quietMode ? 'Quiet' : 'Normal'}
+                            </button>
+                          </div>
+                          <div className={styles.promptBudgetMetric}>
+                            <span className={styles.promptBudgetLabel}>Desktop toast</span>
+                            <button
+                              type="button"
+                              className={
+                                aoiAutonomyPanelSettings.notificationsEnabled
+                                  ? styles.saveBtn
+                                  : styles.cancelBtn
+                              }
+                              onClick={() =>
+                                onUpdateAoiAutonomyPanelSettings({
+                                  notificationsEnabled:
+                                    !aoiAutonomyPanelSettings.notificationsEnabled,
+                                })
+                              }
+                              title="Desktop notifications stay opt-in and high-risk proposals are excluded"
+                            >
+                              {aoiAutonomyPanelSettings.notificationsEnabled ? 'Opt-in' : 'Off'}
+                            </button>
+                          </div>
+                          <div className={styles.field}>
+                            <label className={styles.label}>Max suggestions</label>
+                            <select
+                              className={styles.select}
+                              value={String(aoiAutonomyPanelSettings.maxSuggestionsPerSession)}
+                              onChange={(event) =>
+                                onUpdateAoiAutonomyPanelSettings({
+                                  maxSuggestionsPerSession: Number(event.target.value),
+                                })
+                              }
+                            >
+                              {[0, 1, 2, 3, 5].map((value) => (
+                                <option key={value} value={value}>
+                                  {value}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        </details>
                       </div>
 
                       <div className={styles.aoiAutonomyProposalSection}>

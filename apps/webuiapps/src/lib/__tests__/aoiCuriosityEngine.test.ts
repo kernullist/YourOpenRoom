@@ -8,7 +8,8 @@ import type {
   AoiKiraOutcomeEvent,
   AoiWorkspaceSnapshot,
 } from '../aoiAutonomyTypes';
-import { loadAoiActiveOpportunities } from '../aoiAutonomyStore';
+import { loadAoiActiveOpportunities, saveAoiAutonomyPolicy } from '../aoiAutonomyStore';
+import { DEFAULT_AOI_AUTONOMY_POLICY } from '../aoiAutonomyPolicy';
 import {
   buildAoiCuriosityCandidates,
   runAoiCuriosityEngineForSession,
@@ -409,9 +410,12 @@ describe('Aoi Curiosity Engine', () => {
 
   it('caps opportunity delivery through the interruption governor (P5.5)', () => {
     const root = makeTempRoot();
-    // No policy saved -> the default policy is disabled/preview, so the governor blocks a loud
-    // interruption. The persisted opportunities must therefore be DOWNGRADED to the quiet
-    // 'dashboard' surface -- the governor, not the producer's recommendation, is the gate.
+    // Persist the conservative baseline policy (disabled/preview) so the governor
+    // blocks a loud interruption. (A fresh install now seeds the full autonomy
+    // mode, so this test states the restrictive policy explicitly.) The persisted
+    // opportunities must therefore be DOWNGRADED to the quiet 'dashboard' surface
+    // -- the governor, not the producer's recommendation, is the gate.
+    saveAoiAutonomyPolicy(root, SESSION_PATH, DEFAULT_AOI_AUTONOMY_POLICY, NOW);
     const run = runAoiCuriosityEngineForSession({
       sessionsDir: root,
       sessionPath: SESSION_PATH,

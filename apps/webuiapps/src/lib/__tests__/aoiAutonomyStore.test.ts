@@ -148,12 +148,20 @@ describe('Aoi autonomy path guards', () => {
 });
 
 describe('Aoi autonomy policy storage', () => {
-  it('loads conservative defaults and saves normalized policy', () => {
+  it('seeds the full autonomy mode on a fresh install with safety guards preserved', () => {
     const root = makeTempRoot();
 
+    // A fresh install (no persisted policy) seeds the default autonomy mode
+    // (full): proactive behavior + network + capture are on, but the safety
+    // guards (preview / approval / evidence) remain on. DEFAULT_AOI_AUTONOMY_POLICY
+    // stays the fail-closed baseline used for existing partial policies.
     expect(loadAoiAutonomyPolicy(root, 'aoi/default')).toMatchObject({
-      enabled: false,
+      enabled: true,
+      allowNetwork: true,
+      fieldShadowCaptureEnabled: true,
       previewMode: true,
+      requireApprovalForHighRisk: true,
+      requireEvidenceRefs: true,
       level: 'L1',
     });
 
@@ -171,6 +179,22 @@ describe('Aoi autonomy policy storage', () => {
       updatedAt: 1234,
     });
     expect(loadAoiAutonomyPolicy(root, 'aoi/default')).toMatchObject(saved);
+  });
+
+  it('fails closed to the baseline when a present policy file is unreadable', () => {
+    const root = makeTempRoot();
+    // A real persisted policy exists on disk...
+    saveAoiAutonomyPolicy(root, 'aoi/default', { enabled: true }, 1000);
+    const policyPath = resolveAoiAutonomyPaths(root, 'aoi/default').policy;
+    expect(fs.existsSync(policyPath)).toBe(true);
+    // ...then it becomes unreadable (parse error / transient lock). loadAoiAutonomyPolicy
+    // must fail CLOSED to the baseline, never seed the full autonomy mode -- that is only
+    // for a genuine first run (file absent).
+    fs.writeFileSync(policyPath, '{ not: valid json', 'utf-8');
+    const loaded = loadAoiAutonomyPolicy(root, 'aoi/default');
+    expect(loaded.enabled).toBe(false);
+    expect(loaded.allowNetwork).toBe(false);
+    expect(loaded.fieldShadowCaptureEnabled).toBe(false);
   });
 });
 

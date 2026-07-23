@@ -19,10 +19,15 @@ test.describe('Chat settings – Aoi field-shadow capture toggle', () => {
 
     await modal.getByRole('button', { name: 'Advanced', exact: true }).click();
 
+    // Individual toggles now sit under a collapsed "Advanced" details section (the
+    // Autonomy mode preset is the primary control); expand it to reach them.
+    await modal.getByText('Advanced (individual toggles)', { exact: true }).click();
+
     await expect(modal.getByText('Field-shadow capture', { exact: true })).toBeVisible();
     const toggle = modal.locator('[data-testid="aoi-field-shadow-capture-toggle"]');
     await expect(toggle).toBeVisible();
-    // The button reflects policy.fieldShadowCaptureEnabled as On/Off (default off).
+    // The button reflects policy.fieldShadowCaptureEnabled as On/Off (a fresh session
+    // now seeds the full autonomy mode, so this reads On).
     await expect(toggle).toHaveText(/^(On|Off)$/);
 
     // Close without acting; nothing is written.
