@@ -236,4 +236,29 @@ describe('Aoi interest profile - non-work interests', () => {
     expect(topic).toBeDefined();
     expect(topic?.interestKind).toBe('personal');
   });
+
+  it('does not extract negated Korean interest or the over-generic "into" verb', () => {
+    const topics = extractAoiInterestTopicsFromMemories({
+      sessionPath: 'aoi/default',
+      now: 1000,
+      memories: [
+        makeMemory({
+          id: 'neg-ko',
+          type: 'preference',
+          content: '나는 로그라이크 게임을 안 좋아해',
+          tags: ['preference'],
+        }),
+        makeMemory({
+          id: 'into-en',
+          type: 'preference',
+          content: 'The user is into indie games.',
+          tags: ['preference'],
+        }),
+      ],
+    });
+    // Negation must not surface as a positive watch topic.
+    expect(topics.some((item) => item.label.includes('로그라이크'))).toBe(false);
+    // The over-generic "into" verb no longer spawns a junk topic.
+    expect(topics.some((item) => item.label.toLowerCase().includes('indie'))).toBe(false);
+  });
 });

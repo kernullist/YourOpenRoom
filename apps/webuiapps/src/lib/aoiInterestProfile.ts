@@ -484,11 +484,19 @@ function findContentPhraseSeeds(memory: AoiMemoryEntry): ExtractedTopicSeed[] {
     /\bloves?\s+([^.;:"']{3,100})/iu,
     /\benjoys?\s+([^.;:"']{3,100})/iu,
     /\b(?:a )?(?:huge |big )?fan of\s+([^.;:"']{3,100})/iu,
-    /\binto\s+([^.;:"']{3,100})/iu,
     /\bobsessed with\s+([^.;:"']{3,100})/iu,
     /\bhobby (?:is|are)\s+([^.;:"']{3,100})/iu,
-    // Korean object-before-verb taste patterns (subject and particle optional).
-    /(?:나는|저는|전|제가)?\s*([^.;:"'\n]{2,60}?)(?:을|를|이|가|에)?\s*(?:정말\s*|완전\s*|엄청\s*|되게\s*)?(?:좋아하는|좋아해요?|좋아합니다|사랑하는|사랑해요?|사랑합니다|선호하는|선호해요?|선호합니다|즐겨\s?(?:듣|봐|보|해|하)|빠져\s?있어요?|팬이(?:에|예)?요?|팬입니다|관심\s?(?:이\s?)?(?:많|있))/u,
+    // Korean object-marked taste verbs. The object particle is REQUIRED so a bare
+    // subject ("안 좋아해" / no object) does not match and negation ("...을 안
+    // 좋아해") falls out (the "안" sits between particle and verb, matching neither
+    // the adverb slot nor the verb). Dislike verbs are intentionally excluded --
+    // only positive interests become watch topics.
+    /(?:나는|저는|전|제가)?\s*([^\s.;:"'\n][^.;:"'\n]{1,40}?)(?:을|를|이|가)\s*(?:정말\s*|완전\s*|엄청\s*|되게\s*)?(?:좋아하는|좋아해요?|좋아합니다|사랑하는|사랑해요?|사랑합니다|선호하는|선호해요?|선호합니다|즐겨\s?(?:듣|봐|보|해))/u,
+    // Korean locative interest verbs ("...에 관심있어" / "...에 빠져있어"). The
+    // negation form ("관심없어") uses a different verb and does not match.
+    /([^\s.;:"'\n][^.;:"'\n]{1,40}?)에\s*(?:정말\s*)?(?:관심\s?(?:이\s?)?있|빠져\s?있)/u,
+    // Korean fandom ("...팬이야").
+    /([^\s.;:"'\n][^.;:"'\n]{1,40}?)\s*(?:의\s*)?팬(?:이야|이에요|이예요|입니다)/u,
   ];
   for (const pattern of patterns) {
     const match = pattern.exec(memory.content);
