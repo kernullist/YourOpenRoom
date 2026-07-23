@@ -401,6 +401,36 @@ describe('live activity context candidates (SA1.4)', () => {
     );
   });
 
+  it('does not crash on a persisted intent with an unknown kind (schema drift)', () => {
+    const root = makeTempRoot();
+    consentActivity(root);
+    recordAoiActivityEvent(root, SESSION_PATH, { kind: 'app_opened', appId: 'musicapp' }, NOW);
+    recordAoiActivityEvent(
+      root,
+      SESSION_PATH,
+      { kind: 'app_action', appId: 'musicapp', actionType: 'PLAY_TRACK', observedAt: NOW + 1000 },
+      NOW + 1000,
+    );
+    const intentState = buildAoiIntentState({
+      sessionPath: SESSION_PATH,
+      now: NOW + 2000,
+      activitySummary: loadAoiActivityStreamSummary(root, SESSION_PATH, NOW + 2000),
+    });
+    // Simulate a removed/renamed intent kind surviving in a persisted file.
+    const corrupted = JSON.parse(JSON.stringify(intentState));
+    corrupted.current.kind = 'legacy_removed_kind';
+    corrupted.staleAt = NOW + 60_000;
+    expect(() =>
+      buildAoiContextRouterResult({
+        sessionsDir: root,
+        sessionPath: SESSION_PATH,
+        latestUserMessage: 'status?',
+        intentState: corrupted,
+        now: NOW + 2000,
+      }),
+    ).not.toThrow();
+  });
+
   it('respects an injected null activity summary (no ledger read)', () => {
     const root = makeTempRoot();
     consentActivity(root);

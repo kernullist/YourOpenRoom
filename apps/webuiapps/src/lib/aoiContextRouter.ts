@@ -1179,6 +1179,14 @@ const SALIENCE_DECAY_KINDS = new Set<AoiContextSourceKind>([
   'workspace_build',
 ]);
 
+// 'fresh'/'stale' encode snapshot AGE, which the salience curve models. 'failed'/
+// 'unknown' encode source/validation HEALTH (e.g. a failed workspace build) whose
+// penalty the age-based curve must NOT rescore away -- otherwise a failed/unknown
+// workspace is treated as merely fresh and can outrank genuinely fresh sources.
+function isAgeBasedFreshness(freshness: AoiSignalFreshness): boolean {
+  return freshness === 'fresh' || freshness === 'stale';
+}
+
 // The continuous freshness contribution for a candidate: live kinds with a
 // real timestamp fade on the salience curve; everything else keeps the
 // discrete label scoring. Used in BOTH weighting passes (builder swap + the
@@ -1186,6 +1194,7 @@ const SALIENCE_DECAY_KINDS = new Set<AoiContextSourceKind>([
 function freshnessScoreFor(summary: AoiContextSourceSummary, now: number): number {
   if (
     SALIENCE_DECAY_KINDS.has(summary.kind) &&
+    isAgeBasedFreshness(summary.freshness) &&
     typeof summary.updatedAt === 'number' &&
     Number.isFinite(summary.updatedAt) &&
     summary.updatedAt > 0
@@ -1209,6 +1218,11 @@ function applySalienceDecay(params: {
     !Number.isFinite(params.summary.updatedAt) ||
     params.summary.updatedAt <= 0
   ) {
+    return params.summary;
+  }
+  // Only age-based freshness is swapped for the continuous curve; a 'failed'/
+  // 'unknown' health signal keeps its penalty (see freshnessScoreFor).
+  if (!isAgeBasedFreshness(params.summary.freshness)) {
     return params.summary;
   }
   const salience = scoreAoiSalience(
@@ -1256,7 +1270,10 @@ function applyIntentAlignment(params: {
   if (!current || (params.intentState?.staleAt ?? 0) <= params.now) {
     return params.summary;
   }
-  if (!INTENT_ALIGNED_SOURCE_KINDS[current.kind].includes(params.summary.kind)) {
+  // Unknown persisted intent kind (schema drift / corrupt intent file) -> no
+  // alignment, never a crash that would take down the whole router build.
+  const alignedKinds = INTENT_ALIGNED_SOURCE_KINDS[current.kind];
+  if (!alignedKinds || !alignedKinds.includes(params.summary.kind)) {
     return params.summary;
   }
   return {
