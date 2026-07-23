@@ -1,3 +1,5 @@
+import { aoiSyncSha256Hex } from './aoiSyncSha256';
+
 export type AoiApprovalSandboxTargetKind =
   | 'workspace'
   | 'app'
@@ -157,13 +159,13 @@ function sanitizeText(value: unknown, fallback = '', maxChars = MAX_TEXT): strin
   return `${safe.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
 }
 
+// Cryptographic content hash for approval identity + fingerprints. This was a
+// 32-bit FNV-1a (8 hex chars); its ~4.3e9 output space made a targeted
+// second-preimage brute-forceable, so an executor could forge a DIFFERENT action
+// whose fingerprint collided with an operator-approved one. sha256 makes the
+// content-addressed approval binding infeasible to forge. Client-safe (pure JS).
 function stableHash(value: string): string {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return hash.toString(16).padStart(8, '0');
+  return aoiSyncSha256Hex(value);
 }
 
 function uniqueStrings(values: Array<string | undefined | null>, limit = 24): string[] {
