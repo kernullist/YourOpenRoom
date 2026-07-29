@@ -11,6 +11,15 @@ import {
 } from './aoiAutonomyStore';
 import { buildAoiFollowThroughEventFromTrendDelivery } from './aoiFollowThroughLearning';
 import type { AoiCardLang } from './aoiAutonomyCardI18n';
+import {
+  buildAoiCompanionBriefReason,
+  buildAoiCompanionTrendHook,
+  buildAoiCompanionTrendNextAction,
+  buildAoiCompanionTrendTake,
+  buildAoiCompanionTrendWhatChanged,
+  type AoiCompanionTrendTakeKind,
+  type AoiCompanionVoice,
+} from './aoiCompanionVoice';
 import { loadAoiCardLanguage } from './aoiCardLanguageStore';
 import { loadAoiCurrentSituation } from './aoiCurrentSituationModel';
 import { decideAoiInterruptionDelivery } from './aoiInterruptionGovernor';
@@ -1528,22 +1537,6 @@ function pickTrendCopy(lang: AoiCardLang, table: { ko: string; en: string }): st
   return lang === 'ko' ? table.ko : table.en;
 }
 
-function buildChatHookText(params: {
-  topicLabel: string;
-  title: string;
-  myTake: string;
-  sourceHosts: string[];
-  lang: AoiCardLang;
-}): string {
-  const hosts =
-    params.sourceHosts.slice(0, 3).join(', ') ||
-    pickTrendCopy(params.lang, { ko: '공개 출처', en: 'public sources' });
-  if (params.lang === 'ko') {
-    return `${params.topicLabel} 관련 Aoi 트렌드 신호: ${params.title}. 내 생각: ${params.myTake} 출처: ${hosts}.`;
-  }
-  return `Aoi trend signal for ${params.topicLabel}: ${params.title}. My take: ${params.myTake} Sources: ${hosts}.`;
-}
-
 export function buildAoiProactiveTrendFollowUpPrompts(
   card: Pick<
     AoiProactiveTrendOpinionCard,
@@ -1602,59 +1595,35 @@ function snapshotOpinionFields(params: {
 > {
   const candidate = params.candidate;
   const lang = params.lang;
+  const voice: AoiCompanionVoice = { lang };
   const topic =
     sanitizeText(candidate.topicLabel, 80) ||
     pickTrendCopy(lang, { ko: '이 관심사', en: 'this interest' });
   const novelty = sanitizeText(candidate.noveltyReason, 260);
   const summary = sanitizeText(candidate.summary || candidate.hook, 360);
-  const whyForOperator = sanitizeText(candidate.whyForOperator, 260);
+  // Novelty and summary are factual source descriptions and stay as authored;
+  // only the fallback (neither present) is companion copy.
   const whatChanged =
-    novelty ||
-    summary ||
-    (lang === 'ko'
-      ? `${topic} 관련 새 항목을 출처 기반 스카우트가 발견했습니다.`
-      : `A source-backed scout surfaced a new item related to ${topic}.`);
-  const whyItMatters =
-    whyForOperator ||
-    (lang === 'ko'
-      ? `Aoi가 이미 추적 중인 ${topic} 관심사와 연결되므로 대시보드에 남겨둘 가치가 있습니다.`
-      : `This maps to an interest Aoi already tracks for ${topic}, so it is worth keeping on the dashboard.`);
-  let myTake = pickTrendCopy(lang, {
-    ko: '일단 관찰 항목으로 두는 게 좋겠습니다. 유용한 신호지만 그 자체로 대화를 끊을 정도는 아닙니다.',
-    en: 'This is worth parking as a watch item first: useful signal, but not enough to interrupt by itself.',
+    novelty || summary || buildAoiCompanionTrendWhatChanged(voice, { topicLabel: topic });
+  // Replaces the candidate's stored operator-register line -- which quotes the
+  // topic's confidence and current-info scores -- with the same relational
+  // reason the brief card gives.
+  const whyItMatters = buildAoiCompanionBriefReason(voice, {
+    interestKind: candidate.interestKind ?? null,
   });
-  let suggestedNextAction = pickTrendCopy(lang, {
-    ko: '편할 때 나열된 출처를 열어 보고 카드에 유용/노이즈 표시를 해주세요.',
-    en: 'Open the listed sources when convenient and mark the card useful or noisy.',
-  });
-  if (params.freshness === 'stale') {
-    myTake = pickTrendCopy(lang, {
-      ko: '스카우트가 출처 근거를 새로고침하기 전에는 이걸 최신 정보로 취급하지 않겠습니다.',
-      en: 'I would not act on this as current information until the scout refreshes the source evidence.',
-    });
-    suggestedNextAction = pickTrendCopy(lang, {
-      ko: '행동하기 전에 스카우트를 다시 돌리거나 다음 예산 내 새로고침을 기다려 주세요.',
-      en: 'Run the scout again or wait for the next budgeted refresh before acting.',
-    });
-  } else if (!params.sourceStrong) {
-    myTake = pickTrendCopy(lang, {
-      ko: '독립적인 두 번째 출처나 더 강한 근거가 나오기 전까지는 약한 신호입니다.',
-      en: 'This is a weak signal until a second independent source or stronger evidence appears.',
-    });
-    suggestedNextAction = pickTrendCopy(lang, {
-      ko: '대시보드에는 남겨두되 직접 대화로 격상하지는 마세요.',
-      en: 'Keep it visible on the dashboard, but avoid direct chat escalation.',
-    });
-  } else if (candidate.confidence >= 0.8 && candidate.score >= 0.75) {
-    myTake = pickTrendCopy(lang, {
-      ko: '짧게 리뷰해볼 만한 후보로 보입니다. 출처 근거가 있고 저장된 관심 프로필과도 맞습니다.',
-      en: 'This looks like a good short-review candidate: it has source support and matches the saved interest profile.',
-    });
-    suggestedNextAction = pickTrendCopy(lang, {
-      ko: '출처를 훑어보고 관점이 실제로 유효하면 유용으로 표시해 주세요.',
-      en: 'Skim the sources and mark useful if the angle is actually relevant.',
-    });
-  }
+  // The stance the signals already imply, now spoken in the persona register.
+  // Ordering is load-bearing: staleness outranks source strength, which
+  // outranks a high-confidence recommendation.
+  const takeKind: AoiCompanionTrendTakeKind =
+    params.freshness === 'stale'
+      ? 'stale_refresh'
+      : !params.sourceStrong
+        ? 'weak_source'
+        : candidate.confidence >= 0.8 && candidate.score >= 0.75
+          ? 'review_candidate'
+          : 'default_watch';
+  const myTake = buildAoiCompanionTrendTake(voice, takeKind);
+  const suggestedNextAction = buildAoiCompanionTrendNextAction(voice, takeKind);
   return {
     whatChanged: sanitizeText(whatChanged, 320),
     whyItMatters: sanitizeText(whyItMatters, 320),
@@ -1976,14 +1945,16 @@ export function buildAoiProactiveTrendSnapshotFromCandidate(params: {
   const sourceHosts = unique(sources.map((source) => source.host)).slice(0, 6);
   const chatHookText =
     deliveryMode === 'direct_chat'
-      ? buildChatHookText({
-          topicLabel:
-            topicLabel || pickTrendCopy(language, { ko: '관심 주제', en: 'Interest topic' }),
-          title: cardTitle,
-          myTake: opinion.myTake,
-          sourceHosts,
-          lang: language,
-        })
+      ? buildAoiCompanionTrendHook(
+          { lang: language },
+          {
+            topicLabel:
+              topicLabel || pickTrendCopy(language, { ko: '관심 주제', en: 'Interest topic' }),
+            title: cardTitle,
+            take: opinion.myTake,
+            sourceHosts,
+          },
+        )
       : undefined;
   return {
     version: 1,

@@ -210,6 +210,20 @@ export function buildAoiCompanionTrendNextAction(
   return pickCompanionCopy(voice.lang, tables[kind]);
 }
 
+// Fallback for a trend card's "what changed" line, used only when the
+// candidate carries neither a novelty reason nor a summary. The populated case
+// stays as-is: those are factual source descriptions, not companion copy.
+export function buildAoiCompanionTrendWhatChanged(
+  voice: AoiCompanionVoice,
+  params: { topicLabel: string },
+): string {
+  const topic = sanitizeCompanionText(params.topicLabel, 80);
+  if (voice.lang === 'ko') {
+    return `${topic} 쪽에 새로 뜬 게 있어. 출처 있는 것만 골랐어.`;
+  }
+  return `Something new turned up on ${topic}, and I only kept what has sources.`;
+}
+
 export interface AoiCompanionTrendHookParams {
   topicLabel: string;
   title: string;

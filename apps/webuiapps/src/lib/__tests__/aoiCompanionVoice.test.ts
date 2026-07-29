@@ -11,6 +11,7 @@ import {
   buildAoiCompanionTrendHook,
   buildAoiCompanionTrendNextAction,
   buildAoiCompanionTrendTake,
+  buildAoiCompanionTrendWhatChanged,
   violatesAoiCompanionRegister,
   type AoiCompanionFeedbackActionKind,
   type AoiCompanionTrendTakeKind,
@@ -163,6 +164,17 @@ describe('aoiCompanionVoice trend copy', () => {
     expect(many).not.toContain('d.com');
   });
 
+  it('offers a what-changed fallback that names the topic', () => {
+    expect(buildAoiCompanionTrendWhatChanged(KO, { topicLabel: 'TPM 검증' })).toContain('TPM 검증');
+    expect(buildAoiCompanionTrendWhatChanged(KO, { topicLabel: 'x' })).toContain('출처');
+    expect(buildAoiCompanionTrendWhatChanged(EN, { topicLabel: 'kernel' })).toContain(
+      'Something new turned up on kernel',
+    );
+    expect(buildAoiCompanionTrendWhatChanged({ lang: 'ja' }, { topicLabel: 't' })).toBe(
+      buildAoiCompanionTrendWhatChanged(EN, { topicLabel: 't' }),
+    );
+  });
+
   it('drops blank hosts before joining', () => {
     expect(
       buildAoiCompanionTrendHook(EN, {
@@ -281,6 +293,7 @@ describe('aoiCompanionVoice register contract', () => {
         buildAoiCompanionBriefChatHook(voice, { topicLabel: '주제', sourceCount: 0 }),
         buildAoiCompanionBriefReason(voice, { interestKind: 'professional' }),
         buildAoiCompanionBriefReason(voice, { interestKind: 'personal' }),
+        buildAoiCompanionTrendWhatChanged(voice, { topicLabel: '주제' }),
         buildAoiCompanionResumeTitle(voice),
         buildAoiCompanionResumeGreeting(voice, { idleMs: 3 * 3_600_000 }),
         buildAoiCompanionResumeSafetyNote(voice),

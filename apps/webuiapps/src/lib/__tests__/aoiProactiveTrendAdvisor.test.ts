@@ -394,7 +394,10 @@ describe('Aoi proactive trend advisor', () => {
     expect(state.readiness.status).toBe('ready');
     expect(state.opinionCards[0].directChatAllowed).toBe(true);
     expect(state.opinionCards[0].deliveryMode).toBe('direct_chat');
-    expect(state.chatHook).toContain('Aoi trend signal');
+    // First person, not "Aoi trend signal for ..." (companion register).
+    expect(state.chatHook).toContain('Something worth your eye on');
+    expect(state.chatHook).toContain('My take --');
+    expect(state.chatHook).not.toContain('Aoi');
     expect(state.directChatCard?.followUpPrompts).toEqual(
       expect.arrayContaining([
         expect.stringContaining('Fresh reversing writeup trend'),
@@ -402,6 +405,28 @@ describe('Aoi proactive trend advisor', () => {
       ]),
     );
     expect(state.directChatHookCount).toBe(1);
+  });
+
+  it('takes a refresh-first stance in voice when the source evidence is stale', () => {
+    const state = buildAoiProactiveTrendAdvisorState({
+      sessionPath: SESSION_PATH,
+      policy: makePolicy(true),
+      profile: makeProfile(),
+      candidates: [
+        makeCandidate({
+          freshness: { searchedAt: NOW, cannotKnow: ['The newest item may be stale.'] },
+        }),
+      ],
+      fieldMetrics: makeFieldMetrics(),
+      now: NOW,
+      persist: false,
+      language: 'ko',
+    });
+
+    expect(state.snapshots[0]?.freshness).toBe('stale');
+    expect(state.snapshots[0]?.myTake).toContain('최신 정보로 안 칠 거야');
+    expect(state.snapshots[0]?.suggestedNextAction).toContain('스카우트');
+    expect(state.snapshots[0]?.myTake).not.toMatch(/니다|세요/);
   });
 
   it('authors the direct-chat hook, opinion take, and follow-up prompts in the operator language', () => {
@@ -418,11 +443,17 @@ describe('Aoi proactive trend advisor', () => {
 
     expect(state.opinionCards[0].deliveryMode).toBe('direct_chat');
     // The deterministic templates are Korean; scout-authored fields (title,
-    // summary) pass through verbatim.
-    expect(state.chatHook).toContain('Aoi 트렌드 신호');
-    expect(state.chatHook).toContain('내 생각:');
+    // summary) pass through verbatim. The hook speaks in first person and
+    // never refers to Aoi in the third person.
+    expect(state.chatHook).toContain('눈에 띄는 게 하나 있어');
+    expect(state.chatHook).toContain('내 생각엔');
+    expect(state.chatHook).not.toContain('Aoi');
     expect(state.opinionCards[0].myTake).toMatch(/[가-힣]/);
     expect(state.opinionCards[0].suggestedNextAction).toMatch(/[가-힣]/);
+    // No formal endings anywhere in the card copy the user reads.
+    expect(state.opinionCards[0].myTake).not.toMatch(/니다|세요/);
+    expect(state.opinionCards[0].suggestedNextAction).not.toMatch(/니다|세요/);
+    expect(state.opinionCards[0].whyItMatters).not.toMatch(/니다|세요/);
     expect(state.directChatCard?.followUpPrompts.some((prompt) => /[가-힣]/.test(prompt))).toBe(
       true,
     );
