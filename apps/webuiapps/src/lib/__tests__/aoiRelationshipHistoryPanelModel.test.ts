@@ -146,6 +146,23 @@ describe('aoiRelationshipHistoryPanelModel view model', () => {
     expect(view.milestoneRows[1].dateLabel).toBe('2026-01-10');
   });
 
+  it('renders an out-of-range timestamp as unknown instead of throwing', () => {
+    // 1e20 passes a typeof check and is valid JSON, but toISOString() throws on
+    // it -- one corrupted record would otherwise crash the whole panel.
+    const parsed = parseAoiRelationshipHistoryResponse(
+      fullPayload({
+        retrospective: retrospectivePayload({ periodStart: 1e20, periodEnd: 1e20 }),
+        history: [],
+        milestones: [{ id: 'weird', kind: 'session_count', label: 'Odd clock.', occurredAt: 1e20 }],
+      }),
+    );
+
+    expect(() => buildAoiRelationshipHistoryViewModel(parsed!)).not.toThrow();
+    const view = buildAoiRelationshipHistoryViewModel(parsed!);
+    expect(view.latest?.periodLabel).toBe('unknown date to unknown date');
+    expect(view.milestoneRows[0]?.dateLabel).toBe('unknown date');
+  });
+
   it('reports an explicitly empty history when nothing is stored', () => {
     const parsed = parseAoiRelationshipHistoryResponse({
       ok: true,

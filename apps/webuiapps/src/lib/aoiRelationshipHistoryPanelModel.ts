@@ -147,8 +147,15 @@ export interface AoiRelationshipHistoryViewModel {
   milestoneRows: Array<{ id: string; label: string; dateLabel: string }>;
 }
 
+// Defensive: toISOString() THROWS a RangeError on an out-of-range date, and a
+// value like 1e20 is perfectly valid JSON, so a corrupted stored timestamp would
+// otherwise crash the whole panel rather than render one odd row.
 function formatDate(timestamp: number): string {
-  return new Date(timestamp).toISOString().slice(0, 10);
+  if (!Number.isFinite(timestamp)) {
+    return 'unknown date';
+  }
+  const date = new Date(timestamp);
+  return Number.isNaN(date.getTime()) ? 'unknown date' : date.toISOString().slice(0, 10);
 }
 
 function buildRow(record: AoiRelationshipHistoryRetrospective): AoiRelationshipHistoryRow {

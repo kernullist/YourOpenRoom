@@ -52,8 +52,16 @@ function cap(value: string, maxChars = MAX_LINE_CHARS): string {
   return `${collapsed.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
 }
 
-function formatDate(timestamp: number): string {
-  return new Date(timestamp).toISOString().slice(0, 10);
+// toISOString() THROWS on an out-of-range date, and this block is built inline
+// while assembling the system prompt -- an unguarded throw here would fail the
+// whole message send, not just drop a line. Returns null so the caller omits the
+// date instead.
+function formatDate(timestamp: number): string | null {
+  if (!Number.isFinite(timestamp)) {
+    return null;
+  }
+  const date = new Date(timestamp);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10);
 }
 
 // Plain descriptions of the stored mood. Neutral is omitted: there is nothing to
@@ -74,10 +82,9 @@ export function buildAoiPersonaBridgeBlock(input: AoiPersonaBridgeInput): string
       ? Math.max(0, Math.floor(input.sessionCount))
       : 0;
   if (sessionCount > 1) {
-    const since =
-      typeof input.firstMetAt === 'number' && Number.isFinite(input.firstMetAt)
-        ? ` since ${formatDate(input.firstMetAt)}`
-        : '';
+    const firstMetLabel =
+      typeof input.firstMetAt === 'number' ? formatDate(input.firstMetAt) : null;
+    const since = firstMetLabel ? ` since ${firstMetLabel}` : '';
     facts.push(cap(`You have worked together across ${sessionCount} sessions${since}.`));
   }
   if (input.arc?.arcName) {

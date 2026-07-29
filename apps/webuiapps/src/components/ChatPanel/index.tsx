@@ -3482,6 +3482,9 @@ const ChatPanel: React.FC<{
   const aoiNewMilestonesRef = useRef<AoiRelationshipMilestone[]>([]);
   const aoiNewRetrospectiveRef = useRef<AoiRelationshipSessionOpenRetrospective | null>(null);
   const aoiMoodRef = useRef<AoiMoodState | null>(null);
+  // R2.3: content key of the last persisted session summary, so a re-rendered
+  // strategic brief with identical content does not rewrite the record.
+  const lastSessionSummaryKeyRef = useRef('');
   const aoiCardLangRef = useRef<AoiCardLang>('en');
 
   useEffect(() => {
@@ -3512,67 +3515,91 @@ const ChatPanel: React.FC<{
     const openThreads = [...aoiStrategicBrief.openThreads, ...aoiStrategicBrief.blockedThreads]
       .map((title) => ({ title }))
       .slice(0, 8);
+    // Dedupe on CONTENT, not object identity: refreshAoiAutonomy runs after many
+    // user actions and hands back a fresh brief object each time, so keying off
+    // the reference alone would rewrite the record on every settings poke.
+    const summaryKey = JSON.stringify([
+      aoiStrategicBrief.focusSummary,
+      openThreads.map((thread) => thread.title),
+    ]);
+    if (summaryKey === lastSessionSummaryKeyRef.current) {
+      return;
+    }
+    lastSessionSummaryKeyRef.current = summaryKey;
     void reportAoiRelationshipSessionSummary(sessionPathRef.current, {
       summary: aoiStrategicBrief.focusSummary,
       openThreads,
     })
       .then((relationship) => {
-        if (relationship) {
-          aoiRelationshipStateRef.current = relationship;
+        if (!relationship) {
+          return;
         }
+        const local = aoiRelationshipStateRef.current;
+        // Preserve locally-set asked markers. A thread-asked POST can still be in
+        // flight, and taking the server's copy wholesale would drop the marker --
+        // letting a re-seed in this same session ask about the thread again, which
+        // is exactly what R2.3 exists to prevent.
+        aoiRelationshipStateRef.current = local
+          ? {
+              ...relationship,
+              openThreads: relationship.openThreads.map((thread) => {
+                const localThread = local.openThreads.find((item) => item.id === thread.id);
+                return localThread?.lastAskedAt !== undefined && thread.lastAskedAt === undefined
+                  ? { ...thread, lastAskedAt: localThread.lastAskedAt }
+                  : thread;
+              }),
+            }
+          : relationship;
       })
       .catch(() => {
         // Best-effort: a failed write only costs the next greeting its detail.
+        // Clear the key so the next brief change retries.
+        lastSessionSummaryKeyRef.current = '';
       });
   }, [aoiStrategicBrief]);
 
-  // R2.2: record the session open once per mount, whether or not a history was
-  // restored -- seedPrologue only runs on an empty history, so relying on it
-  // alone would stall the session count for anyone who keeps their history.
-  // The store's gap floor makes the duplicate call from seedPrologue harmless.
-  useEffect(() => {
-    let cancelled = false;
-    void reportAoiRelationshipSessionOpen(sessionPathRef.current)
-      .then((result) => {
-        if (!cancelled && result.relationship) {
-          aoiRelationshipStateRef.current = result.relationship;
-          if (result.newMilestones.length > 0) {
-            aoiNewMilestonesRef.current = result.newMilestones;
-          }
-        }
-      })
-      .catch(() => {
-        // Best-effort: a missing relationship record only costs the greeting.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // R2.2: read the relationship record, fetching (and thereby recording) it on
-  // first need. Cached in a ref because several openers consult it and the
-  // record only changes on a session open.
+  // R2.2: read the relationship record, recording the session open on first
+  // need. The in-flight promise is cached, not just the result: the mount effect
+  // below and seedPrologue can both reach this before either resolves, and two
+  // POSTs would run the whole session-open pipeline twice (policy + decisions +
+  // milestones + retrospective + mood) AND leave whichever call lost the race
+  // without its news -- the retrospective and mood would silently never reach a
+  // greeting.
+  const relationshipOpenRef = useRef<Promise<AoiRelationshipState | null> | null>(null);
   const ensureAoiRelationshipState = useCallback(async (): Promise<AoiRelationshipState | null> => {
     if (aoiRelationshipStateRef.current) {
       return aoiRelationshipStateRef.current;
     }
-    try {
-      const result = await reportAoiRelationshipSessionOpen(sessionPathRef.current);
-      aoiRelationshipStateRef.current = result.relationship;
-      // R3.3/R4.2: milestones and a freshly composed retrospective are news
-      // exactly once, so they are held for the greeting rather than read back
-      // off the full history.
-      aoiNewMilestonesRef.current = result.newMilestones;
-      aoiNewRetrospectiveRef.current = result.newRetrospective;
-      // R6.2: expression only -- the mood reaches the greeting copy and nothing
-      // else. No decision in this component reads it.
-      aoiMoodRef.current = result.mood;
-      return result.relationship;
-    } catch {
-      // Best-effort: with no record Aoi keeps the authored first-meeting line.
-      return null;
+    if (!relationshipOpenRef.current) {
+      relationshipOpenRef.current = reportAoiRelationshipSessionOpen(sessionPathRef.current)
+        .then((result) => {
+          aoiRelationshipStateRef.current = result.relationship;
+          // R3.3/R4.2: milestones and a freshly composed retrospective are news
+          // exactly once, so they are held for the greeting rather than read back
+          // off the full history.
+          aoiNewMilestonesRef.current = result.newMilestones;
+          aoiNewRetrospectiveRef.current = result.newRetrospective;
+          // R6.2: expression only -- the mood reaches the greeting copy and
+          // nothing else. No decision in this component reads it.
+          aoiMoodRef.current = result.mood;
+          return result.relationship;
+        })
+        .catch(() => {
+          // Best-effort: with no record Aoi keeps the authored first-meeting
+          // line. Clear the cache so a later attempt can retry.
+          relationshipOpenRef.current = null;
+          return null;
+        });
     }
+    return relationshipOpenRef.current;
   }, []);
+
+  // R2.2: record the session open once per mount, whether or not a history was
+  // restored -- seedPrologue only runs on an empty history, so relying on it
+  // alone would stall the session count for anyone who keeps their history.
+  useEffect(() => {
+    void ensureAoiRelationshipState();
+  }, [ensureAoiRelationshipState]);
 
   /** Seed prologue and opening replies from the current active mod */
   const seedPrologue = useCallback(
@@ -3669,9 +3696,8 @@ const ChatPanel: React.FC<{
           : '';
         // R6.2: Aoi's own state, said only when there is something behind it.
         const mood = aoiMoodRef.current;
-        const moodNote = shouldAoiMoodBeVoiced(mood)
-          ? buildAoiCompanionMoodNote(voice, mood!.mood)
-          : '';
+        const moodNote =
+          mood && shouldAoiMoodBeVoiced(mood) ? buildAoiCompanionMoodNote(voice, mood.mood) : '';
         const greeting = [
           buildAoiCompanionSessionGreeting(voice, {
             gapMs: Math.max(0, Date.now() - relationship.lastSessionAt),
@@ -3691,7 +3717,11 @@ const ChatPanel: React.FC<{
         };
         setMessages([greetingMsg]);
         setChatHistory([{ role: 'assistant', content: greeting }]);
-        setSuggestedReplies(nextReplies);
+        // NOT nextReplies: those are the mod's opening_rec_replies, written as
+        // responses to the first-meeting prologue. Pinning them under a reunion
+        // greeting offers the user answers to a line Aoi did not say. No chips is
+        // honest; wrong chips are not.
+        setSuggestedReplies([]);
         setCurrentEmotion(undefined);
         return;
       }
@@ -5901,7 +5931,11 @@ const ChatPanel: React.FC<{
   const pendingNewsOfferRef = useRef<PendingNewsOffer | null>(null);
   const newsOfferInFlightRef = useRef(false);
   // R6.3: spacing for self-observations, which ride the news nudge's trigger.
-  const selfObservationStateRef = useRef<AoiSelfObservationState>(loadAoiSelfObservationState());
+  // Seeded with the default and hydrated in the effect below, like the other
+  // nudge state -- a loader call here would re-read localStorage every render.
+  const selfObservationStateRef = useRef<AoiSelfObservationState>(
+    DEFAULT_AOI_SELF_OBSERVATION_STATE,
+  );
 
   // Music taste: the user's own YouTube searches + answered taste polls, fed
   // into the idle-music recommendation (persisted in localStorage).
@@ -5918,6 +5952,7 @@ const ChatPanel: React.FC<{
     idleMusicStateRef.current = loadAoiIdleMusicState();
     newsStateRef.current = loadAoiNewsState();
     musicTasteStateRef.current = loadAoiMusicTasteState();
+    selfObservationStateRef.current = loadAoiSelfObservationState();
     // Nudge cards and their chips are restored from chat history, so a pending
     // offer must survive a reload too; otherwise a restored play chip skips the
     // accept path and falls through to the generic intent parser.
@@ -10413,7 +10448,10 @@ const ChatPanel: React.FC<{
               now: stamp,
               lastSelfObservationAt: selfObservationStateRef.current.lastSelfObservationAt,
               hasSelfInquiry: Boolean(selfInquiry),
-              hasHostContent: true,
+              // An article is in hand at this point (the null case returned
+              // above); stating it as the condition keeps the invariant visible
+              // rather than hiding it behind a literal.
+              hasHostContent: Boolean(article),
             }) &&
             selfInquiry
           ) {
@@ -10427,10 +10465,13 @@ const ChatPanel: React.FC<{
                 stamp,
               );
               saveAoiSelfObservationState(selfObservationStateRef.current);
-              // The host nudge's own cooldown is still stamped, so the news
-              // rhythm is unaffected by being skipped this once.
+              // Stamp the host cooldown but do NOT consume the article: passing an
+              // empty id leaves recentArticleIds untouched, so the headline the
+              // user never saw is still eligible next time. Recording it here
+              // would silently burn an article on a nudge that showed something
+              // else entirely.
               newsStateRef.current = recordNewsOffered(newsStateRef.current, {
-                articleId: article.id,
+                articleId: '',
                 now: stamp,
               });
               saveAoiNewsState(newsStateRef.current);

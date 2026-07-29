@@ -420,9 +420,20 @@ describe('relationship routes (R2.1)', () => {
     const opened = await post('/relationship/session-open', { sessionPath: 'aoi/default' });
     expect(opened.status).toBe(200);
     const openedBody = (await opened.json()) as {
-      relationship?: { sessionCount?: number; actionAuthority?: string; mutationCount?: number };
+      relationship?: {
+        sessionCount?: number;
+        actionAuthority?: string;
+        mutationCount?: number;
+        mood?: { mood?: string };
+      };
       newMilestones?: unknown[];
+      mood?: { mood?: string } | null;
     };
+    // R6.2/R7.2: the mood write is the last mutation of the record, so the
+    // returned relationship must already carry it. Returning the pre-mood
+    // snapshot silently left the persona bridge's mood line permanently empty.
+    expect(openedBody.mood?.mood).toBeTruthy();
+    expect(openedBody.relationship?.mood?.mood).toBe(openedBody.mood?.mood);
     expect(openedBody.relationship?.sessionCount).toBe(1);
     expect(openedBody.relationship?.actionAuthority).toBe('display_only');
     expect(openedBody.relationship?.mutationCount).toBe(0);

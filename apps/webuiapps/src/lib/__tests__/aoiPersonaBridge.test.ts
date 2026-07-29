@@ -112,6 +112,27 @@ describe('buildAoiPersonaBridgeBlock', () => {
     expect(block).toContain('## Who you are in this work');
   });
 
+  it('survives an out-of-range stored timestamp instead of failing the prompt', () => {
+    // 1e20 is valid JSON but out of Date's range, and toISOString() throws on it.
+    // This block is assembled inline while building the system prompt, so an
+    // unguarded throw would fail the whole message send.
+    const block = buildAoiPersonaBridgeBlock({
+      characterName: 'Aoi',
+      sessionCount: 7,
+      firstMetAt: 1e20,
+    });
+    expect(block).toContain('across 7 sessions.');
+    expect(block).not.toContain('since');
+
+    expect(() =>
+      buildAoiPersonaBridgeBlock({
+        characterName: 'Aoi',
+        sessionCount: 7,
+        firstMetAt: Number.NaN,
+      }),
+    ).not.toThrow();
+  });
+
   it('falls back to a generic pronoun for a blank character name', () => {
     const block = buildAoiPersonaBridgeBlock({ characterName: '   ', sessionCount: 4 });
     expect(block).toContain('You are you.');

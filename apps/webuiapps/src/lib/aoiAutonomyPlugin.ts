@@ -2598,17 +2598,24 @@ export async function handleAoiAutonomyRequest(
       // from the same read-only counters used above, so it costs one extra pass
       // over data already in hand.
       let mood = null;
+      // The mood write is the LAST mutation of the record, so the response has to
+      // carry its result -- returning the pre-mood snapshot would hand the client
+      // a state whose `mood` is always undefined, which silently killed the mood
+      // line in the persona bridge (R7.2).
+      let relationshipForResponse = milestoneResult.state ?? relationship;
       try {
-        const relationshipForMood = milestoneResult.state ?? relationship;
         const derived = deriveAoiMoodState({
           now,
           recentOutcomes: loadAoiOutcomeSignalRecords(sessionsDir, sessionPath, now).map(
             (record) => ({ result: record.result, createdAt: record.createdAt }),
           ),
           newMilestoneCount: milestoneResult.added.length,
-          openThreadCount: relationshipForMood.openThreads.length,
+          openThreadCount: relationshipForResponse.openThreads.length,
         });
         const stored = recordAoiRelationshipMood(sessionsDir, sessionPath, derived, now);
+        if (stored) {
+          relationshipForResponse = stored;
+        }
         mood = stored?.mood ?? derived;
       } catch {
         mood = null;
@@ -2616,7 +2623,7 @@ export async function handleAoiAutonomyRequest(
       writeJson(res, 200, {
         ok: true,
         sessionPath,
-        relationship: milestoneResult.state ?? relationship,
+        relationship: relationshipForResponse,
         newMilestones: milestoneResult.added,
         newRetrospective,
         mood,
