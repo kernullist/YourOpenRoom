@@ -2291,6 +2291,13 @@ function getFinishTargetToolDef() {
 // Build system prompt with Character + Mod context
 // ---------------------------------------------------------------------------
 
+type BuiltSystemPrompt = {
+  /** Session-scoped. Carries the prompt-cache breakpoint on the Anthropic route. */
+  base: string;
+  /** Rebuilt on every send, so it has to sit outside the cached prefix. */
+  perTurn: string;
+};
+
 function buildSystemPrompt(
   character: CharacterConfig,
   modManager: ModManager | null,
@@ -2311,7 +2318,7 @@ function buildSystemPrompt(
   toolCallRuntimeAvailable = true,
   aoiMusicTastePrompt = '',
   personaBridgePrompt = '',
-): string {
+): BuiltSystemPrompt {
   let prompt = getCharacterPromptContext(character);
   // R7.2: the persona is immediately followed by ~150 lines of tool policy and
   // nine operator-register blocks, with nothing saying the operator work is
@@ -2483,18 +2490,29 @@ Tool rule:
 - Never call save_memory by itself and stop there.`;
   }
 
-  prompt += runGoalPrompt;
-  prompt += missionPrompt;
-  prompt += contextPrompt;
-  prompt += governorPrompt;
-  prompt += skillsPrompt;
-  prompt += mcpPluginPrompt;
-  prompt += capabilityPrompt;
-  prompt += aoiMemoryPrompt;
-  prompt += aoiMusicTastePrompt;
-  prompt += buildMemoryPrompt(memories);
+  // A split, not a reordering. Everything above is session-scoped -- the
+  // persona, the mod stage, the user profile, the tool policy, the rules -- and
+  // everything below is rebuilt on every send: the context router and the
+  // autonomy governor are both keyed on the latest user message, and the active
+  // skill set is trigger-matched against it. Concatenated into one string, those
+  // three put per-turn bytes inside the cacheable prefix, which meant the prefix
+  // differed on every turn and the prompt cache could never be read across
+  // turns. The blocks keep their order and, on the OpenAI routes, their position;
+  // chatAnthropic moves them to the tail of the conversation, where they also
+  // read as newer than the recalled history.
+  const perTurn =
+    runGoalPrompt +
+    missionPrompt +
+    contextPrompt +
+    governorPrompt +
+    skillsPrompt +
+    mcpPluginPrompt +
+    capabilityPrompt +
+    aoiMemoryPrompt +
+    aoiMusicTastePrompt +
+    buildMemoryPrompt(memories);
 
-  return prompt;
+  return { base: prompt, perTurn };
 }
 
 function buildUserActionMessage(
@@ -7282,7 +7300,7 @@ const ChatPanel: React.FC<{
       latestUserMessage,
     });
     const currentAoiMusicTastePrompt = buildAoiMusicTastePromptBlock(musicTasteStateRef.current);
-    const systemPrompt = buildSystemPrompt(
+    const builtSystemPrompt = buildSystemPrompt(
       char,
       mm,
       hasImageGen,
@@ -7317,14 +7335,25 @@ const ChatPanel: React.FC<{
           : null,
       }),
     );
+    // Budget accounting stays on the combined text so the snapshots remain
+    // comparable to the ones recorded before the split.
+    const systemPrompt = `${builtSystemPrompt.base}${builtSystemPrompt.perTurn}`;
     const aoiTrendFollowUpPrompt = buildAoiProactiveTrendFollowUpPromptBlock(
       options.aoiTrendFollowUpContext,
     );
     const fullMessages: ChatMessage[] = [
       {
         role: 'system',
-        content: systemPrompt,
+        content: builtSystemPrompt.base,
       },
+      ...(builtSystemPrompt.perTurn.trim()
+        ? [
+            {
+              role: 'system' as const,
+              content: builtSystemPrompt.perTurn,
+            },
+          ]
+        : []),
       ...(aoiTrendFollowUpPrompt
         ? [
             {
