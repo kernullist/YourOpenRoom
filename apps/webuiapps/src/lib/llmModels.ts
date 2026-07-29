@@ -316,7 +316,11 @@ export const LLM_PROVIDER_CONFIGS: Record<LLMProvider, ProviderModelConfig> = {
   'claude-cli': {
     displayName: 'Claude CLI',
     baseUrl: '',
-    defaultModel: 'claude-opus-5',
+    // The alias, not a pinned id: this value is handed to the locally installed
+    // `claude` binary as --model, so a pinned id that predates the install fails
+    // every chat and the connection check with it. `opus` resolves to whatever
+    // Opus that build supports.
+    defaultModel: 'opus',
     models: [
       { id: 'claude-opus-5', name: 'Claude Opus 5', category: 'flagship' },
       { id: 'claude-opus-4-8', name: 'Claude Opus 4.8', category: 'flagship' },

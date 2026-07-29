@@ -1264,7 +1264,7 @@ async function chatAnthropic(
   const systemMsg = systemMessages[0]?.content || '';
   const operatorContext = systemMessages
     .slice(1)
-    .map((m) => m.content)
+    .map((m) => m.content ?? '')
     .filter((content) => content.trim().length > 0);
   const nonSystemMessages = messages.filter((m) => m.role !== 'system');
 

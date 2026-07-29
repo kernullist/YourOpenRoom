@@ -677,7 +677,21 @@ async function callAoiAnthropicModel(
   );
   if (!response.ok)
     throw new Error(`${config.provider} status ${response.status}: ${await response.text()}`);
-  const data = (await response.json()) as { content?: Array<{ type?: string; text?: string }> };
+  const data = (await response.json()) as {
+    content?: Array<{ type?: string; text?: string }>;
+    stop_reason?: string;
+    stop_details?: { category?: string | null; explanation?: string | null };
+  };
+  // A declined request is a successful 200 whose content is empty. Without this
+  // the autonomy loop reads '' and degrades to deterministic synthesis with no
+  // reason recorded anywhere -- and the classifier most likely to fire here is
+  // the one aimed at the subject matter this project is about. Throwing matches
+  // how this same function already reports a non-2xx, so every caller handles it.
+  if (data.stop_reason === 'refusal') {
+    const category = data.stop_details?.category || 'unspecified';
+    const explanation = data.stop_details?.explanation ? ` ${data.stop_details.explanation}` : '';
+    throw new Error(`${config.provider} declined this request (${category}).${explanation}`);
+  }
   return (data.content ?? [])
     .filter((block) => block.type === 'text')
     .map((block) => block.text || '')

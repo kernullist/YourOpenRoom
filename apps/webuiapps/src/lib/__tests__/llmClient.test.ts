@@ -254,7 +254,8 @@ describe('getDefaultProviderConfig()', () => {
     const cfg = getDefaultProviderConfig('claude-cli');
     expect(cfg.provider).toBe('claude-cli');
     expect(cfg.baseUrl).toBe('');
-    expect(cfg.model).toBe('claude-opus-5');
+    // An alias, not a pinned id -- this is passed to the local binary as --model.
+    expect(cfg.model).toBe('opus');
     expect(cfg.command).toBe('claude');
   });
 
