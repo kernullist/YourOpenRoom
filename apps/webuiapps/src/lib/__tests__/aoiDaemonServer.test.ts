@@ -382,6 +382,89 @@ describe('intent route (SA2.2)', () => {
   });
 });
 
+describe('relationship routes (R2.1)', () => {
+  it('creates, updates, and serves the durable relationship record', async () => {
+    const sessionsDir = makeTempSessionsDir();
+    const handle = await startAoiDaemon({
+      sessionsDir,
+      configFile: join(sessionsDir, 'config.json'),
+      workspaceRoot: sessionsDir,
+      host: '127.0.0.1',
+      port: 0,
+      env: { AOI_AUTONOMY_BACKGROUND: '0' },
+    });
+    liveDaemons.push(handle);
+    const base = `http://127.0.0.1:${handle.port}/api/aoi-autonomy`;
+    const post = (route: string, body: unknown) =>
+      fetch(`${base}${route}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+    // Every route refuses without a usable sessionPath.
+    expect((await fetch(`${base}/relationship`)).status).toBe(400);
+    expect((await post('/relationship/session-open', {})).status).toBe(400);
+
+    // No record yet: an honest null, not an invented history.
+    const empty = await fetch(`${base}/relationship?sessionPath=aoi/default`);
+    expect(empty.status).toBe(200);
+    expect(((await empty.json()) as { relationship?: unknown }).relationship).toBeNull();
+
+    // Writers refuse before the record exists rather than creating one.
+    expect(
+      (await post('/relationship/session-summary', { sessionPath: 'aoi/default', summary: 'x' }))
+        .status,
+    ).toBe(404);
+
+    const opened = await post('/relationship/session-open', { sessionPath: 'aoi/default' });
+    expect(opened.status).toBe(200);
+    const openedBody = (await opened.json()) as {
+      relationship?: { sessionCount?: number; actionAuthority?: string; mutationCount?: number };
+    };
+    expect(openedBody.relationship?.sessionCount).toBe(1);
+    expect(openedBody.relationship?.actionAuthority).toBe('display_only');
+    expect(openedBody.relationship?.mutationCount).toBe(0);
+
+    const summarized = await post('/relationship/session-summary', {
+      sessionPath: 'aoi/default',
+      summary: 'Wired the relationship store.',
+      openThreads: [{ title: 'Session greeting' }],
+    });
+    expect(summarized.status).toBe(200);
+    const summarizedBody = (await summarized.json()) as {
+      relationship?: {
+        lastSessionSummary?: string;
+        openThreads?: Array<{ id: string; lastAskedAt?: number }>;
+      };
+    };
+    expect(summarizedBody.relationship?.lastSessionSummary).toBe('Wired the relationship store.');
+    const threadId = summarizedBody.relationship?.openThreads?.[0]?.id ?? '';
+    expect(threadId).toBeTruthy();
+
+    expect((await post('/relationship/thread-asked', { sessionPath: 'aoi/default' })).status).toBe(
+      400,
+    );
+    const asked = await post('/relationship/thread-asked', {
+      sessionPath: 'aoi/default',
+      threadId,
+    });
+    expect(asked.status).toBe(200);
+
+    const served = await fetch(`${base}/relationship?sessionPath=aoi/default`);
+    const servedBody = (await served.json()) as {
+      relationship?: {
+        lastSessionSummary?: string;
+        openThreads?: Array<{ lastAskedAt?: number }>;
+        milestones?: Array<{ kind?: string }>;
+      };
+    };
+    expect(servedBody.relationship?.lastSessionSummary).toBe('Wired the relationship store.');
+    expect(servedBody.relationship?.openThreads?.[0]?.lastAskedAt).toBeGreaterThan(0);
+    expect(servedBody.relationship?.milestones?.[0]?.kind).toBe('first_met');
+  });
+});
+
 describe('situation route (SA4.2)', () => {
   it('serves the persisted display-only situation brief with an explicit stale flag', async () => {
     const sessionsDir = makeTempSessionsDir();

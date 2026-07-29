@@ -95,6 +95,12 @@ import {
 import { loadAoiActivityStreamSummary, recordAoiActivityEvent } from './aoiActivityStream';
 import { loadAoiIntentState } from './aoiIntentInference';
 import { loadAoiCurrentSituation } from './aoiCurrentSituationModel';
+import {
+  loadAoiRelationshipState,
+  markAoiRelationshipThreadAsked,
+  recordAoiRelationshipSessionOpen,
+  recordAoiRelationshipSessionSummary,
+} from './aoiRelationshipState';
 import { buildAoiServerCognitionReadinessScorecard } from './aoiCognitionReadinessServer';
 import { loadAoiNonVoiceJarvisScorecardFromStores } from './aoiNonVoiceJarvisScorecardServer';
 import type { AoiDaemonHealthSnapshot } from './aoiDaemonHealth';
@@ -2474,6 +2480,115 @@ export async function handleAoiAutonomyRequest(
         situation,
         stale: situation ? situation.staleAt <= Date.now() : null,
       });
+      return true;
+    }
+
+    if (req.method === 'GET' && route === '/relationship') {
+      const sessionPath = getSessionPathFromUrl(url);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      // R2.1: the durable "us" record -- first meeting, session count, last
+      // session summary, open threads, milestones. Display-only; absent means
+      // no shared history yet, which callers must treat as "say nothing".
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        relationship: loadAoiRelationshipState(sessionsDir, sessionPath, Date.now()),
+      });
+      return true;
+    }
+
+    if (req.method === 'POST' && route === '/relationship/session-open') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      // Creates the record on a first-ever open and increments the session
+      // count only past the gap floor, so a browser refresh cannot inflate it.
+      const relationship = recordAoiRelationshipSessionOpen(sessionsDir, sessionPath, Date.now());
+      writeJson(res, 200, { ok: true, sessionPath, relationship });
+      return true;
+    }
+
+    if (req.method === 'POST' && route === '/relationship/session-summary') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      // The store redacts + caps the summary and thread titles; request free
+      // text never lands verbatim. No record yet -> nothing to update.
+      const relationship = recordAoiRelationshipSessionSummary(sessionsDir, sessionPath, {
+        summary: typeof body.summary === 'string' ? body.summary : undefined,
+        openThreads: Array.isArray(body.openThreads)
+          ? body.openThreads
+              .filter(
+                (thread: unknown): thread is { title: string; noticedAt?: number } =>
+                  typeof (thread as { title?: unknown })?.title === 'string',
+              )
+              .slice(0, 12)
+          : undefined,
+        now: Date.now(),
+      });
+      if (!relationship) {
+        writeJson(res, 404, {
+          error: 'No relationship record exists for this session yet.',
+          code: 'relationship_absent',
+        });
+        return true;
+      }
+      writeJson(res, 200, { ok: true, sessionPath, relationship });
+      return true;
+    }
+
+    if (req.method === 'POST' && route === '/relationship/thread-asked') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      const threadId = typeof body.threadId === 'string' ? body.threadId : '';
+      if (!threadId) {
+        writeJson(res, 400, {
+          error: 'Missing threadId.',
+          code: 'invalid_thread_id',
+        });
+        return true;
+      }
+      // Asked-once bookkeeping: without this a follow-up question would repeat
+      // every session and read as nagging rather than remembering.
+      const relationship = markAoiRelationshipThreadAsked(
+        sessionsDir,
+        sessionPath,
+        threadId,
+        Date.now(),
+      );
+      if (!relationship) {
+        writeJson(res, 404, {
+          error: 'No relationship record exists for this session yet.',
+          code: 'relationship_absent',
+        });
+        return true;
+      }
+      writeJson(res, 200, { ok: true, sessionPath, relationship });
       return true;
     }
 
