@@ -79,6 +79,8 @@ import type {
 import type { AoiProactiveBriefPanelModel } from './aoiProactiveBriefUi';
 import type { AoiShadowDecisionLabel } from './aoiShadowModeEvaluation';
 
+import type { AoiRelationshipState } from './aoiRelationshipState';
+
 const API_PREFIX = '/api/aoi-autonomy';
 
 export interface AoiAutonomyProposalList {
@@ -757,6 +759,33 @@ export async function fetchAoiAutonomyStatus(sessionPath: string): Promise<AoiAu
     'status',
     'Aoi autonomy status response was malformed.',
   );
+}
+
+// R2.1/R2.2 relationship record. The store module touches node fs, so only its
+// TYPE is imported here (erased at build time) and all access goes over the
+// routes -- a value import would break the client bundle.
+export async function fetchAoiRelationshipState(
+  sessionPath: string,
+): Promise<AoiRelationshipState | null> {
+  const response = await fetch(`${API_PREFIX}/relationship?${sessionQuery(sessionPath)}`);
+  const payload = await readJsonRecord(response, 'Failed to load Aoi relationship state.');
+  const relationship = payload.relationship;
+  return relationship ? (relationship as AoiRelationshipState) : null;
+}
+
+// Marks a session as opened: creates the record on a first-ever open and
+// increments the session count only past the store's gap floor.
+export async function reportAoiRelationshipSessionOpen(
+  sessionPath: string,
+): Promise<AoiRelationshipState | null> {
+  const response = await fetch(`${API_PREFIX}/relationship/session-open`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionPath }),
+  });
+  const payload = await readJsonRecord(response, 'Failed to record an Aoi session open.');
+  const relationship = payload.relationship;
+  return relationship ? (relationship as AoiRelationshipState) : null;
 }
 
 export async function fetchAoiAutonomyProposals(

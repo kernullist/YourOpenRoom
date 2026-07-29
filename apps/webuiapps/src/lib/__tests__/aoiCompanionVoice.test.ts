@@ -8,6 +8,7 @@ import {
   buildAoiCompanionResumeGreeting,
   buildAoiCompanionResumeSafetyNote,
   buildAoiCompanionResumeTitle,
+  buildAoiCompanionSessionGreeting,
   buildAoiCompanionTrendHook,
   buildAoiCompanionTrendNextAction,
   buildAoiCompanionTrendTake,
@@ -228,6 +229,53 @@ describe('aoiCompanionVoice resume copy', () => {
     expect(buildAoiCompanionResumeGreeting(EN, { idleMs: -5 })).toBe('Back already.');
   });
 
+  it('opens a returning session by how long it has been', () => {
+    expect(buildAoiCompanionSessionGreeting(KO, { gapMs: 2 * 3_600_000 })).toBe('또 왔네.');
+    expect(buildAoiCompanionSessionGreeting(KO, { gapMs: 20 * 3_600_000 })).toBe(
+      '어제 이후로 처음이네.',
+    );
+    expect(buildAoiCompanionSessionGreeting(KO, { gapMs: 80 * 3_600_000 })).toBe('오랜만이야.');
+    expect(buildAoiCompanionSessionGreeting(EN, { gapMs: 2 * 3_600_000 })).toBe('Back again.');
+    expect(buildAoiCompanionSessionGreeting(EN, { gapMs: 20 * 3_600_000 })).toBe(
+      'First time since yesterday.',
+    );
+    expect(buildAoiCompanionSessionGreeting(EN, { gapMs: Number.NaN })).toBe('Back again.');
+  });
+
+  it('references the last session when one was stored', () => {
+    const ko = buildAoiCompanionSessionGreeting(KO, {
+      gapMs: 80 * 3_600_000,
+      lastSessionSummary: '커널 드라이버 IRQL 버그 추적',
+    });
+    expect(ko).toContain('오랜만이야.');
+    expect(ko).toContain('커널 드라이버 IRQL 버그 추적');
+    expect(ko).toContain('지난번엔');
+
+    const en = buildAoiCompanionSessionGreeting(EN, {
+      gapMs: 2 * 3_600_000,
+      lastSessionSummary: 'the flaky e2e',
+    });
+    expect(en).toBe('Back again. Last time we were on the flaky e2e.');
+  });
+
+  it('omits the reference when no summary was stored and caps a long one', () => {
+    expect(buildAoiCompanionSessionGreeting(KO, { gapMs: 0, lastSessionSummary: '  ' })).toBe(
+      '또 왔네.',
+    );
+    const long = buildAoiCompanionSessionGreeting(EN, {
+      gapMs: 0,
+      lastSessionSummary: 'y'.repeat(400),
+    });
+    expect(long).toContain('…');
+    expect(long).not.toContain('y'.repeat(121));
+  });
+
+  it('addresses the user by name in the session greeting too', () => {
+    expect(buildAoiCompanionSessionGreeting({ lang: 'ko', userName: '꿀보' }, { gapMs: 0 })).toBe(
+      '꿀보, 또 왔네.',
+    );
+  });
+
   it('keeps the full safety boundary meaning in voice', () => {
     const ko = buildAoiCompanionResumeSafetyNote(KO);
     expect(ko).toContain('승인');
@@ -296,6 +344,11 @@ describe('aoiCompanionVoice register contract', () => {
         buildAoiCompanionTrendWhatChanged(voice, { topicLabel: '주제' }),
         buildAoiCompanionResumeTitle(voice),
         buildAoiCompanionResumeGreeting(voice, { idleMs: 3 * 3_600_000 }),
+        buildAoiCompanionSessionGreeting(voice, { gapMs: 3 * 3_600_000 }),
+        buildAoiCompanionSessionGreeting(voice, {
+          gapMs: 80 * 3_600_000,
+          lastSessionSummary: '지난 작업',
+        }),
         buildAoiCompanionResumeSafetyNote(voice),
       );
       for (const bucket of ['watch', 'listen', 'read', 'mixed'] as const) {

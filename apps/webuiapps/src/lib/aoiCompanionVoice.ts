@@ -298,6 +298,49 @@ export function buildAoiCompanionResumeGreeting(
   return name ? `${name}, ${gap}` : gap;
 }
 
+export interface AoiCompanionSessionGreetingParams {
+  // Time since the last session, used to pick the opener.
+  gapMs: number;
+  // What the last session was about, if anything was stored. Referencing it is
+  // the strongest "she remembers" signal, so it is included when present.
+  lastSessionSummary?: string;
+}
+
+const MAX_GREETING_SUMMARY_CHARS = 120;
+
+// Opening line for a session that has shared history behind it. Replaces the
+// static first-meeting prologue, which repeated verbatim every time the chat
+// history was empty -- including after clearing it, when the relationship
+// itself was still on record.
+export function buildAoiCompanionSessionGreeting(
+  voice: AoiCompanionVoice,
+  params: AoiCompanionSessionGreetingParams,
+): string {
+  const gapMs = Number.isFinite(params.gapMs) ? Math.max(0, params.gapMs) : 0;
+  const hours = gapMs / 3_600_000;
+  let opener: string;
+  if (hours < 12) {
+    opener = pickCompanionCopy(voice.lang, { ko: '또 왔네.', en: 'Back again.' });
+  } else if (hours < 48) {
+    opener = pickCompanionCopy(voice.lang, {
+      ko: '어제 이후로 처음이네.',
+      en: 'First time since yesterday.',
+    });
+  } else {
+    opener = pickCompanionCopy(voice.lang, { ko: '오랜만이야.', en: 'Been a while.' });
+  }
+  const name = sanitizedUserName(voice);
+  const greeting = name ? `${name}, ${opener}` : opener;
+  const summary = sanitizeCompanionText(params.lastSessionSummary, MAX_GREETING_SUMMARY_CHARS);
+  if (!summary) {
+    return greeting;
+  }
+  if (voice.lang === 'ko') {
+    return `${greeting} 지난번엔 ${summary} 쪽 보고 있었어.`;
+  }
+  return `${greeting} Last time we were on ${summary}.`;
+}
+
 // The safety boundary, spoken in-voice with the exact same meaning as the
 // compliance sentence it replaces: nothing is approved, executed, run,
 // researched, created, or edited without explicit approval.

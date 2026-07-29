@@ -389,6 +389,7 @@ import {
   recordAoiOutcomeSignal,
   recordAoiProactiveBriefFeedback,
   recordAoiActivityEvent,
+  reportAoiRelationshipSessionOpen,
   recordAoiProactiveTrendDeliveryEvent,
   recordAoiProposalFeedback,
   resetAoiProactiveBriefCooldown,
@@ -488,6 +489,10 @@ import {
   normalizeAoiCardLang,
   type AoiCardLang,
 } from '@/lib/aoiAutonomyCardI18n';
+import { buildAoiCompanionSessionGreeting } from '@/lib/aoiCompanionVoice';
+// Type-only: the relationship store touches node fs, so the client reads it
+// exclusively over the routes (a value import would break the client bundle).
+import type { AoiRelationshipState } from '@/lib/aoiRelationshipState';
 import { fetchVibeInfo, getVibeInfo, useVibeInfo } from '@/lib/vibeInfo';
 import type { AoiShadowDecisionLabel } from '@/lib/aoiShadowModeEvaluation';
 import { buildAoiOperatorDigest } from '@/lib/aoiOperatorDigest';
@@ -3399,6 +3404,12 @@ const ChatPanel: React.FC<{
     new Map<string, { prologue: string; replies: string[] }>(),
   );
   const seedPrologueRequestRef = useRef(0);
+  // R2.2: the relationship record and the card language are declared far below
+  // (they depend on state this callback precedes), so they are mirrored into
+  // refs -- naming them in seedPrologue's dependency array would be a TDZ
+  // throw. Same pattern as aoiEnvironmentSourcesRef above.
+  const aoiRelationshipStateRef = useRef<AoiRelationshipState | null>(null);
+  const aoiCardLangRef = useRef<AoiCardLang>('en');
 
   useEffect(() => {
     if (messages.length === 0 && chatHistory.length === 0) return;
@@ -3415,6 +3426,43 @@ const ChatPanel: React.FC<{
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
   }, [messages, chatHistory, suggestedReplies]);
+
+  // R2.2: record the session open once per mount, whether or not a history was
+  // restored -- seedPrologue only runs on an empty history, so relying on it
+  // alone would stall the session count for anyone who keeps their history.
+  // The store's gap floor makes the duplicate call from seedPrologue harmless.
+  useEffect(() => {
+    let cancelled = false;
+    void reportAoiRelationshipSessionOpen(sessionPathRef.current)
+      .then((relationship) => {
+        if (!cancelled && relationship) {
+          aoiRelationshipStateRef.current = relationship;
+        }
+      })
+      .catch(() => {
+        // Best-effort: a missing relationship record only costs the greeting.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // R2.2: read the relationship record, fetching (and thereby recording) it on
+  // first need. Cached in a ref because several openers consult it and the
+  // record only changes on a session open.
+  const ensureAoiRelationshipState = useCallback(async (): Promise<AoiRelationshipState | null> => {
+    if (aoiRelationshipStateRef.current) {
+      return aoiRelationshipStateRef.current;
+    }
+    try {
+      const relationship = await reportAoiRelationshipSessionOpen(sessionPathRef.current);
+      aoiRelationshipStateRef.current = relationship;
+      return relationship;
+    } catch {
+      // Best-effort: with no record Aoi keeps the authored first-meeting line.
+      return null;
+    }
+  }, []);
 
   /** Seed prologue and opening replies from the current active mod */
   const seedPrologue = useCallback(
@@ -3455,7 +3503,33 @@ const ChatPanel: React.FC<{
         }
       }
 
+      // R2.2: seeding only happens with an empty chat history -- a first-ever
+      // run, or a cleared history. Clearing the conversation does not clear the
+      // relationship, so when a record exists this is a reunion, not a first
+      // meeting, and the authored first-meeting prologue would be a lie.
+      const relationship = await ensureAoiRelationshipState();
+
       if (requestId !== seedPrologueRequestRef.current) {
+        return;
+      }
+
+      if (relationship && relationship.sessionCount > 1) {
+        const greeting = buildAoiCompanionSessionGreeting(
+          { lang: aoiCardLangRef.current },
+          {
+            gapMs: Math.max(0, Date.now() - relationship.lastSessionAt),
+            lastSessionSummary: relationship.lastSessionSummary,
+          },
+        );
+        const greetingMsg: CharacterDisplayMessage = {
+          id: 'prologue',
+          role: 'assistant',
+          content: greeting,
+        };
+        setMessages([greetingMsg]);
+        setChatHistory([{ role: 'assistant', content: greeting }]);
+        setSuggestedReplies(nextReplies);
+        setCurrentEmotion(undefined);
         return;
       }
 
@@ -3479,6 +3553,7 @@ const ChatPanel: React.FC<{
       config,
       conversationPreferences?.responseLanguageMode,
       dialogLlmConfig,
+      ensureAoiRelationshipState,
       modCollection,
     ],
   );
@@ -3559,6 +3634,17 @@ const ChatPanel: React.FC<{
         await seedPrologue();
       } else {
         const onlyPrologue = loadedMessages.length === 1 && loadedMessages[0].id === 'prologue';
+        // R2.2: a saved transcript that is JUST the opening line is not a
+        // conversation. If a relationship is on record, that stored line is a
+        // stale first meeting, so reseed to replace it with a returning
+        // greeting; otherwise it would persist unchanged forever.
+        if (onlyPrologue) {
+          const relationship = await ensureAoiRelationshipState();
+          if (relationship && relationship.sessionCount > 1) {
+            await seedPrologue();
+            return;
+          }
+        }
         let nextMessages = loadedMessages;
         let nextHistory = loadedHistory;
         let nextSuggestedReplies = data?.suggestedReplies?.length ? data.suggestedReplies : [];
@@ -9170,6 +9256,7 @@ const ChatPanel: React.FC<{
       aoiVibeInfo.systemSettings?.language?.current,
     ],
   );
+  aoiCardLangRef.current = aoiCardLang;
 
   const aoiProactiveBriefPanel = useMemo(
     () =>
