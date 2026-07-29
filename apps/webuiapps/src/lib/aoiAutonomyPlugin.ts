@@ -96,11 +96,13 @@ import { loadAoiActivityStreamSummary, recordAoiActivityEvent } from './aoiActiv
 import { loadAoiIntentState } from './aoiIntentInference';
 import { loadAoiCurrentSituation } from './aoiCurrentSituationModel';
 import {
+  applyAoiRelationshipMilestones,
   loadAoiRelationshipState,
   markAoiRelationshipThreadAsked,
   recordAoiRelationshipSessionOpen,
   recordAoiRelationshipSessionSummary,
 } from './aoiRelationshipState';
+import { deriveAoiRelationshipMilestones } from './aoiRelationshipMilestones';
 import { buildAoiServerCognitionReadinessScorecard } from './aoiCognitionReadinessServer';
 import { loadAoiNonVoiceJarvisScorecardFromStores } from './aoiNonVoiceJarvisScorecardServer';
 import type { AoiDaemonHealthSnapshot } from './aoiDaemonHealth';
@@ -2515,8 +2517,43 @@ export async function handleAoiAutonomyRequest(
       }
       // Creates the record on a first-ever open and increments the session
       // count only past the gap floor, so a browser refresh cannot inflate it.
-      const relationship = recordAoiRelationshipSessionOpen(sessionsDir, sessionPath, Date.now());
-      writeJson(res, 200, { ok: true, sessionPath, relationship });
+      const now = Date.now();
+      const relationship = recordAoiRelationshipSessionOpen(sessionsDir, sessionPath, now);
+      // R3.3: derive milestones from real counters on every open. Derivation is
+      // pure and the append is id-keyed, so this is idempotent; `added` is what
+      // was actually crossed just now and therefore worth mentioning.
+      // Read-only sourcing -- a store that cannot be read yields no milestone
+      // rather than an assumed one.
+      let autonomyLevel: string | null = null;
+      let acceptedProposalCount: number | null = null;
+      try {
+        autonomyLevel = loadAoiAutonomyPolicy(sessionsDir, sessionPath)?.level ?? null;
+      } catch {
+        autonomyLevel = null;
+      }
+      try {
+        acceptedProposalCount = loadAoiProposalDecisions(sessionsDir, sessionPath).filter(
+          (decision) => decision.actor === 'user' && decision.action === 'accept',
+        ).length;
+      } catch {
+        acceptedProposalCount = null;
+      }
+      const milestoneResult = applyAoiRelationshipMilestones(
+        sessionsDir,
+        sessionPath,
+        deriveAoiRelationshipMilestones({
+          sessionCount: relationship.sessionCount,
+          autonomyLevel,
+          acceptedProposalCount,
+        }),
+        now,
+      );
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        relationship: milestoneResult.state ?? relationship,
+        newMilestones: milestoneResult.added,
+      });
       return true;
     }
 

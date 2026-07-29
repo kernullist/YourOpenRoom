@@ -341,6 +341,66 @@ export function buildAoiCompanionSessionGreeting(
   return `${greeting} Last time we were on ${summary}.`;
 }
 
+export type AoiCompanionMilestoneKind =
+  | 'first_met'
+  | 'session_count'
+  | 'trust_promoted'
+  | 'first_accepted_proposal'
+  | 'arc_completed';
+
+export interface AoiCompanionMilestoneParams {
+  kind: AoiCompanionMilestoneKind;
+  // Sessions together, for the session-count milestone.
+  sessionCount?: number;
+  // Autonomy level reached, for the trust milestone.
+  level?: string;
+}
+
+// Mentions a milestone that was crossed just now. Only ever spoken on the
+// crossing itself -- a partner notes the hundredth session once, not every time.
+export function buildAoiCompanionMilestoneNote(
+  voice: AoiCompanionVoice,
+  params: AoiCompanionMilestoneParams,
+): string {
+  if (params.kind === 'session_count') {
+    const count =
+      typeof params.sessionCount === 'number' && Number.isFinite(params.sessionCount)
+        ? Math.max(0, Math.floor(params.sessionCount))
+        : 0;
+    if (count <= 0) {
+      return '';
+    }
+    if (voice.lang === 'ko') {
+      return `그러고 보니 우리 벌써 ${count}번째네.`;
+    }
+    return `That makes ${count} sessions together, by the way.`;
+  }
+  if (params.kind === 'trust_promoted') {
+    const level = sanitizeCompanionText(params.level, 8);
+    if (!level) {
+      return '';
+    }
+    if (voice.lang === 'ko') {
+      return `${level}까지 맡겨준 것도 기억하고 있어.`;
+    }
+    return `I have not forgotten you trusted me up to ${level}.`;
+  }
+  if (params.kind === 'first_accepted_proposal') {
+    return pickCompanionCopy(voice.lang, {
+      ko: '내 제안 처음 받아준 날이기도 해.',
+      en: 'It is also the first time you took one of my suggestions.',
+    });
+  }
+  if (params.kind === 'arc_completed') {
+    return pickCompanionCopy(voice.lang, {
+      ko: '우리 사이도 그때랑 좀 달라졌지.',
+      en: 'Things between us are not quite what they were, either.',
+    });
+  }
+  // first_met is the greeting's own premise; restating it would be odd.
+  return '';
+}
+
 // Asks about one thread left unresolved last time. Following up on unfinished
 // work is the strongest "she was paying attention" signal, which is also why at
 // most one is ever raised and never twice (see aoiRelationshipThreads).

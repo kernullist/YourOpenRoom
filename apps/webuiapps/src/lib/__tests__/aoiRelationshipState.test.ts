@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   appendAoiRelationshipMilestone,
+  applyAoiRelationshipMilestones,
   createAoiRelationshipState,
   deriveAoiRelationshipThreadId,
   loadAoiRelationshipState,
@@ -363,5 +364,97 @@ describe('aoiRelationshipState fail-closed reads', () => {
     expect(loadAoiRelationshipState(root, SESSION_PATH, NOW)).toEqual(created);
     expect(normalizeAoiRelationshipState(created, SESSION_PATH, NOW)).toEqual(created);
     expect(normalizeAoiRelationshipState(null, SESSION_PATH, NOW)).toBeNull();
+  });
+});
+
+describe('applyAoiRelationshipMilestones (R3.3)', () => {
+  it('reports only genuinely new milestones and is idempotent on re-derivation', () => {
+    const root = makeTempRoot();
+    recordAoiRelationshipSessionOpen(root, SESSION_PATH, NOW);
+
+    const inputs = [
+      {
+        kind: 'session_count' as const,
+        id: 'session_count:10',
+        label: 'We reached 10 sessions together.',
+        evidenceRefs: ['relationship:session_count:10'],
+      },
+      {
+        kind: 'trust_promoted' as const,
+        id: 'trust_promoted:L4',
+        label: 'Trust was raised to L4.',
+        evidenceRefs: [],
+      },
+    ];
+
+    const first = applyAoiRelationshipMilestones(root, SESSION_PATH, inputs, NOW + HOUR);
+    expect(first.added.map((item) => item.id)).toEqual(['session_count:10', 'trust_promoted:L4']);
+    expect(first.state?.milestones).toHaveLength(3);
+
+    // Re-deriving the same milestones is a no-op: nothing is news twice.
+    const second = applyAoiRelationshipMilestones(root, SESSION_PATH, inputs, NOW + 2 * HOUR);
+    expect(second.added).toEqual([]);
+    expect(second.state?.milestones).toHaveLength(3);
+  });
+
+  it('skips label-less inputs and returns the record untouched when none apply', () => {
+    const root = makeTempRoot();
+    recordAoiRelationshipSessionOpen(root, SESSION_PATH, NOW);
+
+    const result = applyAoiRelationshipMilestones(
+      root,
+      SESSION_PATH,
+      [{ kind: 'session_count', label: '   ' }],
+      NOW + HOUR,
+    );
+    expect(result.added).toEqual([]);
+    expect(result.state?.milestones).toHaveLength(1);
+  });
+
+  it('returns nulls when no relationship record exists yet', () => {
+    const root = makeTempRoot();
+    const result = applyAoiRelationshipMilestones(
+      root,
+      SESSION_PATH,
+      [{ kind: 'first_met', label: 'x' }],
+      NOW,
+    );
+    expect(result.state).toBeNull();
+    expect(result.added).toEqual([]);
+  });
+
+  it('does not report a milestone that normalization dropped at the cap', () => {
+    const root = makeTempRoot();
+    recordAoiRelationshipSessionOpen(root, SESSION_PATH, NOW);
+    // Fill past the 20-entry cap with older entries, then add one older still:
+    // it must not be reported as added when it did not survive.
+    applyAoiRelationshipMilestones(
+      root,
+      SESSION_PATH,
+      Array.from({ length: 25 }, (_unused, index) => ({
+        kind: 'session_count' as const,
+        id: `session_count:${index + 1}`,
+        label: `Session ${index + 1}.`,
+        occurredAt: NOW + (index + 1) * HOUR,
+      })),
+      NOW + 100 * HOUR,
+    );
+
+    const late = applyAoiRelationshipMilestones(
+      root,
+      SESSION_PATH,
+      [
+        {
+          kind: 'session_count',
+          id: 'session_count:ancient',
+          label: 'Ancient.',
+          occurredAt: NOW - 50 * HOUR,
+        },
+      ],
+      NOW + 200 * HOUR,
+    );
+    expect(late.added).toEqual([]);
+    expect(late.state?.milestones).toHaveLength(20);
+    expect(late.state?.milestones[0]?.kind).toBe('first_met');
   });
 });

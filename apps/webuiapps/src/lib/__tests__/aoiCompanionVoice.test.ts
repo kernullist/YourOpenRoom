@@ -5,6 +5,7 @@ import {
   buildAoiCompanionBriefHook,
   buildAoiCompanionBriefReason,
   buildAoiCompanionFeedbackAction,
+  buildAoiCompanionMilestoneNote,
   buildAoiCompanionResumeGreeting,
   buildAoiCompanionResumeSafetyNote,
   buildAoiCompanionResumeTitle,
@@ -275,6 +276,37 @@ describe('aoiCompanionVoice resume copy', () => {
     expect(buildAoiCompanionSessionGreeting({ lang: 'ko', userName: '꿀보' }, { gapMs: 0 })).toBe(
       '꿀보, 또 왔네.',
     );
+  });
+
+  it('mentions a just-crossed milestone per kind', () => {
+    expect(
+      buildAoiCompanionMilestoneNote(KO, { kind: 'session_count', sessionCount: 50 }),
+    ).toContain('50번째');
+    expect(
+      buildAoiCompanionMilestoneNote(EN, { kind: 'session_count', sessionCount: 50 }),
+    ).toContain('50 sessions together');
+    expect(buildAoiCompanionMilestoneNote(KO, { kind: 'trust_promoted', level: 'L4' })).toContain(
+      'L4',
+    );
+    expect(buildAoiCompanionMilestoneNote(EN, { kind: 'trust_promoted', level: 'L4' })).toContain(
+      'trusted me up to L4',
+    );
+    expect(buildAoiCompanionMilestoneNote(KO, { kind: 'first_accepted_proposal' })).toContain(
+      '제안 처음 받아준',
+    );
+    expect(buildAoiCompanionMilestoneNote(EN, { kind: 'arc_completed' })).toContain(
+      'not quite what they were',
+    );
+  });
+
+  it('says nothing for a milestone with no usable detail', () => {
+    // A missing count or level yields silence rather than a half-formed claim.
+    expect(buildAoiCompanionMilestoneNote(KO, { kind: 'session_count' })).toBe('');
+    expect(buildAoiCompanionMilestoneNote(KO, { kind: 'session_count', sessionCount: 0 })).toBe('');
+    expect(buildAoiCompanionMilestoneNote(KO, { kind: 'trust_promoted' })).toBe('');
+    expect(buildAoiCompanionMilestoneNote(KO, { kind: 'trust_promoted', level: '  ' })).toBe('');
+    // The greeting already IS the reunion, so restating first contact is odd.
+    expect(buildAoiCompanionMilestoneNote(KO, { kind: 'first_met' })).toBe('');
   });
 
   it('asks about an unresolved thread by name', () => {

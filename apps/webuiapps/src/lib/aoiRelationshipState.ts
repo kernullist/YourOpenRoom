@@ -417,6 +417,53 @@ export interface AoiRelationshipMilestoneInput {
   id?: string;
 }
 
+// Applies several derived milestones in one load/save and reports which were
+// genuinely new. Callers need that distinction: only a just-crossed milestone is
+// worth mentioning to the user, and re-derivation runs on every session open.
+export function applyAoiRelationshipMilestones(
+  sessionsDir: string,
+  sessionPath: string,
+  inputs: AoiRelationshipMilestoneInput[],
+  now: number,
+): { state: AoiRelationshipState | null; added: AoiRelationshipMilestone[] } {
+  const existing = loadAoiRelationshipState(sessionsDir, sessionPath, now);
+  if (!existing) {
+    return { state: null, added: [] };
+  }
+  const known = new Set(existing.milestones.map((milestone) => milestone.id));
+  const added: AoiRelationshipMilestone[] = [];
+  for (const input of inputs) {
+    const label = sanitizeRelationshipText(input.label, MAX_MILESTONE_LABEL_CHARS);
+    if (!label) {
+      continue;
+    }
+    const id = input.id ?? `${input.kind}:${label}`;
+    if (known.has(id)) {
+      continue;
+    }
+    known.add(id);
+    added.push({
+      id,
+      kind: input.kind,
+      label,
+      occurredAt: input.occurredAt ?? now,
+      evidenceRefs: input.evidenceRefs ?? [],
+    });
+  }
+  if (added.length === 0) {
+    return { state: existing, added: [] };
+  }
+  const milestones = normalizeMilestones([...existing.milestones, ...added], now);
+  const state = saveAoiRelationshipState(sessionsDir, {
+    ...existing,
+    milestones,
+    updatedAt: now,
+  });
+  // Report only those that survived normalization's cap.
+  const retained = new Set(state.milestones.map((milestone) => milestone.id));
+  return { state, added: added.filter((milestone) => retained.has(milestone.id)) };
+}
+
 // Appends a milestone unless one with the same id already exists, so a
 // re-derived milestone (same trust promotion, same arc) is recorded once.
 export function appendAoiRelationshipMilestone(

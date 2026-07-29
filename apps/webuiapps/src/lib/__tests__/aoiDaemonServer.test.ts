@@ -421,10 +421,14 @@ describe('relationship routes (R2.1)', () => {
     expect(opened.status).toBe(200);
     const openedBody = (await opened.json()) as {
       relationship?: { sessionCount?: number; actionAuthority?: string; mutationCount?: number };
+      newMilestones?: unknown[];
     };
     expect(openedBody.relationship?.sessionCount).toBe(1);
     expect(openedBody.relationship?.actionAuthority).toBe('display_only');
     expect(openedBody.relationship?.mutationCount).toBe(0);
+    // R3.3: a first session crosses no threshold, and the default L1 level is
+    // the starting point rather than an achievement -- so nothing is news yet.
+    expect(openedBody.newMilestones).toEqual([]);
 
     const summarized = await post('/relationship/session-summary', {
       sessionPath: 'aoi/default',

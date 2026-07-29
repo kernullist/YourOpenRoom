@@ -494,13 +494,14 @@ import {
   type AoiCardLang,
 } from '@/lib/aoiAutonomyCardI18n';
 import {
+  buildAoiCompanionMilestoneNote,
   buildAoiCompanionSessionGreeting,
   buildAoiCompanionThreadFollowUp,
 } from '@/lib/aoiCompanionVoice';
 import { selectAoiRelationshipThreadToRaise } from '@/lib/aoiRelationshipThreads';
 // Type-only: the relationship store touches node fs, so the client reads it
 // exclusively over the routes (a value import would break the client bundle).
-import type { AoiRelationshipState } from '@/lib/aoiRelationshipState';
+import type { AoiRelationshipMilestone, AoiRelationshipState } from '@/lib/aoiRelationshipState';
 import { fetchVibeInfo, getVibeInfo, useVibeInfo } from '@/lib/vibeInfo';
 import type { AoiShadowDecisionLabel } from '@/lib/aoiShadowModeEvaluation';
 import { buildAoiOperatorDigest } from '@/lib/aoiOperatorDigest';
@@ -3417,6 +3418,7 @@ const ChatPanel: React.FC<{
   // refs -- naming them in seedPrologue's dependency array would be a TDZ
   // throw. Same pattern as aoiEnvironmentSourcesRef above.
   const aoiRelationshipStateRef = useRef<AoiRelationshipState | null>(null);
+  const aoiNewMilestonesRef = useRef<AoiRelationshipMilestone[]>([]);
   const aoiCardLangRef = useRef<AoiCardLang>('en');
 
   useEffect(() => {
@@ -3468,9 +3470,12 @@ const ChatPanel: React.FC<{
   useEffect(() => {
     let cancelled = false;
     void reportAoiRelationshipSessionOpen(sessionPathRef.current)
-      .then((relationship) => {
-        if (!cancelled && relationship) {
-          aoiRelationshipStateRef.current = relationship;
+      .then((result) => {
+        if (!cancelled && result.relationship) {
+          aoiRelationshipStateRef.current = result.relationship;
+          if (result.newMilestones.length > 0) {
+            aoiNewMilestonesRef.current = result.newMilestones;
+          }
         }
       })
       .catch(() => {
@@ -3489,9 +3494,12 @@ const ChatPanel: React.FC<{
       return aoiRelationshipStateRef.current;
     }
     try {
-      const relationship = await reportAoiRelationshipSessionOpen(sessionPathRef.current);
-      aoiRelationshipStateRef.current = relationship;
-      return relationship;
+      const result = await reportAoiRelationshipSessionOpen(sessionPathRef.current);
+      aoiRelationshipStateRef.current = result.relationship;
+      // R3.3: milestones crossed by this open are news exactly once, so they are
+      // held for the greeting rather than read back off the full history.
+      aoiNewMilestonesRef.current = result.newMilestones;
+      return result.relationship;
     } catch {
       // Best-effort: with no record Aoi keeps the authored first-meeting line.
       return null;
@@ -3567,11 +3575,25 @@ const ChatPanel: React.FC<{
             // Best-effort: the local ref already prevents a repeat this session.
           });
         }
+        // R3.3: at most one just-crossed milestone, consumed so a re-seed in the
+        // same session does not repeat it.
+        const milestone = aoiNewMilestonesRef.current[0];
+        aoiNewMilestonesRef.current = [];
+        const milestoneNote = milestone
+          ? buildAoiCompanionMilestoneNote(voice, {
+              kind: milestone.kind,
+              sessionCount: relationship.sessionCount,
+              ...(milestone.kind === 'trust_promoted'
+                ? { level: milestone.id.split(':')[1] ?? '' }
+                : {}),
+            })
+          : '';
         const greeting = [
           buildAoiCompanionSessionGreeting(voice, {
             gapMs: Math.max(0, Date.now() - relationship.lastSessionAt),
             lastSessionSummary: relationship.lastSessionSummary,
           }),
+          milestoneNote,
           followUp,
         ]
           .filter(Boolean)

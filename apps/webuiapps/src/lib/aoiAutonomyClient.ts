@@ -79,7 +79,7 @@ import type {
 import type { AoiProactiveBriefPanelModel } from './aoiProactiveBriefUi';
 import type { AoiShadowDecisionLabel } from './aoiShadowModeEvaluation';
 
-import type { AoiRelationshipState } from './aoiRelationshipState';
+import type { AoiRelationshipMilestone, AoiRelationshipState } from './aoiRelationshipState';
 
 const API_PREFIX = '/api/aoi-autonomy';
 
@@ -773,11 +773,18 @@ export async function fetchAoiRelationshipState(
   return relationship ? (relationship as AoiRelationshipState) : null;
 }
 
+export interface AoiRelationshipSessionOpenResult {
+  relationship: AoiRelationshipState | null;
+  // R3.3: milestones crossed by THIS open. Only these are worth mentioning --
+  // the full list is history, not news.
+  newMilestones: AoiRelationshipMilestone[];
+}
+
 // Marks a session as opened: creates the record on a first-ever open and
 // increments the session count only past the store's gap floor.
 export async function reportAoiRelationshipSessionOpen(
   sessionPath: string,
-): Promise<AoiRelationshipState | null> {
+): Promise<AoiRelationshipSessionOpenResult> {
   const response = await fetch(`${API_PREFIX}/relationship/session-open`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -785,7 +792,12 @@ export async function reportAoiRelationshipSessionOpen(
   });
   const payload = await readJsonRecord(response, 'Failed to record an Aoi session open.');
   const relationship = payload.relationship;
-  return relationship ? (relationship as AoiRelationshipState) : null;
+  return {
+    relationship: relationship ? (relationship as AoiRelationshipState) : null,
+    newMilestones: Array.isArray(payload.newMilestones)
+      ? (payload.newMilestones as AoiRelationshipMilestone[])
+      : [],
+  };
 }
 
 // Stores what this session was about and which threads are still open, so the
