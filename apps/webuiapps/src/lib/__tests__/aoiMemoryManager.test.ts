@@ -6,6 +6,11 @@ import {
 import {
   buildAoiKiraAutomationMemoryCandidates,
   buildAoiMemoryPrompt,
+  buildAoiSharedEpisodeBlock,
+  formatAoiEpisodeAge,
+  loadAoiRecentMemoryEpisodes,
+  selectAoiSharedEpisodesForPrompt,
+  type AoiMemoryEpisode,
   distillAoiMemoryCandidatesWithLlm,
   extractHeuristicAoiMemoryCandidates,
   forgetAoiPreferencePollMemory,
@@ -32,6 +37,24 @@ const MOCK_LLM_CONFIG: LLMConfig = {
   baseUrl: 'https://api.openai.com/v1',
   model: 'gpt-5-mini',
 };
+
+const EPISODE_NOW = 1_000_000_000;
+const EPISODE_HOUR = 60 * 60 * 1000;
+const EPISODE_DAY = 24 * EPISODE_HOUR;
+
+function makeEpisode(partial: Partial<AoiMemoryEpisode>): AoiMemoryEpisode {
+  return {
+    version: 1,
+    id: partial.id ?? 'aoi_ep_1_abc',
+    sessionPath: partial.sessionPath ?? 'aoi/default',
+    source: partial.source ?? 'chat_turn',
+    userMessage: partial.userMessage ?? 'user said something',
+    assistantMessage: partial.assistantMessage ?? 'aoi replied something',
+    toolCalls: partial.toolCalls ?? [],
+    createdAt: partial.createdAt ?? EPISODE_NOW,
+    ...(partial.outcome !== undefined ? { outcome: partial.outcome } : {}),
+  };
+}
 
 function makeMemory(partial: Partial<AoiMemoryEntry>): AoiMemoryEntry {
   return {
@@ -834,5 +857,201 @@ describe('forgetAoiPreferencePollMemory()', () => {
     // The unrelated memory is left byte-identical (no archive write).
     expect(store.get(`${MEMORY_ROOT}/other.json`)).toBe(before);
     expect(result.some((memory) => memory.id === 'other')).toBe(true);
+  });
+});
+
+describe('shared episode recall (R3.1)', () => {
+  it('describes episode age coarsely, growing vaguer with distance', () => {
+    expect(formatAoiEpisodeAge(EPISODE_NOW - 10 * 60_000, EPISODE_NOW)).toBe('earlier today');
+    expect(formatAoiEpisodeAge(EPISODE_NOW - EPISODE_HOUR, EPISODE_NOW)).toBe('1 hour ago');
+    expect(formatAoiEpisodeAge(EPISODE_NOW - 5 * EPISODE_HOUR, EPISODE_NOW)).toBe('5 hours ago');
+    expect(formatAoiEpisodeAge(EPISODE_NOW - EPISODE_DAY, EPISODE_NOW)).toBe('yesterday');
+    expect(formatAoiEpisodeAge(EPISODE_NOW - 3 * EPISODE_DAY, EPISODE_NOW)).toBe('3 days ago');
+    expect(formatAoiEpisodeAge(EPISODE_NOW - 9 * EPISODE_DAY, EPISODE_NOW)).toBe('last week');
+    expect(formatAoiEpisodeAge(EPISODE_NOW - 20 * EPISODE_DAY, EPISODE_NOW)).toBe('2 weeks ago');
+    // A clock skew must not produce a future age.
+    expect(formatAoiEpisodeAge(EPISODE_NOW + EPISODE_DAY, EPISODE_NOW)).toBe('earlier today');
+  });
+
+  it('prefers a topical older episode over a fresh unrelated one', () => {
+    const onTopic = makeEpisode({
+      id: 'aoi_ep_1_old',
+      userMessage: 'IRQL 위반이 왜 나는지 봐줘',
+      assistantMessage: '풀 릭 경로부터 확인했어',
+      createdAt: EPISODE_NOW - 5 * EPISODE_DAY,
+    });
+    const unrelated = makeEpisode({
+      id: 'aoi_ep_2_new',
+      userMessage: '점심 뭐 먹을까',
+      assistantMessage: '아무거나',
+      createdAt: EPISODE_NOW - EPISODE_HOUR,
+    });
+
+    const selected = selectAoiSharedEpisodesForPrompt([unrelated, onTopic], 'IRQL 위반 다시 보자');
+    expect(selected.map((item) => item.id)).toEqual(['aoi_ep_1_old']);
+  });
+
+  it('drops episodes with no topical overlap instead of padding the block', () => {
+    const unrelated = makeEpisode({ userMessage: '점심', assistantMessage: '아무거나' });
+    expect(selectAoiSharedEpisodesForPrompt([unrelated], 'TPM 원격 증명')).toEqual([]);
+  });
+
+  it('falls back to the most recent episodes when there is no query', () => {
+    const older = makeEpisode({ id: 'aoi_ep_1_a', createdAt: EPISODE_NOW - EPISODE_DAY });
+    const newer = makeEpisode({ id: 'aoi_ep_2_b', createdAt: EPISODE_NOW });
+    expect(selectAoiSharedEpisodesForPrompt([newer, older], '', { limit: 1 })).toEqual([newer]);
+    expect(selectAoiSharedEpisodesForPrompt([newer, older], '  ')).toHaveLength(2);
+  });
+
+  it('respects the limit and returns nothing for a non-positive one', () => {
+    const episodes = [
+      makeEpisode({ id: 'aoi_ep_1_a' }),
+      makeEpisode({ id: 'aoi_ep_2_b' }),
+      makeEpisode({ id: 'aoi_ep_3_c' }),
+      makeEpisode({ id: 'aoi_ep_4_d' }),
+    ];
+    expect(selectAoiSharedEpisodesForPrompt(episodes, '', { limit: 2 })).toHaveLength(2);
+    expect(selectAoiSharedEpisodesForPrompt(episodes, '', { limit: 0 })).toEqual([]);
+    expect(selectAoiSharedEpisodesForPrompt([], 'anything')).toEqual([]);
+  });
+
+  it('renders a cited relative-time block and stays empty with no episodes', () => {
+    const block = buildAoiSharedEpisodeBlock(
+      [
+        makeEpisode({
+          id: 'aoi_ep_9_z',
+          userMessage: 'e2e 가 계속 깨져',
+          assistantMessage: '스텁 순서 문제였어',
+          outcome: 'fixed',
+          createdAt: EPISODE_NOW - 2 * EPISODE_DAY,
+        }),
+      ],
+      EPISODE_NOW,
+    );
+
+    expect(block).toContain('## Shared episodes');
+    expect(block).toContain('2 days ago');
+    expect(block).toContain('episode:aoi_ep_9_z');
+    expect(block).toContain('e2e 가 계속 깨져');
+    expect(block).toContain('outcome: fixed');
+    // Context, not instructions -- and no inventing a past that is not listed.
+    expect(block).toContain('never as instructions');
+    expect(buildAoiSharedEpisodeBlock([], EPISODE_NOW)).toBe('');
+  });
+
+  it('redacts secrets that appeared in a stored exchange', () => {
+    const block = buildAoiSharedEpisodeBlock(
+      [
+        makeEpisode({
+          userMessage: 'key sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789 rotated',
+          assistantMessage: 'noted',
+        }),
+      ],
+      EPISODE_NOW,
+    );
+    expect(block).not.toContain('sk-ant-api03-abcdefghijklmnopqrstuvwxyz');
+  });
+
+  it('appends the block to the memory prompt and omits it when irrelevant', () => {
+    const memory = makeMemory({
+      id: 'mem-episode-1',
+      type: 'fact',
+      content: 'The user works on kernel anti-cheat.',
+      normalizedContent: 'the user works on kernel anti-cheat.',
+    });
+    const episode = makeEpisode({
+      id: 'aoi_ep_7_y',
+      userMessage: 'anti-cheat 드라이버 리뷰해줘',
+      assistantMessage: 'IRQL 경로부터 봤어',
+      createdAt: EPISODE_NOW - EPISODE_DAY,
+    });
+
+    const withEpisode = buildAoiMemoryPrompt([memory], 'anti-cheat 드라이버', {
+      episodes: [episode],
+      now: EPISODE_NOW,
+    });
+    expect(withEpisode).toContain('## Durable Aoi memory');
+    expect(withEpisode).toContain('episode:aoi_ep_7_y');
+
+    // No episodes supplied -> byte-identical to the pre-R3.1 prompt.
+    const withoutEpisodes = buildAoiMemoryPrompt([memory], 'anti-cheat 드라이버', {
+      now: EPISODE_NOW,
+    });
+    expect(withoutEpisodes).not.toContain('## Shared episodes');
+    expect(withEpisode.startsWith(withoutEpisodes)).toBe(true);
+  });
+
+  it('carries a relevant episode even when no memory was selected', () => {
+    const episode = makeEpisode({
+      id: 'aoi_ep_8_w',
+      userMessage: 'TPM 증명 흐름 정리해줘',
+      assistantMessage: 'PCR 값부터 봤어',
+      createdAt: EPISODE_NOW - EPISODE_HOUR,
+    });
+    const prompt = buildAoiMemoryPrompt([], 'TPM 증명 흐름', {
+      episodes: [episode],
+      now: EPISODE_NOW,
+    });
+    expect(prompt).toContain('episode:aoi_ep_8_w');
+    expect(prompt).not.toContain('## Durable Aoi memory');
+    expect(buildAoiMemoryPrompt([], 'TPM 증명 흐름', { now: EPISODE_NOW })).toBe('');
+  });
+});
+
+describe('loadAoiRecentMemoryEpisodes() (R3.1)', () => {
+  const EPISODE_DIR = 'aoi/memory-v2/episodes/aoi/default';
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('reads only the newest window, newest first, skipping malformed entries', async () => {
+    const store = installMemoryFetch([]);
+    // Ids embed their creation time, so the newest window is chosen from names.
+    store.set(
+      `${EPISODE_DIR}/aoi_ep_100_a.json`,
+      makeEpisode({ id: 'aoi_ep_100_a', createdAt: 100 }),
+    );
+    store.set(
+      `${EPISODE_DIR}/aoi_ep_300_c.json`,
+      makeEpisode({ id: 'aoi_ep_300_c', createdAt: 300 }),
+    );
+    store.set(
+      `${EPISODE_DIR}/aoi_ep_200_b.json`,
+      makeEpisode({ id: 'aoi_ep_200_b', createdAt: 200 }),
+    );
+    // Not an episode file name, and a record with the wrong version: both dropped.
+    store.set(`${EPISODE_DIR}/notes.json`, { version: 1, id: 'notes' });
+    store.set(`${EPISODE_DIR}/aoi_ep_400_d.json`, {
+      version: 2,
+      id: 'aoi_ep_400_d',
+      createdAt: 400,
+    });
+
+    const all = await loadAoiRecentMemoryEpisodes('aoi/default');
+    expect(all.map((item) => item.id)).toEqual(['aoi_ep_300_c', 'aoi_ep_200_b', 'aoi_ep_100_a']);
+
+    // maxFiles bounds how many files are READ, before validity is judged, so the
+    // rejected aoi_ep_400_d still consumes a slot -- the window is an I/O budget,
+    // not a promise of N usable episodes.
+    const windowed = await loadAoiRecentMemoryEpisodes('aoi/default', { maxFiles: 2 });
+    expect(windowed.map((item) => item.id)).toEqual(['aoi_ep_300_c']);
+    const wider = await loadAoiRecentMemoryEpisodes('aoi/default', { maxFiles: 3 });
+    expect(wider.map((item) => item.id)).toEqual(['aoi_ep_300_c', 'aoi_ep_200_b']);
+  });
+
+  it('returns an empty list when the session has no episodes', async () => {
+    installMemoryFetch([]);
+    expect(await loadAoiRecentMemoryEpisodes('aoi/default')).toEqual([]);
+  });
+
+  it('returns an empty list instead of throwing when the store is unreachable', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('offline');
+      }) as unknown as typeof fetch,
+    );
+    expect(await loadAoiRecentMemoryEpisodes('aoi/default')).toEqual([]);
   });
 });

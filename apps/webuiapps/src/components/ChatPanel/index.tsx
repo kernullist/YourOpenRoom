@@ -173,6 +173,7 @@ import {
   deleteAoiMemory,
   demoteAoiPreferenceMemory,
   loadAoiMemories,
+  loadAoiRecentMemoryEpisodes,
   markAoiMemoryTemporary,
   saveAoiManualMemory,
   saveAoiPreferenceMemory,
@@ -180,6 +181,7 @@ import {
   syncAoiMemoryFromPreferencePoll,
   syncAoiMemoryFromTurn,
   type AoiMemoryEntry,
+  type AoiMemoryEpisode,
   type AoiMemoryEpisodeSource,
   type AoiMemoryType,
 } from '@/lib/aoiMemoryManager';
@@ -7050,9 +7052,20 @@ const ChatPanel: React.FC<{
       aoiEmbeddingProviderRef.current,
     );
     throwIfConversationAborted(options.signal);
+    // R3.1: episodes have always been written but never read back. Load a
+    // bounded recent window so relevant past exchanges can be referred to by
+    // when they happened. Best-effort -- a failure just omits the block.
+    let recentAoiEpisodes: AoiMemoryEpisode[] = [];
+    try {
+      recentAoiEpisodes = await loadAoiRecentMemoryEpisodes(sessionPathRef.current);
+    } catch (error) {
+      console.warn('[ChatPanel] Failed to load Aoi shared episodes', error);
+    }
+    throwIfConversationAborted(options.signal);
     const currentAoiMemoryPrompt = buildAoiMemoryPrompt(latestAoiMemories, latestUserMessage, {
       queryEmbedding: aoiQueryEmbedding,
       queryEmbeddingModel: aoiEmbeddingProviderRef.current?.model ?? null,
+      episodes: recentAoiEpisodes,
     });
     let currentAoiMissionPrompt = '';
     try {
