@@ -17,7 +17,18 @@ import { test, expect, type Page } from '@playwright/test';
 const FIRST_MEETING_MARKER = '후후';
 const HOUR = 60 * 60 * 1000;
 
-function relationshipFixture(sessionCount: number, lastSessionAt: number) {
+interface ThreadFixture {
+  id: string;
+  title: string;
+  noticedAt: number;
+  lastAskedAt?: number;
+}
+
+function relationshipFixture(
+  sessionCount: number,
+  lastSessionAt: number,
+  openThreads: ThreadFixture[] = [],
+) {
   return {
     version: 1,
     sessionPath: 'aoi/default',
@@ -25,7 +36,7 @@ function relationshipFixture(sessionCount: number, lastSessionAt: number) {
     sessionCount,
     lastSessionAt,
     lastSessionSummary: 'E2E: the companion voice rollout',
-    openThreads: [],
+    openThreads,
     milestones: [
       {
         id: 'first_met',
@@ -93,6 +104,48 @@ test.describe('Chat – Aoi session greeting (R2.2)', () => {
     const firstMessage = page.locator('[data-testid="chat-message"]').first();
     await expect(firstMessage).toContainText('Back again');
     await expect(firstMessage).not.toContainText('Been a while');
+  });
+
+  test('follows up on one unresolved thread and records the ask (R2.3)', async ({ page }) => {
+    await stubEmptyChatHistory(page);
+    const asked: string[] = [];
+    // Capture the thread-asked write while still serving the record.
+    await page.route('**/api/aoi-autonomy/relationship**', async (route) => {
+      const request = route.request();
+      if (request.url().includes('thread-asked')) {
+        const body = JSON.parse(request.postData() ?? '{}') as { threadId?: string };
+        asked.push(body.threadId ?? '');
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: true,
+          sessionPath: 'aoi/default',
+          relationship: relationshipFixture(4, Date.now() - 30 * HOUR, [
+            // Oldest unasked wins; the already-asked one must not be raised again.
+            {
+              id: 'thread:already-asked',
+              title: 'an old settled thing',
+              noticedAt: 1,
+              lastAskedAt: 2,
+            },
+            { id: 'thread:open-one', title: 'the daemon restart soak', noticedAt: 10 },
+            { id: 'thread:open-two', title: 'a newer loose end', noticedAt: 20 },
+          ]),
+        }),
+      });
+    });
+
+    await page.goto('/');
+
+    const firstMessage = page.locator('[data-testid="chat-message"]').first();
+    await expect(firstMessage).toContainText('First time since yesterday');
+    await expect(firstMessage).toContainText('how did the daemon restart soak turn out?');
+    // Exactly one thread is raised, and never one already asked about.
+    await expect(firstMessage).not.toContainText('a newer loose end');
+    await expect(firstMessage).not.toContainText('an old settled thing');
+    await expect.poll(() => asked).toEqual(['thread:open-one']);
   });
 
   test('keeps the authored first-meeting prologue with no relationship on record', async ({

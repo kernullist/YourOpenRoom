@@ -390,6 +390,8 @@ import {
   recordAoiProactiveBriefFeedback,
   recordAoiActivityEvent,
   reportAoiRelationshipSessionOpen,
+  reportAoiRelationshipSessionSummary,
+  reportAoiRelationshipThreadAsked,
   recordAoiProactiveTrendDeliveryEvent,
   recordAoiProposalFeedback,
   resetAoiProactiveBriefCooldown,
@@ -489,7 +491,11 @@ import {
   normalizeAoiCardLang,
   type AoiCardLang,
 } from '@/lib/aoiAutonomyCardI18n';
-import { buildAoiCompanionSessionGreeting } from '@/lib/aoiCompanionVoice';
+import {
+  buildAoiCompanionSessionGreeting,
+  buildAoiCompanionThreadFollowUp,
+} from '@/lib/aoiCompanionVoice';
+import { selectAoiRelationshipThreadToRaise } from '@/lib/aoiRelationshipThreads';
 // Type-only: the relationship store touches node fs, so the client reads it
 // exclusively over the routes (a value import would break the client bundle).
 import type { AoiRelationshipState } from '@/lib/aoiRelationshipState';
@@ -3427,6 +3433,32 @@ const ChatPanel: React.FC<{
     };
   }, [messages, chatHistory, suggestedReplies]);
 
+  // R2.3: persist what this session is about whenever the strategic brief moves.
+  // The brief already carries a continuity line and the accepted/blocked threads
+  // (P3.3), so this reuses real state instead of inventing a summary -- and it
+  // writes on every brief change rather than at close, because a browser tab
+  // closing is not a reliable event to hang the record on.
+  useEffect(() => {
+    if (!aoiStrategicBrief) {
+      return;
+    }
+    const openThreads = [...aoiStrategicBrief.openThreads, ...aoiStrategicBrief.blockedThreads]
+      .map((title) => ({ title }))
+      .slice(0, 8);
+    void reportAoiRelationshipSessionSummary(sessionPathRef.current, {
+      summary: aoiStrategicBrief.focusSummary,
+      openThreads,
+    })
+      .then((relationship) => {
+        if (relationship) {
+          aoiRelationshipStateRef.current = relationship;
+        }
+      })
+      .catch(() => {
+        // Best-effort: a failed write only costs the next greeting its detail.
+      });
+  }, [aoiStrategicBrief]);
+
   // R2.2: record the session open once per mount, whether or not a history was
   // restored -- seedPrologue only runs on an empty history, so relying on it
   // alone would stall the session count for anyone who keeps their history.
@@ -3514,13 +3546,34 @@ const ChatPanel: React.FC<{
       }
 
       if (relationship && relationship.sessionCount > 1) {
-        const greeting = buildAoiCompanionSessionGreeting(
-          { lang: aoiCardLangRef.current },
-          {
+        const voice = { lang: aoiCardLangRef.current };
+        // R2.3: at most ONE unresolved thread is raised, and the ask is recorded
+        // so it is never raised twice -- asking again reads as nagging, not as
+        // remembering. Recording is best-effort; a failure only risks one repeat.
+        const thread = selectAoiRelationshipThreadToRaise(relationship.openThreads);
+        const followUp = thread
+          ? buildAoiCompanionThreadFollowUp(voice, { title: thread.title })
+          : '';
+        if (thread && followUp) {
+          aoiRelationshipStateRef.current = {
+            ...relationship,
+            openThreads: relationship.openThreads.map((item) =>
+              item.id === thread.id ? { ...item, lastAskedAt: Date.now() } : item,
+            ),
+          };
+          void reportAoiRelationshipThreadAsked(sessionPathRef.current, thread.id).catch(() => {
+            // Best-effort: the local ref already prevents a repeat this session.
+          });
+        }
+        const greeting = [
+          buildAoiCompanionSessionGreeting(voice, {
             gapMs: Math.max(0, Date.now() - relationship.lastSessionAt),
             lastSessionSummary: relationship.lastSessionSummary,
-          },
-        );
+          }),
+          followUp,
+        ]
+          .filter(Boolean)
+          .join(' ');
         const greetingMsg: CharacterDisplayMessage = {
           id: 'prologue',
           role: 'assistant',

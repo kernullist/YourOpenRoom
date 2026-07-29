@@ -9,6 +9,7 @@ import {
   buildAoiCompanionResumeSafetyNote,
   buildAoiCompanionResumeTitle,
   buildAoiCompanionSessionGreeting,
+  buildAoiCompanionThreadFollowUp,
   buildAoiCompanionTrendHook,
   buildAoiCompanionTrendNextAction,
   buildAoiCompanionTrendTake,
@@ -276,6 +277,18 @@ describe('aoiCompanionVoice resume copy', () => {
     );
   });
 
+  it('asks about an unresolved thread by name', () => {
+    expect(buildAoiCompanionThreadFollowUp(KO, { title: 'e2e 플레이키 수정' })).toBe(
+      '그런데 e2e 플레이키 수정 그거 어떻게 됐어?',
+    );
+    expect(buildAoiCompanionThreadFollowUp(EN, { title: 'the flaky e2e' })).toBe(
+      'Also -- how did the flaky e2e turn out?',
+    );
+    // An unusable title yields nothing, so the greeting simply omits the ask.
+    expect(buildAoiCompanionThreadFollowUp(KO, { title: '   ' })).toBe('');
+    expect(buildAoiCompanionThreadFollowUp(EN, { title: 'z'.repeat(300) })).toContain('…');
+  });
+
   it('keeps the full safety boundary meaning in voice', () => {
     const ko = buildAoiCompanionResumeSafetyNote(KO);
     expect(ko).toContain('승인');
@@ -345,6 +358,7 @@ describe('aoiCompanionVoice register contract', () => {
         buildAoiCompanionResumeTitle(voice),
         buildAoiCompanionResumeGreeting(voice, { idleMs: 3 * 3_600_000 }),
         buildAoiCompanionSessionGreeting(voice, { gapMs: 3 * 3_600_000 }),
+        buildAoiCompanionThreadFollowUp(voice, { title: '미결 작업' }),
         buildAoiCompanionSessionGreeting(voice, {
           gapMs: 80 * 3_600_000,
           lastSessionSummary: '지난 작업',

@@ -25,6 +25,7 @@ import { randomUUID } from 'crypto';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { normalizeAoiAutonomySessionPath, resolveAoiAutonomyPaths } from './aoiAutonomyStore';
 import { redactAoiSensitiveContent, stripAoiSourceInstructions } from './aoiMemoryShared';
+import { selectAoiRelationshipThreadToRaise as selectAoiRelationshipThreadToRaiseFromList } from './aoiRelationshipThreads';
 
 const RELATIONSHIP_DIR = 'relationship';
 const RELATIONSHIP_STATE_FILE = 'state.json';
@@ -401,18 +402,11 @@ export function markAoiRelationshipThreadAsked(
   });
 }
 
-// The one thread worth asking about this time: oldest never-asked thread.
-// Returns null when every open thread has already been raised.
+// State-shaped wrapper over the shared selector (which the client also uses).
 export function selectAoiRelationshipThreadToRaise(
   state: AoiRelationshipState | null,
 ): AoiRelationshipOpenThread | null {
-  if (!state) {
-    return null;
-  }
-  const unasked = state.openThreads
-    .filter((thread) => thread.lastAskedAt === undefined)
-    .sort((left, right) => left.noticedAt - right.noticedAt);
-  return unasked[0] ?? null;
+  return selectAoiRelationshipThreadToRaiseFromList(state?.openThreads);
 }
 
 export interface AoiRelationshipMilestoneInput {

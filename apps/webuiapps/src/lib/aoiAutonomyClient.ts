@@ -788,6 +788,41 @@ export async function reportAoiRelationshipSessionOpen(
   return relationship ? (relationship as AoiRelationshipState) : null;
 }
 
+// Stores what this session was about and which threads are still open, so the
+// next open can pick them up. The server redacts and caps the free text.
+export async function reportAoiRelationshipSessionSummary(
+  sessionPath: string,
+  input: { summary?: string; openThreads?: Array<{ title: string }> },
+): Promise<AoiRelationshipState | null> {
+  const response = await fetch(`${API_PREFIX}/relationship/session-summary`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionPath,
+      ...(input.summary !== undefined ? { summary: input.summary } : {}),
+      ...(input.openThreads ? { openThreads: input.openThreads } : {}),
+    }),
+  });
+  const payload = await readJsonRecord(response, 'Failed to record an Aoi session summary.');
+  const relationship = payload.relationship;
+  return relationship ? (relationship as AoiRelationshipState) : null;
+}
+
+// Marks a thread as raised so Aoi does not ask about it again.
+export async function reportAoiRelationshipThreadAsked(
+  sessionPath: string,
+  threadId: string,
+): Promise<AoiRelationshipState | null> {
+  const response = await fetch(`${API_PREFIX}/relationship/thread-asked`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionPath, threadId }),
+  });
+  const payload = await readJsonRecord(response, 'Failed to record an Aoi thread follow-up.');
+  const relationship = payload.relationship;
+  return relationship ? (relationship as AoiRelationshipState) : null;
+}
+
 export async function fetchAoiAutonomyProposals(
   sessionPath: string,
   includeArchived = true,

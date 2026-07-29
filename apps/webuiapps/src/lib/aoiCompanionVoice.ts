@@ -341,6 +341,23 @@ export function buildAoiCompanionSessionGreeting(
   return `${greeting} Last time we were on ${summary}.`;
 }
 
+// Asks about one thread left unresolved last time. Following up on unfinished
+// work is the strongest "she was paying attention" signal, which is also why at
+// most one is ever raised and never twice (see aoiRelationshipThreads).
+export function buildAoiCompanionThreadFollowUp(
+  voice: AoiCompanionVoice,
+  params: { title: string },
+): string {
+  const title = sanitizeCompanionText(params.title, 100);
+  if (!title) {
+    return '';
+  }
+  if (voice.lang === 'ko') {
+    return `그런데 ${title} 그거 어떻게 됐어?`;
+  }
+  return `Also -- how did ${title} turn out?`;
+}
+
 // The safety boundary, spoken in-voice with the exact same meaning as the
 // compliance sentence it replaces: nothing is approved, executed, run,
 // researched, created, or edited without explicit approval.
