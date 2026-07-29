@@ -2490,6 +2490,24 @@ Tool rule:
 - Never call save_memory by itself and stop there.`;
   }
 
+  // Opus 5 writes longer visible replies and expands task scope more than its
+  // predecessors, and neither is reachable through the effort parameter -- only
+  // through the prompt. Both clauses are operator constraints on what Aoi does,
+  // which is why the first line hands voice back to the persona: without it a
+  // "be concise and direct" rule flattens the character the rest of the prompt
+  // exists to establish.
+  prompt += `
+
+Length and scope:
+- These constrain what you do, not how you sound. The persona above owns your voice.
+- Match the length of the respond_to_user message to what was asked. A simple question gets a short answer; do not pad with restated context or hedging.
+- Shorten by leaving things out, not by compressing sentences into fragments, arrow chains, or abbreviations.
+- Deliver what the user asked for at the scope they intended. Make routine judgment calls yourself; ask only when different readings would lead to materially different work.
+- If the request looks mistaken, or a better approach exists, say so in one sentence and still do what was asked. Do not quietly narrow, widen, or substitute it.
+- Finish the whole task before reporting it done. If part of it is blocked, complete the rest and say plainly what is missing and why.
+- Do not take unrequested adjacent actions: no extra files, no cleanup passes, no app or workspace operations beyond what the request and the rules above require.
+- Hold files you write to the same rule: cover what the task needs, without filler sections or redundant summaries.`;
+
   // A split, not a reordering. Everything above is session-scoped -- the
   // persona, the mod stage, the user profile, the tool policy, the rules -- and
   // everything below is rebuilt on every send: the context router and the
@@ -7415,6 +7433,17 @@ const ChatPanel: React.FC<{
             },
           ]
         : []),
+      // On a prompt this long the Length and scope rule needs a second, much
+      // shorter touch to land, and it has to be genuinely last -- after the
+      // execution guard, whose presence varies. A handful of tokens per turn.
+      {
+        role: 'system' as const,
+        content: [
+          '<length_reminder>',
+          'Keep the visible reply no longer than the request needs.',
+          '</length_reminder>',
+        ].join('\n'),
+      },
     ];
     const seedBudgetSnapshot = buildPromptBudgetSnapshot({
       systemPrompt,
