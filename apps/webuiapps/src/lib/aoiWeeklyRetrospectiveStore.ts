@@ -10,7 +10,14 @@ import { randomUUID } from 'crypto';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { normalizeAoiAutonomySessionPath, resolveAoiAutonomyPaths } from './aoiAutonomyStore';
 import { makeAoiRelationNode, upsertAoiRelations } from './aoiAutonomyRelations';
-import type { AoiWeeklyRetrospective } from './aoiWeeklyRetrospective';
+import { loadAoiOutcomeSignalRecords } from './aoiAutonomyStore';
+import { loadAoiRelationshipState, type AoiRelationshipState } from './aoiRelationshipState';
+import type { AoiOutcomeSignalRecord } from './aoiAutonomyTypes';
+import {
+  AOI_RETROSPECTIVE_WINDOW_MS,
+  buildAoiWeeklyRetrospective,
+  type AoiWeeklyRetrospective,
+} from './aoiWeeklyRetrospective';
 
 const RETROSPECTIVE_DIR = 'retrospective';
 const RETROSPECTIVE_LATEST_FILE = 'latest.json';
@@ -145,5 +152,79 @@ export function loadAoiWeeklyRetrospectiveHistory(
     return parsed.reverse();
   } catch {
     return [];
+  }
+}
+
+// True when the period a stored retrospective covers has fully elapsed, i.e. it
+// is time for a new one. Absent record -> due, so the first one is produced on
+// the first session open after this ships.
+export function isAoiWeeklyRetrospectiveDue(
+  latest: AoiWeeklyRetrospective | null,
+  now: number,
+  windowMs = AOI_RETROSPECTIVE_WINDOW_MS,
+): boolean {
+  if (!latest) {
+    return true;
+  }
+  return now - latest.periodEnd >= windowMs;
+}
+
+export interface MaybeBuildAoiWeeklyRetrospectiveResult {
+  retrospective: AoiWeeklyRetrospective | null;
+  created: boolean;
+}
+
+// Builds and stores this period's retrospective if one is due, from stores that
+// already exist. Called on session open rather than from the scheduler: "our
+// week" is only worth composing when the user is actually there to read it, and
+// it keeps the cadence off the tick's budget entirely.
+//
+// Fail-closed per input: an unreadable store contributes an empty section rather
+// than blocking the retrospective or inventing content for it.
+export function maybeBuildAoiWeeklyRetrospective(
+  sessionsDir: string,
+  sessionPath: string,
+  now: number,
+): MaybeBuildAoiWeeklyRetrospectiveResult {
+  let latest: AoiWeeklyRetrospective | null = null;
+  try {
+    latest = loadAoiWeeklyRetrospective(sessionsDir, sessionPath);
+  } catch {
+    latest = null;
+  }
+  if (!isAoiWeeklyRetrospectiveDue(latest, now)) {
+    return { retrospective: latest, created: false };
+  }
+
+  let outcomeSignals: AoiOutcomeSignalRecord[] = [];
+  try {
+    outcomeSignals = loadAoiOutcomeSignalRecords(sessionsDir, sessionPath, now);
+  } catch {
+    outcomeSignals = [];
+  }
+  let relationship: AoiRelationshipState | null = null;
+  try {
+    relationship = loadAoiRelationshipState(sessionsDir, sessionPath, now);
+  } catch {
+    relationship = null;
+  }
+
+  const retrospective = buildAoiWeeklyRetrospective({
+    sessionPath,
+    now,
+    outcomeSignals,
+    ...(relationship ? { milestones: relationship.milestones } : {}),
+    ...(relationship ? { openThreads: relationship.openThreads } : {}),
+    ...(relationship ? { sessionCount: relationship.sessionCount } : {}),
+  });
+  // An empty period is not worth storing or telling the user about: it would
+  // spend the one weekly mention on "nothing happened".
+  if (retrospective.empty) {
+    return { retrospective: latest, created: false };
+  }
+  try {
+    return { retrospective: saveAoiWeeklyRetrospective(sessionsDir, retrospective), created: true };
+  } catch {
+    return { retrospective: latest, created: false };
   }
 }

@@ -6,6 +6,7 @@ import {
   buildAoiCompanionBriefReason,
   buildAoiCompanionFeedbackAction,
   buildAoiCompanionMilestoneNote,
+  buildAoiCompanionRetrospectiveNote,
   buildAoiCompanionResumeGreeting,
   buildAoiCompanionResumeSafetyNote,
   buildAoiCompanionResumeTitle,
@@ -276,6 +277,19 @@ describe('aoiCompanionVoice resume copy', () => {
     expect(buildAoiCompanionSessionGreeting({ lang: 'ko', userName: '꿀보' }, { gapMs: 0 })).toBe(
       '꿀보, 또 왔네.',
     );
+  });
+
+  it('offers the week as counts rather than retelling it', () => {
+    expect(
+      buildAoiCompanionRetrospectiveNote(KO, { landedCount: 3, stuckCount: 1, openCount: 2 }),
+    ).toBe('지난 한 주 정리해뒀어 — 끝낸 게 3개, 막힌 게 1개, 아직 남은 게 2개.');
+    expect(
+      buildAoiCompanionRetrospectiveNote(EN, { landedCount: 3, stuckCount: 1, openCount: 2 }),
+    ).toBe('I put together our week -- 3 landed, 1 stuck, 2 still open.');
+    // Nothing to report means no line at all.
+    expect(
+      buildAoiCompanionRetrospectiveNote(KO, { landedCount: 0, stuckCount: 0, openCount: 0 }),
+    ).toBe('');
   });
 
   it('mentions a just-crossed milestone per kind', () => {

@@ -103,6 +103,11 @@ import {
   recordAoiRelationshipSessionSummary,
 } from './aoiRelationshipState';
 import { deriveAoiRelationshipMilestones } from './aoiRelationshipMilestones';
+import {
+  loadAoiWeeklyRetrospective,
+  loadAoiWeeklyRetrospectiveHistory,
+  maybeBuildAoiWeeklyRetrospective,
+} from './aoiWeeklyRetrospectiveStore';
 import { buildAoiServerCognitionReadinessScorecard } from './aoiCognitionReadinessServer';
 import { loadAoiNonVoiceJarvisScorecardFromStores } from './aoiNonVoiceJarvisScorecardServer';
 import type { AoiDaemonHealthSnapshot } from './aoiDaemonHealth';
@@ -2505,6 +2510,31 @@ export async function handleAoiAutonomyRequest(
       return true;
     }
 
+    if (req.method === 'GET' && route === '/relationship/retrospective') {
+      const sessionPath = getSessionPathFromUrl(url);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      // R4.2: the shared-history surface -- the latest "our week" narrative, the
+      // ones before it, and the milestones behind them. Read-only; absent
+      // records serve nulls rather than a manufactured story.
+      const relationship = loadAoiRelationshipState(sessionsDir, sessionPath, Date.now());
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        retrospective: loadAoiWeeklyRetrospective(sessionsDir, sessionPath),
+        history: loadAoiWeeklyRetrospectiveHistory(sessionsDir, sessionPath),
+        milestones: relationship?.milestones ?? [],
+        firstMetAt: relationship?.firstMetAt ?? null,
+        sessionCount: relationship?.sessionCount ?? null,
+      });
+      return true;
+    }
+
     if (req.method === 'POST' && route === '/relationship/session-open') {
       const body = await readJsonBody(req);
       const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
@@ -2548,11 +2578,24 @@ export async function handleAoiAutonomyRequest(
         }),
         now,
       );
+      // R4.2: compose "our week" here rather than in the scheduler -- it is only
+      // worth writing when the user is present to read it, and this keeps the
+      // cadence off the tick's budget. Only a NEWLY created one is announced, so
+      // the weekly mention happens once and rides the greeting (no new
+      // interruption class).
+      let newRetrospective = null;
+      try {
+        const result = maybeBuildAoiWeeklyRetrospective(sessionsDir, sessionPath, now);
+        newRetrospective = result.created ? result.retrospective : null;
+      } catch {
+        newRetrospective = null;
+      }
       writeJson(res, 200, {
         ok: true,
         sessionPath,
         relationship: milestoneResult.state ?? relationship,
         newMilestones: milestoneResult.added,
+        newRetrospective,
       });
       return true;
     }

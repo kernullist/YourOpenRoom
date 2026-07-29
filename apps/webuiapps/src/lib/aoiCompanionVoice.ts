@@ -341,6 +341,31 @@ export function buildAoiCompanionSessionGreeting(
   return `${greeting} Last time we were on ${summary}.`;
 }
 
+export interface AoiCompanionRetrospectiveParams {
+  landedCount: number;
+  stuckCount: number;
+  openCount: number;
+}
+
+// One line offering the week just composed. It reports counts rather than
+// retelling the whole retrospective: the panel holds the detail, and the
+// greeting only has room to say it exists and is worth opening.
+export function buildAoiCompanionRetrospectiveNote(
+  voice: AoiCompanionVoice,
+  params: AoiCompanionRetrospectiveParams,
+): string {
+  const landed = Math.max(0, Math.floor(params.landedCount || 0));
+  const stuck = Math.max(0, Math.floor(params.stuckCount || 0));
+  const open = Math.max(0, Math.floor(params.openCount || 0));
+  if (landed === 0 && stuck === 0 && open === 0) {
+    return '';
+  }
+  if (voice.lang === 'ko') {
+    return `지난 한 주 정리해뒀어 — 끝낸 게 ${landed}개, 막힌 게 ${stuck}개, 아직 남은 게 ${open}개.`;
+  }
+  return `I put together our week -- ${landed} landed, ${stuck} stuck, ${open} still open.`;
+}
+
 export type AoiCompanionMilestoneKind =
   | 'first_met'
   | 'session_count'

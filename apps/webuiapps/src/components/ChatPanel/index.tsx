@@ -392,6 +392,7 @@ import {
   recordAoiProactiveBriefFeedback,
   recordAoiActivityEvent,
   reportAoiRelationshipSessionOpen,
+  type AoiRelationshipSessionOpenRetrospective,
   reportAoiRelationshipSessionSummary,
   reportAoiRelationshipThreadAsked,
   recordAoiProactiveTrendDeliveryEvent,
@@ -495,6 +496,7 @@ import {
 } from '@/lib/aoiAutonomyCardI18n';
 import {
   buildAoiCompanionMilestoneNote,
+  buildAoiCompanionRetrospectiveNote,
   buildAoiCompanionSessionGreeting,
   buildAoiCompanionThreadFollowUp,
 } from '@/lib/aoiCompanionVoice';
@@ -713,6 +715,7 @@ import { AoiMemoryDecayPanel } from './AoiMemoryDecayPanel';
 import { AoiNonVoiceScorecardPanel } from './AoiNonVoiceScorecardPanel';
 import { AoiOperatorSnapshotPanel } from './AoiOperatorSnapshotPanel';
 import { AoiSituationPanel } from './AoiSituationPanel';
+import { AoiRelationshipHistoryPanel } from './AoiRelationshipHistoryPanel';
 import { AoiReadinessAccrualPanel } from './AoiReadinessAccrualPanel';
 import { AoiPreferenceDashboard } from './AoiPreferenceDashboard';
 import { AoiReplayPromotionPanel } from './AoiReplayPromotionPanel';
@@ -3419,6 +3422,7 @@ const ChatPanel: React.FC<{
   // throw. Same pattern as aoiEnvironmentSourcesRef above.
   const aoiRelationshipStateRef = useRef<AoiRelationshipState | null>(null);
   const aoiNewMilestonesRef = useRef<AoiRelationshipMilestone[]>([]);
+  const aoiNewRetrospectiveRef = useRef<AoiRelationshipSessionOpenRetrospective | null>(null);
   const aoiCardLangRef = useRef<AoiCardLang>('en');
 
   useEffect(() => {
@@ -3496,9 +3500,11 @@ const ChatPanel: React.FC<{
     try {
       const result = await reportAoiRelationshipSessionOpen(sessionPathRef.current);
       aoiRelationshipStateRef.current = result.relationship;
-      // R3.3: milestones crossed by this open are news exactly once, so they are
-      // held for the greeting rather than read back off the full history.
+      // R3.3/R4.2: milestones and a freshly composed retrospective are news
+      // exactly once, so they are held for the greeting rather than read back
+      // off the full history.
       aoiNewMilestonesRef.current = result.newMilestones;
+      aoiNewRetrospectiveRef.current = result.newRetrospective;
       return result.relationship;
     } catch {
       // Best-effort: with no record Aoi keeps the authored first-meeting line.
@@ -3588,11 +3594,23 @@ const ChatPanel: React.FC<{
                 : {}),
             })
           : '';
+        // R4.2: the weekly retrospective rides the greeting rather than adding an
+        // interruption class of its own, and only when it was just composed.
+        const retrospective = aoiNewRetrospectiveRef.current;
+        aoiNewRetrospectiveRef.current = null;
+        const retrospectiveNote = retrospective
+          ? buildAoiCompanionRetrospectiveNote(voice, {
+              landedCount: retrospective.shipped.length,
+              stuckCount: retrospective.stuck.length,
+              openCount: retrospective.openNext.length,
+            })
+          : '';
         const greeting = [
           buildAoiCompanionSessionGreeting(voice, {
             gapMs: Math.max(0, Date.now() - relationship.lastSessionAt),
             lastSessionSummary: relationship.lastSessionSummary,
           }),
+          retrospectiveNote,
           milestoneNote,
           followUp,
         ]
@@ -17580,6 +17598,7 @@ const SettingsModal: React.FC<{
                   <AoiOperatorSnapshotPanel sessionPath={aoiReplaySessionPath} />
                   <AoiNonVoiceScorecardPanel sessionPath={aoiReplaySessionPath} />
                   <AoiSituationPanel sessionPath={aoiReplaySessionPath} />
+                  <AoiRelationshipHistoryPanel sessionPath={aoiReplaySessionPath} />
                   <AoiReadinessAccrualPanel sessionPath={aoiReplaySessionPath} />
                 </>
               )}

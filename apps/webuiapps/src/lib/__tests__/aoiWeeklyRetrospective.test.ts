@@ -9,12 +9,18 @@ import {
   buildAoiWeeklyRetrospective,
 } from '../aoiWeeklyRetrospective';
 import {
+  isAoiWeeklyRetrospectiveDue,
   loadAoiWeeklyRetrospective,
   loadAoiWeeklyRetrospectiveHistory,
+  maybeBuildAoiWeeklyRetrospective,
   resolveAoiWeeklyRetrospectivePaths,
   saveAoiWeeklyRetrospective,
 } from '../aoiWeeklyRetrospectiveStore';
 import { loadAoiRelationIndex } from '../aoiAutonomyRelations';
+import {
+  recordAoiRelationshipSessionOpen,
+  recordAoiRelationshipSessionSummary,
+} from '../aoiRelationshipState';
 
 const SESSION_PATH = 'aoi/default';
 const NOW = 1_700_000_000_000;
@@ -285,5 +291,62 @@ describe('aoiWeeklyRetrospectiveStore', () => {
   it('rejects an unusable session path', () => {
     const root = makeTempRoot();
     expect(() => resolveAoiWeeklyRetrospectivePaths(root, '')).toThrow(/sessionPath/);
+  });
+});
+
+describe('weekly cadence (R4.2)', () => {
+  it('treats an absent record as due and a fresh one as not', () => {
+    expect(isAoiWeeklyRetrospectiveDue(null, NOW)).toBe(true);
+    const fresh = buildAoiWeeklyRetrospective({ sessionPath: SESSION_PATH, now: NOW });
+    expect(isAoiWeeklyRetrospectiveDue(fresh, NOW)).toBe(false);
+    expect(isAoiWeeklyRetrospectiveDue(fresh, NOW + 6 * DAY)).toBe(false);
+    expect(isAoiWeeklyRetrospectiveDue(fresh, NOW + 7 * DAY)).toBe(true);
+  });
+
+  it('does not store an empty period, so the weekly mention is not spent on nothing', () => {
+    const root = makeTempRoot();
+    // No relationship record and no outcomes: genuinely nothing to report.
+    const result = maybeBuildAoiWeeklyRetrospective(root, SESSION_PATH, NOW);
+    expect(result.created).toBe(false);
+    expect(loadAoiWeeklyRetrospective(root, SESSION_PATH)).toBeNull();
+  });
+
+  it('counts a first meeting as a real event of that week', () => {
+    const root = makeTempRoot();
+    // recordAoiRelationshipSessionOpen writes the first_met milestone, which is
+    // an actual thing that happened in the window -- so the week is not empty.
+    recordAoiRelationshipSessionOpen(root, SESSION_PATH, NOW);
+
+    const result = maybeBuildAoiWeeklyRetrospective(root, SESSION_PATH, NOW);
+    expect(result.created).toBe(true);
+    expect(result.retrospective?.milestones).toEqual(['We started working together.']);
+  });
+
+  it('composes from real stores once there is something to report', () => {
+    const root = makeTempRoot();
+    recordAoiRelationshipSessionOpen(root, SESSION_PATH, NOW);
+    recordAoiRelationshipSessionSummary(root, SESSION_PATH, {
+      openThreads: [{ title: 'Daemon restart soak' }],
+      now: NOW,
+    });
+
+    const result = maybeBuildAoiWeeklyRetrospective(root, SESSION_PATH, NOW);
+    expect(result.created).toBe(true);
+    expect(result.retrospective?.openNext).toEqual(['Daemon restart soak']);
+    // Session count comes from the relationship record, not from a guess.
+    expect(result.retrospective?.sessionCount).toBe(1);
+    expect(loadAoiWeeklyRetrospective(root, SESSION_PATH)?.id).toBe(result.retrospective?.id);
+
+    // A second open inside the same period must not compose another one.
+    const again = maybeBuildAoiWeeklyRetrospective(root, SESSION_PATH, NOW + DAY);
+    expect(again.created).toBe(false);
+    expect(again.retrospective?.id).toBe(result.retrospective?.id);
+  });
+
+  it('reports not-created rather than throwing when the session path is unusable', () => {
+    const root = makeTempRoot();
+    const result = maybeBuildAoiWeeklyRetrospective(root, '', NOW);
+    expect(result.created).toBe(false);
+    expect(result.retrospective).toBeNull();
   });
 });

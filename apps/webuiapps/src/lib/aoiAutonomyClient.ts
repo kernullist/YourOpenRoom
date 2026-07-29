@@ -773,11 +773,38 @@ export async function fetchAoiRelationshipState(
   return relationship ? (relationship as AoiRelationshipState) : null;
 }
 
+export interface AoiRelationshipSessionOpenRetrospective {
+  id: string;
+  shipped: string[];
+  stuck: string[];
+  openNext: string[];
+}
+
 export interface AoiRelationshipSessionOpenResult {
   relationship: AoiRelationshipState | null;
   // R3.3: milestones crossed by THIS open. Only these are worth mentioning --
   // the full list is history, not news.
   newMilestones: AoiRelationshipMilestone[];
+  // R4.2: set only when a retrospective was newly composed by this open, so the
+  // weekly mention happens once.
+  newRetrospective: AoiRelationshipSessionOpenRetrospective | null;
+}
+
+function parseSessionOpenRetrospective(
+  value: unknown,
+): AoiRelationshipSessionOpenRetrospective | null {
+  const raw = value as Record<string, unknown> | null;
+  if (!raw || typeof raw.id !== 'string') {
+    return null;
+  }
+  const asList = (field: unknown): string[] =>
+    Array.isArray(field) ? field.filter((item): item is string => typeof item === 'string') : [];
+  return {
+    id: raw.id,
+    shipped: asList(raw.shipped),
+    stuck: asList(raw.stuck),
+    openNext: asList(raw.openNext),
+  };
 }
 
 // Marks a session as opened: creates the record on a first-ever open and
@@ -797,6 +824,7 @@ export async function reportAoiRelationshipSessionOpen(
     newMilestones: Array.isArray(payload.newMilestones)
       ? (payload.newMilestones as AoiRelationshipMilestone[])
       : [],
+    newRetrospective: parseSessionOpenRetrospective(payload.newRetrospective),
   };
 }
 
