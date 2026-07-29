@@ -19,6 +19,13 @@ import {
   classifyAoiProactiveBriefMediaKind,
   deriveAoiProactiveBriefMediaBucket,
 } from './aoiProactiveMediaKind';
+import {
+  buildAoiCompanionBriefHook,
+  buildAoiCompanionBriefReason,
+  buildAoiCompanionFeedbackAction,
+  type AoiCompanionFeedbackActionKind,
+  type AoiCompanionVoice,
+} from './aoiCompanionVoice';
 
 const MAX_CARD_COUNT = 5;
 
@@ -107,6 +114,9 @@ export interface BuildAoiProactiveBriefPanelModelInput {
   calibrationTuning?: AoiProactiveBriefCalibrationTuning | null;
   context?: AoiProactiveBriefDeliveryContext;
   includeHidden?: boolean;
+  // Renders the card copy and the chat hook in the companion register.
+  // Omitted -> the stored operator-register strings are shown as before.
+  voice?: AoiCompanionVoice | null;
 }
 
 function normalizeWhitespace(value: string): string {
@@ -181,11 +191,24 @@ function buildSources(candidate: AoiProactiveBriefCandidate): AoiProactiveBriefS
   }));
 }
 
+// Only the chips the card actually offers need companion copy; Extract keeps
+// that set honest -- adding a chip with no companion wording fails to compile
+// instead of silently shipping the English fallback in a Korean card.
+type CompanionBackedBriefAction = Extract<
+  AoiProactiveBriefUiAction,
+  AoiCompanionFeedbackActionKind
+>;
+
+interface BriefFeedbackActionSpec extends AoiProactiveBriefFeedbackActionDisplay {
+  action: CompanionBackedBriefAction;
+}
+
 function buildFeedbackActions(
   candidate: AoiProactiveBriefCandidate,
+  voice: AoiCompanionVoice | null,
 ): AoiProactiveBriefFeedbackActionDisplay[] {
   const archived = candidate.status === 'archived' || candidate.status === 'expired';
-  return [
+  const specs: BriefFeedbackActionSpec[] = [
     {
       action: 'useful',
       label: 'Useful',
@@ -229,14 +252,23 @@ function buildFeedbackActions(
       tone: archived ? 'neutral' : 'negative',
     },
   ];
+  if (!voice) {
+    return specs;
+  }
+  return specs.map((spec) => {
+    const copy = buildAoiCompanionFeedbackAction(voice, spec.action);
+    return { ...spec, label: copy.label, title: copy.title };
+  });
 }
 
 function buildCard(params: {
   candidate: AoiProactiveBriefCandidate;
   decision: AoiProactiveBriefDeliveryDecision;
   calibrationTuning?: AoiProactiveBriefCalibrationTuning | null;
+  voice?: AoiCompanionVoice | null;
 }): AoiProactiveBriefCardModel {
   const candidate = params.candidate;
+  const voice = params.voice ?? null;
   const topicTuning = params.calibrationTuning?.topicTuning[candidate.topicId];
   const sourceTuning = candidate.sources
     .map((source) => params.calibrationTuning?.sourceTuning[source.host.toLowerCase()])
@@ -259,13 +291,26 @@ function buildCard(params: {
   const directChatSuppressionLabels = ladder.steps.direct_chat.allowed
     ? []
     : ladder.steps.direct_chat.reasons.map((reason) => `Direct chat blocked: ${reason}`);
+  // With a voice the two operator-register lines are recomposed from the
+  // candidate's structured fields; without one the stored strings are shown
+  // unchanged, so legacy records and voiceless callers are unaffected.
+  const hook = voice
+    ? buildAoiCompanionBriefHook(voice, {
+        topicLabel: candidate.topicLabel,
+        sourceCount: candidate.sources.length,
+        mediaBucket,
+      })
+    : candidate.hook;
+  const why = voice
+    ? buildAoiCompanionBriefReason(voice, { interestKind: candidate.interestKind ?? null })
+    : candidate.whyForOperator;
   return {
     id: candidate.id,
     topicId: candidate.topicId,
     status: candidate.status,
     title: truncateText(candidate.title, 140),
-    hook: truncateText(candidate.hook, 180),
-    whyForOperator: truncateText(candidate.whyForOperator, 240),
+    hook: truncateText(hook, 180),
+    whyForOperator: truncateText(why, 240),
     noveltyReason: truncateText(candidate.noveltyReason, 220),
     summary: truncateText(candidate.summary, 320),
     sourceCountLabel: `${candidate.sources.length} source${
@@ -279,7 +324,7 @@ function buildCard(params: {
     evidenceRefs,
     memoryRefs,
     sources: buildSources(candidate),
-    feedbackActions: buildFeedbackActions(candidate),
+    feedbackActions: buildFeedbackActions(candidate, voice),
     delivery: params.decision,
     deliveryLadderLabels: uniqueLabels(
       [
@@ -297,7 +342,7 @@ function buildCard(params: {
     actionAuthorityLabel: `${ladder.actionAuthority}; ${ladder.mutationCount} mutations`,
     directChatHook: params.decision.chatHook.text,
     expandedSummaryLabel: truncateText(
-      `${candidate.summary} ${candidate.whyForOperator} ${candidate.noveltyReason}`,
+      `${candidate.summary} ${why} ${candidate.noveltyReason}`,
       700,
     ),
     tuningLabels: uniqueLabels(
@@ -334,6 +379,7 @@ export function buildAoiProactiveBriefPanelModel(
       cooldownState: input.cooldownState,
       calibrationTuning: input.calibrationTuning,
       context,
+      voice: input.voice ?? null,
     }),
   }));
   const cards = decisions
@@ -345,7 +391,13 @@ export function buildAoiProactiveBriefPanelModel(
         right.candidate.updatedAt - left.candidate.updatedAt,
     )
     .slice(0, MAX_CARD_COUNT)
-    .map((item) => buildCard({ ...item, calibrationTuning: input.calibrationTuning }));
+    .map((item) =>
+      buildCard({
+        ...item,
+        calibrationTuning: input.calibrationTuning,
+        voice: input.voice ?? null,
+      }),
+    );
   const hiddenCount = decisions.filter((item) => !item.decision.compactCardVisible).length;
   const inlineCard = cards.find((card) => card.delivery.inlineCardVisible);
   const chatHook = cards.find((card) => card.delivery.chatHook.allowed)?.directChatHook;

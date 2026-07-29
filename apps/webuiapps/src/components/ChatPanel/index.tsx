@@ -9146,6 +9146,31 @@ const ChatPanel: React.FC<{
     void refreshAoiAutonomy({ silent: true });
   }, [refreshAoiAutonomy]);
 
+  const aoiVibeInfo = useVibeInfo();
+  // Unlike the iframe apps (each calls fetchVibeInfo on mount), the host chat
+  // panel never populated vibe info. Fetch once on mount so the app language
+  // setting is available as a fallback (cached/idempotent).
+  useEffect(() => {
+    void fetchVibeInfo().catch((error) => console.warn('[ChatPanel] fetchVibeInfo failed:', error));
+  }, []);
+  // Resolve the card language from the conversation (see
+  // deriveAoiCardLangFromMessages): the most recent non-Latin script across all
+  // turns, then the app language setting, then English. Declared here because
+  // the proactive-brief panel below renders its copy in this language.
+  const aoiCardLang: AoiCardLang = useMemo(
+    () =>
+      deriveAoiCardLangFromMessages(
+        messages,
+        normalizeResponseLanguageMode(conversationPreferences?.responseLanguageMode),
+        aoiVibeInfo.systemSettings?.language?.current,
+      ),
+    [
+      messages,
+      conversationPreferences?.responseLanguageMode,
+      aoiVibeInfo.systemSettings?.language?.current,
+    ],
+  );
+
   const aoiProactiveBriefPanel = useMemo(
     () =>
       buildAoiProactiveBriefPanelModel({
@@ -9163,8 +9188,12 @@ const ChatPanel: React.FC<{
           inlineCardsShown: aoiInlineShownCount,
           maxInlineCards: Math.min(1, aoiAutonomyPanelSettings.maxSuggestionsPerSession),
         },
+        // Card copy and the chat hook speak in Aoi's own register, in the
+        // language the conversation is actually happening in.
+        voice: { lang: aoiCardLang },
       }),
     [
+      aoiCardLang,
       aoiAutonomyLastTickAt,
       aoiAutonomyPanelSettings.maxSuggestionsPerSession,
       aoiAutonomyPanelSettings.quietMode,
@@ -9560,29 +9589,6 @@ const ChatPanel: React.FC<{
       aoiInlineHiddenAt,
       aoiInlineShownCount,
       aoiInlineSnoozedProposalIds,
-    ],
-  );
-  const aoiVibeInfo = useVibeInfo();
-  // Unlike the iframe apps (each calls fetchVibeInfo on mount), the host chat
-  // panel never populated vibe info. Fetch once on mount so the app language
-  // setting is available as a fallback (cached/idempotent).
-  useEffect(() => {
-    void fetchVibeInfo().catch((error) => console.warn('[ChatPanel] fetchVibeInfo failed:', error));
-  }, []);
-  // Resolve the card language from the conversation (see
-  // deriveAoiCardLangFromMessages): the most recent non-Latin script across all
-  // turns, then the app language setting, then English.
-  const aoiCardLang: AoiCardLang = useMemo(
-    () =>
-      deriveAoiCardLangFromMessages(
-        messages,
-        normalizeResponseLanguageMode(conversationPreferences?.responseLanguageMode),
-        aoiVibeInfo.systemSettings?.language?.current,
-      ),
-    [
-      messages,
-      conversationPreferences?.responseLanguageMode,
-      aoiVibeInfo.systemSettings?.language?.current,
     ],
   );
   const inlineAoiProposalActionPresentation = useMemo(
