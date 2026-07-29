@@ -418,6 +418,17 @@ export function modelSupportsMidConversationSystem(model: string): boolean {
   return MID_CONVERSATION_SYSTEM_MODELS.has(model.trim());
 }
 
+// Models whose safety classifiers can decline a request outright. Only these
+// accept the server-side fallbacks parameter, which re-runs a declined request on
+// another model inside the same call rather than handing the refusal back. The
+// fallback targets -- Opus 4.8 among them -- do not need the parameter
+// themselves.
+const SERVER_SIDE_FALLBACK_MODELS = new Set(['claude-opus-5', 'claude-fable-5', 'claude-mythos-5']);
+
+export function modelSupportsAnthropicServerSideFallback(model: string): boolean {
+  return SERVER_SIDE_FALLBACK_MODELS.has(model.trim());
+}
+
 export function normalizeProviderModelId(provider: LLMProvider, modelId: string): string {
   const model = modelId.trim();
   if (provider === 'opencode' && model.startsWith('opencode/')) {

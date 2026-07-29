@@ -1412,6 +1412,88 @@ respond_to_user
       expect(last.content[0].text).toContain('Final execution guard.');
     });
 
+    it('opts into server-side refusal fallbacks on a refusal-capable model', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce(makeAnthropicResponse('ok'));
+      globalThis.fetch = mockFetch;
+
+      await chat(MOCK_MESSAGES, [], { ...MOCK_ANTHROPIC_CONFIG, model: 'claude-opus-5' });
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      const headers = mockFetch.mock.calls[0][1].headers as Record<string, string>;
+      expect(body.fallbacks).toBe('default');
+      expect(headers['anthropic-beta']).toContain('server-side-fallback-2026-07-01');
+    });
+
+    it('does not send fallbacks on a model that never refuses', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce(makeAnthropicResponse('ok'));
+      globalThis.fetch = mockFetch;
+
+      await chat(MOCK_MESSAGES, [], { ...MOCK_ANTHROPIC_CONFIG, model: 'claude-sonnet-4-6' });
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      const headers = mockFetch.mock.calls[0][1].headers as Record<string, string>;
+      expect(body.fallbacks).toBeUndefined();
+      expect(headers['anthropic-beta']).toBeUndefined();
+    });
+
+    it('retries without fallbacks when the beta is not enabled for the key', async () => {
+      const mockFetch = vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 400,
+          text: async () => '{"error":{"message":"unexpected field: fallbacks"}}',
+        })
+        .mockResolvedValueOnce(makeAnthropicResponse('ok'));
+      globalThis.fetch = mockFetch;
+
+      const result = await chat(MOCK_MESSAGES, [], {
+        ...MOCK_ANTHROPIC_CONFIG,
+        model: 'claude-opus-5',
+      });
+
+      expect(result.content).toBe('ok');
+      const proxyCalls = mockFetch.mock.calls.filter((call) => call[0] === '/api/llm-proxy');
+      expect(proxyCalls).toHaveLength(2);
+      const retryBody = JSON.parse(proxyCalls[1][1].body as string);
+      const retryHeaders = proxyCalls[1][1].headers as Record<string, string>;
+      expect(retryBody.fallbacks).toBeUndefined();
+      expect(retryHeaders['anthropic-beta']).toBeUndefined();
+    });
+
+    it('does not swallow an unrelated 400', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        text: async () => '{"error":{"message":"max_tokens too large"}}',
+      });
+      globalThis.fetch = mockFetch;
+
+      await expect(
+        chat(MOCK_MESSAGES, [], { ...MOCK_ANTHROPIC_CONFIG, model: 'claude-opus-5' }),
+      ).rejects.toThrow('max_tokens too large');
+      // The point of the test: a 400 that is not about fallbacks is not retried.
+      expect(mockFetch.mock.calls.filter((call) => call[0] === '/api/llm-proxy')).toHaveLength(1);
+    });
+
+    it('surfaces a refusal instead of returning an empty turn', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          content: [],
+          stop_reason: 'refusal',
+          stop_details: { type: 'refusal', category: 'cyber', explanation: 'Declined.' },
+          usage: { input_tokens: 10, output_tokens: 0 },
+        }),
+      });
+      globalThis.fetch = mockFetch;
+
+      await expect(
+        chat(MOCK_MESSAGES, [], { ...MOCK_ANTHROPIC_CONFIG, model: 'claude-opus-5' }),
+      ).rejects.toThrow(/declined this request \(cyber\)/i);
+    });
+
     it('folds operator context back into system when a tool call is unresolved', async () => {
       const messages: ChatMessage[] = [
         { role: 'system', content: 'Base prompt.' },

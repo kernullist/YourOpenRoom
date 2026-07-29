@@ -9,6 +9,7 @@ import {
   applyOpenAiResponsesRuntimeOptions,
   getExplicitModelRuntimeOptions,
   isDeepSeekProvider,
+  modelSupportsAnthropicServerSideFallback,
   modelSupportsMidConversationSystem,
   normalizeProviderModelId,
   normalizeReasoningEffort,
@@ -1162,6 +1163,27 @@ type AnthropicRequestMessage = {
   content: string | Array<Record<string, unknown>>;
 };
 
+const ANTHROPIC_SERVER_SIDE_FALLBACK_BETA = 'server-side-fallback-2026-07-01';
+
+function mergeAnthropicBeta(existing: string | undefined, value: string): string {
+  const entries = (existing ?? '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  if (!entries.includes(value)) {
+    entries.push(value);
+  }
+  return entries.join(',');
+}
+
+function withoutAnthropicBeta(existing: string | undefined, value: string): string {
+  return (existing ?? '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry && entry !== value)
+    .join(',');
+}
+
 // Places the trailing operator context at the tail of the conversation, where it
 // reads as newer than the recalled history, and returns whatever could not go
 // there so the caller can fold it back into the system field.
@@ -1303,6 +1325,16 @@ async function chatAnthropic(
   if (systemField !== undefined) body.system = systemField;
   if (anthropicTools.length > 0) body.tools = anthropicTools;
 
+  // Aoi's subject matter -- anti-cheat, kernel telemetry, memory inspection --
+  // sits next to what the cyber classifier is looking for, so a false-positive
+  // refusal is a routine risk here rather than an edge case. "default" routes by
+  // refusal category instead of pinning a substitute, so there is no model list
+  // to migrate when a target is deprecated.
+  const serverSideFallback = nativeFeatures && modelSupportsAnthropicServerSideFallback(wireModel);
+  if (serverSideFallback) {
+    body.fallbacks = 'default';
+  }
+
   const anthropicToolNames = anthropicTools.map((t) => t.name).filter(Boolean);
   console.info('[LLM] Anthropic-compatible request', {
     targetUrl: joinUrl(config.baseUrl, getAnthropicMessagesPath(config.baseUrl)),
@@ -1333,6 +1365,14 @@ async function chatAnthropic(
   if (config.apiKey.trim()) {
     headers['x-api-key'] = config.apiKey;
   }
+  // After the custom-header spread, so a caller-supplied anthropic-beta is
+  // merged with this one rather than replaced by it.
+  if (serverSideFallback) {
+    headers['anthropic-beta'] = mergeAnthropicBeta(
+      headers['anthropic-beta'],
+      ANTHROPIC_SERVER_SIDE_FALLBACK_BETA,
+    );
+  }
   let res: Response;
   try {
     res = await fetch('/api/llm-proxy', {
@@ -1353,12 +1393,41 @@ async function chatAnthropic(
   logger.info('LLM', 'Anthropic Response status:', res.status);
   if (!res.ok) {
     const text = await res.text();
-    console.error('[LLM] Anthropic-compatible response error', {
-      status: res.status,
-      bodyPreview: text.slice(0, 500),
-    });
-    logger.error('LLM', 'Anthropic Error body:', text.slice(0, 500));
-    throw new Error(`Anthropic API error ${res.status}: ${text}`);
+    // The fallbacks parameter is a beta, so a key without it enabled answers 400.
+    // Losing every turn over an optional resilience feature is worse than not
+    // having it, so drop it and retry once.
+    if (serverSideFallback && res.status === 400 && /fallback/i.test(text)) {
+      logger.warn('LLM', 'Anthropic rejected server-side fallback, retrying without it');
+      delete body.fallbacks;
+      const retryHeaders = { ...headers };
+      const remainingBeta = withoutAnthropicBeta(
+        retryHeaders['anthropic-beta'],
+        ANTHROPIC_SERVER_SIDE_FALLBACK_BETA,
+      );
+      if (remainingBeta) {
+        retryHeaders['anthropic-beta'] = remainingBeta;
+      } else {
+        delete retryHeaders['anthropic-beta'];
+      }
+      res = await fetch('/api/llm-proxy', {
+        method: 'POST',
+        headers: retryHeaders,
+        body: JSON.stringify(body),
+        signal: options.signal,
+      });
+      if (!res.ok) {
+        const retryText = await res.text();
+        logger.error('LLM', 'Anthropic Error body:', retryText.slice(0, 500));
+        throw new Error(`Anthropic API error ${res.status}: ${retryText}`);
+      }
+    } else {
+      console.error('[LLM] Anthropic-compatible response error', {
+        status: res.status,
+        bodyPreview: text.slice(0, 500),
+      });
+      logger.error('LLM', 'Anthropic Error body:', text.slice(0, 500));
+      throw new Error(`Anthropic API error ${res.status}: ${text}`);
+    }
   }
 
   const data = await res.json();
@@ -1367,6 +1436,34 @@ async function chatAnthropic(
     JSON.stringify(data).slice(0, 500),
   );
   logger.info('LLM', 'Anthropic Response data:', JSON.stringify(data).slice(0, 500));
+
+  const usageIterations = (data as { usage?: { iterations?: Array<{ type?: string } | null> } })
+    .usage?.iterations;
+  if (
+    Array.isArray(usageIterations) &&
+    usageIterations.some((entry) => entry?.type === 'fallback_message')
+  ) {
+    // A sticky-routed turn carries no fallback content block, so this is the only
+    // signal that a substitute model answered.
+    logger.warn('LLM', 'Anthropic served by fallback model:', (data as { model?: string }).model);
+  }
+
+  // A declined request is a successful 200 whose content is empty. Without this
+  // branch Aoi renders a blank turn with no emotion and no suggested replies, and
+  // nothing anywhere says why -- respond_to_user was never called.
+  if ((data as { stop_reason?: string }).stop_reason === 'refusal') {
+    const details = (
+      data as { stop_details?: { category?: string | null; explanation?: string | null } }
+    ).stop_details;
+    const category = details?.category || 'unspecified';
+    logger.error('LLM', 'Anthropic refusal:', { category, explanation: details?.explanation });
+    const explanation = details?.explanation ? ` ${details.explanation}` : '';
+    throw new Error(
+      `Anthropic declined this request (${category}).${explanation} ` +
+        'Rephrase it, or route this turn through a provider without that classifier.',
+    );
+  }
+
   let content = '';
   const toolCalls: ToolCall[] = [];
 
