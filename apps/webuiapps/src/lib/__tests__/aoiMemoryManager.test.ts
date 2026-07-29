@@ -689,6 +689,49 @@ describe('Aoi LLM memory distiller', () => {
     expect(user.content).toContain('나는 K-POP 걸그룹 노래들을 좋아해.');
   });
 
+  it('asks for emotion memories, bounded to one and only when the turn carried weight', async () => {
+    const captured: ChatMessage[][] = [];
+    const distillerChat = async (messages: ChatMessage[]) => {
+      captured.push(messages);
+      return { content: JSON.stringify({ memories: [] }), toolCalls: [] };
+    };
+
+    await distillAoiMemoryCandidatesWithLlm({
+      sessionPath: 'aoi/default',
+      userMessage: '드디어 그 IRQL 버그 잡았다',
+      assistantMessage: '고생했네. 풀 릭 경로가 원인이었어.',
+      llmConfig: MOCK_LLM_CONFIG,
+      distillerChat,
+    });
+
+    const system = captured[0][0];
+    // The type was always valid; nothing ever requested it, so none were made.
+    expect(system.content).toContain('"emotion"');
+    expect(system.content).toContain('at most ONE');
+    expect(system.content).toContain('prefer none over a manufactured one');
+  });
+
+  it('accepts a distilled emotion memory', () => {
+    const candidates = parseAoiMemoryDistillerResponse(
+      JSON.stringify({
+        memories: [
+          {
+            scope: 'user',
+            type: 'emotion',
+            content: 'The user was relieved after the IRQL bug turned out to be a pool leak.',
+            importance: 0.7,
+            confidence: 0.8,
+            tags: ['emotion'],
+          },
+        ],
+      }),
+    );
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].type).toBe('emotion');
+    expect(candidates[0].tags).toContain('emotion');
+  });
+
   it('does not run hidden distillation through interactive CLI/OAuth providers', async () => {
     let calls = 0;
     const distillerChat = async () => {

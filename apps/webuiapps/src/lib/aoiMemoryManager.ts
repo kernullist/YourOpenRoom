@@ -957,6 +957,7 @@ function buildDistillerMessages(params: AoiMemorySyncParams): ChatMessage[] {
         '- Do not store trivial acknowledgements, one-off requests, temporary wording, passwords, API keys, tokens, or secrets.',
         '- Store stable user preferences, identity facts, project decisions, reusable procedures, and important completed actions.',
         '- Also store reusable user interests, tastes, and technical topics the user asks about, even when the user did not explicitly say remember.',
+        '- Store at most ONE "emotion" memory when the turn genuinely carried emotional weight -- relief after a hard-won fix, pride in something shipped, frustration that finally resolved, worry about a risk. Say what happened and how it landed, and tag it "emotion". A routine exchange carries none; prefer none over a manufactured one.',
         '- For inferred interests, write a concise standalone memory and tag it with "interest" and "auto".',
         '- Set permanent=true only when the user explicitly asks Aoi to remember something forever, permanently, or never forget it.',
         '- Never emit a memory that merely restates an already-stored preference or an already-captured memory listed in the input, even reworded or translated into another language. Only emit it when the turn genuinely CHANGES it (then state the updated preference).',
