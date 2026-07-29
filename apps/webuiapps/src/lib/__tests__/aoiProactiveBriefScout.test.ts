@@ -128,6 +128,50 @@ afterEach(() => {
 });
 
 describe('Aoi proactive brief scout', () => {
+  it('carries the topic interest kind onto the candidate for companion copy', async () => {
+    const root = makeTempRoot();
+    saveProfile(root, { ...makeTopic(), interestKind: 'personal' });
+
+    const result = await runAoiProactiveBriefScout({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      now: 10_000,
+      budget: {
+        allowNetwork: true,
+        maxTopicsPerWakeup: 1,
+        maxNetworkCallsPerWakeup: 1,
+      },
+      dependencies: {
+        search: makeSearch(),
+        loadPolicy: () => makePolicy(10_000),
+      },
+    });
+
+    expect(result.createdCandidates[0]?.interestKind).toBe('personal');
+  });
+
+  it('leaves the interest kind unset when the topic does not classify one', async () => {
+    const root = makeTempRoot();
+    saveProfile(root);
+
+    const result = await runAoiProactiveBriefScout({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      now: 10_000,
+      budget: {
+        allowNetwork: true,
+        maxTopicsPerWakeup: 1,
+        maxNetworkCallsPerWakeup: 1,
+      },
+      dependencies: {
+        search: makeSearch(),
+        loadPolicy: () => makePolicy(10_000),
+      },
+    });
+
+    expect(result.createdCandidates[0]?.interestKind).toBeUndefined();
+  });
+
   it('creates a source-backed candidate for an RE topic from public search results', async () => {
     const root = makeTempRoot();
     saveProfile(root);

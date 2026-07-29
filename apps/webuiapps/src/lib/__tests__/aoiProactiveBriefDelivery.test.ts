@@ -173,6 +173,34 @@ describe('Aoi proactive brief delivery policy', () => {
     expect(decision.ladder.mutationCount).toBe(0);
   });
 
+  it('speaks the chat hook in the companion register when a voice is supplied', () => {
+    const base = {
+      candidate: { ...makeCandidate(), mediaBucket: 'read' as const },
+      policy: makePolicy(),
+      profile: makeProfile(),
+      feedback: [],
+      cooldownState: null,
+      context: {
+        now: NOW,
+        quietMode: false,
+        directChatOptIn: true,
+      },
+    };
+    const withoutVoice = decideAoiProactiveBriefDelivery(base);
+    const withVoice = decideAoiProactiveBriefDelivery({ ...base, voice: { lang: 'ko' } });
+
+    expect(withoutVoice.chatHook.allowed).toBe(true);
+    expect(withoutVoice.chatHook.text).toContain('Open the brief if you want the sources.');
+
+    expect(withVoice.chatHook.allowed).toBe(true);
+    expect(withVoice.chatHook.text).toContain('Reverse Engineering');
+    expect(withVoice.chatHook.text).toContain('읽어볼 만한 자료');
+    expect(withVoice.chatHook.text).toContain('열어볼래?');
+    // The register contract: no third-person self-reference, no formal endings.
+    expect(withVoice.chatHook.text).not.toContain('Aoi');
+    expect(withVoice.chatHook.text).not.toMatch(/니다|세요/);
+  });
+
   it('allows one short chat hook only after explicit opt-in', () => {
     const candidate = makeCandidate();
     const withoutOptIn = decideAoiProactiveBriefDelivery({

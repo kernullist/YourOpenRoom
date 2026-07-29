@@ -985,6 +985,10 @@ export interface AoiProactiveBriefCandidate {
   sources: AoiProactiveBriefSource[];
   // Optional so previously persisted candidates remain valid.
   mediaBucket?: AoiProactiveBriefMediaBucket;
+  // Carried from the interest topic so companion copy can say WHY this was
+  // picked ("you keep digging into it" vs "you like this stuff") without
+  // exposing the topic's internal scores.
+  interestKind?: AoiInterestKind;
   evidenceRefs: string[];
   memoryIds: string[];
   researchRunId?: string;

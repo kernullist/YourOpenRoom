@@ -703,6 +703,11 @@ export function normalizeAoiProactiveBriefCandidate(
     sources,
     // Preserve a valid stored bucket; otherwise derive from the source kinds.
     mediaBucket: storedMediaBucket ?? deriveAoiProactiveBriefMediaBucket(sources),
+    // Preserved so companion copy keeps its reason; legacy records simply have
+    // none and fall back to the professional phrasing.
+    ...(raw.interestKind === 'professional' || raw.interestKind === 'personal'
+      ? { interestKind: raw.interestKind }
+      : {}),
     evidenceRefs: normalizeStringList(raw.evidenceRefs, 24, 180),
     memoryIds: normalizeStringList(raw.memoryIds, 24, 120),
     ...(normalizeText(raw.researchRunId, 120)

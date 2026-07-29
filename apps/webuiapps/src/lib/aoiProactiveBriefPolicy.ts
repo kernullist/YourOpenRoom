@@ -8,6 +8,7 @@ import type {
   AoiProactiveBriefDeliveryMode,
   AoiProactiveBriefFeedback,
 } from './aoiAutonomyTypes';
+import { buildAoiCompanionBriefChatHook, type AoiCompanionVoice } from './aoiCompanionVoice';
 
 const DEFAULT_SOURCE_STALE_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
 const RECENT_FEEDBACK_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
@@ -116,6 +117,9 @@ export interface DecideAoiProactiveBriefDeliveryInput {
   cooldownState?: AoiProactiveBriefCooldownState | null;
   calibrationTuning?: AoiProactiveBriefCalibrationTuning | null;
   context?: AoiProactiveBriefDeliveryContext;
+  // Renders the chat hook in the companion register. Omitted -> the stored
+  // English hook is used, so existing callers are unaffected.
+  voice?: AoiCompanionVoice | null;
 }
 
 function clampScore(value: number): number {
@@ -388,7 +392,24 @@ function modeAllowed(
   return candidate.delivery.allowedModes.includes(mode);
 }
 
-function chatHookText(candidate: AoiProactiveBriefCandidate): string {
+// The line Aoi actually says when a brief is escalated to chat. With a voice
+// supplied it is composed in the companion register from the candidate's own
+// structured fields; without one it falls back to the stored hook, so legacy
+// records and callers that pass no voice behave exactly as before.
+function chatHookText(
+  candidate: AoiProactiveBriefCandidate,
+  voice: AoiCompanionVoice | null,
+): string {
+  if (voice) {
+    return truncateText(
+      buildAoiCompanionBriefChatHook(voice, {
+        topicLabel: candidate.topicLabel,
+        sourceCount: candidate.sources.length,
+        mediaBucket: candidate.mediaBucket ?? null,
+      }),
+      CHAT_HOOK_MAX_CHARS,
+    );
+  }
   return truncateText(
     `${candidate.hook} Open the brief if you want the sources.`,
     CHAT_HOOK_MAX_CHARS,
@@ -596,7 +617,7 @@ export function decideAoiProactiveBriefDelivery(
     inlineCardVisible,
     chatHook: {
       allowed: chatHookAllowed,
-      text: chatHookAllowed ? chatHookText(candidate) : '',
+      text: chatHookAllowed ? chatHookText(candidate, input.voice ?? null) : '',
       reasons: chatHookReasonList,
     },
     ladder,

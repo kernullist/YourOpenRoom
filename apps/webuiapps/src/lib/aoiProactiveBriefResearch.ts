@@ -418,6 +418,7 @@ export function buildAoiProactiveBriefCandidateFromEvidence(
       : `${primary?.host ?? 'A public source'} is the primary source surfaced by the scout.`,
     sources,
     mediaBucket: deriveAoiProactiveBriefMediaBucket(sources),
+    ...(input.topic.interestKind ? { interestKind: input.topic.interestKind } : {}),
     evidenceRefs: [...sources.map(buildEvidenceRef), ...input.topic.evidenceRefs.slice(0, 6)].slice(
       0,
       16,
