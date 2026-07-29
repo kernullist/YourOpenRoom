@@ -1576,6 +1576,9 @@ export interface AoiResumeBrief {
   id: string;
   visible: boolean;
   title: string;
+  // Time-gap-aware opener spoken by Aoi. Present only when the digest is built
+  // with a companion voice; absent renders the card exactly as before.
+  greeting?: string;
   whatChanged: string;
   nextSafeAction: string;
   safetyBoundary: string;

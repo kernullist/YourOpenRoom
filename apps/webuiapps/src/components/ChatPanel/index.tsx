@@ -9230,8 +9230,11 @@ const ChatPanel: React.FC<{
         proactiveBriefProfile: aoiProactiveBriefs?.profile,
         proactiveBriefFeedback: aoiProactiveBriefs?.feedback,
         proactiveBriefCooldownState: aoiProactiveBriefs?.cooldownState,
+        // The resume card greets the user in Aoi's own voice.
+        voice: { lang: aoiCardLang },
       }),
     [
+      aoiCardLang,
       aoiAutonomyActiveProposals,
       aoiAutonomyBlockedProposals,
       aoiAutonomyEvaluation?.trustCalibration,
@@ -10397,13 +10400,18 @@ const ChatPanel: React.FC<{
             <div className={styles.aoiInlineSuggestion} data-testid="aoi-resume-brief">
               <div className={styles.aoiInlineSuggestionMain}>
                 <div className={styles.aoiInlineSuggestionMeta}>
-                  <span>Aoi resume brief</span>
+                  <span>{aoiResumeBrief.title}</span>
                   <span>{aoiOperatorDigest.summary}</span>
                   <span>evidence {aoiResumeBrief.evidenceRefs.length}</span>
                   {aoiOperatorDigest.approvalInbox.length > 0 && (
                     <span>approvals {aoiOperatorDigest.approvalInbox.length}</span>
                   )}
                 </div>
+                {aoiResumeBrief.greeting && (
+                  <div className={styles.aoiInlineSuggestionBody} data-testid="aoi-resume-greeting">
+                    {sanitizeAoiProposalDisplayText(aoiResumeBrief.greeting, 160)}
+                  </div>
+                )}
                 <div className={styles.aoiInlineSuggestionTitle}>
                   {sanitizeAoiProposalDisplayText(aoiResumeBrief.whatChanged, 140)}
                 </div>

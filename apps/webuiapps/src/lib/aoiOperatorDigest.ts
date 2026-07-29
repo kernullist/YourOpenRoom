@@ -1,6 +1,12 @@
 import { redactAoiSensitiveContent, stripAoiSourceInstructions } from './aoiMemoryShared';
 import { applyAoiTrustCalibration } from './aoiTrustCalibration';
 import { decideAoiProactiveBriefDelivery } from './aoiProactiveBriefPolicy';
+import {
+  buildAoiCompanionResumeGreeting,
+  buildAoiCompanionResumeSafetyNote,
+  buildAoiCompanionResumeTitle,
+  type AoiCompanionVoice,
+} from './aoiCompanionVoice';
 import type { AoiMemoryEntry } from './aoiMemoryShared';
 import type {
   AoiApprovalInboxItem,
@@ -59,6 +65,9 @@ export interface AoiOperatorDigestInput {
   trustCalibrationProfile?: AoiTrustCalibrationProfile | null;
   operatorHealth?: AoiOperatorHealthState | null;
   policy?: AoiAutonomyPolicy | null;
+  // Renders the resume brief as Aoi speaking. Omitted -> the original English
+  // card heading and boundary sentence, with no greeting line.
+  voice?: AoiCompanionVoice | null;
   proactiveBriefCandidates?: AoiProactiveBriefCandidate[];
   proactiveBriefProfile?: AoiInterestProfile | null;
   proactiveBriefFeedback?: AoiProactiveBriefFeedback[];
@@ -744,6 +753,7 @@ function buildResumeBrief(params: {
   approvalInbox: AoiApprovalInboxItem[];
   lastSeenAt?: number | null;
   userIdleMs?: number;
+  voice?: AoiCompanionVoice | null;
 }): AoiResumeBrief | undefined {
   const idleMs =
     typeof params.userIdleMs === 'number'
@@ -770,11 +780,15 @@ function buildResumeBrief(params: {
     ...(topApproval?.evidenceRefs ?? []),
     ...(params.mission?.evidenceRefs ?? []),
   ]);
+  const voice = params.voice ?? null;
   return {
     version: 1,
     id: `aoi-resume-brief-${hashPart(`${params.sessionPath}:${params.lastSeenAt ?? idleMs}`)}`,
     visible: true,
-    title: 'Aoi resume brief',
+    // With a voice this is Aoi greeting the user back; without one it stays the
+    // original card heading so existing callers see no change.
+    title: voice ? buildAoiCompanionResumeTitle(voice) : 'Aoi resume brief',
+    ...(voice ? { greeting: buildAoiCompanionResumeGreeting(voice, { idleMs }) } : {}),
     whatChanged: truncateText(
       topItem?.summary ||
         topApproval?.exactNextAction ||
@@ -788,8 +802,11 @@ function buildResumeBrief(params: {
         'Review the digest before continuing.',
       160,
     ),
-    safetyBoundary:
-      'This brief will not approve, execute, run tools, start research, create Kira work, or edit files without explicit approval.',
+    // Same guarantee either way -- the voiced form states the identical set of
+    // gated effects (approve, execute, tools, research, Kira work, file edits).
+    safetyBoundary: voice
+      ? buildAoiCompanionResumeSafetyNote(voice)
+      : 'This brief will not approve, execute, run tools, start research, create Kira work, or edit files without explicit approval.',
     evidenceRefs,
     createdAt: params.now,
   };
@@ -872,6 +889,7 @@ export function buildAoiOperatorDigest(params: AoiOperatorDigestInput): AoiOpera
     approvalInbox,
     lastSeenAt: params.lastSeenAt,
     userIdleMs: params.userIdleMs,
+    voice: params.voice ?? null,
   });
 
   return {

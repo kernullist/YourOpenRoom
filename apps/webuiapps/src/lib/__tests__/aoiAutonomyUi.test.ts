@@ -2686,6 +2686,56 @@ describe('Aoi autonomy UI helpers', () => {
     expect(panelSummary.resumeBriefLabel).toContain('Boundary:');
   });
 
+  it('greets the user back in voice while keeping the same safety guarantee', () => {
+    const plain = buildAoiOperatorDigest({
+      sessionPath: 'aoi/default',
+      now: 4000,
+      mission: makeMission(),
+      userIdleMs: 20 * 60 * 1000,
+    });
+    const voiced = buildAoiOperatorDigest({
+      sessionPath: 'aoi/default',
+      now: 4000,
+      mission: makeMission(),
+      userIdleMs: 20 * 60 * 1000,
+      voice: { lang: 'ko' },
+    });
+
+    // Without a voice the card is unchanged: original heading, no greeting.
+    expect(plain.resumeBrief?.title).toBe('Aoi resume brief');
+    expect(plain.resumeBrief?.greeting).toBeUndefined();
+
+    expect(voiced.resumeBrief?.title).toBe('잠깐 사이에 있었던 일');
+    expect(voiced.resumeBrief?.greeting).toBe('잠깐 자리 비웠었네.');
+    // The boundary still names every gated effect, now in the persona register.
+    const boundary = voiced.resumeBrief?.safetyBoundary ?? '';
+    expect(boundary).toContain('승인');
+    expect(boundary).toContain('실행');
+    expect(boundary).toContain('리서치');
+    expect(boundary).toContain('파일 수정');
+    expect(boundary).not.toMatch(/니다|세요/);
+  });
+
+  it('varies the returning greeting with the length of the absence', () => {
+    const hours = buildAoiOperatorDigest({
+      sessionPath: 'aoi/default',
+      now: 4000,
+      mission: makeMission(),
+      userIdleMs: 3 * 60 * 60 * 1000,
+      voice: { lang: 'ko' },
+    });
+    const days = buildAoiOperatorDigest({
+      sessionPath: 'aoi/default',
+      now: 4000,
+      mission: makeMission(),
+      userIdleMs: 40 * 60 * 60 * 1000,
+      voice: { lang: 'ko' },
+    });
+
+    expect(hours.resumeBrief?.greeting).toBe('3시간 만이네.');
+    expect(days.resumeBrief?.greeting).toBe('오랜만이야.');
+  });
+
   it('does not build a resume brief for low-value FYI-only changes', () => {
     const digest = buildAoiOperatorDigest({
       sessionPath: 'aoi/default',
