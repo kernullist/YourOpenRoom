@@ -1327,7 +1327,7 @@ respond_to_user
       expect(headers['X-LLM-Target-URL']).toBe('https://api.anthropic.com/v1/messages');
     });
 
-    it('extracts system message to top-level system field', async () => {
+    it('extracts system message to top-level system field with a cache breakpoint', async () => {
       const messages: ChatMessage[] = [
         { role: 'system', content: 'You are helpful.' },
         { role: 'user', content: 'Hello' },
@@ -1338,9 +1338,104 @@ respond_to_user
       await chat(messages, [], MOCK_ANTHROPIC_CONFIG);
 
       const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
-      expect(body.system).toBe('You are helpful.');
+      expect(body.system).toEqual([
+        {
+          type: 'text',
+          text: 'You are helpful.',
+          cache_control: { type: 'ephemeral' },
+        },
+      ]);
       expect(body.messages.some((m: { role: string }) => m.role === 'system')).toBe(false);
       expect(body.max_tokens).toBe(8192);
+    });
+
+    it('keeps the system field a plain string on anthropic-compatible proxies', async () => {
+      const messages: ChatMessage[] = [
+        { role: 'system', content: 'You are helpful.' },
+        { role: 'user', content: 'Hello' },
+      ];
+      const mockFetch = vi.fn().mockResolvedValueOnce(makeAnthropicResponse('ok'));
+      globalThis.fetch = mockFetch;
+
+      await chat(messages, [], {
+        provider: 'minimax',
+        apiKey: 'mm-test-key',
+        baseUrl: 'https://api.minimax.io/anthropic/v1',
+        model: 'MiniMax-M2.5',
+      });
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(body.system).toBe('You are helpful.');
+    });
+
+    it('carries a trailing system message as a mid-conversation system turn', async () => {
+      const messages: ChatMessage[] = [
+        { role: 'system', content: 'Base prompt.' },
+        { role: 'user', content: 'Hello' },
+        { role: 'assistant', content: 'Hi.' },
+        { role: 'user', content: 'Save it.' },
+        { role: 'system', content: 'Final execution guard: write the file first.' },
+      ];
+      const mockFetch = vi.fn().mockResolvedValueOnce(makeAnthropicResponse('ok'));
+      globalThis.fetch = mockFetch;
+
+      await chat(messages, [], { ...MOCK_ANTHROPIC_CONFIG, model: 'claude-opus-5' });
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      const last = body.messages[body.messages.length - 1];
+      expect(last).toEqual({
+        role: 'system',
+        content: 'Final execution guard: write the file first.',
+      });
+      // The base prompt keeps the breakpoint; the per-turn guard sits after it.
+      expect(body.system).toEqual([
+        { type: 'text', text: 'Base prompt.', cache_control: { type: 'ephemeral' } },
+      ]);
+    });
+
+    it('falls back to a system-reminder turn when the model has no system role', async () => {
+      const messages: ChatMessage[] = [
+        { role: 'system', content: 'Base prompt.' },
+        { role: 'user', content: 'Save it.' },
+        { role: 'system', content: 'Final execution guard.' },
+      ];
+      const mockFetch = vi.fn().mockResolvedValueOnce(makeAnthropicResponse('ok'));
+      globalThis.fetch = mockFetch;
+
+      // Sonnet 5 rejects a mid-conversation system role.
+      await chat(messages, [], { ...MOCK_ANTHROPIC_CONFIG, model: 'claude-sonnet-5' });
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      const last = body.messages[body.messages.length - 1];
+      expect(last.role).toBe('user');
+      expect(last.content[0].text).toContain('<system-reminder>');
+      expect(last.content[0].text).toContain('Final execution guard.');
+    });
+
+    it('folds operator context back into system when a tool call is unresolved', async () => {
+      const messages: ChatMessage[] = [
+        { role: 'system', content: 'Base prompt.' },
+        { role: 'user', content: 'Save it.' },
+        {
+          role: 'assistant',
+          content: '',
+          tool_calls: [
+            { id: 'toolu_1', type: 'function', function: { name: 'file_write', arguments: '{}' } },
+          ],
+        },
+        { role: 'system', content: 'Final execution guard.' },
+      ];
+      const mockFetch = vi.fn().mockResolvedValueOnce(makeAnthropicResponse('ok'));
+      globalThis.fetch = mockFetch;
+
+      await chat(messages, [], { ...MOCK_ANTHROPIC_CONFIG, model: 'claude-opus-5' });
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(body.messages[body.messages.length - 1].role).toBe('assistant');
+      expect(body.system).toEqual([
+        { type: 'text', text: 'Base prompt.', cache_control: { type: 'ephemeral' } },
+        { type: 'text', text: 'Final execution guard.' },
+      ]);
     });
 
     it('sends image attachments as Anthropic image source blocks', async () => {

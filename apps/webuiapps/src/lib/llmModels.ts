@@ -395,6 +395,29 @@ export function getProviderDisplayName(provider: LLMProvider): string {
   return LLM_PROVIDER_CONFIGS[provider]?.displayName ?? provider;
 }
 
+// Prompt caching and the mid-conversation system role are first-party Claude API
+// features. MiniMax and OpenCode Zen accept the Messages request shape but not
+// necessarily every field in it, so both stay opt-in by provider rather than by
+// request shape -- an unknown field on a proxy is a 400, not a degraded request.
+export function providerSupportsAnthropicNativeFeatures(provider: LLMProvider): boolean {
+  return provider === 'anthropic';
+}
+
+// Appending a {role:'system'} entry to messages[] mid-conversation, so operator
+// context can trail the history without rewriting the cached prefix, is
+// supported on Opus 5, Opus 4.8 and the Fable/Mythos line -- but NOT on Sonnet
+// 5, which rejects it. Anything else falls back to a <system-reminder> block.
+const MID_CONVERSATION_SYSTEM_MODELS = new Set([
+  'claude-opus-5',
+  'claude-opus-4-8',
+  'claude-fable-5',
+  'claude-mythos-5',
+]);
+
+export function modelSupportsMidConversationSystem(model: string): boolean {
+  return MID_CONVERSATION_SYSTEM_MODELS.has(model.trim());
+}
+
 export function normalizeProviderModelId(provider: LLMProvider, modelId: string): string {
   const model = modelId.trim();
   if (provider === 'opencode' && model.startsWith('opencode/')) {

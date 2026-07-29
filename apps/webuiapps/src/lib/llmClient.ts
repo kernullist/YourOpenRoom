@@ -9,11 +9,13 @@ import {
   applyOpenAiResponsesRuntimeOptions,
   getExplicitModelRuntimeOptions,
   isDeepSeekProvider,
+  modelSupportsMidConversationSystem,
   normalizeProviderModelId,
   normalizeReasoningEffort,
   normalizeReasoningSummary,
   normalizeServiceTier,
   normalizeVerbosity,
+  providerSupportsAnthropicNativeFeatures,
 } from './llmModels';
 
 import { logger } from './logger';
@@ -1155,16 +1157,96 @@ async function chatOpenAIResponses(
   };
 }
 
+type AnthropicRequestMessage = {
+  role: 'user' | 'assistant' | 'system';
+  content: string | Array<Record<string, unknown>>;
+};
+
+// Places the trailing operator context at the tail of the conversation, where it
+// reads as newer than the recalled history, and returns whatever could not go
+// there so the caller can fold it back into the system field.
+function placeAnthropicOperatorContext(
+  anthropicMessages: AnthropicRequestMessage[],
+  operatorContext: string[],
+  wireModel: string,
+  nativeFeatures: boolean,
+): string {
+  if (operatorContext.length === 0) {
+    return '';
+  }
+  const joined = operatorContext.join('\n\n');
+  const last = anthropicMessages[anthropicMessages.length - 1];
+  const hasPendingToolUse =
+    last?.role === 'assistant' &&
+    Array.isArray(last.content) &&
+    last.content.some((block) => (block as { type?: string }).type === 'tool_use');
+  if (!last || hasPendingToolUse) {
+    // A text turn appended after an unresolved tool_use would break the
+    // tool_use/tool_result pairing, so this one goes back into the system field.
+    return joined;
+  }
+  if (nativeFeatures && last.role === 'user' && modelSupportsMidConversationSystem(wireModel)) {
+    // The operator channel proper: unspoofable, and it leaves the cached prefix
+    // in front of it untouched. Valid only directly after a user turn.
+    anthropicMessages.push({ role: 'system', content: joined });
+    return '';
+  }
+  // Consecutive same-role messages are merged into one turn, so this is safe
+  // after either a user or an assistant turn.
+  anthropicMessages.push({
+    role: 'user',
+    content: [{ type: 'text', text: `<system-reminder>\n${joined}\n</system-reminder>` }],
+  });
+  return '';
+}
+
+function buildAnthropicSystemField(
+  systemMsg: string,
+  foldedOperatorContext: string,
+  nativeFeatures: boolean,
+): string | Array<Record<string, unknown>> | undefined {
+  if (!systemMsg && !foldedOperatorContext) {
+    return undefined;
+  }
+  if (!nativeFeatures) {
+    return [systemMsg, foldedOperatorContext].filter(Boolean).join('\n\n');
+  }
+  const blocks: Array<Record<string, unknown>> = [];
+  if (systemMsg) {
+    // The breakpoint sits at the end of the base prompt. Within one user turn
+    // the agentic loop re-sends this byte-identical across every tool
+    // round-trip, so iteration two onward reads it from cache instead of paying
+    // full input price on the persona, the tool policy and every appended block.
+    blocks.push({ type: 'text', text: systemMsg, cache_control: { type: 'ephemeral' } });
+  }
+  if (foldedOperatorContext) {
+    blocks.push({ type: 'text', text: foldedOperatorContext });
+  }
+  return blocks;
+}
+
 async function chatAnthropic(
   messages: ChatMessage[],
   tools: ToolDef[],
   config: LLMConfig,
   options: ChatRequestOptions,
 ): Promise<LLMResponse> {
-  const systemMsg = messages.find((m) => m.role === 'system')?.content || '';
+  const systemMessages = messages.filter((m) => m.role === 'system');
+  // Only the first system message is the base prompt. Every later one is
+  // operator context that has to read as newer than the recalled conversation:
+  // the final execution guard with the file-task and outcome contracts, a
+  // confirmed-proposal instruction, a trend follow-up. find() + filter() used to
+  // drop all of them on this route, so on Claude and MiniMax those instructions
+  // never reached the model at all -- the OpenAI route maps messages 1:1 and
+  // kept them, which is why the two routes behaved differently.
+  const systemMsg = systemMessages[0]?.content || '';
+  const operatorContext = systemMessages
+    .slice(1)
+    .map((m) => m.content)
+    .filter((content) => content.trim().length > 0);
   const nonSystemMessages = messages.filter((m) => m.role !== 'system');
 
-  const anthropicMessages = nonSystemMessages.map((m) => {
+  const anthropicMessages: AnthropicRequestMessage[] = nonSystemMessages.map((m) => {
     if (m.role === 'tool') {
       return {
         role: 'user' as const,
@@ -1203,12 +1285,22 @@ async function chatAnthropic(
     input_schema: t.function.parameters,
   }));
 
+  const wireModel = normalizeProviderModel(config);
+  const nativeFeatures = providerSupportsAnthropicNativeFeatures(config.provider);
+  const foldedOperatorContext = placeAnthropicOperatorContext(
+    anthropicMessages,
+    operatorContext,
+    wireModel,
+    nativeFeatures,
+  );
+
   const body: Record<string, unknown> = {
-    model: normalizeProviderModel(config),
+    model: wireModel,
     max_tokens: LLM_MAX_OUTPUT_TOKENS,
     messages: anthropicMessages,
   };
-  if (systemMsg) body.system = systemMsg;
+  const systemField = buildAnthropicSystemField(systemMsg, foldedOperatorContext, nativeFeatures);
+  if (systemField !== undefined) body.system = systemField;
   if (anthropicTools.length > 0) body.tools = anthropicTools;
 
   const anthropicToolNames = anthropicTools.map((t) => t.name).filter(Boolean);
