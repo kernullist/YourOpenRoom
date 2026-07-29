@@ -7,6 +7,8 @@ import {
   buildAoiCompanionFeedbackAction,
   buildAoiCompanionMilestoneNote,
   buildAoiCompanionRetrospectiveNote,
+  buildAoiCompanionSelfInquiryNote,
+  buildAoiCompanionSharedInterestNote,
   buildAoiCompanionResumeGreeting,
   buildAoiCompanionResumeSafetyNote,
   buildAoiCompanionResumeTitle,
@@ -279,6 +281,24 @@ describe('aoiCompanionVoice resume copy', () => {
     );
   });
 
+  it('claims a shared interest and an own inquiry by name', () => {
+    expect(buildAoiCompanionSharedInterestNote(KO, { topicLabel: 'TPM 증명' })).toBe(
+      'TPM 증명 쪽은 나도 따로 좀 파봤어.',
+    );
+    expect(
+      buildAoiCompanionSharedInterestNote(EN, { topicLabel: 'reverse engineering' }),
+    ).toContain('looked into reverse engineering on my own too');
+    expect(buildAoiCompanionSelfInquiryNote(KO, { topicLabel: '커널 텔레메트리' })).toContain(
+      '나 요즘 커널 텔레메트리',
+    );
+    expect(buildAoiCompanionSelfInquiryNote(EN, { topicLabel: 'kernel telemetry' })).toContain(
+      'poking at kernel telemetry',
+    );
+    // No usable topic means no claim at all.
+    expect(buildAoiCompanionSharedInterestNote(KO, { topicLabel: '  ' })).toBe('');
+    expect(buildAoiCompanionSelfInquiryNote(EN, { topicLabel: '' })).toBe('');
+  });
+
   it('offers the week as counts rather than retelling it', () => {
     expect(
       buildAoiCompanionRetrospectiveNote(KO, { landedCount: 3, stuckCount: 1, openCount: 2 }),
@@ -405,6 +425,13 @@ describe('aoiCompanionVoice register contract', () => {
         buildAoiCompanionResumeGreeting(voice, { idleMs: 3 * 3_600_000 }),
         buildAoiCompanionSessionGreeting(voice, { gapMs: 3 * 3_600_000 }),
         buildAoiCompanionThreadFollowUp(voice, { title: '미결 작업' }),
+        buildAoiCompanionSharedInterestNote(voice, { topicLabel: '커널 보안' }),
+        buildAoiCompanionSelfInquiryNote(voice, { topicLabel: '커널 보안' }),
+        buildAoiCompanionRetrospectiveNote(voice, {
+          landedCount: 2,
+          stuckCount: 1,
+          openCount: 1,
+        }),
         buildAoiCompanionSessionGreeting(voice, {
           gapMs: 80 * 3_600_000,
           lastSessionSummary: '지난 작업',

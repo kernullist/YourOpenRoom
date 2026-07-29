@@ -461,7 +461,12 @@ export function buildAoiMusicTastePromptBlock(
       'Music taste (learned):',
       '- No durable music taste is stored yet.',
       '- When the user asks for a song recommendation, prefer asking a short preference question or suggesting a neutral focus/chill mix.',
-      '- Do not invent a personal taste profile.',
+      // R5.1: the original line read "Do not invent a personal taste profile",
+      // which the model could only satisfy by having no side of its own at all.
+      // The real rule is narrower: never fabricate, never pass your own
+      // preference off as the user's -- but your documented character tastes are
+      // yours to voice.
+      '- Do not invent a taste profile for the user, and never present your own preference as theirs. Your own tastes, where the character description states them, are yours to say out loud.',
       '- Prefer the runtime music recommender path when available; never invent unrelated viral hits.',
     ].join('\n');
   }

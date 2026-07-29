@@ -501,6 +501,12 @@ import {
   buildAoiCompanionThreadFollowUp,
 } from '@/lib/aoiCompanionVoice';
 import { selectAoiRelationshipThreadToRaise } from '@/lib/aoiRelationshipThreads';
+import {
+  buildAoiSelfInquirySourcesFromMemories,
+  buildAoiSelfProfile,
+  buildAoiSelfProfilePromptBlock,
+  findAoiSharedInterests,
+} from '@/lib/aoiSelfProfile';
 // Type-only: the relationship store touches node fs, so the client reads it
 // exclusively over the routes (a value import would break the client bundle).
 import type { AoiRelationshipMilestone, AoiRelationshipState } from '@/lib/aoiRelationshipState';
@@ -3295,6 +3301,10 @@ const ChatPanel: React.FC<{
   const [aoiOperatorHealth, setAoiOperatorHealth] = useState<AoiOperatorHealthState | null>(null);
   const [aoiProactiveBriefs, setAoiProactiveBriefs] =
     useState<AoiProactiveBriefListResponse | null>(null);
+  // R5.1: the send path reads the user's interest topics to find shared ground
+  // with Aoi's own inquiries; a ref keeps that off the callback's dependencies.
+  const aoiProactiveBriefsRef = useRef(aoiProactiveBriefs);
+  aoiProactiveBriefsRef.current = aoiProactiveBriefs;
   const [aoiFieldFeedback, setAoiFieldFeedback] = useState<AoiFieldFeedbackResponse | null>(null);
   const [aoiAutonomyPanelSettings, setAoiAutonomyPanelSettings] =
     useState<AoiAutonomyPanelSettings>(() => loadAoiAutonomyPanelSettings());
@@ -7107,6 +7117,22 @@ const ChatPanel: React.FC<{
       queryEmbeddingModel: aoiEmbeddingProviderRef.current?.model ?? null,
       episodes: recentAoiEpisodes,
     });
+    // R5.1: Aoi's own side. Agent-scope memories are what she actually
+    // researched, so they are the one self-side material that can be evidence-
+    // backed; crossing them with the user's interest topics is what makes "I
+    // looked into that too" a fact rather than flattery. Both inputs are already
+    // in hand, and an empty result contributes no block at all.
+    const aoiSelfProfile = buildAoiSelfProfile({
+      now: Date.now(),
+      sources: buildAoiSelfInquirySourcesFromMemories(latestAoiMemories),
+    });
+    const currentAoiSelfPrompt = buildAoiSelfProfilePromptBlock({
+      profile: aoiSelfProfile,
+      sharedInterests: findAoiSharedInterests(
+        aoiSelfProfile,
+        aoiProactiveBriefsRef.current?.profile?.topics ?? [],
+      ),
+    });
     let currentAoiMissionPrompt = '';
     try {
       updateStatus('Refreshing mission state');
@@ -7170,7 +7196,7 @@ const ChatPanel: React.FC<{
       currentMemories,
       hasTavily && toolCallRuntimeAvailable,
       hasResearchTools,
-      currentAoiMemoryPrompt,
+      `${currentAoiMemoryPrompt}${currentAoiSelfPrompt}`,
       currentAoiMissionPrompt,
       currentAoiContextPrompt,
       currentAoiGovernorPrompt,

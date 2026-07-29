@@ -341,6 +341,47 @@ export function buildAoiCompanionSessionGreeting(
   return `${greeting} Last time we were on ${summary}.`;
 }
 
+export interface AoiCompanionSharedInterestParams {
+  topicLabel: string;
+}
+
+// "I looked into that too." Only ever composed from a real overlap between what
+// Aoi explored and what the user cares about (see aoiSelfProfile) -- said without
+// that evidence it would be flattery, which is worse than saying nothing.
+export function buildAoiCompanionSharedInterestNote(
+  voice: AoiCompanionVoice,
+  params: AoiCompanionSharedInterestParams,
+): string {
+  const topic = sanitizeCompanionText(params.topicLabel, 80);
+  if (!topic) {
+    return '';
+  }
+  if (voice.lang === 'ko') {
+    return `${topic} 쪽은 나도 따로 좀 파봤어.`;
+  }
+  return `I went and looked into ${topic} on my own too.`;
+}
+
+export interface AoiCompanionSelfInquiryParams {
+  topicLabel: string;
+}
+
+// What Aoi dug into on her own, unprompted. Sourced from real research runs and
+// agent-scope memories, never from an invented curiosity.
+export function buildAoiCompanionSelfInquiryNote(
+  voice: AoiCompanionVoice,
+  params: AoiCompanionSelfInquiryParams,
+): string {
+  const topic = sanitizeCompanionText(params.topicLabel, 80);
+  if (!topic) {
+    return '';
+  }
+  if (voice.lang === 'ko') {
+    return `나 요즘 ${topic} 쪽 혼자 좀 들여다봤어.`;
+  }
+  return `I have been poking at ${topic} on my own lately.`;
+}
+
 export interface AoiCompanionRetrospectiveParams {
   landedCount: number;
   stuckCount: number;
