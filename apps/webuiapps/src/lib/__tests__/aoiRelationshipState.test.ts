@@ -11,6 +11,7 @@ import {
   loadAoiRelationshipState,
   markAoiRelationshipThreadAsked,
   normalizeAoiRelationshipState,
+  recordAoiRelationshipArcCompletion,
   recordAoiRelationshipMood,
   recordAoiRelationshipSessionOpen,
   recordAoiRelationshipSessionSummary,
@@ -528,5 +529,130 @@ describe('relationship mood persistence (R6.2)', () => {
     expect(
       recordAoiRelationshipMood(root, SESSION_PATH, deriveAoiMoodState({ now: NOW }), NOW),
     ).toBeNull();
+  });
+});
+
+describe('arc completion baseline (R7.1)', () => {
+  it('records the baseline and an arc_completed milestone together', () => {
+    const root = makeTempRoot();
+    recordAoiRelationshipSessionOpen(root, SESSION_PATH, NOW);
+
+    const result = recordAoiRelationshipArcCompletion(root, SESSION_PATH, {
+      arcId: 'space_adventure',
+      arcName: 'Bounty Hunter Fugue',
+      completedStages: ['Relics and Reunion', 'Methodical Pursuit', 'Epilogue'],
+      now: NOW + HOUR,
+    });
+
+    expect(result.recorded).toBe(true);
+    expect(result.state?.arcBaseline?.arcId).toBe('space_adventure');
+    expect(result.state?.arcBaseline?.completedStages).toEqual([
+      'Relics and Reunion',
+      'Methodical Pursuit',
+      'Epilogue',
+    ]);
+    const milestone = result.state?.milestones.find((item) => item.kind === 'arc_completed');
+    expect(milestone?.label).toContain('Bounty Hunter Fugue');
+    expect(milestone?.evidenceRefs).toEqual(['arc:space_adventure']);
+    // The baseline is what later sessions read, so it has to survive a reload.
+    expect(loadAoiRelationshipState(root, SESSION_PATH, NOW + 2 * HOUR)?.arcBaseline?.arcName).toBe(
+      'Bounty Hunter Fugue',
+    );
+  });
+
+  it('is idempotent for the same arc but records a different one', () => {
+    const root = makeTempRoot();
+    recordAoiRelationshipSessionOpen(root, SESSION_PATH, NOW);
+    recordAoiRelationshipArcCompletion(root, SESSION_PATH, {
+      arcId: 'arc-one',
+      arcName: 'First Arc',
+      now: NOW + HOUR,
+    });
+
+    // Replaying the final stage must not re-record it.
+    const again = recordAoiRelationshipArcCompletion(root, SESSION_PATH, {
+      arcId: 'arc-one',
+      arcName: 'First Arc',
+      now: NOW + 2 * HOUR,
+    });
+    expect(again.recorded).toBe(false);
+    expect(again.state?.milestones.filter((item) => item.kind === 'arc_completed')).toHaveLength(1);
+
+    // A genuinely different arc finishing later replaces the baseline and adds
+    // its own milestone -- both arcs really happened.
+    const second = recordAoiRelationshipArcCompletion(root, SESSION_PATH, {
+      arcId: 'arc-two',
+      arcName: 'Second Arc',
+      now: NOW + 3 * HOUR,
+    });
+    expect(second.recorded).toBe(true);
+    expect(second.state?.arcBaseline?.arcId).toBe('arc-two');
+    expect(second.state?.milestones.filter((item) => item.kind === 'arc_completed')).toHaveLength(
+      2,
+    );
+  });
+
+  it('refuses an arc with no usable identity', () => {
+    const root = makeTempRoot();
+    recordAoiRelationshipSessionOpen(root, SESSION_PATH, NOW);
+
+    const noId = recordAoiRelationshipArcCompletion(root, SESSION_PATH, {
+      arcId: '   ',
+      arcName: 'Nameless',
+      now: NOW + HOUR,
+    });
+    expect(noId.recorded).toBe(false);
+    expect(noId.state?.arcBaseline).toBeUndefined();
+
+    const noName = recordAoiRelationshipArcCompletion(root, SESSION_PATH, {
+      arcId: 'arc-x',
+      arcName: '',
+      now: NOW + HOUR,
+    });
+    expect(noName.recorded).toBe(false);
+  });
+
+  it('caps the stage list and the labels', () => {
+    const root = makeTempRoot();
+    recordAoiRelationshipSessionOpen(root, SESSION_PATH, NOW);
+
+    const result = recordAoiRelationshipArcCompletion(root, SESSION_PATH, {
+      arcId: 'arc-long',
+      arcName: 'n'.repeat(200),
+      completedStages: Array.from({ length: 20 }, (_unused, index) => `stage-${index}`),
+      now: NOW + HOUR,
+    });
+
+    expect(result.state?.arcBaseline?.arcName.length).toBeLessThanOrEqual(80);
+    expect(result.state?.arcBaseline?.completedStages).toHaveLength(8);
+  });
+
+  it('drops a stored baseline that lost its identity', () => {
+    const root = makeTempRoot();
+    const statePath = resolveAoiRelationshipStatePath(root, SESSION_PATH);
+    fs.mkdirSync(join(statePath, '..'), { recursive: true });
+    fs.writeFileSync(
+      statePath,
+      JSON.stringify({
+        version: 1,
+        firstMetAt: NOW,
+        arcBaseline: { completedAt: NOW, completedStages: ['x'] },
+      }),
+      'utf-8',
+    );
+
+    // "Some arc finished" is not something Aoi can refer back to.
+    expect(loadAoiRelationshipState(root, SESSION_PATH, NOW)?.arcBaseline).toBeUndefined();
+  });
+
+  it('returns null when no relationship record exists yet', () => {
+    const root = makeTempRoot();
+    const result = recordAoiRelationshipArcCompletion(root, SESSION_PATH, {
+      arcId: 'arc-one',
+      arcName: 'First Arc',
+      now: NOW,
+    });
+    expect(result.state).toBeNull();
+    expect(result.recorded).toBe(false);
   });
 });

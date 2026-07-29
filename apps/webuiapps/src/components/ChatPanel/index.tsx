@@ -391,6 +391,7 @@ import {
   recordAoiOutcomeSignal,
   recordAoiProactiveBriefFeedback,
   recordAoiActivityEvent,
+  reportAoiRelationshipArcCompleted,
   reportAoiRelationshipSessionOpen,
   type AoiRelationshipSessionOpenRetrospective,
   reportAoiRelationshipSessionSummary,
@@ -8146,6 +8147,28 @@ const ChatPanel: React.FC<{
           if (mm) {
             const result = mm.finishTarget(targetIds);
             console.info('[ChatPanel] finish_target result', result);
+            // R7.1: the arc reaching its end used to leave no trace -- the mod
+            // flipped to free conversation and everything it built was gone.
+            // Record it as the relationship baseline instead. Best-effort and
+            // idempotent per arc; only the arc's real identity and the stages
+            // actually played are stored, never an invented "transformed state".
+            if (result.progressInfo?.stage_progress.all_stages_finished) {
+              const config = mm.getConfig();
+              void reportAoiRelationshipArcCompleted(sessionPathRef.current, {
+                arcId: config.id,
+                arcName: config.mod_name,
+                // stages is keyed by index, not an array.
+                completedStages: Object.values(config.stages).map((stage) => stage.stage_name),
+              })
+                .then((relationship) => {
+                  if (relationship) {
+                    aoiRelationshipStateRef.current = relationship;
+                  }
+                })
+                .catch(() => {
+                  // A failed write only costs the baseline, never the arc itself.
+                });
+            }
             // Persist state via collection
             const updatedEntry = { config: mm.getConfig(), state: mm.getState() };
             setModCollection((prev) => {

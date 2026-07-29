@@ -855,6 +855,27 @@ export async function reportAoiRelationshipSessionSummary(
   return relationship ? (relationship as AoiRelationshipState) : null;
 }
 
+// R7.1: records that an authored arc was played to the end, so the relationship
+// it built becomes the baseline rather than evaporating into free conversation.
+export async function reportAoiRelationshipArcCompleted(
+  sessionPath: string,
+  input: { arcId: string; arcName: string; completedStages?: string[] },
+): Promise<AoiRelationshipState | null> {
+  const response = await fetch(`${API_PREFIX}/relationship/arc-completed`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionPath,
+      arcId: input.arcId,
+      arcName: input.arcName,
+      ...(input.completedStages ? { completedStages: input.completedStages } : {}),
+    }),
+  });
+  const payload = await readJsonRecord(response, 'Failed to record an Aoi arc completion.');
+  const relationship = payload.relationship;
+  return relationship ? (relationship as AoiRelationshipState) : null;
+}
+
 // Marks a thread as raised so Aoi does not ask about it again.
 export async function reportAoiRelationshipThreadAsked(
   sessionPath: string,

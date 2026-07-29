@@ -58,6 +58,17 @@ export interface AoiRelationshipMilestone {
   evidenceRefs: string[];
 }
 
+// What a finished arc leaves behind. Deliberately only facts that were actually
+// recorded -- the arc's identity and the stages really played through. A free-text
+// "transformed relationship state" would be invented narrative, and Aoi referring
+// to a change that never happened is worse than not referring to one.
+export interface AoiRelationshipArcBaseline {
+  arcId: string;
+  arcName: string;
+  completedAt: number;
+  completedStages: string[];
+}
+
 export interface AoiRelationshipOpenThread {
   id: string;
   title: string;
@@ -79,6 +90,11 @@ export interface AoiRelationshipState {
   // R6.2: how Aoi is doing, carried across sessions. EXPRESSION ONLY -- it never
   // reaches a gate (asserted by aoiMoodGateIntegrity.test.ts).
   mood?: AoiMoodState;
+  // R7.1: the authored arc that was actually played to the end. Until now a
+  // completed arc left no trace: the mod flipped to free conversation and the
+  // relationship it had built evaporated. This is the baseline later sessions
+  // start from.
+  arcBaseline?: AoiRelationshipArcBaseline;
   actionAuthority: 'display_only';
   mutationCount: 0;
   updatedAt: number;
@@ -201,6 +217,34 @@ function normalizeMilestones(value: unknown, now: number): AoiRelationshipMilest
   return [...firstMet, ...rest];
 }
 
+const MAX_ARC_STAGES = 8;
+const MAX_ARC_LABEL_CHARS = 80;
+
+function normalizeArcBaseline(value: unknown, now: number): AoiRelationshipArcBaseline | null {
+  const raw = value as Partial<AoiRelationshipArcBaseline> | null;
+  if (!raw) {
+    return null;
+  }
+  const arcId = sanitizeRelationshipText(raw.arcId, MAX_ARC_LABEL_CHARS);
+  const arcName = sanitizeRelationshipText(raw.arcName, MAX_ARC_LABEL_CHARS);
+  // Without an identity there is nothing to refer back to, so the record is
+  // dropped rather than kept as a vague "some arc finished".
+  if (!arcId || !arcName) {
+    return null;
+  }
+  return {
+    arcId,
+    arcName,
+    completedAt: normalizeTimestamp(raw.completedAt, now),
+    completedStages: Array.isArray(raw.completedStages)
+      ? raw.completedStages
+          .map((stage) => sanitizeRelationshipText(stage, MAX_ARC_LABEL_CHARS))
+          .filter(Boolean)
+          .slice(0, MAX_ARC_STAGES)
+      : [],
+  };
+}
+
 export function createAoiRelationshipState(sessionPath: string, now: number): AoiRelationshipState {
   return {
     version: 1,
@@ -262,6 +306,10 @@ export function normalizeAoiRelationshipState(
     ...(() => {
       const mood = normalizeAoiMoodState(value.mood, now);
       return mood ? { mood } : {};
+    })(),
+    ...(() => {
+      const arcBaseline = normalizeArcBaseline(value.arcBaseline, now);
+      return arcBaseline ? { arcBaseline } : {};
     })(),
     actionAuthority: 'display_only',
     mutationCount: 0,
@@ -533,4 +581,69 @@ export function recordAoiRelationshipMood(
     mood: normalized,
     updatedAt: now,
   });
+}
+
+export interface RecordAoiRelationshipArcCompletionInput {
+  arcId: string;
+  arcName: string;
+  completedStages?: string[];
+  now: number;
+}
+
+// Called when an authored arc reaches its end. Writes the baseline and an
+// arc_completed milestone in one pass, so the arc that built the relationship
+// stops evaporating into "free conversation mode".
+//
+// Idempotent per arc: replaying the final stage does not re-record it, because
+// the milestone id is derived from the arc and the baseline is only replaced by a
+// DIFFERENT arc finishing later.
+export function recordAoiRelationshipArcCompletion(
+  sessionsDir: string,
+  sessionPath: string,
+  input: RecordAoiRelationshipArcCompletionInput,
+): { state: AoiRelationshipState | null; recorded: boolean } {
+  const existing = loadAoiRelationshipState(sessionsDir, sessionPath, input.now);
+  if (!existing) {
+    return { state: null, recorded: false };
+  }
+  const baseline = normalizeArcBaseline(
+    {
+      arcId: input.arcId,
+      arcName: input.arcName,
+      completedAt: input.now,
+      completedStages: input.completedStages ?? [],
+    },
+    input.now,
+  );
+  if (!baseline) {
+    return { state: existing, recorded: false };
+  }
+  if (existing.arcBaseline?.arcId === baseline.arcId) {
+    return { state: existing, recorded: false };
+  }
+  const milestoneId = `arc_completed:${baseline.arcId}`;
+  const milestones = existing.milestones.some((milestone) => milestone.id === milestoneId)
+    ? existing.milestones
+    : normalizeMilestones(
+        [
+          ...existing.milestones,
+          {
+            id: milestoneId,
+            kind: 'arc_completed' as const,
+            label: `We finished "${baseline.arcName}" together.`,
+            occurredAt: input.now,
+            evidenceRefs: [`arc:${baseline.arcId}`],
+          },
+        ],
+        input.now,
+      );
+  return {
+    state: saveAoiRelationshipState(sessionsDir, {
+      ...existing,
+      arcBaseline: baseline,
+      milestones,
+      updatedAt: input.now,
+    }),
+    recorded: true,
+  };
 }

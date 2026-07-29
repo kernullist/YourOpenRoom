@@ -99,6 +99,7 @@ import {
   applyAoiRelationshipMilestones,
   loadAoiRelationshipState,
   markAoiRelationshipThreadAsked,
+  recordAoiRelationshipArcCompletion,
   recordAoiRelationshipMood,
   recordAoiRelationshipSessionOpen,
   recordAoiRelationshipSessionSummary,
@@ -2655,6 +2656,45 @@ export async function handleAoiAutonomyRequest(
         return true;
       }
       writeJson(res, 200, { ok: true, sessionPath, relationship });
+      return true;
+    }
+
+    if (req.method === 'POST' && route === '/relationship/arc-completed') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      // R7.1: an authored arc reached its end. Records the baseline plus an
+      // arc_completed milestone so the relationship the arc built survives the
+      // switch to free conversation. Idempotent per arc.
+      const result = recordAoiRelationshipArcCompletion(sessionsDir, sessionPath, {
+        arcId: typeof body.arcId === 'string' ? body.arcId : '',
+        arcName: typeof body.arcName === 'string' ? body.arcName : '',
+        completedStages: Array.isArray(body.completedStages)
+          ? body.completedStages.filter(
+              (stage: unknown): stage is string => typeof stage === 'string',
+            )
+          : [],
+        now: Date.now(),
+      });
+      if (!result.state) {
+        writeJson(res, 404, {
+          error: 'No relationship record exists for this session yet.',
+          code: 'relationship_absent',
+        });
+        return true;
+      }
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        relationship: result.state,
+        recorded: result.recorded,
+      });
       return true;
     }
 
