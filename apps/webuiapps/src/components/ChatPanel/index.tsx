@@ -2204,7 +2204,12 @@ function getRespondToUserToolDef() {
               },
               emotion: {
                 type: 'string',
-                description: 'Character emotion: happy, shy, peaceful, depressing, angry',
+                // R6.1: the last four are about Aoi's own footing rather than a
+                // reaction to the message -- curiosity about a topic,
+                // anticipation, satisfaction in something that landed, concern
+                // about a risk.
+                description:
+                  'Character emotion: happy, shy, peaceful, depressing, angry, curious, excited, proud, worried',
               },
             },
             required: ['content'],

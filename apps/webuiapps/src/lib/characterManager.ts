@@ -16,8 +16,48 @@ export const CHARACTER_EMOTION_LIST = [
   'peaceful',
   'depressing',
   'angry',
+  // R6.1: the partner-grade states. The original six are all reactions to the
+  // user's message; these are the ones Aoi needs to express something about her
+  // own footing -- curiosity about a topic, anticipation, satisfaction in
+  // something that landed, concern about a risk.
+  'curious',
+  'excited',
+  'proud',
+  'worried',
 ] as const;
 export type CharacterEmotion = (typeof CHARACTER_EMOTION_LIST)[number];
+
+// Where to fall back when an emotion has no asset of its own -- for a custom
+// character, or before new clips exist. Picks the nearest expression rather than
+// dropping to neutral, so an added emotion degrades in feel instead of vanishing.
+export const CHARACTER_EMOTION_FALLBACKS: Record<string, string> = {
+  curious: 'default',
+  excited: 'happy',
+  proud: 'happy',
+  worried: 'peaceful',
+};
+
+// Resolves the clip list for an emotion, following the fallback chain once.
+// Returns an empty array when nothing matches, which callers already treat as
+// "keep the current clip".
+export function resolveCharacterEmotionVideos(
+  emotionVideos: Record<string, string[]> | undefined,
+  emotion: string,
+): string[] {
+  if (!emotionVideos) {
+    return [];
+  }
+  const direct = emotionVideos[emotion];
+  if (direct && direct.length > 0) {
+    return direct;
+  }
+  const fallback = CHARACTER_EMOTION_FALLBACKS[emotion];
+  if (!fallback) {
+    return [];
+  }
+  const fallbackVideos = emotionVideos[fallback];
+  return fallbackVideos && fallbackVideos.length > 0 ? fallbackVideos : [];
+}
 
 export interface CharacterMetaInfo {
   base_image_url?: string;
@@ -129,6 +169,14 @@ current_state:
       happy: ['/assets/characters/aoi/happy_0.mp4', '/assets/characters/aoi/happy_1.mp4'],
       peaceful: ['/assets/characters/aoi/peaceful_0.mp4', '/assets/characters/aoi/peaceful_1.mp4'],
       shy: ['/assets/characters/aoi/shy_0.mp4', '/assets/characters/aoi/shy_1.mp4'],
+      // R6.1: graded from the nearest existing clip (curious from default,
+      // excited/proud from happy, worried from peaceful) so the four new states
+      // are visually distinct today. Replaceable with purpose-shot animation
+      // without touching any code -- only these paths point at them.
+      curious: ['/assets/characters/aoi/curious_0.mp4'],
+      excited: ['/assets/characters/aoi/excited_0.mp4'],
+      proud: ['/assets/characters/aoi/proud_0.mp4'],
+      worried: ['/assets/characters/aoi/worried_0.mp4'],
     },
   },
 };
@@ -299,8 +347,11 @@ export function resolveEmotionMedia(
   const meta = config.character_meta_info;
   if (!meta) return undefined;
   if (emotion) {
-    const videos = meta.emotion_videos?.[emotion];
-    if (videos?.length) {
+    // R6.1: a new emotion with no clip of its own resolves to its nearest
+    // neighbour rather than dropping through to the generic fallback chain, so a
+    // character without the added assets still shows something close in feel.
+    const videos = resolveCharacterEmotionVideos(meta.emotion_videos, emotion);
+    if (videos.length) {
       const cacheKey = `${config.id}:${emotion}`;
       let url = _emotionVideoCache.get(cacheKey);
       if (!url || !videos.includes(url)) {
