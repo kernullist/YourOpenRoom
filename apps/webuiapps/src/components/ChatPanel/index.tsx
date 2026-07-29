@@ -505,6 +505,7 @@ import {
 } from '@/lib/aoiCompanionVoice';
 import { selectAoiRelationshipThreadToRaise } from '@/lib/aoiRelationshipThreads';
 import { shouldAoiMoodBeVoiced, type AoiMoodState } from '@/lib/aoiMoodState';
+import { buildAoiPersonaBridgeBlock } from '@/lib/aoiPersonaBridge';
 import {
   buildAoiSelfInquirySourcesFromMemories,
   buildAoiSelfProfile,
@@ -2309,8 +2310,17 @@ function buildSystemPrompt(
   mcpPluginPrompt = '',
   toolCallRuntimeAvailable = true,
   aoiMusicTastePrompt = '',
+  personaBridgePrompt = '',
 ): string {
   let prompt = getCharacterPromptContext(character);
+  // R7.2: the persona is immediately followed by ~150 lines of tool policy and
+  // nine operator-register blocks, with nothing saying the operator work is
+  // hers or that those blocks govern what is permitted rather than how she
+  // talks. The bridge goes here, adjacent to the persona, for that reason.
+  // Empty without a stored relationship, so a first run is unchanged.
+  if (personaBridgePrompt) {
+    prompt += `\n${personaBridgePrompt}`;
+  }
   const preferredName = normalizeUserProfileDisplayName(userProfile?.displayName);
   const responseLanguageMode = normalizeResponseLanguageMode(
     conversationPreferences?.responseLanguageMode,
@@ -7256,6 +7266,21 @@ const ChatPanel: React.FC<{
       mcpPluginPrompt,
       toolCallRuntimeAvailable,
       currentAoiMusicTastePrompt,
+      // R7.2: reconciles the persona with the operator role, from the stored
+      // relationship only.
+      buildAoiPersonaBridgeBlock({
+        characterName: char.character_name,
+        sessionCount: aoiRelationshipStateRef.current?.sessionCount ?? null,
+        firstMetAt: aoiRelationshipStateRef.current?.firstMetAt ?? null,
+        milestones: aoiRelationshipStateRef.current?.milestones ?? [],
+        mood: aoiRelationshipStateRef.current?.mood?.mood ?? null,
+        openThreadTitles: (aoiRelationshipStateRef.current?.openThreads ?? []).map(
+          (thread) => thread.title,
+        ),
+        arc: aoiRelationshipStateRef.current?.arcBaseline
+          ? { arcName: aoiRelationshipStateRef.current.arcBaseline.arcName }
+          : null,
+      }),
     );
     const aoiTrendFollowUpPrompt = buildAoiProactiveTrendFollowUpPromptBlock(
       options.aoiTrendFollowUpContext,
