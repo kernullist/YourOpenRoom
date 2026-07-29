@@ -341,6 +341,53 @@ export function buildAoiCompanionSessionGreeting(
   return `${greeting} Last time we were on ${summary}.`;
 }
 
+export type AoiCompanionStanceReasonKind =
+  | 'stale_evidence'
+  | 'single_source'
+  | 'multi_source_corroboration'
+  | 'matches_own_inquiry'
+  | 'saved_interest_but_thin'
+  | 'high_confidence_signal';
+
+// The reason behind a take, so an opinion reads as a judgement rather than a
+// label. Empty for an unknown reason, which keeps the take standing alone rather
+// than trailing a broken clause.
+export function buildAoiCompanionStanceReason(
+  voice: AoiCompanionVoice,
+  reason: AoiCompanionStanceReasonKind,
+): string {
+  const tables: Record<AoiCompanionStanceReasonKind, CompanionCopyTable> = {
+    stale_evidence: {
+      ko: '근거가 오래돼서 지금도 맞다고는 못 하겠어.',
+      en: 'The evidence has aged, so I would not call it current.',
+    },
+    single_source: {
+      ko: '출처가 하나뿐이라 아직 뒷받침이 없어.',
+      en: 'It rests on a single source, so nothing corroborates it yet.',
+    },
+    multi_source_corroboration: {
+      ko: '독립적인 출처들이 서로 맞아떨어져서 눈여겨볼 만해.',
+      en: 'Independent sources line up, which is what makes it worth a look.',
+    },
+    matches_own_inquiry: {
+      ko: '나도 이 주제 파본 적 있어서 감이 좀 있어.',
+      en: 'I have dug into this topic myself, so I have some footing on it.',
+    },
+    // The disagreement. Alignment with a saved interest must not be allowed to
+    // carry a thin signal.
+    saved_interest_but_thin: {
+      ko: '네가 챙기는 주제인 건 알지만, 이건 근거가 아직 얇아.',
+      en: 'I know it is one of your topics, but the evidence is still thin.',
+    },
+    high_confidence_signal: {
+      ko: '확신도랑 새로움 둘 다 기준을 넘겼어.',
+      en: 'Both confidence and novelty clear the bar.',
+    },
+  };
+  const table = tables[reason];
+  return table ? pickCompanionCopy(voice.lang, table) : '';
+}
+
 export interface AoiCompanionSharedInterestParams {
   topicLabel: string;
 }

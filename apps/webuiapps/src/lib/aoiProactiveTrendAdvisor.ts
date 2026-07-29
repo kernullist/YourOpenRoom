@@ -13,13 +13,14 @@ import { buildAoiFollowThroughEventFromTrendDelivery } from './aoiFollowThroughL
 import type { AoiCardLang } from './aoiAutonomyCardI18n';
 import {
   buildAoiCompanionBriefReason,
+  buildAoiCompanionStanceReason,
   buildAoiCompanionTrendHook,
   buildAoiCompanionTrendNextAction,
   buildAoiCompanionTrendTake,
   buildAoiCompanionTrendWhatChanged,
-  type AoiCompanionTrendTakeKind,
   type AoiCompanionVoice,
 } from './aoiCompanionVoice';
+import { composeAoiGroundedStance, selectAoiStancePrimaryReason } from './aoiGroundedStance';
 import { loadAoiCardLanguage } from './aoiCardLanguageStore';
 import { loadAoiCurrentSituation } from './aoiCurrentSituationModel';
 import { decideAoiInterruptionDelivery } from './aoiInterruptionGovernor';
@@ -1589,6 +1590,9 @@ function snapshotOpinionFields(params: {
   freshness: AoiProactiveTrendSnapshotFreshness;
   sourceStrong: boolean;
   lang: AoiCardLang;
+  // R5.2: whether the candidate maps to a topic the user actually saved. Feeds
+  // the disagreement case, where alignment must not carry thin evidence.
+  interestAligned?: boolean;
 }): Pick<
   AoiProactiveTrendSnapshot,
   'whatChanged' | 'whyItMatters' | 'myTake' | 'suggestedNextAction'
@@ -1611,19 +1615,26 @@ function snapshotOpinionFields(params: {
   const whyItMatters = buildAoiCompanionBriefReason(voice, {
     interestKind: candidate.interestKind ?? null,
   });
-  // The stance the signals already imply, now spoken in the persona register.
-  // Ordering is load-bearing: staleness outranks source strength, which
-  // outranks a high-confidence recommendation.
-  const takeKind: AoiCompanionTrendTakeKind =
-    params.freshness === 'stale'
-      ? 'stale_refresh'
-      : !params.sourceStrong
-        ? 'weak_source'
-        : candidate.confidence >= 0.8 && candidate.score >= 0.75
-          ? 'review_candidate'
-          : 'default_watch';
-  const myTake = buildAoiCompanionTrendTake(voice, takeKind);
-  const suggestedNextAction = buildAoiCompanionTrendNextAction(voice, takeKind);
+  // R5.2: the stance and the reason behind it come from one place now (the
+  // take-selection precedence moved into composeAoiGroundedStance unchanged:
+  // staleness outranks source strength, which outranks high confidence). The
+  // reason is what turns a take from a label into a judgement -- and when the
+  // candidate matches a saved interest on thin evidence, the reason says so
+  // instead of agreeing because it aligns.
+  const stance = composeAoiGroundedStance({
+    freshness: params.freshness,
+    sourceCount: candidate.sources.length,
+    sourceStrong: params.sourceStrong,
+    confidence: candidate.confidence,
+    score: candidate.score,
+    ...(params.interestAligned === true ? { interestAligned: true } : {}),
+  });
+  const primaryReason = selectAoiStancePrimaryReason(stance);
+  const reasonText = primaryReason ? buildAoiCompanionStanceReason(voice, primaryReason) : '';
+  const myTake = [buildAoiCompanionTrendTake(voice, stance.takeKind), reasonText]
+    .filter(Boolean)
+    .join(' ');
+  const suggestedNextAction = buildAoiCompanionTrendNextAction(voice, stance.takeKind);
   return {
     whatChanged: sanitizeText(whatChanged, 320),
     whyItMatters: sanitizeText(whyItMatters, 320),
@@ -1904,7 +1915,13 @@ export function buildAoiProactiveTrendSnapshotFromCandidate(params: {
     directChatConfidenceFloorRelief: params.directChatConfidenceFloorRelief,
     now,
   });
-  const opinion = snapshotOpinionFields({ candidate, freshness, sourceStrong, lang: language });
+  const opinion = snapshotOpinionFields({
+    candidate,
+    freshness,
+    sourceStrong,
+    lang: language,
+    interestAligned: interestDrift.status === 'aligned',
+  });
   const confidence = clampScore(
     candidate.confidence +
       (sourceStrong ? 0.04 : sourceQuality.status === 'acceptable' ? -0.05 : -0.15) +

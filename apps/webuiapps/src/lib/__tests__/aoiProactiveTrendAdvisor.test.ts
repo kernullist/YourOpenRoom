@@ -427,6 +427,8 @@ describe('Aoi proactive trend advisor', () => {
     expect(state.snapshots[0]?.myTake).toContain('최신 정보로 안 칠 거야');
     expect(state.snapshots[0]?.suggestedNextAction).toContain('스카우트');
     expect(state.snapshots[0]?.myTake).not.toMatch(/니다|세요/);
+    // R5.2: staleness is the operative reason, so that is what gets voiced.
+    expect(state.snapshots[0]?.myTake).toContain('근거가 오래돼서');
   });
 
   it('authors the direct-chat hook, opinion take, and follow-up prompts in the operator language', () => {
@@ -645,6 +647,11 @@ describe('Aoi proactive trend advisor', () => {
     expect(state.opinionCards[0].directChatBlockedReasons).toContain('weak_source_evidence');
     expect(state.snapshots[0].sourceQuality.status).toBe('weak');
     expect(state.sourceQualityCounts.weak).toBe(1);
+    // R5.2: the take carries the reason it was reached, and where the topic is a
+    // saved interest on thin evidence Aoi says so instead of agreeing because it
+    // aligns. That pushback is the point of the item.
+    expect(state.snapshots[0].myTake).toContain('I know it is one of your topics');
+    expect(state.snapshots[0].myTake).toContain('evidence is still thin');
   });
 
   it('suppresses duplicate direct chat and notification delivery with a stable control key', () => {

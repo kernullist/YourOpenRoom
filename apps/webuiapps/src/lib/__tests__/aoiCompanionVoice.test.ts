@@ -9,6 +9,7 @@ import {
   buildAoiCompanionRetrospectiveNote,
   buildAoiCompanionSelfInquiryNote,
   buildAoiCompanionSharedInterestNote,
+  buildAoiCompanionStanceReason,
   buildAoiCompanionResumeGreeting,
   buildAoiCompanionResumeSafetyNote,
   buildAoiCompanionResumeTitle,
@@ -278,6 +279,23 @@ describe('aoiCompanionVoice resume copy', () => {
   it('addresses the user by name in the session greeting too', () => {
     expect(buildAoiCompanionSessionGreeting({ lang: 'ko', userName: '꿀보' }, { gapMs: 0 })).toBe(
       '꿀보, 또 왔네.',
+    );
+  });
+
+  it('gives a reason per stance kind, including the disagreement', () => {
+    expect(buildAoiCompanionStanceReason(KO, 'stale_evidence')).toContain('오래돼서');
+    expect(buildAoiCompanionStanceReason(KO, 'single_source')).toContain('출처가 하나뿐');
+    expect(buildAoiCompanionStanceReason(EN, 'multi_source_corroboration')).toContain(
+      'Independent sources line up',
+    );
+    expect(buildAoiCompanionStanceReason(EN, 'high_confidence_signal')).toContain('clear the bar');
+    expect(buildAoiCompanionStanceReason(KO, 'matches_own_inquiry')).toContain('나도 이 주제');
+    // The disagreement has to actually push back, not hedge.
+    expect(buildAoiCompanionStanceReason(KO, 'saved_interest_but_thin')).toContain(
+      '근거가 아직 얇아',
+    );
+    expect(buildAoiCompanionStanceReason(EN, 'saved_interest_but_thin')).toContain(
+      'evidence is still thin',
     );
   });
 
