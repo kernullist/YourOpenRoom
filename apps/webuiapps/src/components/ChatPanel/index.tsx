@@ -498,6 +498,7 @@ import {
   buildAoiCompanionMilestoneNote,
   buildAoiCompanionMoodNote,
   buildAoiCompanionRetrospectiveNote,
+  buildAoiCompanionSelfInquiryNote,
   buildAoiCompanionSessionGreeting,
   buildAoiCompanionThreadFollowUp,
 } from '@/lib/aoiCompanionVoice';
@@ -508,7 +509,15 @@ import {
   buildAoiSelfProfile,
   buildAoiSelfProfilePromptBlock,
   findAoiSharedInterests,
+  selectAoiSelfInquiryToShare,
 } from '@/lib/aoiSelfProfile';
+import {
+  DEFAULT_AOI_SELF_OBSERVATION_STATE,
+  normalizeAoiSelfObservationState,
+  recordAoiSelfObservationOffered,
+  shouldSubstituteAoiSelfObservation,
+  type AoiSelfObservationState,
+} from '@/lib/aoiSelfObservationNudge';
 // Type-only: the relationship store touches node fs, so the client reads it
 // exclusively over the routes (a value import would break the client bundle).
 import type { AoiRelationshipMilestone, AoiRelationshipState } from '@/lib/aoiRelationshipState';
@@ -1813,6 +1822,27 @@ function loadAoiNewsState(): AoiNewsLearningState {
 function saveAoiNewsState(state: AoiNewsLearningState): void {
   try {
     localStorage.setItem(AOI_NEWS_STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // Best-effort persistence; ignore quota / privacy-mode failures.
+  }
+}
+
+// R6.3: self-observation spacing, kept alongside the other nudge state. Only a
+// timestamp -- the substitution decision is pure and lives in the lib module.
+const AOI_SELF_OBSERVATION_STORAGE_KEY = 'aoi:selfObservationState:v1';
+
+function loadAoiSelfObservationState(): AoiSelfObservationState {
+  try {
+    const raw = localStorage.getItem(AOI_SELF_OBSERVATION_STORAGE_KEY);
+    return normalizeAoiSelfObservationState(raw ? JSON.parse(raw) : null);
+  } catch {
+    return { ...DEFAULT_AOI_SELF_OBSERVATION_STATE };
+  }
+}
+
+function saveAoiSelfObservationState(state: AoiSelfObservationState): void {
+  try {
+    localStorage.setItem(AOI_SELF_OBSERVATION_STORAGE_KEY, JSON.stringify(state));
   } catch {
     // Best-effort persistence; ignore quota / privacy-mode failures.
   }
@@ -5859,6 +5889,8 @@ const ChatPanel: React.FC<{
   const newsStateRef = useRef<AoiNewsLearningState>(DEFAULT_AOI_NEWS_STATE);
   const pendingNewsOfferRef = useRef<PendingNewsOffer | null>(null);
   const newsOfferInFlightRef = useRef(false);
+  // R6.3: spacing for self-observations, which ride the news nudge's trigger.
+  const selfObservationStateRef = useRef<AoiSelfObservationState>(loadAoiSelfObservationState());
 
   // Music taste: the user's own YouTube searches + answered taste polls, fed
   // into the idle-music recommendation (persisted in localStorage).
@@ -10318,6 +10350,53 @@ const ChatPanel: React.FC<{
             return;
           }
           const stamp = Date.now();
+          // R6.3: this interruption is already happening; sometimes it carries an
+          // observation about Aoi's own work instead of a headline. Substituting
+          // rather than adding keeps the interruption count unchanged, which the
+          // no-new-interruption-class constraint requires.
+          const selfInquiry = selectAoiSelfInquiryToShare(
+            buildAoiSelfProfile({
+              now: stamp,
+              sources: buildAoiSelfInquirySourcesFromMemories(aoiMemoriesRef.current ?? []),
+            }),
+          );
+          if (
+            shouldSubstituteAoiSelfObservation({
+              now: stamp,
+              lastSelfObservationAt: selfObservationStateRef.current.lastSelfObservationAt,
+              hasSelfInquiry: Boolean(selfInquiry),
+              hasHostContent: true,
+            }) &&
+            selfInquiry
+          ) {
+            const note = buildAoiCompanionSelfInquiryNote(
+              { lang: aoiCardLangRef.current },
+              { topicLabel: selfInquiry.label },
+            );
+            if (note) {
+              selfObservationStateRef.current = recordAoiSelfObservationOffered(
+                selfObservationStateRef.current,
+                stamp,
+              );
+              saveAoiSelfObservationState(selfObservationStateRef.current);
+              // The host nudge's own cooldown is still stamped, so the news
+              // rhythm is unaffected by being skipped this once.
+              newsStateRef.current = recordNewsOffered(newsStateRef.current, {
+                articleId: article.id,
+                now: stamp,
+              });
+              saveAoiNewsState(newsStateRef.current);
+              emitAssistantMessage(
+                {
+                  id: `aoi-self-observation-${stamp}`,
+                  role: 'assistant',
+                  content: note,
+                },
+                { updateSuggestedReplies: false, speak: false },
+              );
+              return;
+            }
+          }
           const copy = buildNewsCardCopy(article.title, resolveNudgeLang());
           pendingNewsOfferRef.current = {
             playPrompt: copy.playPrompt,
