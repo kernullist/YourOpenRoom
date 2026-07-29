@@ -11,12 +11,14 @@ import {
   loadAoiRelationshipState,
   markAoiRelationshipThreadAsked,
   normalizeAoiRelationshipState,
+  recordAoiRelationshipMood,
   recordAoiRelationshipSessionOpen,
   recordAoiRelationshipSessionSummary,
   resolveAoiRelationshipStatePath,
   saveAoiRelationshipState,
   selectAoiRelationshipThreadToRaise,
 } from '../aoiRelationshipState';
+import { deriveAoiMoodState } from '../aoiMoodState';
 
 const SESSION_PATH = 'aoi/default';
 const NOW = 1_000_000_000;
@@ -456,5 +458,75 @@ describe('applyAoiRelationshipMilestones (R3.3)', () => {
     expect(late.added).toEqual([]);
     expect(late.state?.milestones).toHaveLength(20);
     expect(late.state?.milestones[0]?.kind).toBe('first_met');
+  });
+});
+
+describe('relationship mood persistence (R6.2)', () => {
+  it('stores a mood and carries it across loads', () => {
+    const root = makeTempRoot();
+    recordAoiRelationshipSessionOpen(root, SESSION_PATH, NOW);
+
+    const stored = recordAoiRelationshipMood(
+      root,
+      SESSION_PATH,
+      deriveAoiMoodState({ now: NOW, recentOutcomes: [{ result: 'positive', createdAt: NOW }] }),
+      NOW + HOUR,
+    );
+
+    expect(stored?.mood?.mood).toBe('content');
+    // Mood is what survives the session boundary; that is the whole point.
+    expect(loadAoiRelationshipState(root, SESSION_PATH, NOW + 2 * HOUR)?.mood?.mood).toBe(
+      'content',
+    );
+  });
+
+  it('drops an unrecognizable stored mood rather than repairing it', () => {
+    const root = makeTempRoot();
+    const statePath = resolveAoiRelationshipStatePath(root, SESSION_PATH);
+    fs.mkdirSync(join(statePath, '..'), { recursive: true });
+    fs.writeFileSync(
+      statePath,
+      JSON.stringify({
+        version: 1,
+        firstMetAt: NOW,
+        mood: { version: 1, mood: 'elated' },
+      }),
+      'utf-8',
+    );
+
+    // No stored feeling is better than a wrong one.
+    expect(loadAoiRelationshipState(root, SESSION_PATH, NOW)?.mood).toBeUndefined();
+  });
+
+  it('re-asserts display-only authority on a mood written to disk', () => {
+    const root = makeTempRoot();
+    const statePath = resolveAoiRelationshipStatePath(root, SESSION_PATH);
+    fs.mkdirSync(join(statePath, '..'), { recursive: true });
+    fs.writeFileSync(
+      statePath,
+      JSON.stringify({
+        version: 1,
+        firstMetAt: NOW,
+        mood: {
+          version: 1,
+          mood: 'worried',
+          actionAuthority: 'execute',
+          mutationCount: 5,
+        },
+      }),
+      'utf-8',
+    );
+
+    const mood = loadAoiRelationshipState(root, SESSION_PATH, NOW)?.mood;
+    expect(mood?.mood).toBe('worried');
+    expect(mood?.actionAuthority).toBe('display_only');
+    expect(mood?.mutationCount).toBe(0);
+  });
+
+  it('returns null when no relationship record exists to attach a mood to', () => {
+    const root = makeTempRoot();
+    expect(
+      recordAoiRelationshipMood(root, SESSION_PATH, deriveAoiMoodState({ now: NOW }), NOW),
+    ).toBeNull();
   });
 });

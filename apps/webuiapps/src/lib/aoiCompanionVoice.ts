@@ -341,6 +341,40 @@ export function buildAoiCompanionSessionGreeting(
   return `${greeting} Last time we were on ${summary}.`;
 }
 
+export type AoiCompanionMoodKind = 'neutral' | 'content' | 'proud' | 'curious' | 'worried';
+
+// Aoi reporting her own state, which nothing could express before: emotion was a
+// per-message reaction with no way to say how she is doing. Neutral says nothing
+// -- "I am feeling fine" is filler, and the mood layer only speaks when there is
+// something behind it.
+export function buildAoiCompanionMoodNote(
+  voice: AoiCompanionVoice,
+  mood: AoiCompanionMoodKind,
+): string {
+  if (mood === 'neutral') {
+    return '';
+  }
+  const tables: Record<Exclude<AoiCompanionMoodKind, 'neutral'>, CompanionCopyTable> = {
+    content: {
+      ko: '요즘은 일이 좀 굴러가는 느낌이라 나쁘지 않아.',
+      en: 'Things have been moving lately, so I am in decent shape.',
+    },
+    proud: {
+      ko: '솔직히 요즘 좀 뿌듯해.',
+      en: 'Honestly, I am a little pleased with how things went.',
+    },
+    curious: {
+      ko: '아직 매듭 안 지은 게 남아서 좀 궁금한 상태야.',
+      en: 'There are still loose ends, so I am a bit itchy about them.',
+    },
+    worried: {
+      ko: '요즘 안 풀린 게 좀 있어서 신경이 쓰여.',
+      en: 'A few things have not landed lately and it is on my mind.',
+    },
+  };
+  return pickCompanionCopy(voice.lang, tables[mood]);
+}
+
 export type AoiCompanionStanceReasonKind =
   | 'stale_evidence'
   | 'single_source'

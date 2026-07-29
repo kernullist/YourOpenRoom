@@ -6,6 +6,7 @@ import {
   buildAoiCompanionBriefReason,
   buildAoiCompanionFeedbackAction,
   buildAoiCompanionMilestoneNote,
+  buildAoiCompanionMoodNote,
   buildAoiCompanionRetrospectiveNote,
   buildAoiCompanionSelfInquiryNote,
   buildAoiCompanionSharedInterestNote,
@@ -282,6 +283,16 @@ describe('aoiCompanionVoice resume copy', () => {
     );
   });
 
+  it('reports her own state, and says nothing when neutral', () => {
+    expect(buildAoiCompanionMoodNote(KO, 'proud')).toContain('뿌듯해');
+    expect(buildAoiCompanionMoodNote(KO, 'worried')).toContain('신경이 쓰여');
+    expect(buildAoiCompanionMoodNote(KO, 'curious')).toContain('궁금한');
+    expect(buildAoiCompanionMoodNote(EN, 'content')).toContain('decent shape');
+    // "I am feeling fine" is filler, so neutral is silence.
+    expect(buildAoiCompanionMoodNote(KO, 'neutral')).toBe('');
+    expect(buildAoiCompanionMoodNote(EN, 'neutral')).toBe('');
+  });
+
   it('gives a reason per stance kind, including the disagreement', () => {
     expect(buildAoiCompanionStanceReason(KO, 'stale_evidence')).toContain('오래돼서');
     expect(buildAoiCompanionStanceReason(KO, 'single_source')).toContain('출처가 하나뿐');
@@ -444,6 +455,8 @@ describe('aoiCompanionVoice register contract', () => {
         buildAoiCompanionSessionGreeting(voice, { gapMs: 3 * 3_600_000 }),
         buildAoiCompanionThreadFollowUp(voice, { title: '미결 작업' }),
         buildAoiCompanionSharedInterestNote(voice, { topicLabel: '커널 보안' }),
+        buildAoiCompanionMoodNote(voice, 'proud'),
+        buildAoiCompanionMoodNote(voice, 'worried'),
         buildAoiCompanionSelfInquiryNote(voice, { topicLabel: '커널 보안' }),
         buildAoiCompanionRetrospectiveNote(voice, {
           landedCount: 2,

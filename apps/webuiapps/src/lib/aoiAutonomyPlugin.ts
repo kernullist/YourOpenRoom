@@ -99,9 +99,11 @@ import {
   applyAoiRelationshipMilestones,
   loadAoiRelationshipState,
   markAoiRelationshipThreadAsked,
+  recordAoiRelationshipMood,
   recordAoiRelationshipSessionOpen,
   recordAoiRelationshipSessionSummary,
 } from './aoiRelationshipState';
+import { deriveAoiMoodState } from './aoiMoodState';
 import { deriveAoiRelationshipMilestones } from './aoiRelationshipMilestones';
 import {
   loadAoiWeeklyRetrospective,
@@ -2590,12 +2592,33 @@ export async function handleAoiAutonomyRequest(
       } catch {
         newRetrospective = null;
       }
+      // R6.2: derive and persist how Aoi is doing. EXPRESSION ONLY -- the mood is
+      // stored on the relationship record and never handed to a gate. Derived
+      // from the same read-only counters used above, so it costs one extra pass
+      // over data already in hand.
+      let mood = null;
+      try {
+        const relationshipForMood = milestoneResult.state ?? relationship;
+        const derived = deriveAoiMoodState({
+          now,
+          recentOutcomes: loadAoiOutcomeSignalRecords(sessionsDir, sessionPath, now).map(
+            (record) => ({ result: record.result, createdAt: record.createdAt }),
+          ),
+          newMilestoneCount: milestoneResult.added.length,
+          openThreadCount: relationshipForMood.openThreads.length,
+        });
+        const stored = recordAoiRelationshipMood(sessionsDir, sessionPath, derived, now);
+        mood = stored?.mood ?? derived;
+      } catch {
+        mood = null;
+      }
       writeJson(res, 200, {
         ok: true,
         sessionPath,
         relationship: milestoneResult.state ?? relationship,
         newMilestones: milestoneResult.added,
         newRetrospective,
+        mood,
       });
       return true;
     }

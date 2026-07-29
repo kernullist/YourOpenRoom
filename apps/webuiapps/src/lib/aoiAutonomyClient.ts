@@ -80,6 +80,9 @@ import type { AoiProactiveBriefPanelModel } from './aoiProactiveBriefUi';
 import type { AoiShadowDecisionLabel } from './aoiShadowModeEvaluation';
 
 import type { AoiRelationshipMilestone, AoiRelationshipState } from './aoiRelationshipState';
+// Value import is safe: aoiMoodState is pure and dependency-free by contract
+// (enforced by aoiMoodGateIntegrity.test.ts).
+import { normalizeAoiMoodState, type AoiMoodState } from './aoiMoodState';
 
 const API_PREFIX = '/api/aoi-autonomy';
 
@@ -788,6 +791,9 @@ export interface AoiRelationshipSessionOpenResult {
   // R4.2: set only when a retrospective was newly composed by this open, so the
   // weekly mention happens once.
   newRetrospective: AoiRelationshipSessionOpenRetrospective | null;
+  // R6.2: how Aoi is doing. Display-only, and deliberately not part of any
+  // decision the client makes -- it only reaches the greeting copy.
+  mood: AoiMoodState | null;
 }
 
 function parseSessionOpenRetrospective(
@@ -825,6 +831,7 @@ export async function reportAoiRelationshipSessionOpen(
       ? (payload.newMilestones as AoiRelationshipMilestone[])
       : [],
     newRetrospective: parseSessionOpenRetrospective(payload.newRetrospective),
+    mood: normalizeAoiMoodState(payload.mood, Date.now()),
   };
 }
 

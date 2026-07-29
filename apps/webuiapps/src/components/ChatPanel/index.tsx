@@ -496,11 +496,13 @@ import {
 } from '@/lib/aoiAutonomyCardI18n';
 import {
   buildAoiCompanionMilestoneNote,
+  buildAoiCompanionMoodNote,
   buildAoiCompanionRetrospectiveNote,
   buildAoiCompanionSessionGreeting,
   buildAoiCompanionThreadFollowUp,
 } from '@/lib/aoiCompanionVoice';
 import { selectAoiRelationshipThreadToRaise } from '@/lib/aoiRelationshipThreads';
+import { shouldAoiMoodBeVoiced, type AoiMoodState } from '@/lib/aoiMoodState';
 import {
   buildAoiSelfInquirySourcesFromMemories,
   buildAoiSelfProfile,
@@ -3438,6 +3440,7 @@ const ChatPanel: React.FC<{
   const aoiRelationshipStateRef = useRef<AoiRelationshipState | null>(null);
   const aoiNewMilestonesRef = useRef<AoiRelationshipMilestone[]>([]);
   const aoiNewRetrospectiveRef = useRef<AoiRelationshipSessionOpenRetrospective | null>(null);
+  const aoiMoodRef = useRef<AoiMoodState | null>(null);
   const aoiCardLangRef = useRef<AoiCardLang>('en');
 
   useEffect(() => {
@@ -3520,6 +3523,9 @@ const ChatPanel: React.FC<{
       // off the full history.
       aoiNewMilestonesRef.current = result.newMilestones;
       aoiNewRetrospectiveRef.current = result.newRetrospective;
+      // R6.2: expression only -- the mood reaches the greeting copy and nothing
+      // else. No decision in this component reads it.
+      aoiMoodRef.current = result.mood;
       return result.relationship;
     } catch {
       // Best-effort: with no record Aoi keeps the authored first-meeting line.
@@ -3620,11 +3626,17 @@ const ChatPanel: React.FC<{
               openCount: retrospective.openNext.length,
             })
           : '';
+        // R6.2: Aoi's own state, said only when there is something behind it.
+        const mood = aoiMoodRef.current;
+        const moodNote = shouldAoiMoodBeVoiced(mood)
+          ? buildAoiCompanionMoodNote(voice, mood!.mood)
+          : '';
         const greeting = [
           buildAoiCompanionSessionGreeting(voice, {
             gapMs: Math.max(0, Date.now() - relationship.lastSessionAt),
             lastSessionSummary: relationship.lastSessionSummary,
           }),
+          moodNote,
           retrospectiveNote,
           milestoneNote,
           followUp,

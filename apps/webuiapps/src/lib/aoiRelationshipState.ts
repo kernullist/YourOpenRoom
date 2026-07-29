@@ -26,6 +26,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { normalizeAoiAutonomySessionPath, resolveAoiAutonomyPaths } from './aoiAutonomyStore';
 import { redactAoiSensitiveContent, stripAoiSourceInstructions } from './aoiMemoryShared';
 import { selectAoiRelationshipThreadToRaise as selectAoiRelationshipThreadToRaiseFromList } from './aoiRelationshipThreads';
+import { normalizeAoiMoodState, type AoiMoodState } from './aoiMoodState';
 
 const RELATIONSHIP_DIR = 'relationship';
 const RELATIONSHIP_STATE_FILE = 'state.json';
@@ -75,6 +76,9 @@ export interface AoiRelationshipState {
   lastSessionSummary: string;
   openThreads: AoiRelationshipOpenThread[];
   milestones: AoiRelationshipMilestone[];
+  // R6.2: how Aoi is doing, carried across sessions. EXPRESSION ONLY -- it never
+  // reaches a gate (asserted by aoiMoodGateIntegrity.test.ts).
+  mood?: AoiMoodState;
   actionAuthority: 'display_only';
   mutationCount: 0;
   updatedAt: number;
@@ -253,6 +257,12 @@ export function normalizeAoiRelationshipState(
     ),
     openThreads: normalizeOpenThreads(value.openThreads, now),
     milestones: normalizeMilestones(value.milestones, now),
+    // An unrecognizable mood is dropped rather than repaired: no stored feeling
+    // is better than a wrong one.
+    ...(() => {
+      const mood = normalizeAoiMoodState(value.mood, now);
+      return mood ? { mood } : {};
+    })(),
     actionAuthority: 'display_only',
     mutationCount: 0,
     updatedAt: normalizeTimestamp(value.updatedAt, firstMetAt),
@@ -498,4 +508,29 @@ export function appendAoiRelationshipMilestone(
     now,
   );
   return saveAoiRelationshipState(sessionsDir, { ...existing, milestones, updatedAt: now });
+}
+
+// Persists the derived mood. Separate from the other writers because mood
+// changes on a different rhythm (it tracks recent outcomes, not session
+// boundaries) and because keeping it isolated makes the expression-only
+// boundary easy to see: nothing here reads or returns authority.
+export function recordAoiRelationshipMood(
+  sessionsDir: string,
+  sessionPath: string,
+  mood: AoiMoodState,
+  now: number,
+): AoiRelationshipState | null {
+  const existing = loadAoiRelationshipState(sessionsDir, sessionPath, now);
+  if (!existing) {
+    return null;
+  }
+  const normalized = normalizeAoiMoodState(mood, now);
+  if (!normalized) {
+    return existing;
+  }
+  return saveAoiRelationshipState(sessionsDir, {
+    ...existing,
+    mood: normalized,
+    updatedAt: now,
+  });
 }
