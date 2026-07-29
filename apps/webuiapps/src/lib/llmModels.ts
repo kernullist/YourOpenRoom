@@ -124,10 +124,19 @@ export const LLM_PROVIDER_CONFIGS: Record<LLMProvider, ProviderModelConfig> = {
   anthropic: {
     displayName: 'Anthropic',
     baseUrl: 'https://api.anthropic.com/v1',
-    defaultModel: 'claude-sonnet-4-6',
+    // Aoi's contract is that every turn ends in a mandatory respond_to_user
+    // tool call, so tool-call reliability outranks raw capability here. Opus 5
+    // runs adaptive thinking when the request omits the thinking field (4.8 and
+    // 4.7 run without it), and disabled thinking is what makes a Claude model
+    // emit a tool call as visible text instead of a tool_use block.
+    defaultModel: 'claude-opus-5',
     models: [
+      { id: 'claude-opus-5', name: 'Claude Opus 5', category: 'flagship' },
+      { id: 'claude-opus-4-8', name: 'Claude Opus 4.8', category: 'flagship' },
+      { id: 'claude-opus-4-7', name: 'Claude Opus 4.7', category: 'flagship' },
       { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', category: 'flagship' },
       { id: 'claude-opus-4-5', name: 'Claude Opus 4.5', category: 'flagship' },
+      { id: 'claude-sonnet-5', name: 'Claude Sonnet 5', category: 'general' },
       { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', category: 'general' },
       { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', category: 'general' },
       { id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5', category: 'lightweight' },
@@ -307,10 +316,14 @@ export const LLM_PROVIDER_CONFIGS: Record<LLMProvider, ProviderModelConfig> = {
   'claude-cli': {
     displayName: 'Claude CLI',
     baseUrl: '',
-    defaultModel: 'claude-sonnet-4-6',
+    defaultModel: 'claude-opus-5',
     models: [
+      { id: 'claude-opus-5', name: 'Claude Opus 5', category: 'flagship' },
+      { id: 'claude-opus-4-8', name: 'Claude Opus 4.8', category: 'flagship' },
+      { id: 'claude-opus-4-7', name: 'Claude Opus 4.7', category: 'flagship' },
       { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', category: 'flagship' },
       { id: 'claude-opus-4-5', name: 'Claude Opus 4.5', category: 'flagship' },
+      { id: 'claude-sonnet-5', name: 'Claude Sonnet 5', category: 'general' },
       { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', category: 'general' },
       { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', category: 'general' },
       { id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5', category: 'lightweight' },

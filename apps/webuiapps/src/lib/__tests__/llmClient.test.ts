@@ -189,7 +189,7 @@ describe('getDefaultProviderConfig()', () => {
     const cfg = getDefaultProviderConfig('anthropic');
     expect(cfg.provider).toBe('anthropic');
     expect(cfg.baseUrl).toBe('https://api.anthropic.com/v1');
-    expect(cfg.model).toBe('claude-sonnet-4-6');
+    expect(cfg.model).toBe('claude-opus-5');
   });
 
   it('returns correct defaults for deepseek', () => {
@@ -254,8 +254,14 @@ describe('getDefaultProviderConfig()', () => {
     const cfg = getDefaultProviderConfig('claude-cli');
     expect(cfg.provider).toBe('claude-cli');
     expect(cfg.baseUrl).toBe('');
-    expect(cfg.model).toBe('claude-sonnet-4-6');
+    expect(cfg.model).toBe('claude-opus-5');
     expect(cfg.command).toBe('claude');
+  });
+
+  it('exposes the current Anthropic Claude generation', () => {
+    expect(PROVIDER_MODELS.anthropic).toEqual(
+      expect.arrayContaining(['claude-opus-5', 'claude-opus-4-8', 'claude-sonnet-5']),
+    );
   });
 
   it('includes ChatGPT Pro models available through Codex CLI', () => {
