@@ -513,6 +513,17 @@ function inferSupportedReasoningEfforts(
   return [];
 }
 
+// The reasoning-effort values a model will actually accept, for building a picker
+// that cannot offer a rejected one. Empty means the model publishes no
+// restriction, so every value in LLM_REASONING_EFFORTS is fair game.
+export function getSupportedReasoningEfforts(
+  provider: LLMProvider,
+  model: string,
+): LLMReasoningEffort[] {
+  const normalizedModel = normalizeProviderModelId(provider, model);
+  return inferSupportedReasoningEfforts(normalizedModel, getModelInfo(provider, model));
+}
+
 function closestSupportedReasoningEffort(
   requested: LLMReasoningEffort | undefined,
   supported: LLMReasoningEffort[],

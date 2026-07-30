@@ -27,6 +27,7 @@ import {
   applyDeepSeekChatRuntimeOptions,
   applyOpenAiResponsesOutputSchema,
   getDefaultProviderConfig,
+  getSupportedReasoningEfforts,
   PROVIDER_MODELS,
   type LLMConfig,
 } from '../llmModels';
@@ -263,6 +264,29 @@ describe('getDefaultProviderConfig()', () => {
     expect(PROVIDER_MODELS.anthropic).toEqual(
       expect.arrayContaining(['claude-opus-5', 'claude-opus-4-8', 'claude-sonnet-5']),
     );
+  });
+});
+
+describe('getSupportedReasoningEfforts()', () => {
+  it('reports the set a gpt-5 model accepts, excluding the ones it rejects', () => {
+    const supported = getSupportedReasoningEfforts('codex-auth', 'gpt-5.5');
+    expect(supported).toEqual(['low', 'medium', 'high', 'xhigh']);
+    // The settings picker builds its options from this, so an effort the model
+    // rejects must not be offerable. 'minimal' is a 400 on gpt-5.5.
+    expect(supported).not.toContain('minimal');
+    expect(supported).not.toContain('none');
+  });
+
+  it('honours an explicit per-model declaration over the inferred set', () => {
+    expect(getSupportedReasoningEfforts('deepseek', 'deepseek-v4-pro')).toEqual([
+      'none',
+      'high',
+      'xhigh',
+    ]);
+  });
+
+  it('reports no restriction for a model that publishes none', () => {
+    expect(getSupportedReasoningEfforts('anthropic', 'claude-opus-5')).toEqual([]);
   });
 
   it('includes ChatGPT Pro models available through Codex CLI', () => {

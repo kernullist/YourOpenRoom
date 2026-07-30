@@ -124,6 +124,7 @@ import {
   getDefaultProviderConfig,
   getModelInfo,
   getProviderDisplayName,
+  getSupportedReasoningEfforts,
   isDeepSeekProvider,
   type LLMApiStyle,
   type LLMConfig,
@@ -503,7 +504,10 @@ import {
   buildAoiCompanionSessionGreeting,
   buildAoiCompanionThreadFollowUp,
 } from '@/lib/aoiCompanionVoice';
-import { selectAoiRelationshipThreadToRaise } from '@/lib/aoiRelationshipThreads';
+import {
+  selectAoiRelationshipThreadTitles,
+  selectAoiRelationshipThreadToRaise,
+} from '@/lib/aoiRelationshipThreads';
 import { shouldAoiMoodBeVoiced, type AoiMoodState } from '@/lib/aoiMoodState';
 import { buildAoiPersonaBridgeBlock } from '@/lib/aoiPersonaBridge';
 import {
@@ -3548,9 +3552,9 @@ const ChatPanel: React.FC<{
     if (!aoiStrategicBrief) {
       return;
     }
-    const openThreads = [...aoiStrategicBrief.openThreads, ...aoiStrategicBrief.blockedThreads]
-      .map((title) => ({ title }))
-      .slice(0, 8);
+    const openThreads = selectAoiRelationshipThreadTitles(aoiStrategicBrief).map((title) => ({
+      title,
+    }));
     // Dedupe on CONTENT, not object identity: refreshAoiAutonomy runs after many
     // user actions and hands back a fresh brief object each time, so keying off
     // the reference alone would rewrite the record on every settings poke.
@@ -11683,6 +11687,29 @@ const MODEL_REASONING_OPTIONS: Array<{ value: LLMReasoningEffort | ''; label: st
   ...LLM_REASONING_EFFORTS.map((value) => ({ value, label: value })),
 ];
 
+// Offer only the efforts the selected model accepts. The picker used to list every
+// value in the union, so a rejected one was selectable -- 'minimal' against
+// gpt-5.5 comes back as a 400 on reasoning.effort that the settings screen gives
+// no way to diagnose. An already-stored unsupported value stays in the list,
+// labelled, so opening settings never silently rewrites saved config.
+function buildReasoningEffortOptions(
+  target: { provider: LLMProvider; model: string },
+  current: LLMReasoningEffort | '',
+): Array<{ value: LLMReasoningEffort | ''; label: string }> {
+  const supported = getSupportedReasoningEfforts(target.provider, target.model);
+  if (supported.length === 0) {
+    return MODEL_REASONING_OPTIONS;
+  }
+  const options: Array<{ value: LLMReasoningEffort | ''; label: string }> = [
+    { value: '', label: 'Model default' },
+    ...supported.map((value) => ({ value, label: value })),
+  ];
+  if (current && !supported.includes(current)) {
+    options.push({ value: current, label: `${current} (not supported by this model)` });
+  }
+  return options;
+}
+
 const MODEL_REASONING_SUMMARY_OPTIONS: Array<{ value: LLMReasoningSummary | ''; label: string }> = [
   { value: '', label: 'Model default' },
   ...LLM_REASONING_SUMMARIES.map((value) => ({ value, label: value })),
@@ -13516,6 +13543,7 @@ const SettingsModal: React.FC<{
         parallelToolCalls: ParallelToolCallsOption;
       }>,
     ) => void,
+    target: { provider: LLMProvider; model: string },
   ) => (
     <div className={styles.runtimeOptionsGrid}>
       <div className={styles.field}>
@@ -13525,7 +13553,7 @@ const SettingsModal: React.FC<{
           value={values.reasoningEffort}
           onChange={(e) => onChange({ reasoningEffort: e.target.value as LLMReasoningEffort | '' })}
         >
-          {MODEL_REASONING_OPTIONS.map((option) => (
+          {buildReasoningEffortOptions(target, values.reasoningEffort).map((option) => (
             <option key={option.value || 'default'} value={option.value}>
               {option.label}
             </option>
@@ -13848,6 +13876,7 @@ const SettingsModal: React.FC<{
             parallelToolCalls: draft.parallelToolCalls,
           },
           onChange,
+          { provider: draft.provider, model: draft.model },
         )}
         <span className={styles.modelHint}>
           Applied to CLI providers and OpenAI Responses-compatible Kira calls. Unsupported model
@@ -14381,6 +14410,7 @@ const SettingsModal: React.FC<{
                       setParallelToolCalls(patch.parallelToolCalls);
                     }
                   },
+                  { provider, model },
                 )}
                 <span className={styles.modelHint}>
                   These options follow the model runtime contract for Responses API and local CLI
@@ -14652,6 +14682,7 @@ const SettingsModal: React.FC<{
                           setDialogParallelToolCalls(patch.parallelToolCalls);
                         }
                       },
+                      { provider: dialogProvider, model: dialogModel },
                     )}
 
                     {!isLoginCliProvider(dialogProvider) && !isCodexAuthProvider(dialogProvider) ? (
