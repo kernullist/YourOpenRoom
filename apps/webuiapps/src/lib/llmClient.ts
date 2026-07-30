@@ -7,6 +7,7 @@ import type { LLMApiStyle, LLMConfig, LLMProvider } from './llmModels';
 import {
   applyDeepSeekChatRuntimeOptions,
   applyOpenAiResponsesRuntimeOptions,
+  getEffectiveModelRuntimeOptions,
   getExplicitModelRuntimeOptions,
   isDeepSeekProvider,
   modelSupportsAnthropicServerSideFallback,
@@ -857,6 +858,66 @@ export async function fetchCurrentModelUsage(
   return data;
 }
 
+function isUnsupportedReasoningEffortError(message: string): boolean {
+  return /reasoning[._]effort/i.test(message) && /unsupported|not supported/i.test(message);
+}
+
+// Sends a Codex CLI chat request, with one narrow recovery path.
+//
+// Leaving a runtime option unset is deliberate: the server only appends
+// `-c model_reasoning_effort=...` when this app supplies a value, so an unset
+// option lets the operator's own ~/.codex/config.toml decide. That deference is
+// the documented contract -- see the 'does not freeze Codex CLI model defaults'
+// test, which asserts every unset option stays absent from the request.
+//
+// The gap it leaves is that the app picks the MODEL while that file picks the
+// effort, and the two can be incompatible: `model_reasoning_effort = "max"`
+// against gpt-5.5 is a 400 on `reasoning.effort` that kills the turn before Aoi
+// produces anything, with nothing in the app able to see or fix the cause. So on
+// exactly that rejection, retry once with an effort resolved against the model --
+// getEffectiveModelRuntimeOptions clamps to the model's supported set, so the
+// retry value cannot be rejected the same way. Config still wins whenever it is
+// compatible; this only rescues the turn when it is not.
+async function postCodexCliChat(
+  endpoint: string,
+  body: Record<string, unknown>,
+  config: LLMConfig,
+  options: ChatRequestOptions,
+  errorLabel: string,
+): Promise<LLMResponse> {
+  const send = async (payload: Record<string, unknown>) => {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: options.signal,
+    });
+    const data = (await res.json()) as { content?: string; error?: string };
+    return { res, data };
+  };
+
+  let { res, data } = await send(body);
+  if (!res.ok) {
+    const modelEffort = getEffectiveModelRuntimeOptions(config).reasoningEffort;
+    if (
+      modelEffort &&
+      modelEffort !== body.reasoningEffort &&
+      isUnsupportedReasoningEffortError(data.error || '')
+    ) {
+      logger.warn(
+        errorLabel,
+        'CLI config reasoning effort rejected by the model, retrying with',
+        modelEffort,
+      );
+      ({ res, data } = await send({ ...body, reasoningEffort: modelEffort }));
+    }
+    if (!res.ok) {
+      throw new Error(data.error || `${errorLabel} error ${res.status}`);
+    }
+  }
+  return buildTextProviderResponse(data.content);
+}
+
 async function chatCodexCli(
   messages: ChatMessage[],
   tools: ToolDef[],
@@ -864,10 +925,9 @@ async function chatCodexCli(
   options: ChatRequestOptions,
 ): Promise<LLMResponse> {
   const runtimeOptions = getExplicitModelRuntimeOptions(config);
-  const res = await fetch('/api/codex-cli-chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
+  return postCodexCliChat(
+    '/api/codex-cli-chat',
+    {
       messages,
       tools,
       model: config.model,
@@ -876,14 +936,11 @@ async function chatCodexCli(
       reasoningSummary: runtimeOptions.reasoningSummary,
       verbosity: runtimeOptions.verbosity,
       serviceTier: runtimeOptions.serviceTier,
-    }),
-    signal: options.signal,
-  });
-  const data = (await res.json()) as { content?: string; error?: string };
-  if (!res.ok) {
-    throw new Error(data.error || `Codex CLI error ${res.status}`);
-  }
-  return buildTextProviderResponse(data.content);
+    },
+    config,
+    options,
+    'Codex CLI',
+  );
 }
 
 async function chatCodexAuth(
@@ -893,10 +950,9 @@ async function chatCodexAuth(
   options: ChatRequestOptions,
 ): Promise<LLMResponse> {
   const runtimeOptions = getExplicitModelRuntimeOptions(config);
-  const res = await fetch('/api/codex-auth-chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
+  return postCodexCliChat(
+    '/api/codex-auth-chat',
+    {
       messages,
       tools,
       model: config.model,
@@ -904,14 +960,11 @@ async function chatCodexAuth(
       reasoningSummary: runtimeOptions.reasoningSummary,
       verbosity: runtimeOptions.verbosity,
       serviceTier: runtimeOptions.serviceTier,
-    }),
-    signal: options.signal,
-  });
-  const data = (await res.json()) as { content?: string; error?: string };
-  if (!res.ok) {
-    throw new Error(data.error || `Codex Auth error ${res.status}`);
-  }
-  return buildTextProviderResponse(data.content);
+    },
+    config,
+    options,
+    'Codex Auth',
+  );
 }
 
 async function chatOpenAI(

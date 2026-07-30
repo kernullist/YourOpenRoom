@@ -1725,6 +1725,70 @@ respond_to_user
       expect(body.model).toBe('gpt-5.5');
       expect(body.command).toBeUndefined();
       expect(body.tools).toHaveLength(1);
+      // Deliberately absent: the CLI's own config owns anything this app did not
+      // explicitly set. See 'does not freeze Codex CLI model defaults'.
+      expect(body.reasoningEffort).toBeUndefined();
+    });
+
+    it('retries once with a model-resolved effort when the CLI config value is rejected', async () => {
+      const mockFetch = vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 400,
+          json: () =>
+            Promise.resolve({
+              error:
+                'ERROR: {"type":"error","error":{"type":"invalid_request_error",' +
+                '"code":"unsupported_value","message":"Unsupported value: \'max\' is not ' +
+                "supported with the 'gpt-5.5-codex-premium' model. Supported values are: " +
+                "'none', 'low', 'medium', 'high', and 'xhigh'.\",\"param\":\"reasoning.effort\"}}",
+            }),
+        } as unknown as Response)
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ content: 'recovered' }),
+        } as unknown as Response);
+      globalThis.fetch = mockFetch;
+
+      const result = await chat(MOCK_MESSAGES, [], {
+        provider: 'codex-auth',
+        apiKey: '',
+        baseUrl: '',
+        model: 'gpt-5.5',
+      });
+
+      expect(result.content).toBe('recovered');
+      const authCalls = mockFetch.mock.calls.filter((call) => call[0] === '/api/codex-auth-chat');
+      expect(authCalls).toHaveLength(2);
+      const first = JSON.parse(authCalls[0][1].body as string);
+      const retry = JSON.parse(authCalls[1][1].body as string);
+      // First attempt still defers to the operator's config; only the retry pins
+      // an effort, and it is one gpt-5.5 accepts.
+      expect(first.reasoningEffort).toBeUndefined();
+      expect(['low', 'medium', 'high', 'xhigh']).toContain(retry.reasoningEffort);
+    });
+
+    it('does not retry an unrelated Codex Auth failure', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        json: () => Promise.resolve({ error: 'codex spawn failed' }),
+      } as unknown as Response);
+      globalThis.fetch = mockFetch;
+
+      await expect(
+        chat(MOCK_MESSAGES, [], {
+          provider: 'codex-auth',
+          apiKey: '',
+          baseUrl: '',
+          model: 'gpt-5.5',
+        }),
+      ).rejects.toThrow('codex spawn failed');
+      expect(
+        mockFetch.mock.calls.filter((call) => call[0] === '/api/codex-auth-chat'),
+      ).toHaveLength(1);
     });
 
     it('converts inline tool call content from Codex Auth into structured tool calls', async () => {
