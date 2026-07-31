@@ -8,6 +8,57 @@ import {
   summarizeAoiCapabilityRegistry,
 } from '../aoiCapabilityRegistry';
 
+// The tool names the browser-drive surface exposes. os_browser_drive is the
+// host-bridge capability the consent settings key off; it is never in a tools
+// array, so registering only that left all four of these unclassified.
+const BROWSER_DRIVE_TOOL_NAMES = [
+  'browser_read_auth',
+  'browser_drive_act',
+  'browser_drive_run',
+  'browser_drive_task',
+];
+
+describe('aoiCapabilityRegistry browser-drive classification', () => {
+  it('classifies every exposed browser-drive tool instead of leaving it unknown', () => {
+    expect(getUnknownAoiCapabilityNames(BROWSER_DRIVE_TOOL_NAMES)).toEqual([]);
+  });
+
+  it('grades the tools that act on the logged-in browser as high risk', () => {
+    const rows = getAoiCapabilityRows(BROWSER_DRIVE_TOOL_NAMES);
+    for (const name of BROWSER_DRIVE_TOOL_NAMES) {
+      expect(rows.find((row) => row.name === name)?.risk).toBe('high');
+    }
+    // The two that actually click and type must declare write access; the two
+    // that only read or propose must not.
+    const writeAccess = (name: string) =>
+      rows.find((row) => row.name === name)?.access.includes('write') ?? false;
+    expect(writeAccess('browser_drive_run')).toBe(true);
+    expect(writeAccess('browser_drive_task')).toBe(true);
+    expect(writeAccess('browser_read_auth')).toBe(false);
+    expect(writeAccess('browser_drive_act')).toBe(false);
+  });
+
+  it('never presents a high-risk tool as read-only in the same prompt', () => {
+    const prompt = buildAoiCapabilityPrompt([
+      'host_browser_read',
+      'browser_read_auth',
+      'search_web',
+      ...BROWSER_DRIVE_TOOL_NAMES,
+    ]);
+    const readOnlyLine = prompt
+      .split('\n')
+      .find((line) => line.startsWith('- Read-only or discovery tools:'));
+
+    expect(readOnlyLine).toContain('search_web');
+    // Both read without writing, and both are graded high -- listing them as
+    // safe-to-start-with contradicts the high-risk line directly below.
+    expect(readOnlyLine).not.toContain('host_browser_read');
+    expect(readOnlyLine).not.toContain('browser_read_auth');
+    expect(prompt).toContain('- High-risk tools can mutate, execute, or restore local state:');
+    expect(prompt).not.toContain('Unknown tools are unclassified');
+  });
+});
+
 describe('aoiCapabilityRegistry', () => {
   it('registers every default Aoi chat capability', () => {
     const summary = summarizeAoiCapabilityRegistry(AOI_DEFAULT_CAPABILITY_NAMES);

@@ -290,6 +290,73 @@ const AOI_CAPABILITY_REGISTRY = {
     policyNotes:
       'Requires Host Bridge os_browser_drive capability + browser-drive consent + a domain allowlist. Attaches to the MAIN profile, so the allowlist is the only containment; interactions need per-action approval, and passwords/payments/CAPTCHAs are never entered.',
   },
+  // The four tool names the browser-drive surface actually exposes to the model.
+  // os_browser_drive above is the host-bridge CAPABILITY name, which is what the
+  // consent settings key off -- it never appears in a tools array, so on its own
+  // it left every one of these unclassified. That put browser_drive_run and
+  // browser_drive_task, the two that genuinely click and type in the operator's
+  // logged-in browser, under "unknown ... require extra care" while carrying no
+  // risk grade at all.
+  browser_read_auth: {
+    name: 'browser_read_auth',
+    label: 'Logged-in browser read',
+    kind: 'tool',
+    surface: 'web',
+    risk: 'high',
+    description:
+      "Read a page from the operator's own already-logged-in Chrome/Edge over CDP and extract reader text.",
+    access: ['read', 'network', 'external'],
+    sandboxEligible: false,
+    approval: 'policy-gated',
+    promptVisible: true,
+    policyNotes:
+      'Requires Host Bridge os_browser_drive capability + browser-drive consent + the domain on the allowlist. Read-only: never clicks, types, or submits. Reads authenticated session content, which is why it is graded high despite not writing.',
+  },
+  browser_drive_act: {
+    name: 'browser_drive_act',
+    label: 'Browser drive: propose one action',
+    kind: 'tool',
+    surface: 'automation',
+    risk: 'high',
+    description:
+      'Propose ONE action on the logged-in browser and record a per-action approval request. Does not perform the action.',
+    access: ['read', 'network', 'external'],
+    sandboxEligible: false,
+    approval: 'user-confirmation',
+    promptVisible: true,
+    policyNotes:
+      'Captures a before-screenshot and records an approval the operator must accept in Settings -> Advanced -> Host PC -> Approvals. browser_drive_run performs it afterwards; passwords, payments, and CAPTCHAs are never entered.',
+  },
+  browser_drive_run: {
+    name: 'browser_drive_run',
+    label: 'Browser drive: perform approved action',
+    kind: 'tool',
+    surface: 'automation',
+    risk: 'high',
+    description:
+      "Perform the single action previously approved via browser_drive_act in the operator's logged-in browser.",
+    access: ['read', 'write', 'network', 'external'],
+    sandboxEligible: false,
+    approval: 'user-confirmation',
+    promptVisible: true,
+    policyNotes:
+      'Fails unless the operator approved this exact plan. Acts on authenticated sites with no undo surface of its own, so the approval and the domain allowlist are the only containment.',
+  },
+  browser_drive_task: {
+    name: 'browser_drive_task',
+    label: 'Browser drive: bounded multi-act task',
+    kind: 'tool',
+    surface: 'automation',
+    risk: 'high',
+    description:
+      'Run a bounded ordered list of single-act browser steps, fail-stopping on the first failure.',
+    access: ['read', 'write', 'network', 'external'],
+    sandboxEligible: false,
+    approval: 'user-confirmation',
+    promptVisible: true,
+    policyNotes:
+      'Requires the standing-approval and bounded-task toggles plus a standing grant per domain. Bounded to <=10 acts / <=40 steps. Only run a task the operator explicitly asked for.',
+  },
   read_url: {
     name: 'read_url',
     label: 'Read URL',
@@ -713,9 +780,17 @@ export function buildAoiCapabilityPrompt(toolNames: string[]): string {
   const summary = summarizeAoiCapabilityRegistry(toolNames);
   const exposedTools = rows.map((row) => row.name);
   const highRiskTools = rows.filter((row) => row.risk === 'high').map((row) => row.name);
+  // High risk disqualifies a tool from this list even when it only reads. The two
+  // lines are read as opposites -- this one says "safe to reach for first", the
+  // high-risk line says "can mutate, execute, or restore local state" -- so a tool
+  // in both told the model both things about itself in the same prompt.
+  // host_browser_read did exactly that: read/network/external access, graded high
+  // because it drives a local browser at an arbitrary page. Grades are unchanged;
+  // only the safe-to-start-with list is narrowed.
   const readOnlyTools = rows
     .filter(
       (row) =>
+        row.risk !== 'high' &&
         row.access.includes('read') &&
         !row.access.includes('write') &&
         !row.access.includes('execute'),
