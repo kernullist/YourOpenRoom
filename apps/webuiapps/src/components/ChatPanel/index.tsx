@@ -2322,6 +2322,10 @@ function buildSystemPrompt(
   toolCallRuntimeAvailable = true,
   aoiMusicTastePrompt = '',
   personaBridgePrompt = '',
+  // Mirrors the tools array: shouldEnableAppTools decides per turn whether the
+  // app/IDE/workspace tools are exposed at all, and the policy for them has to
+  // follow that decision or it describes tools the model was not given.
+  includeAppTools = true,
 ): BuiltSystemPrompt {
   let prompt = getCharacterPromptContext(character);
   // R7.2: the persona is immediately followed by ~150 lines of tool policy and
@@ -2351,7 +2355,14 @@ Persistent user profile:
   }
 
   if (toolCallRuntimeAvailable) {
-    prompt += `
+    // Gated on includeAppTools, not just on the runtime: when shouldEnableAppTools
+    // says this turn is not about apps, list_apps / file_* / app_action / ide_* are
+    // absent from the tools array, and the capability registry block tells the
+    // model never to call a tool outside the exposed list. Emitting the policy
+    // anyway spent ~150 lines instructing a procedure the model cannot perform,
+    // and contradicted that registry line in the same prompt.
+    if (includeAppTools) {
+      prompt += `
 You can interact with apps on the user's device using tools.
 
 When the user wants to interact with an app, first identify the target app from the user's intent, then:
@@ -2434,7 +2445,12 @@ Music follow-up rule:
 - Always honor the "Music taste (learned)" block below when recommending music. Prefer those personal searches/plays over generic viral hits.
 - When recommending, include an explicit line: YouTube 검색어: \`exact query\` so play-follow-ups can open the same query.
 
-When you receive "[User performed action in ... (appName: xxx)]", the appName is already provided. Read its meta.yaml to understand available actions, then respond accordingly. For games, respond with your own move — think strategically.
+When you receive "[User performed action in ... (appName: xxx)]", the appName is already provided. Read its meta.yaml to understand available actions, then respond accordingly. For games, respond with your own move — think strategically.`;
+    }
+
+    // Always: respond_to_user and generate_image are in the tools array on every
+    // tool-capable turn, independent of the app toolset.
+    prompt += `
 
 IMPORTANT: You MUST use the respond_to_user tool to send all messages to the user. Do NOT output plain text responses. Include your emotion and 3 suggested replies. respond_to_user is terminal and must be the final tool call in the assistant turn.${hasImageGen ? '\n\nYou can use generate_image to create images from text prompts. The generated image will be displayed in chat.' : ''}`;
   } else {
@@ -7356,6 +7372,7 @@ const ChatPanel: React.FC<{
           ? { arcName: aoiRelationshipStateRef.current.arcBaseline.arcName }
           : null,
       }),
+      includeAppTools,
     );
     // Budget accounting stays on the combined text so the snapshots remain
     // comparable to the ones recorded before the split.
