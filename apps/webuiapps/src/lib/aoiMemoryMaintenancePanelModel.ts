@@ -109,18 +109,19 @@ export function parseAoiMemoryMaintenanceRunResponse(
   };
 }
 
-// Every field is sent explicitly so a saved setting always wins over the env
-// fallback -- omitting a field would hand that toggle back to the environment.
+// Only the fields the UI actually controls are sent. Each toggle is explicit so
+// a saved setting beats the env fallback, but interval/max are deliberately
+// OMITTED: the panel has no control for them, so echoing back the resolved
+// value would freeze an env-supplied setting into config.json forever -- and
+// the ms->minutes rounding would silently change it on the way (a 20s sweep
+// interval came back as 5 minutes).
 export function buildAoiMemoryMaintenanceBody(
   view: AoiMemoryMaintenanceView,
 ): Record<string, unknown> {
   return {
     version: 1,
     embedSweepEnabled: view.embedSweepEnabled,
-    embedSweepIntervalMinutes: view.embedSweepIntervalMinutes,
-    embedSweepMax: view.embedSweepMax,
     consolidationEnabled: view.consolidationEnabled,
-    consolidationMax: view.consolidationMax,
     localEmbedderEnabled: view.localEmbedderEnabled,
   };
 }

@@ -2157,6 +2157,19 @@ export async function handleAoiAutonomyRequest(
       const normalized = normalizeAoiMemoryMaintenanceConfig(
         body as Partial<AoiMemoryMaintenanceConfig>,
       );
+      // Clearing the block hands every toggle back to the environment, which
+      // can silently RE-ENABLE a feature the operator explicitly turned off, so
+      // it needs its own signal. An empty or misspelled body used to normalize
+      // to null and wipe the settings with a 200.
+      const clearRequested = (body as { clear?: unknown }).clear === true;
+      if (!normalized && !clearRequested) {
+        writeJson(res, 400, {
+          error:
+            'Provide at least one maintenance field, or {"clear":true} to fall back to environment variables.',
+          code: 'invalid_maintenance_settings',
+        });
+        return true;
+      }
       try {
         writeAoiMemoryMaintenanceConfigToFile(configFile, normalized);
       } catch (error) {
@@ -2190,7 +2203,10 @@ export async function handleAoiAutonomyRequest(
           })
         : { ran: false, clusterCount: 0, supersededCount: 0 };
       const status = loadAoiMemoryEmbeddingStatus(sessionsDir, { configFile });
-      writeJson(res, 200, { ok: true, embed, consolidation, status });
+      // `settings` is included so the panel can refresh its coverage line from
+      // this response; its parser requires that field and was discarding the
+      // freshly computed status without it.
+      writeJson(res, 200, { ok: true, embed, consolidation, settings, status });
       return true;
     }
     if (req.method === 'POST' && route === '/memory/explicit-correction') {
@@ -3542,6 +3558,7 @@ export function startAoiMemoryEmbedSweepFromEnv(
     configFile,
     intervalMs: settings.embedSweep.intervalMs,
     max: settings.embedSweep.max,
+    embedEnabled: settings.embedSweep.enabled,
     consolidation: {
       enabled: settings.consolidation.enabled,
       max: settings.consolidation.max,

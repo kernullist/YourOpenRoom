@@ -994,7 +994,29 @@ const WEB_SEARCH_FRESHNESS_CUE_PATTERNS = [
   /\b(?:is|are|does|do|has|have|can)\b[^?？]*\b(?:still|now|currently|these days|nowadays|today|as of)\b/i,
   /(지금|현재|요즘|이제|아직)[^?？]*[?？]/,
   /(지금|현재|요즘|이제|아직).*(이야|인가요?|인지|일까|일까요|한가요?|하나요|되나요?|됐어|되었어|맞아|맞나요?)\s*$/,
-  /(확인해\s*줘?|확인\s*해봐|알아봐\s*줘?|알아보고|찾아봐\s*줘?)/,
+  // "확인해줘" alone is NOT a cue: it is the most common Korean imperative in a
+  // coding session ("변경 사항 확인해줘"), and pairing it with the broad
+  // volatile-fact list below sent ordinary code questions to the web. It counts
+  // only alongside an explicit freshness word or a named outside product.
+  /(지금|현재|요즘|최근|아직)[^\n]{0,40}(확인해\s*줘?|확인\s*해봐|알아봐\s*줘?|알아보고|찾아봐\s*줘?)/,
+  /(openai|anthropic|claude|chatgpt|gemini|deepseek|windows|github|tavily|오픈ai|앤트로픽|클로드|챗gpt|제미나이|딥시크|윈도우|깃허브)[^\n]{0,40}(확인해\s*줘?|확인\s*해봐|알아봐\s*줘?|찾아봐\s*줘?)/i,
+];
+
+// Deixis that pins a question to THIS workspace -- a file, a symbol, our code,
+// the thing on screen. A freshness-worded question about local code is not a
+// question about the world, so the implicit path stays off. Explicit requests
+// ("검색해줘", "웹에서 찾아봐") are unaffected: they match the direct patterns
+// above and never reach this gate.
+const WEB_SEARCH_LOCAL_CONTEXT_PATTERNS = [
+  // A source artifact named anywhere in the message.
+  /(파일|코드|함수|클래스|메서드|메소드|모듈|필드|변수|타입|인터페이스|테스트|스크립트|커밋|브랜치|레포|리포|저장소|디렉터리|디렉토리|폴더)/,
+  /\b(file|code|function|class|method|module|field|variable|type|interface|test|script|commit|branch|diff|repo|repository|directory|folder)\b/i,
+  // Pointing at something already in front of us.
+  /(이|그|저|해당|우리|내|네)\s*(기능|설정|옵션|플래그|동작|로직|부분|값)/,
+  /(이거|그거|저거|이건|그건|이걸|그걸)/,
+  // Work verbs that only make sense against our own code.
+  /\b(refactor|implement|rewrite|debug|review)\b/i,
+  /(리팩터|리팩토링|구현해|디버깅|고쳐줘|수정해|배포해도)/,
 ];
 
 const WEB_SEARCH_VOLATILE_FACT_PATTERNS = [
@@ -1127,6 +1149,14 @@ export function shouldUseWebSearch(latestUserMessage: string): boolean {
   const hasTruthCheckCue = WEB_SEARCH_TRUTH_CHECK_PATTERNS.some((pattern) => pattern.test(latest));
   const hasFreshnessCue = WEB_SEARCH_FRESHNESS_CUE_PATTERNS.some((pattern) => pattern.test(latest));
   if (!hasTruthCheckCue && !hasFreshnessCue) return false;
+
+  // A question about code in this workspace is not a question about the world.
+  // The volatile-fact list holds domain-neutral words a security engineer uses
+  // constantly (모델, 정책, 접근, 지원, 변경), so without this gate "모델 클래스
+  // 확인해줘" ran a live web search and fed the results back as grounding.
+  if (WEB_SEARCH_LOCAL_CONTEXT_PATTERNS.some((pattern) => pattern.test(latest))) {
+    return false;
+  }
 
   return WEB_SEARCH_VOLATILE_FACT_PATTERNS.some((pattern) => pattern.test(latest));
 }

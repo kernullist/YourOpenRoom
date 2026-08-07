@@ -152,41 +152,38 @@ export async function saveConfig(
   localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
 
   const existing = await loadPersistedConfig();
+  // Start from the FULL persisted config so a block this function does not know
+  // about survives the write. This used to be a hand-maintained allow-list of
+  // keys to copy forward, which silently dropped every block added later --
+  // aoiMcpConnectors and aoiMemoryMaintenance were both wiped the first time
+  // the user pressed Save in the settings modal. Preserve by default; the
+  // fields below then explicitly set or delete the ones this function owns.
   const persisted: import('./configPersistence').PersistedConfig = {
+    ...(existing ?? {}),
     llm: config,
-    ...(existing?.album ? { album: existing.album } : {}),
-    ...(existing?.openvscode ? { openvscode: existing.openvscode } : {}),
-    ...(existing?.app ? { app: existing.app } : {}),
-    ...(existing?.userProfile ? { userProfile: existing.userProfile } : {}),
-    ...(existing?.conversationPreferences
-      ? { conversationPreferences: existing.conversationPreferences }
-      : {}),
-    ...(existing?.gmail ? { gmail: existing.gmail } : {}),
-    ...(existing?.aoiEmbedding ? { aoiEmbedding: existing.aoiEmbedding } : {}),
-    ...(existing?.aoiMcpConnectors ? { aoiMcpConnectors: existing.aoiMcpConnectors } : {}),
-    ...(existing?.aoiMusicTaste ? { aoiMusicTaste: existing.aoiMusicTaste } : {}),
   };
+  // undefined means "leave it alone" (the spread above already carried it
+  // forward); an explicit null/empty means "clear it", which now needs an
+  // explicit delete because the base object preserves everything.
   if (dialogLlmConfig && Object.keys(dialogLlmConfig).length > 0) {
     persisted.dialogLlm = dialogLlmConfig;
-  } else if (dialogLlmConfig === undefined && existing?.dialogLlm) {
-    persisted.dialogLlm = existing.dialogLlm;
+  } else if (dialogLlmConfig !== undefined) {
+    delete persisted.dialogLlm;
   }
   if (imageGenConfig) {
     persisted.imageGen = imageGenConfig;
-  } else if (imageGenConfig === undefined && existing?.imageGen) {
-    persisted.imageGen = existing.imageGen;
+  } else if (imageGenConfig !== undefined) {
+    delete persisted.imageGen;
   }
   if (kiraConfig && Object.keys(kiraConfig).length > 0) {
     persisted.kira = kiraConfig;
-  } else if (kiraConfig === undefined && existing?.kira) {
-    persisted.kira = existing.kira;
   } else if (kiraConfig !== undefined) {
     delete persisted.kira;
   }
   if (idaPeConfig) {
     persisted.idaPe = idaPeConfig;
-  } else if (idaPeConfig === undefined && existing?.idaPe) {
-    persisted.idaPe = existing.idaPe;
+  } else if (idaPeConfig !== undefined) {
+    delete persisted.idaPe;
   }
   if (tavilyConfig !== undefined) {
     const normalizedTavilyConfig = normalizeTavilyConfig(tavilyConfig);

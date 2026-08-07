@@ -4,17 +4,19 @@ import {
   describeAoiDistillerHealth,
   loadAoiDistillerAttempts,
   recordAoiDistillerAttempt,
+  resetAoiDistillerHealthCache,
   summarizeAoiDistillerHealth,
   type AoiDistillerAttempt,
 } from '../aoiMemoryDistillerHealth';
 
 const NOW = 1_700_000_000_000;
+const STORAGE_KEY = 'aoi-distiller-health-v1';
 
 function attempt(overrides: Partial<AoiDistillerAttempt> = {}): AoiDistillerAttempt {
   return {
     outcome: 'ok',
     at: NOW,
-    durationMs: 1200,
+    totalDurationMs: 1200,
     attempts: 1,
     candidateCount: 2,
     provider: 'deepseek',
@@ -45,20 +47,52 @@ describe('recordAoiDistillerAttempt', () => {
 
   it('survives a reload through localStorage', () => {
     recordAoiDistillerAttempt(attempt({ outcome: 'timeout' }));
-    clearAoiDistillerAttempts();
-    // clear wipes it; re-record and drop only the in-memory cache to simulate
-    // a page reload reading the persisted ring buffer back.
-    recordAoiDistillerAttempt(attempt({ outcome: 'timeout' }));
-    const raw = localStorage.getItem('aoi-distiller-health-v1');
-    expect(raw).toBeTruthy();
-    expect(JSON.parse(raw as string)[0].outcome).toBe('timeout');
+    // Drop only the in-memory cache: this is what a page reload looks like.
+    resetAoiDistillerHealthCache();
+    expect(loadAoiDistillerAttempts()[0].outcome).toBe('timeout');
   });
 
-  it('ignores malformed persisted entries', () => {
-    localStorage.setItem('aoi-distiller-health-v1', JSON.stringify([{ junk: true }, 42]));
-    clearAoiDistillerAttempts();
-    localStorage.setItem('aoi-distiller-health-v1', JSON.stringify([{ junk: true }, 42]));
+  it('ignores malformed persisted entries on the real read path', () => {
+    // Must exercise the parse: an empty in-memory cache used to short-circuit
+    // the read, so this assertion passed without ever calling JSON.parse.
+    localStorage.setItem(STORAGE_KEY, JSON.stringify([{ junk: true }, 42, null]));
+    resetAoiDistillerHealthCache();
+    expect(loadAoiDistillerAttempts()).toEqual([]);
     expect(summarizeAoiDistillerHealth().total).toBe(0);
+  });
+
+  it('truncates a hostile oversized reason on READ, not just on write', () => {
+    // A giant reason that survives the read gets re-serialized on the next
+    // write until setItem throws quota errors forever.
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify([{ ...attempt({ outcome: 'error' }), reason: 'x'.repeat(50_000) }]),
+    );
+    resetAoiDistillerHealthCache();
+    expect(loadAoiDistillerAttempts()[0].reason).toHaveLength(160);
+  });
+
+  it('re-sorts persisted entries newest-first so lastOutcome is right', () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify([
+        attempt({ outcome: 'ok', at: NOW - 5000 }),
+        attempt({ outcome: 'timeout', at: NOW }),
+      ]),
+    );
+    resetAoiDistillerHealthCache();
+    expect(summarizeAoiDistillerHealth().lastOutcome).toBe('timeout');
+  });
+
+  it('coerces junk numeric fields instead of trusting them', () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify([{ outcome: 'ok', at: NOW, totalDurationMs: 'nope', attempts: -3 }]),
+    );
+    resetAoiDistillerHealthCache();
+    const [stored] = loadAoiDistillerAttempts();
+    expect(stored.totalDurationMs).toBe(0);
+    expect(stored.attempts).toBe(0);
   });
 });
 
@@ -75,16 +109,30 @@ describe('summarizeAoiDistillerHealth', () => {
 
   it('separates timeouts from other errors and reports the median duration', () => {
     const health = summarizeAoiDistillerHealth([
-      attempt({ outcome: 'timeout', durationMs: 20_000 }),
-      attempt({ outcome: 'error', durationMs: 400 }),
-      attempt({ outcome: 'ok', durationMs: 1000 }),
+      attempt({ outcome: 'timeout', totalDurationMs: 20_000 }),
+      attempt({ outcome: 'error', totalDurationMs: 400 }),
+      attempt({ outcome: 'ok', totalDurationMs: 1000 }),
     ]);
 
     expect(health.timeoutCount).toBe(1);
     expect(health.errorCount).toBe(1);
     expect(health.successRate).toBeCloseTo(1 / 3, 5);
-    expect(health.medianDurationMs).toBe(1000);
+    expect(health.medianTotalDurationMs).toBe(1000);
     expect(health.lastOutcome).toBe('timeout');
+  });
+
+  it('counts a malformed response as a FAILURE, not an empty turn', () => {
+    // The whole point of the module: a model emitting prose instead of JSON
+    // produced zero candidates and used to score identically to a turn that
+    // genuinely carried nothing durable -- reporting a dead distiller as 100%.
+    const health = summarizeAoiDistillerHealth([
+      attempt({ outcome: 'malformed', candidateCount: 0 }),
+      attempt({ outcome: 'malformed', candidateCount: 0 }),
+    ]);
+
+    expect(health.malformedCount).toBe(2);
+    expect(health.successRate).toBe(0);
+    expect(describeAoiDistillerHealth(health)).toContain('2 malformed response(s)');
   });
 
   it('reports an empty history without dividing by zero', () => {
@@ -98,8 +146,8 @@ describe('describeAoiDistillerHealth', () => {
   it('names the failure counts when capture is degrading', () => {
     const text = describeAoiDistillerHealth(
       summarizeAoiDistillerHealth([
-        attempt({ outcome: 'ok', durationMs: 900 }),
-        attempt({ outcome: 'timeout', durationMs: 20_000 }),
+        attempt({ outcome: 'ok', totalDurationMs: 900 }),
+        attempt({ outcome: 'timeout', totalDurationMs: 20_000 }),
       ]),
     );
     expect(text).toContain('1/2 recent turns distilled (50%)');

@@ -39,7 +39,7 @@ import {
   embedAndPersistServerAoiMemories,
   loadServerAoiMemories,
 } from './aoiMemoryServerWriter';
-import { resolveAoiMemoryConsolidationConfigFromEnv } from './aoiMemoryConsolidationSweep';
+import { loadAoiMemoryMaintenanceSettings } from './aoiMemoryMaintenanceSettings';
 import {
   buildAoiAutonomyStatus,
   createAoiAutonomyId,
@@ -2003,9 +2003,21 @@ async function runWakeupInternal(
   // memories embed lazily once it is turned on, or via the loop-independent embed sweep when
   // the loop is off. The key stays the opt-in -- no key means lexical-only. Never blocks the
   // wakeup. (embeddingProvider was resolved once above and is reused here.)
-  if (budget.allowNetwork && embeddingProvider) {
+  //
+  // The operator's maintenance settings gate this too. While the background loop
+  // runs it holds the single-instance lock, so the loop-independent maintenance
+  // sweep no-ops and THIS is the only path that embeds -- reading env only (as it
+  // used to) meant the settings-panel toggles silently did nothing for anyone
+  // running the loop, and "Embed backfill sweep: Disabled" still sent memory
+  // bodies to the embedding provider.
+  const maintenanceSettings = loadAoiMemoryMaintenanceSettings({
+    ...(input.configFile ? { configFile: input.configFile } : {}),
+  });
+  if (budget.allowNetwork && embeddingProvider && maintenanceSettings.embedSweep.enabled) {
     try {
-      await embedAndPersistServerAoiMemories(input.sessionsDir, embeddingProvider, { max: 16 });
+      await embedAndPersistServerAoiMemories(input.sessionsDir, embeddingProvider, {
+        max: maintenanceSettings.embedSweep.max,
+      });
     } catch {
       // best-effort; embeddings never block the wakeup
     }
@@ -2017,10 +2029,11 @@ async function runWakeupInternal(
   // network) and is non-destructive (superseded originals keep their files). This is
   // the loop-ON counterpart of the loop-independent maintenance sweep (which no-ops
   // while the loop holds the single-instance lock). Never blocks the wakeup.
-  const consolidationConfig = resolveAoiMemoryConsolidationConfigFromEnv(process.env);
-  if (consolidationConfig.enabled) {
+  if (maintenanceSettings.consolidation.enabled) {
     try {
-      consolidateServerAoiMemories(input.sessionsDir, { maxClusters: consolidationConfig.max });
+      consolidateServerAoiMemories(input.sessionsDir, {
+        maxClusters: maintenanceSettings.consolidation.max,
+      });
     } catch {
       // best-effort; consolidation never blocks the wakeup
     }

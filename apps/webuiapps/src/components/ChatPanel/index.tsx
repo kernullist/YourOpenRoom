@@ -10302,7 +10302,17 @@ const ChatPanel: React.FC<{
         return;
       }
       if (plan === 'ask-taste-question') {
-        askTasteQuestionNow(now);
+        if (askTasteQuestionNow(now)) {
+          // The poll REPLACES this tick's music card, so it spends the
+          // idle-music cooldown too. Without this, answering the poll flips
+          // hasTasteSignal on and a music card follows ~3 minutes later --
+          // two proactive interruptions inside four minutes.
+          idleMusicStateRef.current = recordIdleMusicOffered(idleMusicStateRef.current, {
+            query: '',
+            now,
+          });
+          saveAoiIdleMusicLearningState(idleMusicStateRef.current);
+        }
         return;
       }
       const recommendation = buildAoiMusicRecommendation({

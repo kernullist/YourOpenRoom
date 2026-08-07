@@ -1,10 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { webcrypto } from 'node:crypto';
-import {
-  AOI_LOCAL_EMBEDDING_MODEL,
-  createAoiLocalEmbeddingProvider,
-  embedAoiTextLocally,
-} from '../aoiLocalEmbedding';
+import { createAoiLocalEmbeddingProvider, embedAoiTextLocally } from '../aoiLocalEmbedding';
+import { AOI_LOCAL_EMBEDDING_MODEL } from '../aoiLocalEmbeddingCore';
 import {
   createAoiLocalEmbeddingBrowserProvider,
   embedAoiTextLocallyInBrowser,

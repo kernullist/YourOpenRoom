@@ -22,7 +22,9 @@ import {
 // node-specific. The browser twin is aoiLocalEmbeddingBrowser (crypto.subtle),
 // pinned to this implementation by a vector-parity test.
 
-export { AOI_LOCAL_EMBEDDING_MODEL };
+// NOT re-exported: importing the model-id constant from here drags node:crypto
+// into whatever imports it, which is exactly how a node-only module has broken
+// the client bundle in this repo before. Import it from aoiLocalEmbeddingCore.
 
 // 32-bit unsigned hash of a token from its SHA-1 digest (stable across runs/hosts).
 function hashToken(token: string): number {

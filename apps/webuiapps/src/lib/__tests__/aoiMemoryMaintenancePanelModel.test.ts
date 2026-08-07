@@ -58,7 +58,7 @@ describe('parseAoiMemoryMaintenanceResponse', () => {
 });
 
 describe('buildAoiMemoryMaintenanceBody', () => {
-  it('sends every field so a saved setting always beats the env fallback', () => {
+  it('sends each toggle explicitly so a saved setting beats the env fallback', () => {
     const view: AoiMemoryMaintenanceView = {
       embedSweepEnabled: false,
       embedSweepIntervalMinutes: 5,
@@ -72,12 +72,29 @@ describe('buildAoiMemoryMaintenanceBody', () => {
     expect(buildAoiMemoryMaintenanceBody(view)).toEqual({
       version: 1,
       embedSweepEnabled: false,
-      embedSweepIntervalMinutes: 5,
-      embedSweepMax: 16,
       consolidationEnabled: true,
-      consolidationMax: 8,
       localEmbedderEnabled: false,
     });
+  });
+
+  it('omits interval and max, which the panel does not control', () => {
+    // Echoing the resolved values back would freeze an env-supplied interval
+    // into config.json -- and the ms->minutes rounding changed it on the way
+    // (a 20s sweep came back as 5 minutes, then clamped max 200 down to 64).
+    const view: AoiMemoryMaintenanceView = {
+      embedSweepEnabled: true,
+      embedSweepIntervalMinutes: 5,
+      embedSweepMax: 200,
+      consolidationEnabled: false,
+      consolidationMax: 8,
+      localEmbedderEnabled: true,
+      sources: { embedSweep: 'config', consolidation: 'env', localEmbedder: 'config' },
+    };
+    const body = buildAoiMemoryMaintenanceBody(view);
+
+    expect(body).not.toHaveProperty('embedSweepIntervalMinutes');
+    expect(body).not.toHaveProperty('embedSweepMax');
+    expect(body).not.toHaveProperty('consolidationMax');
   });
 });
 

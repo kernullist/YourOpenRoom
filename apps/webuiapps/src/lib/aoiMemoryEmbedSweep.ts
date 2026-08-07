@@ -120,6 +120,10 @@ export interface AoiMemoryEmbedSweepOptions {
   // shares this timer and the reused single-instance loop lock, so embedding and
   // consolidation never both mutate the memory files. See aoiMemoryConsolidationSweep.
   consolidation?: { enabled: boolean; max?: number };
+  // Startup value for the embed half, and the fail-safe the tick falls back to
+  // when resolveCycleSettings throws. Defaults true so existing callers (which
+  // only start the sweep when embedding is wanted) are unchanged.
+  embedEnabled?: boolean;
   onConsolidation?: (result: AoiMemoryConsolidationSweepCycleResult) => void;
   // Injectable seam for tests.
   runConsolidationCycle?: typeof runAoiMemoryConsolidationSweepCycle;
@@ -147,6 +151,22 @@ export function startAoiMemoryEmbedSweep(
     options.runConsolidationCycle ?? runAoiMemoryConsolidationSweepCycle;
   let running = false;
   let stopped = false;
+  // Seeded from the values start() was called with; refreshed by
+  // resolveCycleSettings on every successful resolve. Callers with no resolver
+  // keep these forever, which is the historical behavior.
+  let lastKnownSettings: {
+    embedSweep: { enabled: boolean; max: number };
+    consolidation: { enabled: boolean; max: number };
+  } = {
+    embedSweep: {
+      enabled: options.embedEnabled ?? true,
+      max: options.max ?? DEFAULT_SWEEP_MAX,
+    },
+    consolidation: {
+      enabled: options.consolidation?.enabled ?? false,
+      max: options.consolidation?.max ?? 8,
+    },
+  };
 
   const tick = async (): Promise<void> => {
     if (running || stopped) {
@@ -155,20 +175,20 @@ export function startAoiMemoryEmbedSweep(
     running = true;
     try {
       // Live settings win over the values captured at start(), so the UI toggle
-      // applies on the next tick. Best-effort: a resolver failure falls back to
-      // the static options rather than silently disabling maintenance.
-      let live: ReturnType<NonNullable<AoiMemoryEmbedSweepOptions['resolveCycleSettings']>> | null =
-        null;
+      // applies on the next tick. A resolver failure keeps the LAST KNOWN GOOD
+      // settings (initially the ones start() was called with) -- it must never
+      // fall open to "embed enabled", because embedding is outbound egress the
+      // operator may have deliberately switched off.
       if (options.resolveCycleSettings) {
         try {
-          live = options.resolveCycleSettings();
+          lastKnownSettings = options.resolveCycleSettings();
         } catch {
-          live = null;
+          // Keep lastKnownSettings as-is.
         }
       }
-      const embedEnabled = live ? live.embedSweep.enabled : true;
-      const embedMax = live ? live.embedSweep.max : options.max;
-      const consolidation = live ? live.consolidation : options.consolidation;
+      const embedEnabled = lastKnownSettings.embedSweep.enabled;
+      const embedMax = lastKnownSettings.embedSweep.max;
+      const consolidation = lastKnownSettings.consolidation;
 
       if (embedEnabled) {
         const result = await runCycle({

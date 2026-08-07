@@ -1,4 +1,9 @@
-import { getSupportedReasoningEfforts, type LLMConfig, type LLMReasoningEffort } from './llmModels';
+import {
+  getSupportedReasoningEfforts,
+  isDeepSeekProvider,
+  type LLMConfig,
+  type LLMReasoningEffort,
+} from './llmModels';
 import { chat, type ChatMessage } from './llmClient';
 import {
   attachAoiMemoryEmbeddings,
@@ -859,6 +864,19 @@ function extractJsonObject(raw: string): unknown {
   }
 }
 
+// Whether the model actually answered in the requested shape. "No memories" and
+// "unparseable prose" both yield an empty candidate list, and conflating them
+// made a completely broken distiller report as healthy: a model emitting
+// <think> prose instead of JSON scored the same as a turn that genuinely
+// carried nothing durable. The health panel needs to tell those apart.
+export function isAoiDistillerResponseWellFormed(raw: string): boolean {
+  const parsed = extractJsonObject(raw);
+  if (!parsed || typeof parsed !== 'object') {
+    return false;
+  }
+  return Array.isArray((parsed as { memories?: unknown }).memories);
+}
+
 export function parseAoiMemoryDistillerResponse(raw: string): AoiMemoryCandidate[] {
   const parsed = extractJsonObject(raw);
   if (!parsed || typeof parsed !== 'object') return [];
@@ -929,6 +947,15 @@ function truncateDistillerInput(value: string): string {
 export function pickAoiDistillerReasoningEffort(
   config: Pick<LLMConfig, 'provider' | 'model'>,
 ): LLMReasoningEffort {
+  // Provider first, model table second. getSupportedReasoningEfforts returns []
+  // for any model that does not declare supportedReasoningEfforts -- which
+  // includes deepseek-chat (a one-click preset) and every hand-typed DeepSeek
+  // model id. Those fell through to 'low', which is exactly the value that
+  // turns DeepSeek thinking ON. On this provider 'none' is always right and is
+  // the only value that disables it.
+  if (isDeepSeekProvider(config.provider)) {
+    return 'none';
+  }
   const supported = getSupportedReasoningEfforts(config.provider, config.model);
   if (supported.length === 0) {
     return 'low';
@@ -1028,25 +1055,45 @@ export function isAoiDistillerTimeoutError(error: unknown): boolean {
   return /timed out after \d+ms/.test(message);
 }
 
-// A permanent failure (bad key, unknown model, malformed request) will fail the
-// same way every time, so retrying only doubles the cost and the log noise.
-// Timeouts and transport errors are the transient ones worth one more try.
+// Every provider path formats its failure differently -- "LLM API error 429",
+// "Anthropic API error 529", "Responses API error 400", "Codex Auth error 500"
+// -- so the status code is pulled generically rather than matched against one
+// provider's prefix. Matching prose was actively wrong: "LLM API error 503:
+// upstream unavailable" was retried only because "upstream" contains "stream",
+// while Anthropic's canonical retryable 529 overload was classified permanent.
+export function parseAoiDistillerErrorStatus(error: unknown): number | null {
+  const message = error instanceof Error ? error.message : String(error);
+  const match = /\berror\s+(\d{3})\b/i.exec(message);
+  if (!match) {
+    return null;
+  }
+  const status = Number.parseInt(match[1], 10);
+  return status >= 100 && status <= 599 ? status : null;
+}
+
+// Retry only what a second attempt can plausibly fix: timeouts, rate limits,
+// request timeouts, overload, and 5xx. A 400/401/403/404 fails identically
+// every time, so retrying just doubles the cost and the log noise.
+const RETRYABLE_DISTILLER_STATUSES = new Set([408, 409, 425, 429, 500, 502, 503, 504, 529]);
+
 export function shouldRetryAoiDistiller(error: unknown): boolean {
   if (isAoiDistillerTimeoutError(error)) {
     return true;
   }
-  const message = error instanceof Error ? error.message : String(error);
-  if (/LLM API error (4\d\d)/.test(message)) {
-    return false;
+  const status = parseAoiDistillerErrorStatus(error);
+  if (status !== null) {
+    return RETRYABLE_DISTILLER_STATUSES.has(status);
   }
-  return /network|fetch|ECONN|socket|stream|aborted without reason/i.test(message);
+  // No status at all means it never reached the provider: a transport failure.
+  const message = error instanceof Error ? error.message : String(error);
+  return /network|failed to fetch|ECONN|socket hang up|aborted without reason/i.test(message);
 }
 
 async function runDistillerAttempt(
   params: AoiMemorySyncParams,
   config: LLMConfig,
   timeoutMs: number,
-): Promise<AoiMemoryCandidate[]> {
+): Promise<{ candidates: AoiMemoryCandidate[]; wellFormed: boolean }> {
   const distillerChat = params.distillerChat ?? chat;
   const abortController = new AbortController();
   try {
@@ -1057,11 +1104,29 @@ async function runDistillerAttempt(
       timeoutMs,
       'Aoi memory distiller',
     );
-    return parseAoiMemoryDistillerResponse(response.content);
+    const content = response.content ?? '';
+    return {
+      candidates: parseAoiMemoryDistillerResponse(content),
+      wellFormed: isAoiDistillerResponseWellFormed(content),
+    };
   } finally {
     // Always abort: on the timeout path this releases the still-open request
     // before the retry starts, so the two never run concurrently.
     abortController.abort();
+  }
+}
+
+// Diagnostics must never be able to eat the payload: a throwing recorder used
+// to land in the provider catch block, which discarded candidates the model had
+// already produced and paid for and then re-reported the turn as an error.
+function recordDistillerAttemptSafely(
+  record: (attempt: AoiDistillerAttempt) => void,
+  attempt: AoiDistillerAttempt,
+): void {
+  try {
+    record(attempt);
+  } catch (error) {
+    console.warn('[AoiMemory] distiller health recorder failed', error);
   }
 }
 
@@ -1073,26 +1138,19 @@ export async function distillAoiMemoryCandidatesWithLlm(
 
   const recordAttempt = params.recordDistillerAttempt ?? recordAoiDistillerAttempt;
   const startedAt = Date.now();
+  const timeouts = [DISTILLER_TIMEOUT_MS, DISTILLER_RETRY_TIMEOUT_MS];
   let attempts = 0;
   let lastError: unknown = null;
+  let result: { candidates: AoiMemoryCandidate[]; wellFormed: boolean } | null = null;
 
-  for (const timeoutMs of [DISTILLER_TIMEOUT_MS, DISTILLER_RETRY_TIMEOUT_MS]) {
+  for (const timeoutMs of timeouts) {
     attempts += 1;
     try {
-      const candidates = await runDistillerAttempt(params, config, timeoutMs);
-      recordAttempt({
-        outcome: candidates.length > 0 ? 'ok' : 'empty',
-        at: Date.now(),
-        durationMs: Date.now() - startedAt,
-        attempts,
-        candidateCount: candidates.length,
-        provider: config.provider,
-        model: config.model,
-      });
-      return candidates;
+      result = await runDistillerAttempt(params, config, timeoutMs);
+      break;
     } catch (error) {
       lastError = error;
-      if (!shouldRetryAoiDistiller(error) || attempts >= 2) {
+      if (!shouldRetryAoiDistiller(error) || attempts >= timeouts.length) {
         break;
       }
       console.info('[AoiMemory] distiller attempt failed; retrying once', {
@@ -1101,10 +1159,28 @@ export async function distillAoiMemoryCandidatesWithLlm(
     }
   }
 
-  recordAttempt({
+  // Recording happens OUTSIDE the provider try/catch so a failing recorder can
+  // never be mistaken for a provider failure.
+  if (result) {
+    recordDistillerAttemptSafely(recordAttempt, {
+      // A response the model did not put in the requested shape is a distiller
+      // failure, not a turn that carried nothing durable.
+      outcome: !result.wellFormed ? 'malformed' : result.candidates.length > 0 ? 'ok' : 'empty',
+      at: Date.now(),
+      totalDurationMs: Date.now() - startedAt,
+      attempts,
+      candidateCount: result.candidates.length,
+      provider: config.provider,
+      model: config.model,
+      ...(result.wellFormed ? {} : { reason: 'response was not the requested JSON shape' }),
+    });
+    return result.candidates;
+  }
+
+  recordDistillerAttemptSafely(recordAttempt, {
     outcome: isAoiDistillerTimeoutError(lastError) ? 'timeout' : 'error',
     at: Date.now(),
-    durationMs: Date.now() - startedAt,
+    totalDurationMs: Date.now() - startedAt,
     attempts,
     candidateCount: 0,
     provider: config.provider,
@@ -1320,6 +1396,7 @@ export async function syncAoiMemoryFromTurn(
 export async function syncAoiMemoryFromKiraAutomationEvent(
   sessionPath: string,
   event: AoiKiraAutomationEvent,
+  options?: { embeddingProvider?: AoiEmbeddingProvider | null },
 ): Promise<AoiMemoryEntry[]> {
   const candidates = buildAoiKiraAutomationMemoryCandidates(event);
   if (candidates.length === 0) {
@@ -1339,7 +1416,9 @@ export async function syncAoiMemoryFromKiraAutomationEvent(
   }
 
   const episode = await saveAoiMemoryEpisode(sessionPath, episodeInput);
-  return saveAoiMemoryCandidates(sessionPath, candidates, episode.id);
+  // Kira automation was the last capture path still writing memories with no
+  // vector, so those were stuck on lexical-only recall forever.
+  return saveAoiMemoryCandidates(sessionPath, candidates, episode.id, options);
 }
 
 export async function archiveAoiMemory(memoryId: string): Promise<AoiMemoryEntry[]> {

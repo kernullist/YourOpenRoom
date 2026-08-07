@@ -31,6 +31,7 @@ import {
   PROVIDER_MODELS,
   type LLMConfig,
 } from '../llmModels';
+import { KNOWN_CONFIG_KEYS } from '../configPersistence';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -561,6 +562,63 @@ describe('saveConfig()', () => {
       apiKey: 'tvly-existing',
       baseUrl: 'https://api.tavily.com/search',
     });
+  });
+
+  it('preserves EVERY unrelated persisted block when saving the main LLM settings', async () => {
+    // Generic guard for a recurring bug class: saveConfig used to copy forward a
+    // hand-maintained allow-list of keys, so every block added later
+    // (aoiMcpConnectors, then aoiMemoryMaintenance) was silently wiped the first
+    // time the user pressed Save. Any future key must survive without touching
+    // this test.
+    const untouchedKeys = KNOWN_CONFIG_KEYS.filter(
+      (key) => !['llm', 'dialogLlm', 'imageGen', 'kira', 'idaPe', 'tavily'].includes(key),
+    );
+    const existingConfig = Object.fromEntries(
+      untouchedKeys.map((key) => [key, { marker: `keep-${key}` }]),
+    );
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ llm: MOCK_ANTHROPIC_CONFIG, ...existingConfig }),
+      } as unknown as Response)
+      .mockResolvedValueOnce({ ok: true } as Response);
+    globalThis.fetch = mockFetch;
+
+    await saveConfig(MOCK_OPENAI_CONFIG);
+
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body as string);
+    for (const key of untouchedKeys) {
+      expect(body[key], `saveConfig dropped the "${key}" block`).toEqual({
+        marker: `keep-${key}`,
+      });
+    }
+    expect(body.llm).toEqual(MOCK_OPENAI_CONFIG);
+  });
+
+  it('still clears dialogLlm, imageGen, and idaPe when they are explicitly nulled', async () => {
+    // Preserve-by-default must not turn an explicit "clear this" into a no-op.
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            llm: MOCK_ANTHROPIC_CONFIG,
+            dialogLlm: { model: 'old-dialog' },
+            imageGen: { apiKey: 'old-image' },
+            idaPe: { mode: 'mcp-http' },
+          }),
+      } as unknown as Response)
+      .mockResolvedValueOnce({ ok: true } as Response);
+    globalThis.fetch = mockFetch;
+
+    await saveConfig(MOCK_OPENAI_CONFIG, null, null, null);
+
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body as string);
+    expect(body.dialogLlm).toBeUndefined();
+    expect(body.imageGen).toBeUndefined();
+    expect(body.idaPe).toBeUndefined();
   });
 
   it('preserves aoiMusicTaste and aoiMcpConnectors when saving the main LLM settings', async () => {

@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import { createHash, randomUUID } from 'crypto';
 import { dirname, isAbsolute, relative, resolve } from 'path';
 
-import { AOI_LOCAL_EMBEDDING_MODEL } from './aoiLocalEmbedding';
+import { AOI_LOCAL_EMBEDDING_MODEL } from './aoiLocalEmbeddingCore';
 import { selectAoiMemoryDecayCandidates } from './aoiMemoryDecay';
 import type { AoiMemoryEmbeddingStatus } from './aoiMemoryEmbeddingStatus';
 import type { AoiMemoryEntry } from './aoiMemoryShared';

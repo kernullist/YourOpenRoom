@@ -231,7 +231,9 @@ export interface PersistedConfig {
 const CONFIG_API = '/api/llm-config';
 const USER_PROFILE_STORAGE_KEY = 'webuiapps-user-profile';
 const CONVERSATION_PREFERENCES_STORAGE_KEY = 'webuiapps-conversation-preferences';
-const KNOWN_CONFIG_KEYS = [
+// Exported so a test can assert that every persisted block survives a partial
+// write, without that test needing its own copy of the list.
+export const KNOWN_CONFIG_KEYS = [
   'llm',
   'dialogLlm',
   'imageGen',

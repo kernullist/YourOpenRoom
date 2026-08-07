@@ -612,6 +612,40 @@ describe('shouldUseWebSearch()', () => {
     expect(shouldUseWebSearch('요즘 어떻게 지내?')).toBe(false);
     expect(shouldUseWebSearch('이 코드 확인해줘')).toBe(false);
   });
+
+  it('does not send ordinary coding requests to the web (freshness false positives)', () => {
+    // Every one of these searched the live web before the local-context gate:
+    // the volatile-fact list is full of words a security engineer uses about
+    // their own code (모델, 정책, 접근, 지원, 변경, 배포, 활성화).
+    const codingRequests = [
+      '변경 사항 확인해줘',
+      '모델 클래스 확인해줘',
+      '접근 지정자 확인해줘',
+      '드라이버 로드 정책 확인해줘',
+      '이 커널 모듈 지원 여부 확인해줘',
+      '기본값 확인해줘',
+      '현재 model 필드 타입 확인해줘',
+      '현재 정책 파일 내용 알아봐 줘',
+      '메모리 접근 위반 원인 알아봐 줘',
+      '지금 이 기능 활성화돼 있어?',
+      '이제 이거 배포해도 될까?',
+      'I have the model file open now, can you refactor it',
+      'can you do the model refactor today',
+      'have you finished the policy refactor now',
+    ];
+    for (const message of codingRequests) {
+      expect(shouldUseWebSearch(message), `should not web-search: ${message}`).toBe(false);
+    }
+  });
+
+  it('still searches when the freshness question is about the outside world', () => {
+    // The gate must not swallow the real use case it was built for.
+    expect(shouldUseWebSearch('Windows Recall은 지금 opt-in 이야?')).toBe(true);
+    expect(shouldUseWebSearch('DeepSeek 요금제 지금 어떻게 돼?')).toBe(true);
+    expect(shouldUseWebSearch('is Windows Recall still opt-in now?')).toBe(true);
+    // Explicit search requests bypass the local-context gate entirely.
+    expect(shouldUseWebSearch('이 코드 관련 최신 CVE 검색해줘')).toBe(true);
+  });
 });
 
 describe('memory prompt limits', () => {

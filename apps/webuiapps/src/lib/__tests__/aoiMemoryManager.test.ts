@@ -791,15 +791,88 @@ describe('Aoi LLM memory distiller', () => {
     expect(attempts[0].reason).toContain('401');
   });
 
-  it('classifies retryable versus permanent distiller failures', () => {
+  it('classifies retryable versus permanent distiller failures by status code', () => {
     expect(shouldRetryAoiDistiller(new Error('Aoi memory distiller timed out after 20000ms'))).toBe(
       true,
     );
     expect(shouldRetryAoiDistiller(new Error('network error'))).toBe(true);
+    // Retryable statuses, across every provider's message format -- matching one
+    // provider's prefix missed Anthropic's canonical 529 overload entirely.
+    expect(shouldRetryAoiDistiller(new Error('LLM API error 429: Rate limit reached'))).toBe(true);
+    expect(shouldRetryAoiDistiller(new Error('LLM API error 408: request timeout'))).toBe(true);
+    expect(shouldRetryAoiDistiller(new Error('LLM API error 500: internal error'))).toBe(true);
+    expect(shouldRetryAoiDistiller(new Error('Anthropic API error 529: overloaded_error'))).toBe(
+      true,
+    );
+    // Permanent: a second identical request cannot fix these.
     expect(shouldRetryAoiDistiller(new Error('LLM API error 400: bad request'))).toBe(false);
-    expect(shouldRetryAoiDistiller(new Error('LLM API error 500: server blew up'))).toBe(false);
+    expect(shouldRetryAoiDistiller(new Error('LLM API error 401: invalid api key'))).toBe(false);
+    expect(
+      shouldRetryAoiDistiller(new Error('Responses API error 400: Unsupported parameter')),
+    ).toBe(false);
+    // Was retried purely because "upstream" contains the substring "stream".
+    expect(shouldRetryAoiDistiller(new Error('Anthropic API error 400: upstream rejected'))).toBe(
+      false,
+    );
     expect(isAoiDistillerTimeoutError(new Error('timed out after 8000ms'))).toBe(true);
     expect(isAoiDistillerTimeoutError(new Error('nope'))).toBe(false);
+  });
+
+  it('disables thinking for every DeepSeek model, not just the ones with a table entry', () => {
+    // getSupportedReasoningEfforts returns [] for models that declare nothing,
+    // which sent deepseek-chat (a one-click preset) and any hand-typed id back
+    // to 'low' -- the value that turns DeepSeek thinking ON.
+    for (const model of [
+      'deepseek-v4-pro',
+      'deepseek-v4-flash',
+      'deepseek-chat',
+      'deepseek-v3.2',
+    ]) {
+      expect(pickAoiDistillerReasoningEffort({ provider: 'deepseek', model })).toBe('none');
+    }
+  });
+
+  it('reports a non-JSON distiller response as malformed rather than an empty turn', () => {
+    const attempts: AoiDistillerAttempt[] = [];
+    const distillerChat = async () => ({
+      content: '<think>Let me consider what to remember...</think> I could not decide.',
+      toolCalls: [],
+    });
+
+    return distillAoiMemoryCandidatesWithLlm({
+      sessionPath: 'aoi/default',
+      userMessage: '커널 드라이버 얘기 계속하자',
+      assistantMessage: '좋아, 이어서 보자.',
+      llmConfig: MOCK_LLM_CONFIG,
+      distillerChat,
+      recordDistillerAttempt: (attempt) => attempts.push(attempt),
+    }).then((candidates) => {
+      expect(candidates).toEqual([]);
+      expect(attempts[0]).toMatchObject({ outcome: 'malformed', candidateCount: 0 });
+    });
+  });
+
+  it('keeps candidates when the health recorder throws', () => {
+    // Diagnostics must never eat the payload the provider already produced.
+    const distillerChat = async () => ({
+      content: JSON.stringify({
+        memories: [{ scope: 'user', type: 'fact', content: 'User ships kernel drivers.' }],
+      }),
+      toolCalls: [],
+    });
+
+    return distillAoiMemoryCandidatesWithLlm({
+      sessionPath: 'aoi/default',
+      userMessage: '나는 커널 드라이버를 만든다',
+      assistantMessage: '기록해둘게.',
+      llmConfig: MOCK_LLM_CONFIG,
+      distillerChat,
+      recordDistillerAttempt: () => {
+        throw new Error('recorder exploded');
+      },
+    }).then((candidates) => {
+      expect(candidates).toHaveLength(1);
+    });
   });
 
   it('grounds the prompt with stored preferences and this-turn captures for dedupe', async () => {

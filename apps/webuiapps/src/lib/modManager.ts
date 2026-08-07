@@ -530,7 +530,7 @@ export class ModManager {
       return (
         `[Story Complete] All stages of "${this.config.mod_name_en}" have been completed. You are now in free conversation mode.\n` +
         'Free conversation rules:\n' +
-        '- Do not restart or continue the story script. Do not invent new fictional missions, quests, bounties, locations, or in-world documents.\n' +
+        '- Do not restart or continue the story script on your own, and do not invent new fictional missions, quests, bounties, locations, or in-world documents. If the user explicitly asks to continue or replay the story, follow their request.\n' +
         "- Keep your persona voice, but ground every proactive suggestion in something real: the apps in this room, the user's actual projects and memories, their learned music taste, live research, or current news.\n" +
         '- When you have nothing real to offer, ask one short genuine question or keep the reply brief instead of fabricating content.\n'
       );

@@ -1,5 +1,5 @@
 import type { AoiEmbeddingProvider } from './aoiMemoryEmbedding';
-import { AOI_LOCAL_EMBEDDING_MODEL } from './aoiLocalEmbedding';
+import { AOI_LOCAL_EMBEDDING_MODEL } from './aoiLocalEmbeddingCore';
 import {
   recordAoiMemoryRecallTrial,
   type AoiMemoryRecallTrial,

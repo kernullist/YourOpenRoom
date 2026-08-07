@@ -1004,8 +1004,15 @@ export function mergeAoiIdleMusicLearningStates(
   };
 }
 
-// Serialized fire-and-forget upload of the CURRENT localStorage state. Reads
-// happen at write time, so a burst of saves collapses into one config write.
+// Serialized fire-and-forget upload of the current localStorage state, MERGED
+// with whatever the server already holds.
+//
+// Merging on write is what makes the upload safe, not just tidy. The write path
+// used to assign the local state wholesale, so a browser whose hydrate had
+// failed (a transient config-API error leaves localStorage empty) would erase
+// the server's entire taste history on its very first YouTube search. Union
+// merge makes every write monotone: a browser that knows less can never
+// subtract, only add.
 let cloudWriteChain: Promise<void> = Promise.resolve();
 let cloudWriteQueued = false;
 
@@ -1016,19 +1023,30 @@ function scheduleAoiMusicCloudWrite(): void {
   cloudWriteQueued = true;
   cloudWriteChain = cloudWriteChain
     .then(async () => {
+      const existing = await loadPersistedConfig();
+      // Release the coalescing flag only after the read, so saves that arrive
+      // while this round trip is in flight are folded into THIS write instead
+      // of queueing another full config round trip each.
       cloudWriteQueued = false;
+      if (!existing) {
+        // Cannot read the current config (API down, or no config file yet):
+        // writing just this field could clobber every other persisted setting.
+        return;
+      }
+      const localTaste = loadAoiMusicTasteState();
+      const localIdle = loadAoiIdleMusicLearningState();
+      const cloudTaste = parseAoiMusicTasteState(existing.aoiMusicTaste?.taste);
+      const cloudIdle = parseAoiIdleMusicLearningState(existing.aoiMusicTaste?.idleLearning);
       const persisted: AoiMusicPersistedState = {
         version: 1,
         updatedAt: Date.now(),
-        taste: loadAoiMusicTasteState() as unknown as Record<string, unknown>,
-        idleLearning: loadAoiIdleMusicLearningState() as unknown as Record<string, unknown>,
+        taste: (cloudTaste
+          ? mergeAoiMusicTasteStates(localTaste, cloudTaste)
+          : localTaste) as unknown as Record<string, unknown>,
+        idleLearning: (cloudIdle
+          ? mergeAoiIdleMusicLearningStates(localIdle, cloudIdle)
+          : localIdle) as unknown as Record<string, unknown>,
       };
-      const existing = await loadPersistedConfig();
-      if (!existing) {
-        // Cannot read the current config (API down or no config yet): writing
-        // just this field could clobber every other persisted setting.
-        return;
-      }
       await savePersistedConfig({ ...existing, aoiMusicTaste: persisted });
     })
     .catch(() => {
@@ -1049,8 +1067,11 @@ export interface AoiMusicHydratedState {
 
 // Merge the server copy into this browser's localStorage on startup and return
 // the merged state for the in-memory refs. Null means the config API was
-// unreachable -- callers keep the local state they already loaded. A missing
-// or invalid server field still returns the local state and seeds the server.
+// unreachable OR no config file exists yet -- loadPersistedConfig cannot tell
+// those apart -- so callers keep the local state they already loaded and no
+// upload is attempted (writing a lone field could clobber a config this browser
+// failed to read). A server field that is merely missing or invalid still
+// returns the local state and seeds the server.
 export async function hydrateAoiMusicStateFromCloud(): Promise<AoiMusicHydratedState | null> {
   let cloudField: AoiMusicPersistedState | undefined;
   try {
