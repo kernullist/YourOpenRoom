@@ -1918,7 +1918,25 @@ function openVscodeManagerPlugin(): Plugin {
   };
 }
 
-/** LLM config persistence plugin — reads/writes config to ~/.openroom/config.json */
+/** Content-addressed version token for config.json, for optimistic concurrency. */
+function readLlmConfigWithEtag(): { content: string; etag: string } {
+  const content = fs.existsSync(LLM_CONFIG_FILE) ? fs.readFileSync(LLM_CONFIG_FILE, 'utf-8') : '{}';
+  return { content, etag: `"${createHash('sha256').update(content).digest('hex').slice(0, 32)}"` };
+}
+
+/**
+ * LLM config persistence plugin — reads/writes config to ~/.openroom/config.json
+ *
+ * config.json has several independent writers (the settings modal, the Tavily
+ * and embedding panels, the music-taste background sync, the Gmail token
+ * refresh, several apps). Every one of them does read-modify-write of the WHOLE
+ * file, so two overlapping writes silently drop whichever change landed first.
+ *
+ * GET therefore returns an ETag and POST honours If-Match: a writer that sends
+ * the token it read gets a 409 instead of clobbering a newer file, and can
+ * re-read and retry. Sending no If-Match keeps the old unconditional behavior,
+ * so writers that have not been migrated are unaffected.
+ */
 function llmConfigPlugin(): Plugin {
   return {
     name: 'llm-config',
@@ -1928,14 +1946,10 @@ function llmConfigPlugin(): Plugin {
 
         if (req.method === 'GET') {
           try {
-            if (fs.existsSync(LLM_CONFIG_FILE)) {
-              const content = fs.readFileSync(LLM_CONFIG_FILE, 'utf-8');
-              res.writeHead(200);
-              res.end(content);
-            } else {
-              res.writeHead(200);
-              res.end('{}');
-            }
+            const { content, etag } = readLlmConfigWithEtag();
+            res.setHeader('ETag', etag);
+            res.writeHead(200);
+            res.end(content);
           } catch (err) {
             res.writeHead(500);
             res.end(JSON.stringify({ error: String(err) }));
@@ -1951,8 +1965,32 @@ function llmConfigPlugin(): Plugin {
               const body = Buffer.concat(chunks).toString();
               // Validate JSON before writing
               JSON.parse(body);
+
+              const ifMatch = req.headers['if-match'];
+              const current = readLlmConfigWithEtag();
+              if (typeof ifMatch === 'string' && ifMatch !== '*' && ifMatch !== current.etag) {
+                res.setHeader('ETag', current.etag);
+                res.writeHead(409);
+                res.end(
+                  JSON.stringify({
+                    error: 'config.json changed since it was read; re-read and retry.',
+                    code: 'config_version_conflict',
+                  }),
+                );
+                return;
+              }
+
               fs.mkdirSync(resolve(os.homedir(), '.openroom'), { recursive: true });
-              fs.writeFileSync(LLM_CONFIG_FILE, body, 'utf-8');
+              // Atomic: a crash or a concurrent reader can never observe a
+              // half-written config (a torn read made the server fall back to
+              // env-only settings until the next write).
+              const tmp = `${LLM_CONFIG_FILE}.tmp-${process.pid}`;
+              fs.writeFileSync(tmp, body, 'utf-8');
+              fs.renameSync(tmp, LLM_CONFIG_FILE);
+              res.setHeader(
+                'ETag',
+                `"${createHash('sha256').update(body).digest('hex').slice(0, 32)}"`,
+              );
               res.writeHead(200);
               res.end(JSON.stringify({ ok: true }));
             } catch (err) {

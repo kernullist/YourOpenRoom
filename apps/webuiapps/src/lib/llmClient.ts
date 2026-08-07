@@ -25,7 +25,7 @@ import {
   loadPersistedConfig,
   normalizeResponseLanguageMode,
   normalizeUserProfileDisplayName,
-  savePersistedConfig,
+  updatePersistedConfig,
   type TavilyConfig,
 } from './configPersistence';
 import { normalizeTavilyConfig, saveTavilyConfigSync } from './tavilyClient';
@@ -151,78 +151,91 @@ export async function saveConfig(
 ): Promise<void> {
   localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
 
-  const existing = await loadPersistedConfig();
-  // Start from the FULL persisted config so a block this function does not know
-  // about survives the write. This used to be a hand-maintained allow-list of
-  // keys to copy forward, which silently dropped every block added later --
-  // aoiMcpConnectors and aoiMemoryMaintenance were both wiped the first time
-  // the user pressed Save in the settings modal. Preserve by default; the
-  // fields below then explicitly set or delete the ones this function owns.
-  const persisted: import('./configPersistence').PersistedConfig = {
-    ...(existing ?? {}),
-    llm: config,
-  };
-  // undefined means "leave it alone" (the spread above already carried it
-  // forward); an explicit null/empty means "clear it", which now needs an
-  // explicit delete because the base object preserves everything.
-  if (dialogLlmConfig && Object.keys(dialogLlmConfig).length > 0) {
-    persisted.dialogLlm = dialogLlmConfig;
-  } else if (dialogLlmConfig !== undefined) {
-    delete persisted.dialogLlm;
-  }
-  if (imageGenConfig) {
-    persisted.imageGen = imageGenConfig;
-  } else if (imageGenConfig !== undefined) {
-    delete persisted.imageGen;
-  }
-  if (kiraConfig && Object.keys(kiraConfig).length > 0) {
-    persisted.kira = kiraConfig;
-  } else if (kiraConfig !== undefined) {
-    delete persisted.kira;
-  }
-  if (idaPeConfig) {
-    persisted.idaPe = idaPeConfig;
-  } else if (idaPeConfig !== undefined) {
-    delete persisted.idaPe;
-  }
-  if (tavilyConfig !== undefined) {
-    const normalizedTavilyConfig = normalizeTavilyConfig(tavilyConfig);
-    saveTavilyConfigSync(normalizedTavilyConfig);
-    if (normalizedTavilyConfig) {
-      persisted.tavily = normalizedTavilyConfig;
-    } else {
-      delete persisted.tavily;
-    }
-  } else if (existing?.tavily) {
-    persisted.tavily = normalizeTavilyConfig(existing.tavily) ?? existing.tavily;
-  }
-  const normalizedDisplayName = normalizeUserProfileDisplayName(userProfileConfig?.displayName);
-  if (normalizedDisplayName) {
-    persisted.userProfile = { displayName: normalizedDisplayName };
-  } else if (userProfileConfig === undefined && existing?.userProfile) {
-    persisted.userProfile = existing.userProfile;
-  } else if (userProfileConfig !== undefined) {
-    delete persisted.userProfile;
-  }
-  if (conversationPreferencesConfig) {
-    persisted.conversationPreferences = {
-      responseLanguageMode: normalizeResponseLanguageMode(
-        conversationPreferencesConfig.responseLanguageMode,
-      ),
-      ttsEnabled: conversationPreferencesConfig.ttsEnabled === true,
-      ttsPreloadCommonPhrases: conversationPreferencesConfig.ttsPreloadCommonPhrases !== false,
-      ...(conversationPreferencesConfig.operatorVoicePolicy
-        ? { operatorVoicePolicy: conversationPreferencesConfig.operatorVoicePolicy }
-        : {}),
-    };
-  } else if (conversationPreferencesConfig === undefined && existing?.conversationPreferences) {
-    persisted.conversationPreferences = existing.conversationPreferences;
-  } else if (conversationPreferencesConfig !== undefined) {
-    delete persisted.conversationPreferences;
+  // localStorage side effects run once, not once per concurrency retry.
+  const normalizedTavilyForCache =
+    tavilyConfig !== undefined ? normalizeTavilyConfig(tavilyConfig) : undefined;
+  if (normalizedTavilyForCache !== undefined) {
+    saveTavilyConfigSync(normalizedTavilyForCache);
   }
 
+  const applyToPersistedConfig = (
+    existing: import('./configPersistence').PersistedConfig,
+  ): import('./configPersistence').PersistedConfig => {
+    // Start from the FULL persisted config so a block this function does not know
+    // about survives the write. This used to be a hand-maintained allow-list of
+    // keys to copy forward, which silently dropped every block added later --
+    // aoiMcpConnectors and aoiMemoryMaintenance were both wiped the first time
+    // the user pressed Save in the settings modal. Preserve by default; the
+    // fields below then explicitly set or delete the ones this function owns.
+    const persisted: import('./configPersistence').PersistedConfig = {
+      ...existing,
+      llm: config,
+    };
+    // undefined means "leave it alone" (the spread above already carried it
+    // forward); an explicit null/empty means "clear it", which now needs an
+    // explicit delete because the base object preserves everything.
+    if (dialogLlmConfig && Object.keys(dialogLlmConfig).length > 0) {
+      persisted.dialogLlm = dialogLlmConfig;
+    } else if (dialogLlmConfig !== undefined) {
+      delete persisted.dialogLlm;
+    }
+    if (imageGenConfig) {
+      persisted.imageGen = imageGenConfig;
+    } else if (imageGenConfig !== undefined) {
+      delete persisted.imageGen;
+    }
+    if (kiraConfig && Object.keys(kiraConfig).length > 0) {
+      persisted.kira = kiraConfig;
+    } else if (kiraConfig !== undefined) {
+      delete persisted.kira;
+    }
+    if (idaPeConfig) {
+      persisted.idaPe = idaPeConfig;
+    } else if (idaPeConfig !== undefined) {
+      delete persisted.idaPe;
+    }
+    if (normalizedTavilyForCache !== undefined) {
+      if (normalizedTavilyForCache) {
+        persisted.tavily = normalizedTavilyForCache;
+      } else {
+        delete persisted.tavily;
+      }
+    } else if (existing.tavily) {
+      persisted.tavily = normalizeTavilyConfig(existing.tavily) ?? existing.tavily;
+    }
+    const normalizedDisplayName = normalizeUserProfileDisplayName(userProfileConfig?.displayName);
+    if (normalizedDisplayName) {
+      persisted.userProfile = { displayName: normalizedDisplayName };
+    } else if (userProfileConfig === undefined && existing?.userProfile) {
+      persisted.userProfile = existing.userProfile;
+    } else if (userProfileConfig !== undefined) {
+      delete persisted.userProfile;
+    }
+    if (conversationPreferencesConfig) {
+      persisted.conversationPreferences = {
+        responseLanguageMode: normalizeResponseLanguageMode(
+          conversationPreferencesConfig.responseLanguageMode,
+        ),
+        ttsEnabled: conversationPreferencesConfig.ttsEnabled === true,
+        ttsPreloadCommonPhrases: conversationPreferencesConfig.ttsPreloadCommonPhrases !== false,
+        ...(conversationPreferencesConfig.operatorVoicePolicy
+          ? { operatorVoicePolicy: conversationPreferencesConfig.operatorVoicePolicy }
+          : {}),
+      };
+    } else if (conversationPreferencesConfig === undefined && existing.conversationPreferences) {
+      persisted.conversationPreferences = existing.conversationPreferences;
+    } else if (conversationPreferencesConfig !== undefined) {
+      delete persisted.conversationPreferences;
+    }
+
+    return persisted;
+  };
+
   try {
-    await savePersistedConfig(persisted);
+    // Retries the whole read-modify-write against a fresh read when another
+    // writer (music-taste sync, Gmail token refresh, a settings panel) lands
+    // between our read and our write.
+    await updatePersistedConfig(applyToPersistedConfig, { createIfMissing: true });
   } catch {
     // Keep localStorage in sync even when the dev-server config API is unavailable.
   }

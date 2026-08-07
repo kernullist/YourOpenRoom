@@ -81,7 +81,12 @@ export interface AoiMemoryEntry {
   hits: number;
   createdAt: number;
   updatedAt: number;
+  // When this memory was last SELECTED into a prompt, and how many times.
+  // `hits` counts re-capture (the same fact being learned again); these count
+  // usage. A memory Aoi actually recalls is worth more than one that merely
+  // got written twice, and decay should not treat it as unused.
   lastAccessedAt?: number;
+  recallHits?: number;
   expiresAt?: number;
   permanent?: boolean;
   sourceEpisodeIds: string[];
@@ -132,6 +137,9 @@ export interface AoiMemorySyncParams {
   toolCalls?: string[];
   source?: AoiMemoryEpisodeSource;
   llmConfig?: LLMConfig | null;
+  // Used for distillation when llmConfig is a CLI/auth provider the distiller
+  // cannot call. Typically the (cheaper) dialog model.
+  distillerFallbackConfig?: LLMConfig | null;
   llmDistiller?: boolean;
   distillerChat?: AoiMemoryDistillerChat;
   embeddingProvider?: AoiEmbeddingProvider | null;
@@ -907,16 +915,41 @@ export function parseAoiMemoryDistillerResponse(raw: string): AoiMemoryCandidate
   return candidates;
 }
 
+// The CLI/auth providers reach their model by spawning a process per call
+// (multi-second startup, a 180s command timeout), which is far too slow for a
+// per-turn side channel -- so the distiller cannot run on them directly.
+function isProcessSpawnProvider(provider: LLMConfig['provider']): boolean {
+  return provider === 'codex-auth' || provider === 'codex-cli' || provider === 'claude-cli';
+}
+
 function hasUsableDistillerConfig(config: LLMConfig | null | undefined): config is LLMConfig {
   if (!config?.model.trim()) return false;
-  if (
-    config.provider === 'codex-auth' ||
-    config.provider === 'codex-cli' ||
-    config.provider === 'claude-cli'
-  ) {
+  if (isProcessSpawnProvider(config.provider)) {
     return false;
   }
   return Boolean(config.baseUrl.trim());
+}
+
+/**
+ * Pick the config the distiller should actually run on.
+ *
+ * When the main model is a CLI/auth provider the distiller used to be skipped
+ * entirely, so those users got regex-only capture forever -- no interests, no
+ * inferred preferences, none of the memories the heuristics cannot see. Any
+ * HTTP-capable config the user has already set up (typically the cheaper dialog
+ * model) is a perfectly good extractor, so it is used as a fallback.
+ */
+export function resolveAoiDistillerConfig(
+  main: LLMConfig | null | undefined,
+  fallback?: LLMConfig | null,
+): LLMConfig | null {
+  if (hasUsableDistillerConfig(main)) {
+    return main;
+  }
+  if (hasUsableDistillerConfig(fallback)) {
+    return fallback;
+  }
+  return null;
 }
 
 function shouldRunLlmDistiller(params: AoiMemorySyncParams, heuristicCount: number): boolean {
@@ -1133,8 +1166,8 @@ function recordDistillerAttemptSafely(
 export async function distillAoiMemoryCandidatesWithLlm(
   params: AoiMemorySyncParams,
 ): Promise<AoiMemoryCandidate[]> {
-  const config = params.llmConfig;
-  if (!hasUsableDistillerConfig(config)) return [];
+  const config = resolveAoiDistillerConfig(params.llmConfig, params.distillerFallbackConfig);
+  if (!config) return [];
 
   const recordAttempt = params.recordDistillerAttempt ?? recordAoiDistillerAttempt;
   const startedAt = Date.now();
@@ -1251,6 +1284,93 @@ export async function saveAoiManualMemory(
   return saveAoiMemoryCandidates(sessionPath, [candidate], episode.id, options);
 }
 
+// --- Legacy store migration --------------------------------------------------
+//
+// The pre-v2 store lives per session at {charId}/{modId}/memory/*.json. It has
+// no permanent flag, no confidence, recency-only recall, and it is destroyed by
+// a session reset. v2 replaced it, but entries written before the switch are
+// still on disk and would simply vanish once nothing reads them -- so they are
+// carried over once, tagged, and the source directory is marked as migrated.
+
+const LEGACY_MIGRATION_MARKER = '.migrated-to-memory-v2.json';
+
+const LEGACY_CATEGORY_TO_AOI_TYPE: Record<string, AoiMemoryType> = {
+  fact: 'fact',
+  preference: 'preference',
+  event: 'event',
+  emotion: 'emotion',
+  other: 'fact',
+};
+
+export interface LegacyMemoryMigrationResult {
+  migrated: number;
+  skipped: boolean;
+}
+
+/**
+ * Copy any pre-v2 memories for this session into memory-v2, once.
+ *
+ * Idempotent twice over: a marker file records that the directory was handled,
+ * and mergeAoiMemoryCandidates dedupes by normalized content anyway. Nothing is
+ * deleted -- the legacy files stay where they are as a backstop.
+ */
+export async function migrateLegacyMemoriesToAoi(
+  sessionPath: string,
+  options?: { embeddingProvider?: AoiEmbeddingProvider | null },
+): Promise<LegacyMemoryMigrationResult> {
+  const dir = `${normalizeSessionPathForStorage(sessionPath)}/memory`;
+  const files = await listJsonFiles(dir);
+  if (files.length === 0) {
+    return { migrated: 0, skipped: true };
+  }
+  if (files.some((file) => file.path.endsWith(LEGACY_MIGRATION_MARKER))) {
+    return { migrated: 0, skipped: true };
+  }
+
+  const results = await batchConcurrent(files, (file) =>
+    readJson<{ content?: unknown; category?: unknown; createdAt?: unknown }>(file.path),
+  );
+  const candidates: AoiMemoryCandidate[] = [];
+  for (const result of results) {
+    const entry = result.status === 'fulfilled' ? result.value : null;
+    const content = typeof entry?.content === 'string' ? entry.content : '';
+    if (!content.trim() || containsAoiSensitiveContent(content)) {
+      continue;
+    }
+    const category = typeof entry?.category === 'string' ? entry.category : 'other';
+    const candidate = normalizeAoiMemoryCandidate({
+      scope: 'user',
+      type: LEGACY_CATEGORY_TO_AOI_TYPE[category] ?? 'fact',
+      content,
+      // Mid confidence: these were captured by the old heuristics with no
+      // scoring at all, so they should not outrank real v2 evidence.
+      importance: 0.6,
+      confidence: 0.6,
+      tags: ['legacy-migrated', category],
+    });
+    if (candidate) {
+      candidates.push(candidate);
+    }
+  }
+
+  if (candidates.length > 0) {
+    const episode = await saveAoiMemoryEpisode(sessionPath, {
+      source: 'manual_memory',
+      userMessage: 'Migrated pre-v2 memories for this session.',
+      assistantMessage: '',
+      toolCalls: ['migrate_legacy_memories'],
+      outcome: `migrated ${candidates.length} legacy memories`,
+    });
+    await saveAoiMemoryCandidates(sessionPath, candidates, episode.id, options);
+  }
+
+  await writeJson(`${dir}/${LEGACY_MIGRATION_MARKER}`, {
+    migratedAt: Date.now(),
+    migratedCount: candidates.length,
+  });
+  return { migrated: candidates.length, skipped: false };
+}
+
 // Persist a structured preference memory from an answered preference poll. The
 // answer is an explicit user choice (a tapped chip or a dashboard pick), so it is
 // written directly as a candidate -- no LLM distillation -- and then flows into
@@ -1355,7 +1475,7 @@ export async function syncAoiMemoryFromTurn(
     assistantMessage: params.assistantMessage,
   });
   if (
-    hasUsableDistillerConfig(params.llmConfig) &&
+    resolveAoiDistillerConfig(params.llmConfig, params.distillerFallbackConfig) &&
     shouldRunLlmDistiller(params, candidates.length)
   ) {
     try {
@@ -1432,6 +1552,41 @@ export async function archiveAoiMemory(memoryId: string): Promise<AoiMemoryEntry
   };
   await writeJson(memoryFilePath(memoryId), archived);
   return loadAoiMemories();
+}
+
+// --- Recall usage feedback ----------------------------------------------------
+
+const MAX_RECALL_HITS = 50;
+
+export function applyAoiMemoryRecallUsage(
+  memory: AoiMemoryEntry,
+  now = Date.now(),
+): AoiMemoryEntry {
+  return {
+    ...memory,
+    lastAccessedAt: now,
+    recallHits: Math.min(MAX_RECALL_HITS, (memory.recallHits ?? 0) + 1),
+  };
+}
+
+/**
+ * Record that these memories were actually recalled into a prompt.
+ *
+ * `updatedAt` is deliberately NOT touched: it drives the decay age check, and
+ * bumping it would make recall silently reset the forgetting clock rather than
+ * merely inform it. Best-effort and fire-and-forget -- a failed write only
+ * costs a usage signal, never the turn.
+ */
+export async function recordAoiMemoryRecallUsage(
+  memories: AoiMemoryEntry[],
+  now = Date.now(),
+): Promise<void> {
+  if (memories.length === 0) {
+    return;
+  }
+  await batchConcurrent(memories, (memory) =>
+    writeJson(memoryFilePath(memory.id), applyAoiMemoryRecallUsage(memory, now)),
+  );
 }
 
 export async function saveAoiPreferenceMemory(memoryId: string): Promise<AoiMemoryEntry[]> {
@@ -1564,6 +1719,10 @@ export function scoreAoiMemoryForQuery(
       : 0;
   const relevance = Math.max(lexical, semantic);
   const hitBoost = Math.min(0.12, memory.hits * 0.015);
+  // Usage feedback: a memory Aoi keeps actually recalling has proven itself in
+  // a way re-capture count cannot. Capped below hitBoost so it nudges the
+  // ranking without letting one hot memory pin the top of every prompt.
+  const recallBoost = Math.min(0.08, (memory.recallHits ?? 0) * 0.01);
   const scopeBoost = memory.scope === 'user' || memory.scope === 'agent' ? 0.06 : 0;
   const conversationContextBoost = scoreConversationContextPromptBoost(memory, query);
   const permanentBoost = memory.permanent
@@ -1577,6 +1736,7 @@ export function scoreAoiMemoryForQuery(
     recency * 0.12 +
     relevance * 0.22 +
     hitBoost +
+    recallBoost +
     scopeBoost +
     conversationContextBoost +
     permanentBoost

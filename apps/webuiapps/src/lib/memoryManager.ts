@@ -119,7 +119,13 @@ export async function loadMemories(sessionPath: string): Promise<MemoryEntry[]> 
   }
 }
 
-/** Save a single memory entry */
+/**
+ * Save a single legacy memory entry.
+ *
+ * @deprecated The durable store is memory-v2 (aoiMemoryManager). This remains
+ * only so already-written entries can be read and migrated; nothing should
+ * create new legacy entries.
+ */
 export async function saveMemory(
   sessionPath: string,
   content: string,
@@ -158,16 +164,21 @@ export async function saveMemory(
   return entry;
 }
 
-/** Execute the save_memory tool call */
-export async function executeMemoryTool(
-  sessionPath: string,
-  params: Record<string, string>,
-): Promise<string> {
+/**
+ * Format the save_memory tool result.
+ *
+ * This used to also WRITE a legacy entry. The durable store is memory-v2 now
+ * (global, permanent-flag aware, survives a session reset), and the caller
+ * writes there; a second copy in the per-session store only shadowed it with a
+ * weaker record that recency-ranked its way into the prompt twice.
+ */
+export function formatMemoryToolResult(params: Record<string, string>): string {
   const { content, category } = params;
   if (!content) return 'error: missing content';
-
-  const entry = await saveMemory(sessionPath, content, category || 'other');
-  return `Memory saved: [${entry.category}] ${entry.content}`;
+  const normalizedCategory = (
+    ['fact', 'preference', 'event', 'emotion'].includes(category) ? category : 'other'
+  ) as MemoryEntry['category'];
+  return `Memory saved: [${normalizedCategory}] ${content}`;
 }
 
 // ---------------------------------------------------------------------------

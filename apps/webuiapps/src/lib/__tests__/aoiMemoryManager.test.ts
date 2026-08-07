@@ -11,9 +11,11 @@ import {
   loadAoiRecentMemoryEpisodes,
   selectAoiSharedEpisodesForPrompt,
   type AoiMemoryEpisode,
+  applyAoiMemoryRecallUsage,
   distillAoiMemoryCandidatesWithLlm,
   isAoiDistillerTimeoutError,
   pickAoiDistillerReasoningEffort,
+  resolveAoiDistillerConfig,
   shouldRetryAoiDistiller,
   extractHeuristicAoiMemoryCandidates,
   forgetAoiPreferencePollMemory,
@@ -78,6 +80,8 @@ function makeMemory(partial: Partial<AoiMemoryEntry>): AoiMemoryEntry {
     sourceEpisodeIds: partial.sourceEpisodeIds ?? ['ep-1'],
     tags: partial.tags ?? [],
     entities: partial.entities ?? [],
+    ...(partial.lastAccessedAt ? { lastAccessedAt: partial.lastAccessedAt } : {}),
+    ...(partial.recallHits ? { recallHits: partial.recallHits } : {}),
     ...(partial.expiresAt ? { expiresAt: partial.expiresAt } : {}),
     ...(partial.permanent ? { permanent: partial.permanent } : {}),
     ...(partial.supersedes ? { supersedes: partial.supersedes } : {}),
@@ -387,6 +391,35 @@ describe('mergeAoiMemoryCandidates()', () => {
 
     expect(prompt).toContain('kernullist <gloryo@naver.com>');
     expect(prompt).not.toContain('Old Name');
+  });
+
+  it('boosts memories Aoi actually recalls, separately from re-capture hits', () => {
+    const recalled = makeMemory({
+      id: 'memory-recalled',
+      content: 'User debugs kernel drivers with IDA first.',
+      normalizedContent: 'user debugs kernel drivers with ida first.',
+      recallHits: 8,
+    });
+    const never = makeMemory({
+      id: 'memory-never-recalled',
+      content: 'User debugs kernel drivers with IDA first (dup).',
+      normalizedContent: 'user debugs kernel drivers with ida first (dup).',
+    });
+
+    // Identical on every other axis, so the ordering is the recall signal alone.
+    expect(scoreAoiMemoryForQuery(recalled, '커널 디버깅')).toBeGreaterThan(
+      scoreAoiMemoryForQuery(never, '커널 디버깅'),
+    );
+  });
+
+  it('stamps recall usage without resetting the decay clock', () => {
+    const memory = makeMemory({ id: 'memory-used', updatedAt: 1000, recallHits: 2 });
+    const used = applyAoiMemoryRecallUsage(memory, 9_999);
+
+    expect(used.recallHits).toBe(3);
+    expect(used.lastAccessedAt).toBe(9_999);
+    // updatedAt drives decay age; recall must inform forgetting, not cancel it.
+    expect(used.updatedAt).toBe(1000);
   });
 
   it('skips an over-budget memory instead of ending selection at it', () => {
@@ -816,6 +849,53 @@ describe('Aoi LLM memory distiller', () => {
     );
     expect(isAoiDistillerTimeoutError(new Error('timed out after 8000ms'))).toBe(true);
     expect(isAoiDistillerTimeoutError(new Error('nope'))).toBe(false);
+  });
+
+  it('falls back to an HTTP config when the main model is a CLI provider', () => {
+    const cliMain: LLMConfig = {
+      provider: 'claude-cli',
+      apiKey: '',
+      baseUrl: '',
+      model: 'opus',
+      command: 'claude',
+    };
+
+    // Without a fallback the distiller is skipped entirely, which left CLI
+    // users on regex-only capture forever.
+    expect(resolveAoiDistillerConfig(cliMain, null)).toBeNull();
+    expect(resolveAoiDistillerConfig(cliMain, MOCK_LLM_CONFIG)).toBe(MOCK_LLM_CONFIG);
+    // A usable main config always wins over the fallback.
+    expect(resolveAoiDistillerConfig(MOCK_LLM_CONFIG, { ...MOCK_LLM_CONFIG, model: 'other' })).toBe(
+      MOCK_LLM_CONFIG,
+    );
+    // Two CLI configs stay unusable rather than spawning a process per turn.
+    expect(resolveAoiDistillerConfig(cliMain, { ...cliMain, provider: 'codex-cli' })).toBeNull();
+  });
+
+  it('runs the distiller on the fallback config when the main one is CLI', async () => {
+    const seen: LLMConfig[] = [];
+    const distillerChat = async (_m: ChatMessage[], _t: ToolDef[], config: LLMConfig) => {
+      seen.push(config);
+      return {
+        content: JSON.stringify({
+          memories: [{ scope: 'user', type: 'fact', content: 'User ships kernel drivers.' }],
+        }),
+        toolCalls: [],
+      };
+    };
+
+    const candidates = await distillAoiMemoryCandidatesWithLlm({
+      sessionPath: 'aoi/default',
+      userMessage: '나는 커널 드라이버를 만든다',
+      assistantMessage: '기록해둘게.',
+      llmConfig: { provider: 'codex-cli', apiKey: '', baseUrl: '', model: 'gpt-5.5' },
+      distillerFallbackConfig: MOCK_LLM_CONFIG,
+      distillerChat,
+      recordDistillerAttempt: () => undefined,
+    });
+
+    expect(candidates).toHaveLength(1);
+    expect(seen[0].provider).toBe('openai');
   });
 
   it('disables thinking for every DeepSeek model, not just the ones with a table entry', () => {

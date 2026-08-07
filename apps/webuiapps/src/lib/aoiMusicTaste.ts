@@ -16,7 +16,7 @@ import {
 } from './aoiIdleMusicNudge';
 import {
   loadPersistedConfig,
-  savePersistedConfig,
+  updatePersistedConfig,
   type AoiMusicPersistedState,
 } from './configPersistence';
 
@@ -1023,31 +1023,30 @@ function scheduleAoiMusicCloudWrite(): void {
   cloudWriteQueued = true;
   cloudWriteChain = cloudWriteChain
     .then(async () => {
-      const existing = await loadPersistedConfig();
-      // Release the coalescing flag only after the read, so saves that arrive
-      // while this round trip is in flight are folded into THIS write instead
-      // of queueing another full config round trip each.
+      // updatePersistedConfig re-reads (and re-merges) on a version conflict,
+      // so a settings save that lands mid-flight is not clobbered by this
+      // background writer.
+      await updatePersistedConfig((existing) => {
+        // Release the coalescing flag once we are inside a read-modify-write
+        // cycle: saves arriving from here on need their own round trip.
+        cloudWriteQueued = false;
+        const localTaste = loadAoiMusicTasteState();
+        const localIdle = loadAoiIdleMusicLearningState();
+        const cloudTaste = parseAoiMusicTasteState(existing.aoiMusicTaste?.taste);
+        const cloudIdle = parseAoiIdleMusicLearningState(existing.aoiMusicTaste?.idleLearning);
+        const persisted: AoiMusicPersistedState = {
+          version: 1,
+          updatedAt: Date.now(),
+          taste: (cloudTaste
+            ? mergeAoiMusicTasteStates(localTaste, cloudTaste)
+            : localTaste) as unknown as Record<string, unknown>,
+          idleLearning: (cloudIdle
+            ? mergeAoiIdleMusicLearningStates(localIdle, cloudIdle)
+            : localIdle) as unknown as Record<string, unknown>,
+        };
+        return { ...existing, aoiMusicTaste: persisted };
+      });
       cloudWriteQueued = false;
-      if (!existing) {
-        // Cannot read the current config (API down, or no config file yet):
-        // writing just this field could clobber every other persisted setting.
-        return;
-      }
-      const localTaste = loadAoiMusicTasteState();
-      const localIdle = loadAoiIdleMusicLearningState();
-      const cloudTaste = parseAoiMusicTasteState(existing.aoiMusicTaste?.taste);
-      const cloudIdle = parseAoiIdleMusicLearningState(existing.aoiMusicTaste?.idleLearning);
-      const persisted: AoiMusicPersistedState = {
-        version: 1,
-        updatedAt: Date.now(),
-        taste: (cloudTaste
-          ? mergeAoiMusicTasteStates(localTaste, cloudTaste)
-          : localTaste) as unknown as Record<string, unknown>,
-        idleLearning: (cloudIdle
-          ? mergeAoiIdleMusicLearningStates(localIdle, cloudIdle)
-          : localIdle) as unknown as Record<string, unknown>,
-      };
-      await savePersistedConfig({ ...existing, aoiMusicTaste: persisted });
     })
     .catch(() => {
       cloudWriteQueued = false;

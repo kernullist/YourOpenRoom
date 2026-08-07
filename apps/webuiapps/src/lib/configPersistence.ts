@@ -325,10 +325,32 @@ function isLegacyConfig(obj: unknown): obj is LLMConfig {
  * Handles legacy flat LLMConfig format for backward compatibility.
  * Returns null if the API is unavailable or the file doesn't exist.
  */
+// Version token of the last config read, used as If-Match on the next write.
+// config.json has several independent whole-file writers, so without this an
+// overlapping write silently drops whichever change landed first.
+let lastKnownConfigEtag: string | null = null;
+
+export class ConfigVersionConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ConfigVersionConflictError';
+  }
+}
+
+export function isConfigVersionConflict(error: unknown): boolean {
+  return error instanceof ConfigVersionConflictError;
+}
+
+// Test seam: forget the cached token so a fresh read is required.
+export function resetPersistedConfigVersion(): void {
+  lastKnownConfigEtag = null;
+}
+
 export async function loadPersistedConfig(): Promise<PersistedConfig | null> {
   try {
     const res = await fetch(CONFIG_API);
     if (res.ok) {
+      lastKnownConfigEtag = res.headers?.get?.('ETag') ?? null;
       const data: unknown = await res.json();
       if (isLegacyConfig(data)) {
         return { llm: data };
@@ -349,25 +371,80 @@ export async function loadPersistedConfig(): Promise<PersistedConfig | null> {
 
 /**
  * Save the full config to ~/.openroom/config.json via the dev-server API.
- * Writes the unified config object as-is.
+ *
+ * Sends If-Match with the token from the last read, so a write that would
+ * clobber a newer file fails with ConfigVersionConflictError instead. Callers
+ * that own a read-modify-write cycle should use updatePersistedConfig, which
+ * re-reads and retries for them.
  */
 export async function savePersistedConfig(config: PersistedConfig): Promise<void> {
   const res = await fetch(CONFIG_API, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(lastKnownConfigEtag ? { 'If-Match': lastKnownConfigEtag } : {}),
+    },
     body: JSON.stringify(config),
   });
 
-  if (!res.ok) {
-    let detail = `Config API error ${res.status}`;
-    try {
-      const data = (await res.json()) as { error?: string };
-      if (data?.error) detail = data.error;
-    } catch {
-      // Ignore JSON parse errors and keep the generic message.
-    }
-    throw new Error(detail);
+  if (res.ok) {
+    lastKnownConfigEtag = res.headers?.get?.('ETag') ?? null;
+    return;
   }
+
+  let detail = `Config API error ${res.status}`;
+  try {
+    const data = (await res.json()) as { error?: string };
+    if (data?.error) detail = data.error;
+  } catch {
+    // Ignore JSON parse errors and keep the generic message.
+  }
+  if (res.status === 409) {
+    // Our snapshot is stale; drop the token so the retry re-reads.
+    lastKnownConfigEtag = null;
+    throw new ConfigVersionConflictError(detail);
+  }
+  throw new Error(detail);
+}
+
+const MAX_CONFIG_UPDATE_ATTEMPTS = 4;
+
+/**
+ * Read-modify-write one part of config.json safely.
+ *
+ * The mutator receives the CURRENT config (never a cached copy) and returns the
+ * object to write. On a version conflict the whole cycle is retried against the
+ * newly-read config, so a concurrent writer's change is preserved instead of
+ * being overwritten. Returns false when the config could not be read at all.
+ */
+export async function updatePersistedConfig(
+  mutate: (current: PersistedConfig) => PersistedConfig | Promise<PersistedConfig>,
+  options?: {
+    // Write against an empty config when none exists yet. Explicit user saves
+    // need this (a fresh install has no config.json and must still be able to
+    // store the first model); background writers must NOT, because they cannot
+    // tell "no config" apart from "could not read the config" and would clobber
+    // every other setting.
+    createIfMissing?: boolean;
+  },
+): Promise<boolean> {
+  for (let attempt = 0; attempt < MAX_CONFIG_UPDATE_ATTEMPTS; attempt += 1) {
+    const loaded = await loadPersistedConfig();
+    const current = loaded ?? (options?.createIfMissing ? {} : null);
+    if (!current) {
+      return false;
+    }
+    try {
+      await savePersistedConfig(await mutate(current));
+      return true;
+    } catch (error) {
+      if (!isConfigVersionConflict(error) || attempt === MAX_CONFIG_UPDATE_ATTEMPTS - 1) {
+        throw error;
+      }
+      // Another writer won the race; loop to re-read and re-apply.
+    }
+  }
+  return false;
 }
 
 /**
@@ -378,14 +455,18 @@ export async function saveAoiEmbeddingConfig(
   config: Partial<AoiEmbeddingConfig> | null,
 ): Promise<void> {
   const normalized = normalizeAoiEmbeddingConfig(config);
-  const existing = (await loadPersistedConfig()) ?? {};
-  const next: PersistedConfig = { ...existing };
-  if (normalized) {
-    next.aoiEmbedding = normalized;
-  } else {
-    delete next.aoiEmbedding;
-  }
-  await savePersistedConfig(next);
+  await updatePersistedConfig(
+    (existing) => {
+      const next: PersistedConfig = { ...existing };
+      if (normalized) {
+        next.aoiEmbedding = normalized;
+      } else {
+        delete next.aoiEmbedding;
+      }
+      return next;
+    },
+    { createIfMissing: true },
+  );
 }
 
 /**
@@ -397,12 +478,16 @@ export async function saveAoiMcpConnectorsConfig(
   config: Partial<AoiMcpConnectorsConfig> | null,
 ): Promise<void> {
   const normalized = normalizeAoiMcpConnectorsConfig(config);
-  const existing = (await loadPersistedConfig()) ?? {};
-  const next: PersistedConfig = { ...existing };
-  if (normalized.connectors.length > 0) {
-    next.aoiMcpConnectors = normalized;
-  } else {
-    delete next.aoiMcpConnectors;
-  }
-  await savePersistedConfig(next);
+  await updatePersistedConfig(
+    (existing) => {
+      const next: PersistedConfig = { ...existing };
+      if (normalized.connectors.length > 0) {
+        next.aoiMcpConnectors = normalized;
+      } else {
+        delete next.aoiMcpConnectors;
+      }
+      return next;
+    },
+    { createIfMissing: true },
+  );
 }

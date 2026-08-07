@@ -39,10 +39,30 @@ import {
 } from '../aoiIdleMusicNudge';
 import { loadPersistedConfig, savePersistedConfig } from '../configPersistence';
 
-vi.mock('../configPersistence', () => ({
-  loadPersistedConfig: vi.fn().mockResolvedValue(null),
-  savePersistedConfig: vi.fn().mockResolvedValue(undefined),
-}));
+// updatePersistedConfig is the real read-modify-write helper; here it is driven
+// by the same mocked load/save pair so these tests keep asserting on the config
+// payload the music sync produces.
+vi.mock('../configPersistence', () => {
+  const loadPersistedConfig = vi.fn().mockResolvedValue(null);
+  const savePersistedConfig = vi.fn().mockResolvedValue(undefined);
+  return {
+    loadPersistedConfig,
+    savePersistedConfig,
+    updatePersistedConfig: vi.fn(
+      async (
+        mutate: (current: Record<string, unknown>) => Record<string, unknown>,
+        options?: { createIfMissing?: boolean },
+      ) => {
+        const current = (await loadPersistedConfig()) ?? (options?.createIfMissing ? {} : null);
+        if (!current) {
+          return false;
+        }
+        await savePersistedConfig(await mutate(current));
+        return true;
+      },
+    ),
+  };
+});
 
 const loadPersistedConfigMock = vi.mocked(loadPersistedConfig);
 const savePersistedConfigMock = vi.mocked(savePersistedConfig);

@@ -71,9 +71,14 @@ export function evaluateAoiMemoryDecayCandidate(
   if (typeof memory.expiresAt === 'number' && memory.expiresAt <= now) {
     reasons.push('expired');
   }
-  const aged = now - memory.updatedAt > resolved.maxAgeMs;
+  // "Aged" means untouched, and being RECALLED counts as touched. Recall usage
+  // deliberately does not bump updatedAt (that would reset the forgetting clock
+  // outright), so it is consulted here instead: a memory Aoi still pulls into
+  // prompts is in use, whatever its capture timestamp says.
+  const lastTouchedAt = Math.max(memory.updatedAt, memory.lastAccessedAt ?? 0);
+  const aged = now - lastTouchedAt > resolved.maxAgeMs;
   const lowConfidence = memory.confidence < resolved.confidenceFloor;
-  const lowHits = memory.hits <= resolved.maxHits;
+  const lowHits = memory.hits <= resolved.maxHits && (memory.recallHits ?? 0) <= resolved.maxHits;
   if (aged && lowConfidence && lowHits) {
     reasons.push('aged', 'low_confidence', 'low_hits');
   }

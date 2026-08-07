@@ -37,7 +37,11 @@ export interface AoiMemoryEntry {
   hits: number;
   createdAt: number;
   updatedAt: number;
+  // Recall usage (see aoiMemoryManager): when this memory was last selected
+  // into a prompt, and how many times. Distinct from `hits`, which counts
+  // re-capture of the same fact.
   lastAccessedAt?: number;
+  recallHits?: number;
   expiresAt?: number;
   permanent?: boolean;
   sourceEpisodeIds: string[];

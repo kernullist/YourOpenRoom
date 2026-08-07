@@ -55,6 +55,24 @@ describe('selectAoiMemoryDecayCandidates', () => {
     expect(new Set(candidate?.reasons)).toEqual(new Set(['aged', 'low_confidence', 'low_hits']));
   });
 
+  it('treats a recently RECALLED memory as in use, not aged out', () => {
+    // Captured long ago and never re-captured, but Aoi keeps pulling it into
+    // prompts -- forgetting it would delete something demonstrably useful.
+    const recalled = mem({ id: 'recalled', updatedAt: 0, confidence: 0.3, hits: 1 });
+    recalled.lastAccessedAt = 9_800;
+    expect(ids(selectAoiMemoryDecayCandidates([recalled], OPTS))).toEqual([]);
+
+    // Frequently recalled also clears the low-hits half on its own.
+    const hot = mem({ id: 'hot', updatedAt: 0, confidence: 0.3, hits: 1 });
+    hot.recallHits = 9;
+    expect(ids(selectAoiMemoryDecayCandidates([hot], OPTS))).toEqual([]);
+
+    // An old recall does not rescue it forever.
+    const stale = mem({ id: 'stale', updatedAt: 0, confidence: 0.3, hits: 1 });
+    stale.lastAccessedAt = 100;
+    expect(ids(selectAoiMemoryDecayCandidates([stale], OPTS))).toEqual(['stale']);
+  });
+
   it('requires ALL of aged, low-confidence, and low-hits (AND)', () => {
     // aged + low-confidence but well-used -> not a candidate
     expect(

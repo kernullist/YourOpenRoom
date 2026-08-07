@@ -1,4 +1,4 @@
-import { loadPersistedConfig, savePersistedConfig, type TavilyConfig } from './configPersistence';
+import { loadPersistedConfig, updatePersistedConfig, type TavilyConfig } from './configPersistence';
 
 const CONFIG_KEY = 'webuiapps-tavily-config';
 export const DEFAULT_TAVILY_BASE_URL = 'https://api.tavily.com/search';
@@ -58,15 +58,18 @@ export function saveTavilyConfigSync(config: TavilyConfig | null): TavilyConfig 
 
 export async function saveTavilyConfig(config: TavilyConfig | null): Promise<TavilyConfig | null> {
   const normalized = saveTavilyConfigSync(config);
-  const persisted = (await loadPersistedConfig()) ?? {};
-
-  if (normalized) {
-    persisted.tavily = normalized;
-  } else {
-    delete persisted.tavily;
-  }
-
-  await savePersistedConfig(persisted);
+  await updatePersistedConfig(
+    (existing) => {
+      const persisted = { ...existing };
+      if (normalized) {
+        persisted.tavily = normalized;
+      } else {
+        delete persisted.tavily;
+      }
+      return persisted;
+    },
+    { createIfMissing: true },
+  );
   return normalized;
 }
 

@@ -165,10 +165,7 @@ import { setSessionPath } from '@/lib/sessionPath';
 import {
   getMemoryToolDefinitions,
   isMemoryTool,
-  executeMemoryTool,
-  loadMemories,
-  saveMemory,
-  buildMemoryPrompt,
+  formatMemoryToolResult,
   type MemoryEntry,
 } from '@/lib/memoryManager';
 import {
@@ -177,6 +174,9 @@ import {
   deleteAoiMemory,
   demoteAoiPreferenceMemory,
   loadAoiMemories,
+  migrateLegacyMemoriesToAoi,
+  recordAoiMemoryRecallUsage,
+  selectAoiMemoriesForPrompt,
   loadAoiRecentMemoryEpisodes,
   markAoiMemoryTemporary,
   saveAoiManualMemory,
@@ -2276,7 +2276,9 @@ function buildSystemPrompt(
   hasImageGen: boolean,
   userProfile: UserProfileConfig | null,
   conversationPreferences: ConversationPreferencesConfig | null,
-  memories: MemoryEntry[] = [],
+  // Kept as a positional placeholder so the long call site stays aligned; the
+  // legacy per-session memories are no longer injected into the prompt.
+  _legacyMemories: MemoryEntry[] = [],
   hasTavily = false,
   hasResearchTools = false,
   aoiMemoryPrompt = '',
@@ -2515,8 +2517,13 @@ Length and scope:
     mcpPluginPrompt +
     capabilityPrompt +
     aoiMemoryPrompt +
-    aoiMusicTastePrompt +
-    buildMemoryPrompt(memories);
+    aoiMusicTastePrompt;
+
+  // The legacy per-session memory block used to be appended here. It shadowed
+  // the memory-v2 block with a recency-only copy of the same facts, was loaded
+  // once per session (so it went stale mid-conversation), and closed with
+  // "use the save_memory tool" even on dialog-model turns where that tool is
+  // not exposed. Legacy entries are migrated into v2 on mount instead.
 
   return { base: prompt, perTurn };
 }
@@ -3913,8 +3920,22 @@ const ChatPanel: React.FC<{
         setCurrentEmotion(undefined);
       }
     });
-    // Load memories for SP injection
-    loadMemories(sessionPath).then(setMemories);
+    // Load memories for SP injection. The legacy per-session store is no longer
+    // read into the prompt; anything already in it is carried into memory-v2
+    // once so a session reset cannot take it, then it is left alone.
+    void migrateLegacyMemoriesToAoi(sessionPath, {
+      embeddingProvider: aoiEmbeddingProviderRef.current,
+    })
+      .then((result) => {
+        if (result.migrated > 0) {
+          console.info('[ChatPanel] Migrated legacy memories into memory-v2', result);
+          return loadAoiMemories().then(setAoiMemories);
+        }
+        return undefined;
+      })
+      .catch((error) => {
+        console.warn('[ChatPanel] Legacy memory migration failed', error);
+      });
     loadAoiMemories().then(setAoiMemories);
     loadAoiRunLedger(sessionPath).then((entries) => {
       aoiRunLedgerRef.current = entries;
@@ -4331,6 +4352,13 @@ const ChatPanel: React.FC<{
         toolCalls: params.toolCalls,
         source: params.source,
         llmConfig: params.llmConfig,
+        // When the main model is a CLI/auth provider the distiller cannot call
+        // it (process spawn per request), so the dialog model stands in rather
+        // than leaving capture on the regex heuristics alone.
+        distillerFallbackConfig: resolveLlmOverride(
+          configRef.current ?? null,
+          dialogLlmConfigRef.current,
+        ),
         embeddingProvider: aoiEmbeddingProviderRef.current,
       })
         .then(setAoiMemories)
@@ -6374,7 +6402,6 @@ const ChatPanel: React.FC<{
       const inferredMemory = extractNameMemory(text);
       if (inferredMemory) {
         try {
-          const saved = await saveMemory(sessionPathRef.current, inferredMemory, 'fact');
           await saveAoiManualMemory(
             sessionPathRef.current,
             {
@@ -6383,12 +6410,11 @@ const ChatPanel: React.FC<{
               content: inferredMemory,
               importance: 0.95,
               confidence: 0.9,
-              tags: ['identity', 'legacy-auto'],
+              tags: ['identity', 'auto-name'],
             },
             { embeddingProvider: aoiEmbeddingProviderRef.current },
           );
-          console.info('[ChatPanel] Auto-saved name memory', saved);
-          loadMemories(sessionPathRef.current).then(setMemories);
+          console.info('[ChatPanel] Auto-saved name memory', inferredMemory);
           refreshAoiMemories();
         } catch (err) {
           console.error('[ChatPanel] Failed to auto-save name memory', err);
@@ -7260,6 +7286,17 @@ const ChatPanel: React.FC<{
       queryEmbedding: aoiQueryEmbedding,
       queryEmbeddingModel: aoiEmbeddingProviderRef.current?.model ?? null,
       episodes: recentAoiEpisodes,
+    });
+    // Feed recall back into ranking and decay: the memories that actually made
+    // it into this prompt are the ones proving their worth. Fire-and-forget so
+    // a slow write never delays the turn.
+    void recordAoiMemoryRecallUsage(
+      selectAoiMemoriesForPrompt(latestAoiMemories, latestUserMessage, {
+        queryEmbedding: aoiQueryEmbedding,
+        queryEmbeddingModel: aoiEmbeddingProviderRef.current?.model ?? null,
+      }),
+    ).catch((error) => {
+      console.warn('[ChatPanel] Failed to record Aoi memory recall usage', error);
     });
     // R5.1: Aoi's own side. Agent-scope memories are what she actually
     // researched, so they are the one self-side material that can be evidence-
@@ -9184,10 +9221,7 @@ const ChatPanel: React.FC<{
           }
           pendingToolCallsRef.current.push(`save_memory`);
           try {
-            const result = await executeMemoryTool(
-              sessionPathRef.current,
-              params as Record<string, string>,
-            );
+            const result = formatMemoryToolResult(params as Record<string, string>);
             console.info('[ChatPanel] Memory tool result', {
               resultPreview: result.slice(0, 200),
             });
@@ -9216,7 +9250,6 @@ const ChatPanel: React.FC<{
               );
             }
             // Refresh memories for next turn's SP
-            loadMemories(sessionPathRef.current).then(setMemories);
             refreshAoiMemories();
             const summarizedResult = summarizeToolResultForModel(tc.function.name, result);
             currentMessages = [
