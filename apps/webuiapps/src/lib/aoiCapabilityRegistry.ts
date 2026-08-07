@@ -825,6 +825,16 @@ export function buildAoiCapabilityPrompt(toolNames: string[]): string {
     '- Never call a tool outside this exposed list, and follow each capability policy before using a write, execute, network, or recovery surface.',
   );
 
+  // Models with a strong offline prior (and personas with a story reason to be
+  // disconnected) answer freshness questions from stale knowledge and excuse it
+  // as a connectivity problem. State the opposite explicitly while the tool is
+  // actually exposed; the line disappears whenever search_web does.
+  if (exposedTools.includes('search_web')) {
+    lines.push(
+      '- Live web access IS available this turn via search_web. For questions about current or recently-changed facts (news, prices, policies, defaults, release or support status), call search_web before answering. Do not claim you are offline, disconnected, or unable to check the live web, and do not roleplay a broken connection instead of searching.',
+    );
+  }
+
   if (
     rows.some((row) =>
       ['app_action', 'get_app_state', 'get_app_schema', 'file_write', 'file_patch'].includes(

@@ -699,6 +699,7 @@ import {
   saveChatHistory,
   clearChatHistory,
   buildSessionPath,
+  formatChatErrorNotice,
   planConversationRestore,
   type ChatHistoryData,
   type DisplayMessage,
@@ -4232,6 +4233,7 @@ const ChatPanel: React.FC<{
       content: buildChatCancelledAck(
         normalizeResponseLanguageMode(conversationPreferencesRef.current?.responseLanguageMode),
       ),
+      ephemeral: true,
     });
   }, [addMessage]);
 
@@ -7022,7 +7024,8 @@ const ChatPanel: React.FC<{
         addMessage({
           id: String(Date.now()),
           role: 'assistant',
-          content: `Error: ${err instanceof Error ? err.message : String(err)}`,
+          content: formatChatErrorNotice(err),
+          ephemeral: true,
         });
       } finally {
         finishChatLoading(loadingRunId);
@@ -14485,6 +14488,34 @@ const SettingsModal: React.FC<{
                     onBlur={persistAoiEmbeddingConfig}
                     placeholder={AOI_EMBEDDING_DEFAULT_MODEL}
                   />
+                </div>
+              </div>
+
+              <div className={styles.settingsSectionCard}>
+                <div className={styles.settingsSectionHeader}>
+                  <div>
+                    <div className={styles.settingsSectionTitle}>Web Search (Tavily)</div>
+                    <span className={styles.modelHint}>
+                      Powers Aoi's search_web tool for live web information. The API key lives under
+                      Advanced &gt; Integrations.
+                    </span>
+                  </div>
+                  <span className={styles.modelHint} data-testid="models-web-search-status">
+                    {tavilyApiKey.trim() ? 'Configured' : 'Disabled'}
+                  </span>
+                </div>
+                <div className={styles.field}>
+                  <button
+                    type="button"
+                    className={styles.inlineActionBtn}
+                    data-testid="models-open-tavily-settings"
+                    onClick={() => {
+                      setActiveTab('advanced');
+                      setAdvancedSection('integrations');
+                    }}
+                  >
+                    Open Tavily settings
+                  </button>
                 </div>
               </div>
 

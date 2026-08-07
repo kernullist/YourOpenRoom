@@ -123,4 +123,15 @@ describe('aoiCapabilityRegistry', () => {
     expect(prompt).toContain('High-risk tools');
     expect(prompt).not.toContain('search_web');
   });
+
+  it('tells the model live web access works only while search_web is exposed', () => {
+    const withSearch = buildAoiCapabilityPrompt(['respond_to_user', 'search_web']);
+    const withoutSearch = buildAoiCapabilityPrompt(['respond_to_user', 'file_read']);
+
+    expect(withSearch).toContain('Live web access IS available this turn via search_web');
+    expect(withSearch).toContain('Do not claim you are offline');
+    // The nudge must never describe a tool the turn does not expose.
+    expect(withoutSearch).not.toContain('Live web access');
+    expect(withoutSearch).not.toContain('search_web');
+  });
 });

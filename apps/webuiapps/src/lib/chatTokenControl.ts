@@ -986,14 +986,27 @@ const WEB_SEARCH_TRUTH_CHECK_PATTERNS = [
   /(진짜야|진짜임|정말이야|사실이야|사실인가|사실인지|맞아[?？]?|맞나요|맞는지|맞는\s*거야|맞는\s*건가|맞다던데|맞다고\s*하던데|확실해|가능하다던데|라던데|라는데|다던데|한다던데|라고\s*하던데)/,
 ];
 
+// Implicit freshness questions ("is X opt-in now?", "Recall은 지금 opt-in이야?").
+// These carry no explicit search verb and no fact-check phrasing, so the model
+// tends to answer from stale knowledge and claim it cannot check live. A cue
+// alone never triggers a search: the volatile-fact gate below must also match.
+const WEB_SEARCH_FRESHNESS_CUE_PATTERNS = [
+  /\b(?:is|are|does|do|has|have|can)\b[^?？]*\b(?:still|now|currently|these days|nowadays|today|as of)\b/i,
+  /(지금|현재|요즘|이제|아직)[^?？]*[?？]/,
+  /(지금|현재|요즘|이제|아직).*(이야|인가요?|인지|일까|일까요|한가요?|하나요|되나요?|됐어|되었어|맞아|맞나요?)\s*$/,
+  /(확인해\s*줘?|확인\s*해봐|알아봐\s*줘?|알아보고|찾아봐\s*줘?)/,
+];
+
 const WEB_SEARCH_VOLATILE_FACT_PATTERNS = [
   /\b\d{1,2}[/-]\d{1,2}\b/,
   /\b20\d{2}[-./]\d{1,2}[-./]\d{1,2}\b/,
   /\d{1,2}\s*월\s*\d{1,2}\s*일/,
   /\b(api only|model|pricing|release|availability|available|deprecated|sunset|after|since|until|only|policy|announcement|launch|access|subscription|beta)\b/i,
-  /\b(openai|anthropic|claude|chatgpt|google|gemini|microsoft|github|apple|meta|tavily|fable)\b/i,
+  /\b(opt[- ]?in|opt[- ]?out|enabled|disabled|default (?:on|off)|turned (?:on|off)|rolled? (?:out|back))\b/i,
+  /\b(openai|anthropic|claude|chatgpt|google|gemini|microsoft|windows|github|apple|meta|tavily|fable|deepseek)\b/i,
   /(api로만|모델|가격|비용|요금|과금|요금제|플랜|쿼터|레이트\s*리밋|출시|릴리스|배포|사용\s*가능|사용가능|지원|종료|중단|폐지|변경|정책|발표|공지|이후|이후로|부터|까지만|만\s*사용|만\s*가능|구독|베타|접근|제공)/i,
-  /(오픈ai|오픈AI|앤트로픽|클로드|챗gpt|챗GPT|구글|제미나이|마이크로소프트|깃허브|애플|메타|타빌리|페이블)/i,
+  /(옵트인|옵트아웃|기본값|기본\s*설정|활성화|비활성화|켜져|꺼져)/,
+  /(오픈ai|오픈AI|앤트로픽|클로드|챗gpt|챗GPT|구글|제미나이|마이크로소프트|윈도우|깃허브|애플|메타|타빌리|페이블|딥시크)/i,
 ];
 
 const AOI_RESEARCH_RUN_INTENT_PATTERNS = [
@@ -1112,7 +1125,8 @@ export function shouldUseWebSearch(latestUserMessage: string): boolean {
   if (WEB_SEARCH_DIRECT_PATTERNS.some((pattern) => pattern.test(latest))) return true;
 
   const hasTruthCheckCue = WEB_SEARCH_TRUTH_CHECK_PATTERNS.some((pattern) => pattern.test(latest));
-  if (!hasTruthCheckCue) return false;
+  const hasFreshnessCue = WEB_SEARCH_FRESHNESS_CUE_PATTERNS.some((pattern) => pattern.test(latest));
+  if (!hasTruthCheckCue && !hasFreshnessCue) return false;
 
   return WEB_SEARCH_VOLATILE_FACT_PATTERNS.some((pattern) => pattern.test(latest));
 }

@@ -106,6 +106,62 @@ describe('chatHistoryStorage', () => {
         saveChatHistory(SESSION_PATH, sampleMessages, sampleChatHistory),
       ).resolves.toBeUndefined();
     });
+
+    it('drops ephemeral messages so error notices never become durable history', async () => {
+      fetchMock.mockResolvedValueOnce({ ok: true });
+      const { saveChatHistory } = await import('../chatHistoryStorage');
+
+      const withEphemeral: DisplayMessage[] = [
+        ...sampleMessages,
+        { id: '3', role: 'assistant', content: 'Error: provider exploded', ephemeral: true },
+      ];
+      await saveChatHistory(SESSION_PATH, withEphemeral, sampleChatHistory);
+
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body.messages).toEqual(sampleMessages);
+    });
+  });
+
+  describe('formatChatErrorNotice', () => {
+    it('keeps a short error intact', async () => {
+      const { formatChatErrorNotice } = await import('../chatHistoryStorage');
+
+      expect(formatChatErrorNotice(new Error('LLM API error 401: bad key'))).toBe(
+        'Error: LLM API error 401: bad key',
+      );
+    });
+
+    it('truncates a multi-kilobyte CLI dump to a readable notice', async () => {
+      const { formatChatErrorNotice } = await import('../chatHistoryStorage');
+
+      const dump = ['boom', ...Array.from({ length: 400 }, (_, i) => `stack line ${i}`)].join('\n');
+      const notice = formatChatErrorNotice(new Error(dump));
+
+      expect(notice.startsWith('Error: boom')).toBe(true);
+      expect(notice).toContain('more characters, see console log');
+      expect(notice.length).toBeLessThan(800);
+    });
+
+    it('handles non-Error and empty values', async () => {
+      const { formatChatErrorNotice } = await import('../chatHistoryStorage');
+
+      expect(formatChatErrorNotice('plain failure')).toBe('Error: plain failure');
+      expect(formatChatErrorNotice('')).toBe('Error: Unknown error');
+    });
+  });
+
+  describe('filterPersistableDisplayMessages', () => {
+    it('removes only ephemeral entries', async () => {
+      const { filterPersistableDisplayMessages } = await import('../chatHistoryStorage');
+
+      const messages: DisplayMessage[] = [
+        { id: '1', role: 'user', content: 'hi' },
+        { id: '2', role: 'assistant', content: 'cancelled note', ephemeral: true },
+        { id: '3', role: 'assistant', content: 'kept reply', ephemeral: false },
+      ];
+
+      expect(filterPersistableDisplayMessages(messages).map((msg) => msg.id)).toEqual(['1', '3']);
+    });
   });
 
   describe('clearChatHistory', () => {

@@ -13,6 +13,10 @@ export interface DisplayMessage {
   content: string;
   imageUrl?: string;
   attachments?: ChatImageAttachment[];
+  // Shown in the transcript for the current page lifetime only. Ephemeral
+  // messages (provider error notices, cancel notes) are dropped on save so a
+  // multi-kilobyte CLI stderr dump can never become durable session history.
+  ephemeral?: boolean;
 }
 
 export interface ChatHistoryData {
@@ -65,6 +69,32 @@ export function planConversationRestore<T extends Pick<DisplayMessage, 'id' | 'r
   };
 }
 
+// A provider failure must stay readable in the transcript without preserving
+// the whole stderr/stack dump some providers put in error.message (a codex CLI
+// failure once persisted a ~50k-char prompt dump as a chat message).
+const MAX_ERROR_NOTICE_CHARS = 600;
+const MAX_ERROR_NOTICE_LINES = 4;
+
+export function formatChatErrorNotice(err: unknown): string {
+  const raw = (err instanceof Error ? err.message : String(err)).trim() || 'Unknown error';
+  const head = raw
+    .split('\n')
+    .slice(0, MAX_ERROR_NOTICE_LINES)
+    .join('\n')
+    .slice(0, MAX_ERROR_NOTICE_CHARS)
+    .trimEnd();
+  if (head.length >= raw.length) {
+    return `Error: ${raw}`;
+  }
+  return `Error: ${head}\n... (${raw.length - head.length} more characters, see console log)`;
+}
+
+export function filterPersistableDisplayMessages<T extends Pick<DisplayMessage, 'ephemeral'>>(
+  messages: readonly T[],
+): T[] {
+  return messages.filter((msg) => !msg.ephemeral);
+}
+
 const API_PATH = '/api/session-data';
 
 function apiUrl(sessionPath: string, file: string): string {
@@ -97,10 +127,11 @@ export async function saveChatHistory(
   chatHistory: ChatMessage[],
   suggestedReplies?: string[],
 ): Promise<void> {
+  const persistableMessages = filterPersistableDisplayMessages(messages);
   const data: ChatHistoryData = {
     version: 1,
     savedAt: Date.now(),
-    messages,
+    messages: persistableMessages,
     chatHistory,
     suggestedReplies,
   };
@@ -110,7 +141,7 @@ export async function saveChatHistory(
     console.info('[ChatHistory] Saving chat history', {
       sessionPath,
       url,
-      messageCount: messages.length,
+      messageCount: persistableMessages.length,
       historyCount: chatHistory.length,
     });
     const res = await fetch(url, {

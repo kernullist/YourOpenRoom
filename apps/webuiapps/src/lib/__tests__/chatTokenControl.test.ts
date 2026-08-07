@@ -598,6 +598,20 @@ describe('shouldUseWebSearch()', () => {
     expect(shouldUseAoiResearchRun(message)).toBe(false);
     expect(shouldUseDialogModel(message)).toBe(false);
   });
+
+  it('detects implicit freshness questions about volatile product state', () => {
+    expect(shouldUseWebSearch('Windows Recall은 지금 opt-in 이야?')).toBe(true);
+    expect(shouldUseWebSearch('윈도우 리콜 요즘도 기본값 꺼짐이야?')).toBe(true);
+    expect(shouldUseWebSearch('is Windows Recall still opt-in now?')).toBe(true);
+    expect(shouldUseWebSearch('DeepSeek V4 Flash 지원 여부 확인해줘')).toBe(true);
+  });
+
+  it('leaves freshness-worded small talk alone when no volatile fact is involved', () => {
+    expect(shouldUseWebSearch('지금 몇시야?')).toBe(false);
+    expect(shouldUseWebSearch('지금 뭐해?')).toBe(false);
+    expect(shouldUseWebSearch('요즘 어떻게 지내?')).toBe(false);
+    expect(shouldUseWebSearch('이 코드 확인해줘')).toBe(false);
+  });
 });
 
 describe('memory prompt limits', () => {
