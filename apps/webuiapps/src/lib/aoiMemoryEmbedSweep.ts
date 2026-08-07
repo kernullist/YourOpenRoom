@@ -123,6 +123,15 @@ export interface AoiMemoryEmbedSweepOptions {
   onConsolidation?: (result: AoiMemoryConsolidationSweepCycleResult) => void;
   // Injectable seam for tests.
   runConsolidationCycle?: typeof runAoiMemoryConsolidationSweepCycle;
+  // Re-read the operator's maintenance settings at the START of every cycle, so
+  // a toggle flipped in the settings UI takes effect on the next tick instead of
+  // requiring a server restart. Returning enabled:false makes the cycle a no-op
+  // (nothing is read or written). Absent -> the static options above are used,
+  // which is what the existing env-only callers and tests rely on.
+  resolveCycleSettings?: () => {
+    embedSweep: { enabled: boolean; max: number };
+    consolidation: { enabled: boolean; max: number };
+  };
 }
 
 // Start the loop-independent embed sweep interval. Overlapping cycles are blocked
@@ -145,20 +154,36 @@ export function startAoiMemoryEmbedSweep(
     }
     running = true;
     try {
-      const result = await runCycle({
-        sessionsDir: options.sessionsDir,
-        ...(options.configFile ? { configFile: options.configFile } : {}),
-        ...(typeof options.max === 'number' ? { max: options.max } : {}),
-      });
-      options.onCycle?.(result);
+      // Live settings win over the values captured at start(), so the UI toggle
+      // applies on the next tick. Best-effort: a resolver failure falls back to
+      // the static options rather than silently disabling maintenance.
+      let live: ReturnType<NonNullable<AoiMemoryEmbedSweepOptions['resolveCycleSettings']>> | null =
+        null;
+      if (options.resolveCycleSettings) {
+        try {
+          live = options.resolveCycleSettings();
+        } catch {
+          live = null;
+        }
+      }
+      const embedEnabled = live ? live.embedSweep.enabled : true;
+      const embedMax = live ? live.embedSweep.max : options.max;
+      const consolidation = live ? live.consolidation : options.consolidation;
+
+      if (embedEnabled) {
+        const result = await runCycle({
+          sessionsDir: options.sessionsDir,
+          ...(options.configFile ? { configFile: options.configFile } : {}),
+          ...(typeof embedMax === 'number' ? { max: embedMax } : {}),
+        });
+        options.onCycle?.(result);
+      }
       // Consolidation runs AFTER embedding in the same cycle so any vectors the
       // backfill just added are eligible; it is best-effort (never throws).
-      if (options.consolidation?.enabled) {
+      if (consolidation?.enabled) {
         const consolidationResult = runConsolidationCycle({
           sessionsDir: options.sessionsDir,
-          ...(typeof options.consolidation.max === 'number'
-            ? { max: options.consolidation.max }
-            : {}),
+          ...(typeof consolidation.max === 'number' ? { max: consolidation.max } : {}),
         });
         options.onConsolidation?.(consolidationResult);
       }

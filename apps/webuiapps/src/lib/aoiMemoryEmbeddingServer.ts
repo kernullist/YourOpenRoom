@@ -11,6 +11,10 @@ import {
   type AoiEmbeddingProvider,
 } from './aoiMemoryEmbedding';
 import { createAoiLocalEmbeddingProvider } from './aoiLocalEmbedding';
+import {
+  readAoiMemoryMaintenanceConfigFromFile,
+  resolveAoiMemoryMaintenanceSettings,
+} from './aoiMemoryMaintenanceSettings';
 
 // Server-only resolver for the Aoi memory embedding provider. The autonomy
 // engines run in Node and cannot read the browser-persisted config via the dev
@@ -78,7 +82,13 @@ export function createServerAoiEmbeddingProvider(params: {
   // Offline fallback (P4.4): opt-in local hash embedder so the keyless default is
   // not dark (semantic recall + consolidation get real vectors, no egress). Only
   // when NO cloud key is configured above, so it never overrides a real provider.
-  if (env.AOI_LOCAL_EMBEDDER === '1' || env.AOI_LOCAL_EMBEDDER === 'true') {
+  // The settings UI owns this toggle (config.json: aoiMemoryMaintenance); the env
+  // var remains the fallback for headless deployments.
+  const maintenance = resolveAoiMemoryMaintenanceSettings({
+    config: readAoiMemoryMaintenanceConfigFromFile(params.configFile),
+    env,
+  });
+  if (maintenance.localEmbedder) {
     return createAoiLocalEmbeddingProvider();
   }
   return null;

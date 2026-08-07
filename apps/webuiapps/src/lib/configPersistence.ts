@@ -106,6 +106,76 @@ export function normalizeAoiEmbeddingConfig(
   };
 }
 
+// Operator-facing memory maintenance settings (embed backfill + consolidation +
+// the offline local embedder). These were env-var only, which meant editing
+// system environment variables and restarting the server to turn semantic
+// memory on. Persisted here so the settings UI owns them; the env vars stay as
+// a fallback for headless deployments and are read only when the matching field
+// is absent from this block.
+export const AOI_MEMORY_MAINTENANCE_DEFAULT_INTERVAL_MINUTES = 5;
+export const AOI_MEMORY_MAINTENANCE_MIN_INTERVAL_MINUTES = 1;
+export const AOI_MEMORY_MAINTENANCE_MAX_INTERVAL_MINUTES = 120;
+export const AOI_MEMORY_MAINTENANCE_DEFAULT_EMBED_MAX = 16;
+export const AOI_MEMORY_MAINTENANCE_MAX_EMBED_MAX = 64;
+export const AOI_MEMORY_MAINTENANCE_DEFAULT_CONSOLIDATION_MAX = 8;
+export const AOI_MEMORY_MAINTENANCE_MAX_CONSOLIDATION_MAX = 32;
+
+export interface AoiMemoryMaintenanceConfig {
+  version: 1;
+  embedSweepEnabled?: boolean;
+  embedSweepIntervalMinutes?: number;
+  embedSweepMax?: number;
+  consolidationEnabled?: boolean;
+  consolidationMax?: number;
+  localEmbedderEnabled?: boolean;
+}
+
+function clampInt(value: unknown, min: number, max: number): number | undefined {
+  const parsed = typeof value === 'number' ? value : Number.parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(parsed)) {
+    return undefined;
+  }
+  return Math.min(max, Math.max(min, Math.trunc(parsed)));
+}
+
+// Absent fields are preserved as absent (undefined), NOT defaulted: absence is
+// what hands the decision to the env fallback, so writing a default here would
+// silently override a headless deployment's env var.
+export function normalizeAoiMemoryMaintenanceConfig(
+  raw: Partial<AoiMemoryMaintenanceConfig> | null | undefined,
+): AoiMemoryMaintenanceConfig | null {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const intervalMinutes = clampInt(
+    raw.embedSweepIntervalMinutes,
+    AOI_MEMORY_MAINTENANCE_MIN_INTERVAL_MINUTES,
+    AOI_MEMORY_MAINTENANCE_MAX_INTERVAL_MINUTES,
+  );
+  const embedMax = clampInt(raw.embedSweepMax, 1, AOI_MEMORY_MAINTENANCE_MAX_EMBED_MAX);
+  const consolidationMax = clampInt(
+    raw.consolidationMax,
+    1,
+    AOI_MEMORY_MAINTENANCE_MAX_CONSOLIDATION_MAX,
+  );
+  const normalized: AoiMemoryMaintenanceConfig = {
+    version: 1,
+    ...(typeof raw.embedSweepEnabled === 'boolean'
+      ? { embedSweepEnabled: raw.embedSweepEnabled }
+      : {}),
+    ...(intervalMinutes !== undefined ? { embedSweepIntervalMinutes: intervalMinutes } : {}),
+    ...(embedMax !== undefined ? { embedSweepMax: embedMax } : {}),
+    ...(typeof raw.consolidationEnabled === 'boolean'
+      ? { consolidationEnabled: raw.consolidationEnabled }
+      : {}),
+    ...(consolidationMax !== undefined ? { consolidationMax } : {}),
+    ...(typeof raw.localEmbedderEnabled === 'boolean'
+      ? { localEmbedderEnabled: raw.localEmbedderEnabled }
+      : {}),
+  };
+  return Object.keys(normalized).length > 1 ? normalized : null;
+}
+
 export interface GmailConfig {
   clientId?: string;
   clientSecret?: string;
@@ -155,6 +225,7 @@ export interface PersistedConfig {
   // raw endpoint. See aoiMcpConnectorRegistry.ts.
   aoiMcpConnectors?: AoiMcpConnectorsConfig;
   aoiMusicTaste?: AoiMusicPersistedState;
+  aoiMemoryMaintenance?: AoiMemoryMaintenanceConfig;
 }
 
 const CONFIG_API = '/api/llm-config';
@@ -176,6 +247,7 @@ const KNOWN_CONFIG_KEYS = [
   'aoiEmbedding',
   'aoiMcpConnectors',
   'aoiMusicTaste',
+  'aoiMemoryMaintenance',
 ];
 
 export function normalizeUserProfileDisplayName(raw: string | null | undefined): string {

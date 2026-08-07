@@ -25,11 +25,19 @@ import { loadAoiProactiveTrendReadinessFromStores } from './aoiProactiveTrendRea
 import { recordServerAoiRunLedgerEvent } from './aoiRunLedgerServer';
 import { recordAoiOutcomeFeedbackFromUserMessage } from './aoiOutcomeFeedbackServer';
 import {
-  resolveAoiMemoryEmbedSweepConfigFromEnv,
+  runAoiMemoryEmbedSweepCycle,
   startAoiMemoryEmbedSweep,
   type AoiMemoryEmbedSweepHandle,
 } from './aoiMemoryEmbedSweep';
-import { resolveAoiMemoryConsolidationConfigFromEnv } from './aoiMemoryConsolidationSweep';
+import { runAoiMemoryConsolidationSweepCycle } from './aoiMemoryConsolidationSweep';
+import {
+  loadAoiMemoryMaintenanceSettings,
+  writeAoiMemoryMaintenanceConfigToFile,
+} from './aoiMemoryMaintenanceSettings';
+import {
+  normalizeAoiMemoryMaintenanceConfig,
+  type AoiMemoryMaintenanceConfig,
+} from './configPersistence';
 import { loadAoiMainLlmConfig } from './dewdropCanvasPlugin';
 import { buildAoiAutonomyEvaluation } from './aoiAutonomyEvaluation';
 import { loadAoiDeliberationRuns } from './aoiDeliberationRun';
@@ -2135,6 +2143,56 @@ export async function handleAoiAutonomyRequest(
       writeJson(res, 200, { ok: true, ...status });
       return true;
     }
+    // Memory maintenance settings, owned by the settings UI. These were env-var
+    // only, which meant editing system environment variables and restarting the
+    // server just to turn semantic memory on.
+    if (req.method === 'GET' && route === '/memory/maintenance') {
+      const settings = loadAoiMemoryMaintenanceSettings({ configFile });
+      const status = loadAoiMemoryEmbeddingStatus(sessionsDir, { configFile });
+      writeJson(res, 200, { ok: true, settings, status });
+      return true;
+    }
+    if (req.method === 'POST' && route === '/memory/maintenance') {
+      const body = await readJsonBody(req);
+      const normalized = normalizeAoiMemoryMaintenanceConfig(
+        body as Partial<AoiMemoryMaintenanceConfig>,
+      );
+      try {
+        writeAoiMemoryMaintenanceConfigToFile(configFile, normalized);
+      } catch (error) {
+        writeJson(res, 500, {
+          error: error instanceof Error ? error.message : 'Failed to save maintenance settings.',
+          code: 'maintenance_save_failed',
+        });
+        return true;
+      }
+      const settings = loadAoiMemoryMaintenanceSettings({ configFile });
+      const status = loadAoiMemoryEmbeddingStatus(sessionsDir, { configFile });
+      writeJson(res, 200, { ok: true, settings, status });
+      return true;
+    }
+    // Run one bounded maintenance pass right now. This is what makes the UI
+    // toggle usable immediately: the periodic sweep only starts with the server,
+    // so without this the operator would still be waiting for a restart.
+    if (req.method === 'POST' && route === '/memory/maintenance/run') {
+      const settings = loadAoiMemoryMaintenanceSettings({ configFile });
+      const embed = settings.embedSweep.enabled
+        ? await runAoiMemoryEmbedSweepCycle({
+            sessionsDir,
+            configFile,
+            max: settings.embedSweep.max,
+          })
+        : { ran: false, embeddedCount: 0, pendingCount: 0 };
+      const consolidation = settings.consolidation.enabled
+        ? runAoiMemoryConsolidationSweepCycle({
+            sessionsDir,
+            max: settings.consolidation.max,
+          })
+        : { ran: false, clusterCount: 0, supersededCount: 0 };
+      const status = loadAoiMemoryEmbeddingStatus(sessionsDir, { configFile });
+      writeJson(res, 200, { ok: true, embed, consolidation, status });
+      return true;
+    }
     if (req.method === 'POST' && route === '/memory/explicit-correction') {
       const body = await readJsonBody(req);
       const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
@@ -3466,13 +3524,15 @@ export function startAoiMemoryEmbedSweepFromEnv(
   options: AoiAutonomyPluginOptions,
   env: Record<string, string | undefined> = process.env,
 ): AoiMemoryEmbedSweepHandle | null {
-  const sweepConfig = resolveAoiMemoryEmbedSweepConfigFromEnv(env);
-  const consolidationConfig = resolveAoiMemoryConsolidationConfigFromEnv(env);
-  if (!sweepConfig.enabled && !consolidationConfig.enabled) {
-    return null;
-  }
   const sessionsDir = resolve(options.sessionsDir);
   const configFile = resolve(options.configFile);
+  // The settings UI (config.json: aoiMemoryMaintenance) decides these; the env
+  // vars remain the fallback for headless deployments. Still OFF by default, so
+  // the loop lock is untouched until one half is actually opted in.
+  const settings = loadAoiMemoryMaintenanceSettings({ configFile, env });
+  if (!settings.embedSweep.enabled && !settings.consolidation.enabled) {
+    return null;
+  }
   const loopLock = acquireAoiAutonomyLoopLock(sessionsDir);
   if (!loopLock) {
     return null;
@@ -3480,9 +3540,18 @@ export function startAoiMemoryEmbedSweepFromEnv(
   const sweepHandle = startAoiMemoryEmbedSweep({
     sessionsDir,
     configFile,
-    intervalMs: sweepConfig.intervalMs,
-    max: sweepConfig.max,
-    consolidation: { enabled: consolidationConfig.enabled, max: consolidationConfig.max },
+    intervalMs: settings.embedSweep.intervalMs,
+    max: settings.embedSweep.max,
+    consolidation: {
+      enabled: settings.consolidation.enabled,
+      max: settings.consolidation.max,
+    },
+    // Re-read every cycle so flipping a toggle in the UI takes effect on the
+    // next tick; only the interval itself still needs a restart.
+    resolveCycleSettings: () => {
+      const live = loadAoiMemoryMaintenanceSettings({ configFile, env });
+      return { embedSweep: live.embedSweep, consolidation: live.consolidation };
+    },
   });
   return {
     stop: () => {

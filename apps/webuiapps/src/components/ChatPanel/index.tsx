@@ -740,6 +740,7 @@ import CharacterPanel from './CharacterPanel';
 import ModPanel from './ModPanel';
 import { AoiMcpConnectorsSettings } from './AoiMcpConnectorsSettings';
 import { AoiMemoryDecayPanel } from './AoiMemoryDecayPanel';
+import { AoiMemoryMaintenancePanel } from './AoiMemoryMaintenancePanel';
 import { AoiNonVoiceScorecardPanel } from './AoiNonVoiceScorecardPanel';
 import { AoiOperatorSnapshotPanel } from './AoiOperatorSnapshotPanel';
 import { AoiSituationPanel } from './AoiSituationPanel';
@@ -17968,6 +17969,8 @@ const SettingsModal: React.FC<{
 
               {advancedSection === 'memory' && (
                 <>
+                  <AoiMemoryMaintenancePanel />
+
                   <AoiMemoryDecayPanel sessionPath={aoiReplaySessionPath} />
 
                   <AoiPreferenceDashboard
