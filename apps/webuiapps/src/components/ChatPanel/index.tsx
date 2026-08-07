@@ -194,6 +194,7 @@ import {
   embedAoiQuery,
   type AoiEmbeddingProvider,
 } from '@/lib/aoiMemoryEmbedding';
+import { createAoiLocalEmbeddingBrowserProvider } from '@/lib/aoiLocalEmbeddingBrowser';
 import { logger } from '@/lib/logger';
 import {
   condenseConversationHistory,
@@ -4238,7 +4239,13 @@ const ChatPanel: React.FC<{
 
   const configRef = useRef(config);
   configRef.current = config;
-  aoiEmbeddingProviderRef.current = createAoiEmbeddingProviderFromConfig(aoiEmbeddingConfig);
+  // Without a cloud embedding key, fall back to the offline local embedder so
+  // keyless recall still gets query/write vectors. Vector-compatible with the
+  // server sweep (same model id, parity-tested algorithm); a configured cloud
+  // key always wins.
+  aoiEmbeddingProviderRef.current =
+    createAoiEmbeddingProviderFromConfig(aoiEmbeddingConfig) ??
+    createAoiLocalEmbeddingBrowserProvider();
   const dialogLlmConfigRef = useRef(dialogLlmConfig);
   dialogLlmConfigRef.current = dialogLlmConfig;
   const imageGenConfigRef = useRef(imageGenConfig);
@@ -6367,14 +6374,18 @@ const ChatPanel: React.FC<{
       if (inferredMemory) {
         try {
           const saved = await saveMemory(sessionPathRef.current, inferredMemory, 'fact');
-          await saveAoiManualMemory(sessionPathRef.current, {
-            type: 'fact',
-            scope: 'user',
-            content: inferredMemory,
-            importance: 0.95,
-            confidence: 0.9,
-            tags: ['identity', 'legacy-auto'],
-          });
+          await saveAoiManualMemory(
+            sessionPathRef.current,
+            {
+              type: 'fact',
+              scope: 'user',
+              content: inferredMemory,
+              importance: 0.95,
+              confidence: 0.9,
+              tags: ['identity', 'legacy-auto'],
+            },
+            { embeddingProvider: aoiEmbeddingProviderRef.current },
+          );
           console.info('[ChatPanel] Auto-saved name memory', saved);
           loadMemories(sessionPathRef.current).then(setMemories);
           refreshAoiMemories();
@@ -9189,15 +9200,19 @@ const ChatPanel: React.FC<{
                   /^(?:true|yes|1)$/i.test(permanentParam.trim())) ||
                 shouldTreatAoiMemoryAsPermanent(latestUserMessage) ||
                 shouldTreatAoiMemoryAsPermanent(memoryContent);
-              await saveAoiManualMemory(sessionPathRef.current, {
-                type: mapMemoryCategoryToAoiType(memoryCategory),
-                scope: 'user',
-                content: memoryContent,
-                importance: permanent ? 0.93 : 0.85,
-                confidence: permanent ? 0.88 : 0.82,
-                permanent,
-                tags: ['manual', memoryCategory],
-              });
+              await saveAoiManualMemory(
+                sessionPathRef.current,
+                {
+                  type: mapMemoryCategoryToAoiType(memoryCategory),
+                  scope: 'user',
+                  content: memoryContent,
+                  importance: permanent ? 0.93 : 0.85,
+                  confidence: permanent ? 0.88 : 0.82,
+                  permanent,
+                  tags: ['manual', memoryCategory],
+                },
+                { embeddingProvider: aoiEmbeddingProviderRef.current },
+              );
             }
             // Refresh memories for next turn's SP
             loadMemories(sessionPathRef.current).then(setMemories);

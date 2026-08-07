@@ -1,9 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { webcrypto } from 'node:crypto';
 import {
   AOI_LOCAL_EMBEDDING_MODEL,
   createAoiLocalEmbeddingProvider,
   embedAoiTextLocally,
 } from '../aoiLocalEmbedding';
+import {
+  createAoiLocalEmbeddingBrowserProvider,
+  embedAoiTextLocallyInBrowser,
+} from '../aoiLocalEmbeddingBrowser';
 import { cosineSimilarity } from '../aoiMemoryEmbedding';
 import { createServerAoiEmbeddingProvider } from '../aoiMemoryEmbeddingServer';
 
@@ -47,5 +52,40 @@ describe('createServerAoiEmbeddingProvider local fallback (P4.4)', () => {
 
   it('stays null (lexical fallback) when the local embedder is not opted in', () => {
     expect(createServerAoiEmbeddingProvider({ env: {} })).toBeNull();
+  });
+});
+
+describe('browser local embedder (crypto.subtle twin)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('produces byte-identical vectors to the node implementation', async () => {
+    // The parity contract: a memory embedded by the server sweep must fuse with
+    // a query embedded in the browser under the same aoi-local-hash-v1 model.
+    vi.stubGlobal('crypto', webcrypto);
+    const samples = [
+      'Windows kernel anti-cheat driver',
+      '커널 드라이버 IRQL 검증 이슈',
+      'fromis_9 Supersonic playlist',
+      'mixed 한글 english tokens 123',
+    ];
+    for (const text of samples) {
+      expect(await embedAoiTextLocallyInBrowser(text)).toEqual(embedAoiTextLocally(text));
+    }
+  });
+
+  it('exposes the same model id and embeds a batch', async () => {
+    vi.stubGlobal('crypto', webcrypto);
+    const provider = createAoiLocalEmbeddingBrowserProvider();
+    expect(provider?.model).toBe(AOI_LOCAL_EMBEDDING_MODEL);
+    const vectors = await provider!.embed(['kernel driver', 'anti-cheat']);
+    expect(vectors).toHaveLength(2);
+    expect(vectors[0]).toEqual(embedAoiTextLocally('kernel driver'));
+  });
+
+  it('returns null when Web Crypto is unavailable so recall stays lexical-only', () => {
+    vi.stubGlobal('crypto', undefined);
+    expect(createAoiLocalEmbeddingBrowserProvider()).toBeNull();
   });
 });

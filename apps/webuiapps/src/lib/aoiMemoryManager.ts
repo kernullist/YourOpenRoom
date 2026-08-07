@@ -1058,6 +1058,7 @@ export async function saveAoiMemoryCandidates(
 export async function saveAoiManualMemory(
   sessionPath: string,
   candidate: AoiMemoryCandidate,
+  options?: { embeddingProvider?: AoiEmbeddingProvider | null },
 ): Promise<AoiMemoryEntry[]> {
   const episode = await saveAoiMemoryEpisode(sessionPath, {
     source: 'manual_memory',
@@ -1066,7 +1067,9 @@ export async function saveAoiManualMemory(
     toolCalls: ['save_memory'],
     outcome: 'manual memory saved',
   });
-  return saveAoiMemoryCandidates(sessionPath, [candidate], episode.id);
+  // Manual saves are the highest-signal memories; without the provider they
+  // were the only capture path written vectorless on the client.
+  return saveAoiMemoryCandidates(sessionPath, [candidate], episode.id, options);
 }
 
 // Persist a structured preference memory from an answered preference poll. The
@@ -1426,7 +1429,11 @@ export function selectAoiMemoriesForPrompt(
   let totalChars = 0;
   for (const item of ranked) {
     if (selected.length >= limit) break;
-    if (totalChars + item.memory.content.length > maxChars) break;
+    if (totalChars + item.memory.content.length > maxChars) {
+      // Skip, do not stop: one long memory near the top must not end selection
+      // while shorter lower-ranked memories would still fit the budget.
+      continue;
+    }
     selected.push(item.memory);
     totalChars += item.memory.content.length;
   }

@@ -1,7 +1,14 @@
 import { createHash } from 'crypto';
 import type { AoiEmbeddingProvider } from './aoiMemoryEmbedding';
+import {
+  AOI_LOCAL_EMBEDDING_MODEL,
+  AOI_LOCAL_EMBED_DIM,
+  buildAoiLocalEmbeddingVector,
+  foldAoiLocalEmbeddingDigest,
+  tokenizeAoiLocalEmbedding,
+} from './aoiLocalEmbeddingCore';
 
-// Dependency-free, offline, deterministic embedding provider (P4.4).
+// Dependency-free, offline, deterministic embedding provider (P4.4) -- node side.
 //
 // The whole semantic memory layer (consolidation + max(lexical,semantic) recall)
 // is silently disabled without a cloud embedding key -- a fresh install gets none
@@ -10,44 +17,22 @@ import type { AoiEmbeddingProvider } from './aoiMemoryEmbedding';
 // Quality is lexical-grade (cosine tracks token overlap), NOT true semantics -- a
 // cloud key still yields better embeddings and stays the opt-in for that -- but it
 // never leaves the machine and never no-ops.
+//
+// The algorithm lives in aoiLocalEmbeddingCore; only the SHA-1 primitive is
+// node-specific. The browser twin is aoiLocalEmbeddingBrowser (crypto.subtle),
+// pinned to this implementation by a vector-parity test.
 
-const LOCAL_EMBED_DIM = 256;
-export const AOI_LOCAL_EMBEDDING_MODEL = 'aoi-local-hash-v1';
-
-function tokenize(text: string): string[] {
-  return text
-    .toLowerCase()
-    .split(/[^a-z0-9À-ɏ가-힣]+/i)
-    .filter((token) => token.length > 1);
-}
+export { AOI_LOCAL_EMBEDDING_MODEL };
 
 // 32-bit unsigned hash of a token from its SHA-1 digest (stable across runs/hosts).
 function hashToken(token: string): number {
   const digest = createHash('sha1').update(token).digest();
-  return ((digest[0] << 24) | (digest[1] << 16) | (digest[2] << 8) | digest[3]) >>> 0;
+  return foldAoiLocalEmbeddingDigest(digest);
 }
 
-// Deterministic hashed bag-of-words vector, L2-normalized so cosine is well-defined.
-// A per-token sign bit lets distinct tokens partially cancel, adding a little
-// discrimination over pure additive counts. Empty/short input -> a zero vector
-// (cosineSimilarity treats it as "no signal", falling back to lexical scoring).
-export function embedAoiTextLocally(text: string, dim = LOCAL_EMBED_DIM): number[] {
-  const vector = new Array<number>(dim).fill(0);
-  for (const token of tokenize(text)) {
-    const hash = hashToken(token);
-    const index = hash % dim;
-    const sign = (hash >> 8) % 2 === 0 ? 1 : -1;
-    vector[index] += sign;
-  }
-  let norm = 0;
-  for (const value of vector) {
-    norm += value * value;
-  }
-  norm = Math.sqrt(norm);
-  if (norm === 0) {
-    return vector;
-  }
-  return vector.map((value) => value / norm);
+export function embedAoiTextLocally(text: string, dim = AOI_LOCAL_EMBED_DIM): number[] {
+  const tokenHashes = tokenizeAoiLocalEmbedding(text).map((token) => hashToken(token));
+  return buildAoiLocalEmbeddingVector(tokenHashes, dim);
 }
 
 export function createAoiLocalEmbeddingProvider(): AoiEmbeddingProvider {

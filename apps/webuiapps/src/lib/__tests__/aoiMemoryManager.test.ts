@@ -385,6 +385,38 @@ describe('mergeAoiMemoryCandidates()', () => {
     expect(prompt).not.toContain('Old Name');
   });
 
+  it('skips an over-budget memory instead of ending selection at it', () => {
+    const longTop = makeMemory({
+      id: 'memory-long-top',
+      importance: 0.99,
+      confidence: 0.95,
+      content: 'k'.repeat(300),
+      normalizedContent: 'k'.repeat(300),
+    });
+    const shortA = makeMemory({
+      id: 'memory-short-a',
+      importance: 0.7,
+      confidence: 0.8,
+      content: 'user prefers concise answers',
+      normalizedContent: 'user prefers concise answers',
+    });
+    const shortB = makeMemory({
+      id: 'memory-short-b',
+      importance: 0.6,
+      confidence: 0.8,
+      content: 'user works on kernel drivers',
+      normalizedContent: 'user works on kernel drivers',
+    });
+
+    const selected = selectAoiMemoriesForPrompt([longTop, shortA, shortB], '', {
+      maxChars: 80,
+    });
+
+    // The 300-char top-ranked memory cannot fit an 80-char budget; the two
+    // short memories below it must still be selected rather than dropped.
+    expect(selected.map((memory) => memory.id)).toEqual(['memory-short-a', 'memory-short-b']);
+  });
+
   it('strips malicious source instructions from durable procedure candidates', () => {
     const candidate = normalizeAoiMemoryCandidate({
       type: 'procedure',
