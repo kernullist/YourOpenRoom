@@ -523,7 +523,17 @@ export class ModManager {
 
   buildStageReminder(): string {
     if (this.state.is_finished) {
-      return `[Story Complete] All stages of "${this.config.mod_name_en}" have been completed. You are now in free conversation mode.\n`;
+      // Free conversation must not decay into aimless fiction. With no stage
+      // script left, an unguided model kept re-pitching invented story content
+      // (bounty lists, fake mission intel) as if a stage still demanded it, so
+      // the finished-mode reminder states what proactive dialogue may draw on.
+      return (
+        `[Story Complete] All stages of "${this.config.mod_name_en}" have been completed. You are now in free conversation mode.\n` +
+        'Free conversation rules:\n' +
+        '- Do not restart or continue the story script. Do not invent new fictional missions, quests, bounties, locations, or in-world documents.\n' +
+        "- Keep your persona voice, but ground every proactive suggestion in something real: the apps in this room, the user's actual projects and memories, their learned music taste, live research, or current news.\n" +
+        '- When you have nothing real to offer, ask one short genuine question or keep the reply brief instead of fabricating content.\n'
+      );
     }
 
     const stage = this.currentStage;
