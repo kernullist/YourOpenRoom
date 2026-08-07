@@ -1,4 +1,4 @@
-import type { LLMConfig } from './llmModels';
+import { getSupportedReasoningEfforts, type LLMConfig, type LLMReasoningEffort } from './llmModels';
 import { chat, type ChatMessage } from './llmClient';
 import {
   attachAoiMemoryEmbeddings,
@@ -17,6 +17,7 @@ import {
   type AoiKiraAutomationMemoryContext,
 } from './aoiMemoryShared';
 import { batchConcurrent } from './fileApi';
+import { recordAoiDistillerAttempt, type AoiDistillerAttempt } from './aoiMemoryDistillerHealth';
 import { resolveAoiPreferenceContext } from './aoiPreferenceMemory';
 import {
   selectStaleTasteMemoryIds,
@@ -35,7 +36,13 @@ const MAX_PROMPT_MEMORY_CHARS = 1800;
 const MIN_PROMPT_CONFIDENCE = 0.45;
 const MAX_DISTILLER_INPUT_CHARS = 1800;
 const MAX_DISTILLER_CANDIDATES = 5;
-const DISTILLER_TIMEOUT_MS = 8_000;
+// The distiller runs off the reply path (recordAoiMemoryTurn voids the promise),
+// so a generous budget costs the user nothing while a tight one silently drops
+// capture to the regex heuristics. 8s was losing whole turns on reasoning
+// models; one retry covers a transient network blip without doubling the wait
+// on a genuinely dead provider.
+const DISTILLER_TIMEOUT_MS = 20_000;
+const DISTILLER_RETRY_TIMEOUT_MS = 25_000;
 const MAX_CONVERSATION_CONTEXT_PROMPT_BOOST = 0.1;
 const PERMANENT_MEMORY_SCORE_BOOST = 0.1;
 
@@ -130,6 +137,8 @@ export interface AoiMemorySyncParams {
   // syncAoiMemoryFromTurn fills both automatically; callers may override.
   knownPreferenceContents?: string[];
   capturedThisTurn?: string[];
+  // Injectable seam for tests; production uses the localStorage-backed recorder.
+  recordDistillerAttempt?: (attempt: AoiDistillerAttempt) => void;
 }
 
 type AoiMemoryEpisodeInput = Omit<
@@ -908,10 +917,34 @@ function truncateDistillerInput(value: string): string {
   return normalized.slice(0, MAX_DISTILLER_INPUT_CHARS - 1).trimEnd() + '...';
 }
 
+// Distillation is structured extraction, not reasoning: the cheapest effort the
+// model actually accepts is always the right one.
+//
+// This used to hard-code 'low', which DeepSeek does not support at all --
+// applyDeepSeekChatRuntimeOptions treats any non-'none' effort as
+// thinking:enabled and maps 'low' UP to reasoning_effort 'high'. The distiller
+// was therefore running a full thinking pass for a JSON extraction and blowing
+// the timeout on every turn, silently degrading capture to the regex
+// heuristics. Models that publish no restriction keep 'low' (unchanged).
+export function pickAoiDistillerReasoningEffort(
+  config: Pick<LLMConfig, 'provider' | 'model'>,
+): LLMReasoningEffort {
+  const supported = getSupportedReasoningEfforts(config.provider, config.model);
+  if (supported.length === 0) {
+    return 'low';
+  }
+  for (const effort of ['none', 'minimal', 'low'] as const) {
+    if (supported.includes(effort)) {
+      return effort;
+    }
+  }
+  return supported[0];
+}
+
 function makeDistillerConfig(config: LLMConfig): LLMConfig {
   return {
     ...config,
-    reasoningEffort: 'low',
+    reasoningEffort: pickAoiDistillerReasoningEffort(config),
     reasoningSummary: 'none',
     verbosity: 'low',
     parallelToolCalls: false,
@@ -990,25 +1023,95 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): 
   });
 }
 
-export async function distillAoiMemoryCandidatesWithLlm(
-  params: AoiMemorySyncParams,
-): Promise<AoiMemoryCandidate[]> {
-  if (!hasUsableDistillerConfig(params.llmConfig)) return [];
+export function isAoiDistillerTimeoutError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /timed out after \d+ms/.test(message);
+}
 
+// A permanent failure (bad key, unknown model, malformed request) will fail the
+// same way every time, so retrying only doubles the cost and the log noise.
+// Timeouts and transport errors are the transient ones worth one more try.
+export function shouldRetryAoiDistiller(error: unknown): boolean {
+  if (isAoiDistillerTimeoutError(error)) {
+    return true;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  if (/LLM API error (4\d\d)/.test(message)) {
+    return false;
+  }
+  return /network|fetch|ECONN|socket|stream|aborted without reason/i.test(message);
+}
+
+async function runDistillerAttempt(
+  params: AoiMemorySyncParams,
+  config: LLMConfig,
+  timeoutMs: number,
+): Promise<AoiMemoryCandidate[]> {
   const distillerChat = params.distillerChat ?? chat;
   const abortController = new AbortController();
   try {
     const response = await withTimeout(
-      distillerChat(buildDistillerMessages(params), [], makeDistillerConfig(params.llmConfig), {
+      distillerChat(buildDistillerMessages(params), [], makeDistillerConfig(config), {
         signal: abortController.signal,
       }),
-      DISTILLER_TIMEOUT_MS,
+      timeoutMs,
       'Aoi memory distiller',
     );
     return parseAoiMemoryDistillerResponse(response.content);
   } finally {
+    // Always abort: on the timeout path this releases the still-open request
+    // before the retry starts, so the two never run concurrently.
     abortController.abort();
   }
+}
+
+export async function distillAoiMemoryCandidatesWithLlm(
+  params: AoiMemorySyncParams,
+): Promise<AoiMemoryCandidate[]> {
+  const config = params.llmConfig;
+  if (!hasUsableDistillerConfig(config)) return [];
+
+  const recordAttempt = params.recordDistillerAttempt ?? recordAoiDistillerAttempt;
+  const startedAt = Date.now();
+  let attempts = 0;
+  let lastError: unknown = null;
+
+  for (const timeoutMs of [DISTILLER_TIMEOUT_MS, DISTILLER_RETRY_TIMEOUT_MS]) {
+    attempts += 1;
+    try {
+      const candidates = await runDistillerAttempt(params, config, timeoutMs);
+      recordAttempt({
+        outcome: candidates.length > 0 ? 'ok' : 'empty',
+        at: Date.now(),
+        durationMs: Date.now() - startedAt,
+        attempts,
+        candidateCount: candidates.length,
+        provider: config.provider,
+        model: config.model,
+      });
+      return candidates;
+    } catch (error) {
+      lastError = error;
+      if (!shouldRetryAoiDistiller(error) || attempts >= 2) {
+        break;
+      }
+      console.info('[AoiMemory] distiller attempt failed; retrying once', {
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  recordAttempt({
+    outcome: isAoiDistillerTimeoutError(lastError) ? 'timeout' : 'error',
+    at: Date.now(),
+    durationMs: Date.now() - startedAt,
+    attempts,
+    candidateCount: 0,
+    provider: config.provider,
+    model: config.model,
+    reason: lastError instanceof Error ? lastError.message : String(lastError),
+  });
+  throw lastError;
 }
 
 export async function loadAoiMemories(): Promise<AoiMemoryEntry[]> {

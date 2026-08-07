@@ -12,6 +12,9 @@ import {
   selectAoiSharedEpisodesForPrompt,
   type AoiMemoryEpisode,
   distillAoiMemoryCandidatesWithLlm,
+  isAoiDistillerTimeoutError,
+  pickAoiDistillerReasoningEffort,
+  shouldRetryAoiDistiller,
   extractHeuristicAoiMemoryCandidates,
   forgetAoiPreferencePollMemory,
   loadAoiMemories,
@@ -30,6 +33,7 @@ import {
 } from '../aoiPreferencePoll';
 import type { ChatMessage, ToolDef } from '../llmClient';
 import type { LLMConfig } from '../llmModels';
+import type { AoiDistillerAttempt } from '../aoiMemoryDistillerHealth';
 
 const MOCK_LLM_CONFIG: LLMConfig = {
   provider: 'openai',
@@ -693,6 +697,109 @@ describe('Aoi LLM memory distiller', () => {
     expect(candidates).toHaveLength(1);
     expect(candidates[0].scope).toBe('project');
     expect(candidates[0].type).toBe('decision');
+  });
+
+  it('picks the cheapest reasoning effort the model actually supports', () => {
+    // The bug this guards: 'low' is not a DeepSeek effort, and
+    // applyDeepSeekChatRuntimeOptions maps any non-'none' value to
+    // thinking:enabled + reasoning_effort 'high' -- a full thinking pass for a
+    // JSON extraction, which blew the distiller timeout on every turn.
+    expect(
+      pickAoiDistillerReasoningEffort({ provider: 'deepseek', model: 'deepseek-v4-flash' }),
+    ).toBe('none');
+    // GPT-5 does not accept 'none'; its cheapest published effort is 'low'.
+    expect(pickAoiDistillerReasoningEffort({ provider: 'openai', model: 'gpt-5.4' })).toBe('low');
+    // A model publishing no restriction keeps the historical value.
+    expect(pickAoiDistillerReasoningEffort({ provider: 'anthropic', model: 'claude-opus-5' })).toBe(
+      'low',
+    );
+  });
+
+  it('sends the distiller config with thinking disabled on DeepSeek', async () => {
+    const seen: LLMConfig[] = [];
+    const distillerChat = async (_m: ChatMessage[], _t: ToolDef[], config: LLMConfig) => {
+      seen.push(config);
+      return { content: JSON.stringify({ memories: [] }), toolCalls: [] };
+    };
+
+    await distillAoiMemoryCandidatesWithLlm({
+      sessionPath: 'aoi/default',
+      userMessage: '커널 드라이버 얘기 계속하자',
+      assistantMessage: '좋아, 이어서 보자.',
+      llmConfig: { ...MOCK_LLM_CONFIG, provider: 'deepseek', model: 'deepseek-v4-flash' },
+      distillerChat,
+      recordDistillerAttempt: () => undefined,
+    });
+
+    expect(seen[0].reasoningEffort).toBe('none');
+    expect(seen[0].verbosity).toBe('low');
+  });
+
+  it('retries once on a transient failure and records the outcome', async () => {
+    const attempts: AoiDistillerAttempt[] = [];
+    let calls = 0;
+    const distillerChat = async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw new Error('network error: failed to fetch');
+      }
+      return {
+        content: JSON.stringify({
+          memories: [{ scope: 'user', type: 'fact', content: 'User ships kernel drivers.' }],
+        }),
+        toolCalls: [],
+      };
+    };
+
+    const candidates = await distillAoiMemoryCandidatesWithLlm({
+      sessionPath: 'aoi/default',
+      userMessage: '나는 커널 드라이버를 만든다',
+      assistantMessage: '기록해둘게.',
+      llmConfig: MOCK_LLM_CONFIG,
+      distillerChat,
+      recordDistillerAttempt: (attempt) => attempts.push(attempt),
+    });
+
+    expect(calls).toBe(2);
+    expect(candidates).toHaveLength(1);
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]).toMatchObject({ outcome: 'ok', attempts: 2, candidateCount: 1 });
+  });
+
+  it('does not retry a permanent provider error and records it as an error', async () => {
+    const attempts: AoiDistillerAttempt[] = [];
+    let calls = 0;
+    const distillerChat = async () => {
+      calls += 1;
+      throw new Error('LLM API error 401: invalid api key');
+    };
+
+    await expect(
+      distillAoiMemoryCandidatesWithLlm({
+        sessionPath: 'aoi/default',
+        userMessage: '테스트 메시지입니다 조금 길게',
+        assistantMessage: '응답입니다.',
+        llmConfig: MOCK_LLM_CONFIG,
+        distillerChat,
+        recordDistillerAttempt: (attempt) => attempts.push(attempt),
+      }),
+    ).rejects.toThrow(/401/);
+
+    // A bad key fails identically every time; retrying only doubles the cost.
+    expect(calls).toBe(1);
+    expect(attempts[0]).toMatchObject({ outcome: 'error', attempts: 1 });
+    expect(attempts[0].reason).toContain('401');
+  });
+
+  it('classifies retryable versus permanent distiller failures', () => {
+    expect(shouldRetryAoiDistiller(new Error('Aoi memory distiller timed out after 20000ms'))).toBe(
+      true,
+    );
+    expect(shouldRetryAoiDistiller(new Error('network error'))).toBe(true);
+    expect(shouldRetryAoiDistiller(new Error('LLM API error 400: bad request'))).toBe(false);
+    expect(shouldRetryAoiDistiller(new Error('LLM API error 500: server blew up'))).toBe(false);
+    expect(isAoiDistillerTimeoutError(new Error('timed out after 8000ms'))).toBe(true);
+    expect(isAoiDistillerTimeoutError(new Error('nope'))).toBe(false);
   });
 
   it('grounds the prompt with stored preferences and this-turn captures for dedupe', async () => {

@@ -13,6 +13,12 @@ import {
   type AoiMemoryMaintenanceView,
 } from '@/lib/aoiMemoryMaintenancePanelModel';
 
+import {
+  describeAoiDistillerHealth,
+  summarizeAoiDistillerHealth,
+  type AoiDistillerHealth,
+} from '@/lib/aoiMemoryDistillerHealth';
+
 import styles from './index.module.scss';
 
 // Operator surface for Aoi memory maintenance. These three switches used to be
@@ -28,6 +34,7 @@ export const AoiMemoryMaintenancePanel: React.FC = () => {
   const [view, setView] = useState<AoiMemoryMaintenanceView | null>(null);
   const [coverage, setCoverage] = useState<AoiMemoryEmbeddingCoverage | null>(null);
   const [runResult, setRunResult] = useState<AoiMemoryMaintenanceRunResult | null>(null);
+  const [distiller, setDistiller] = useState<AoiDistillerHealth | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -44,6 +51,9 @@ export const AoiMemoryMaintenancePanel: React.FC = () => {
   const load = useCallback(async () => {
     setBusy(true);
     setError('');
+    // Local diagnostic, read on every refresh so a distiller that started
+    // failing shows up here instead of only in the console.
+    setDistiller(summarizeAoiDistillerHealth());
     try {
       const response = await fetch(AOI_MEMORY_MAINTENANCE_ROUTE);
       if (!response.ok) {
@@ -163,6 +173,22 @@ export const AoiMemoryMaintenancePanel: React.FC = () => {
           {formatAoiEmbeddingCoverage(coverage)}
           {coverage.providerModel ? ` — provider: ${coverage.providerModel}` : ''}
           {coverage.pendingCount > 0 ? ` — ${coverage.pendingCount} pending` : ''}
+        </div>
+      ) : null}
+
+      {distiller ? (
+        <div
+          className={
+            distiller.total > 0 && distiller.successRate < 0.5
+              ? styles.aoiAutonomyError
+              : styles.modelHint
+          }
+          data-testid="aoi-distiller-health"
+        >
+          Memory capture: {describeAoiDistillerHealth(distiller)}
+          {distiller.lastOutcome === 'timeout' || distiller.lastOutcome === 'error'
+            ? ' — falling back to keyword capture'
+            : ''}
         </div>
       ) : null}
 
