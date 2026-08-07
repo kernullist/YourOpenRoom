@@ -739,6 +739,7 @@ import {
 import CharacterPanel from './CharacterPanel';
 import ModPanel from './ModPanel';
 import { AoiMcpConnectorsSettings } from './AoiMcpConnectorsSettings';
+import { AoiAutonomyRuntimePanel } from './AoiAutonomyRuntimePanel';
 import { AoiMemoryDecayPanel } from './AoiMemoryDecayPanel';
 import { AoiMemoryMaintenancePanel } from './AoiMemoryMaintenancePanel';
 import { AoiNonVoiceScorecardPanel } from './AoiNonVoiceScorecardPanel';
@@ -14971,6 +14972,8 @@ const SettingsModal: React.FC<{
                 {ADVANCED_SETTINGS_SECTIONS.find((section) => section.id === advancedSection)
                   ?.hint ?? ''}
               </p>
+
+              {advancedSection === 'autonomy' && <AoiAutonomyRuntimePanel />}
 
               {advancedSection === 'autonomy' && (
                 <div className={styles.settingsSectionCard} data-testid="aoi-autonomy-panel">

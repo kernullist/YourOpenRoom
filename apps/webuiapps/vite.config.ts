@@ -1918,6 +1918,64 @@ function openVscodeManagerPlugin(): Plugin {
   };
 }
 
+/**
+ * Aoi daemon runtime probe — `GET /api/aoi-daemon/health`
+ *
+ * The daemon is a separate always-on process on its own loopback port, so the
+ * browser cannot read its `/healthz` directly (cross-origin). Without this the
+ * settings UI showed autonomy policy toggles with no way to tell whether ANY
+ * runtime was behind them -- and with the daemon stopped, every one of them was
+ * a state report about a loop that was not running.
+ *
+ * Deliberately minimal: a read-only GET relayed to a FIXED loopback target (the
+ * host/port are never taken from the request, so this is not an SSRF surface),
+ * with a short timeout so a dead daemon cannot stall the panel. The four
+ * outcomes are kept distinct because collapsing them would let the UI claim
+ * "running" on an ambiguous failure.
+ */
+function aoiDaemonHealthProxyPlugin(): Plugin {
+  const DAEMON_PROBE_TIMEOUT_MS = 2000;
+  return {
+    name: 'aoi-daemon-health-proxy',
+    configureServer(server) {
+      server.middlewares.use('/api/aoi-daemon/health', async (req, res) => {
+        res.setHeader('Content-Type', 'application/json');
+        if ((req.method ?? 'GET') !== 'GET') {
+          res.writeHead(405);
+          res.end(JSON.stringify({ error: 'Method not allowed' }));
+          return;
+        }
+        const parsedPort = Number.parseInt(process.env.AOI_DAEMON_PORT ?? '', 10);
+        const port = Number.isFinite(parsedPort) && parsedPort > 0 ? parsedPort : 7333;
+        const target = `http://127.0.0.1:${port}/healthz`;
+        try {
+          const upstream = await fetch(target, {
+            signal: AbortSignal.timeout(DAEMON_PROBE_TIMEOUT_MS),
+          });
+          if (!upstream.ok) {
+            res.writeHead(200);
+            res.end(JSON.stringify({ ok: true, status: 'unreachable', port }));
+            return;
+          }
+          const snapshot = (await upstream.json()) as unknown;
+          res.writeHead(200);
+          res.end(JSON.stringify({ ok: true, status: 'running', port, snapshot }));
+        } catch (error) {
+          // A refused connection is the daemon being STOPPED -- a normal,
+          // actionable state. Anything else (timeout, DNS, socket) is only
+          // "we could not tell", which must never render as running.
+          const code = (error as { cause?: { code?: string }; code?: string })?.cause?.code;
+          const refused = code === 'ECONNREFUSED' || code === 'ECONNRESET';
+          res.writeHead(200);
+          res.end(
+            JSON.stringify({ ok: true, status: refused ? 'not_running' : 'unreachable', port }),
+          );
+        }
+      });
+    },
+  };
+}
+
 /** Content-addressed version token for config.json, for optimistic concurrency. */
 function readLlmConfigWithEtag(): { content: string; etag: string } {
   const content = fs.existsSync(LLM_CONFIG_FILE) ? fs.readFileSync(LLM_CONFIG_FILE, 'utf-8') : '{}';
@@ -3961,6 +4019,7 @@ const config = ({ mode }: ConfigEnv): UserConfigExport => {
   const skipLegacy = env.VITE_SKIP_LEGACY !== 'false';
   const plugins: PluginOption[] = [
     llmConfigPlugin(),
+    aoiDaemonHealthProxyPlugin(),
     sessionDataPlugin(),
     gmailPlugin({
       configFile: LLM_CONFIG_FILE,
