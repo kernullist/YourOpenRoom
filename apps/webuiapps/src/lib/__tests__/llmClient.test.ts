@@ -563,6 +563,36 @@ describe('saveConfig()', () => {
     });
   });
 
+  it('preserves aoiMusicTaste and aoiMcpConnectors when saving the main LLM settings', async () => {
+    const musicTaste = {
+      version: 1,
+      updatedAt: 1_700_000_000_000,
+      taste: { version: 1, answers: {}, recentSearches: ['fromis_9'], recentPlays: [] },
+    };
+    const mcpConnectors = { version: 1, connectors: [] };
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            llm: MOCK_ANTHROPIC_CONFIG,
+            aoiMusicTaste: musicTaste,
+            aoiMcpConnectors: mcpConnectors,
+          }),
+      } as unknown as Response)
+      .mockResolvedValueOnce({ ok: true } as Response);
+    globalThis.fetch = mockFetch;
+
+    await saveConfig(MOCK_OPENAI_CONFIG);
+
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body as string);
+    // A settings save must not wipe the learned music taste or the MCP
+    // connector allow-list; both are written by their own flows.
+    expect(body.aoiMusicTaste).toEqual(musicTaste);
+    expect(body.aoiMcpConnectors).toEqual(mcpConnectors);
+  });
+
   it('saves Tavily config and syncs localStorage when provided', async () => {
     const mockFetch = vi
       .fn()

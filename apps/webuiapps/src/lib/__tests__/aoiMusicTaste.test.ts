@@ -1,28 +1,51 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   AOI_MUSIC_TASTE_STATE_VERSION,
   DEFAULT_AOI_MUSIC_TASTE_STATE,
   TASTE_POLL_COOLDOWN_MS,
   TASTE_POLL_MIN_IDLE_MS,
   TASTE_POLL_QUESTIONS,
+  awaitPendingAoiMusicCloudWrites,
   buildAoiMusicTasteNeedPreferenceCopy,
   buildAoiMusicTastePromptBlock,
   deriveTasteProfile,
+  hydrateAoiMusicStateFromCloud,
+  loadAoiIdleMusicLearningState,
   loadAoiMusicTasteState,
+  mergeAoiIdleMusicLearningStates,
+  mergeAoiMusicTasteStates,
+  parseAoiIdleMusicLearningState,
   parseAoiMusicPreferenceSeed,
   parseAoiMusicTasteChatIntent,
   pickNextTasteQuestion,
+  planIdleMusicNudge,
   recordTasteAnswer,
   recordTasteQuestionAsked,
   recordYouTubePlay,
   recordYouTubeSearch,
   sanitizeTasteSearchQuery,
+  saveAoiIdleMusicLearningState,
   saveAoiMusicTasteState,
   shouldAskTasteQuestion,
   type AoiMusicTasteState,
   type AoiTasteLang,
+  type PlanIdleMusicNudgeInput,
   type ShouldAskTasteQuestionInput,
 } from '../aoiMusicTaste';
+import {
+  DEFAULT_AOI_IDLE_MUSIC_STATE,
+  DEFAULT_IDLE_MUSIC_MIN_IDLE_MS,
+  type AoiIdleMusicLearningState,
+} from '../aoiIdleMusicNudge';
+import { loadPersistedConfig, savePersistedConfig } from '../configPersistence';
+
+vi.mock('../configPersistence', () => ({
+  loadPersistedConfig: vi.fn().mockResolvedValue(null),
+  savePersistedConfig: vi.fn().mockResolvedValue(undefined),
+}));
+
+const loadPersistedConfigMock = vi.mocked(loadPersistedConfig);
+const savePersistedConfigMock = vi.mocked(savePersistedConfig);
 
 const NOW = 1_700_000_000_000;
 const LANGS: readonly AoiTasteLang[] = ['ko', 'ja', 'zh', 'en'];
@@ -358,5 +381,239 @@ describe('storage round-trip', () => {
     expect(state.recentSearches).toEqual(['lofi']);
     expect(state.recentPlays).toEqual([]);
     expect(state.lastAskedAt).toBe(0);
+  });
+});
+
+function makeIdleState(
+  overrides: Partial<AoiIdleMusicLearningState> = {},
+): AoiIdleMusicLearningState {
+  return {
+    ...DEFAULT_AOI_IDLE_MUSIC_STATE,
+    moodFeedback: {},
+    recentQueries: [],
+    ...overrides,
+  };
+}
+
+function makeTasteState(overrides: Partial<AoiMusicTasteState> = {}): AoiMusicTasteState {
+  return {
+    ...DEFAULT_AOI_MUSIC_TASTE_STATE,
+    answers: {},
+    recentSearches: [],
+    recentPlays: [],
+    ...overrides,
+  };
+}
+
+describe('planIdleMusicNudge', () => {
+  function baseInput(overrides: Partial<PlanIdleMusicNudgeInput> = {}): PlanIdleMusicNudgeInput {
+    return {
+      now: NOW,
+      userIdleMs: DEFAULT_IDLE_MUSIC_MIN_IDLE_MS,
+      autonomyEnabled: true,
+      quietMode: false,
+      musicActive: false,
+      otherOfferPending: false,
+      idleMusicLastOfferedAt: 0,
+      hasTasteSignal: true,
+      hasUnansweredTasteQuestion: true,
+      tastePollLastAskedAt: 0,
+      ...overrides,
+    };
+  }
+
+  it('offers music when taste evidence exists', () => {
+    expect(planIdleMusicNudge(baseInput())).toBe('offer-music');
+  });
+
+  it('diverts to a taste question instead of a pool pick when no taste exists', () => {
+    expect(planIdleMusicNudge(baseInput({ hasTasteSignal: false }))).toBe('ask-taste-question');
+  });
+
+  it('stays quiet with no taste when the poll cooldown has not elapsed', () => {
+    expect(
+      planIdleMusicNudge(
+        baseInput({
+          hasTasteSignal: false,
+          tastePollLastAskedAt: NOW - TASTE_POLL_COOLDOWN_MS + 60_000,
+        }),
+      ),
+    ).toBe('skip');
+  });
+
+  it('stays quiet with no taste when the question bank is exhausted', () => {
+    expect(
+      planIdleMusicNudge(baseInput({ hasTasteSignal: false, hasUnansweredTasteQuestion: false })),
+    ).toBe('skip');
+  });
+
+  it('skips when the music gates fail regardless of taste', () => {
+    expect(planIdleMusicNudge(baseInput({ userIdleMs: 1_000 }))).toBe('skip');
+    expect(planIdleMusicNudge(baseInput({ musicActive: true }))).toBe('skip');
+    expect(planIdleMusicNudge(baseInput({ autonomyEnabled: false }))).toBe('skip');
+    expect(planIdleMusicNudge(baseInput({ otherOfferPending: true }))).toBe('skip');
+  });
+});
+
+describe('merge helpers', () => {
+  it('unions taste states with the local side winning conflicts', () => {
+    const local = makeTasteState({
+      answers: { vibe: 'calm_lofi' },
+      recentSearches: ['fromis_9', 'aespa lemonade'],
+      recentPlays: ['Vitamin ME - fromis_9'],
+      lastAskedAt: 200,
+    });
+    const cloud = makeTasteState({
+      answers: { vibe: 'energetic_pop', vocals: 'korean_songs' },
+      recentSearches: ['ive i am'],
+      recentPlays: [],
+      lastAskedAt: 500,
+    });
+
+    const merged = mergeAoiMusicTasteStates(local, cloud);
+
+    expect(merged.answers).toEqual({ vibe: 'calm_lofi', vocals: 'korean_songs' });
+    expect(merged.recentSearches).toEqual(['fromis_9', 'aespa lemonade', 'ive i am']);
+    expect(merged.recentPlays).toEqual(['Vitamin ME - fromis_9']);
+    expect(merged.lastAskedAt).toBe(500);
+  });
+
+  it('takes the max lastOfferedAt so the cooldown holds across browsers', () => {
+    const local = makeIdleState({ lastOfferedAt: 100, moodFeedback: { focus: 2 } });
+    const cloud = makeIdleState({
+      lastOfferedAt: 900,
+      moodFeedback: { focus: -1, chill: 1 },
+      recentQueries: ['lofi hip hop radio beats to relax study to'],
+    });
+
+    const merged = mergeAoiIdleMusicLearningStates(local, cloud);
+
+    expect(merged.lastOfferedAt).toBe(900);
+    expect(merged.moodFeedback).toEqual({ focus: 2, chill: 1 });
+    expect(merged.recentQueries).toEqual(['lofi hip hop radio beats to relax study to']);
+  });
+});
+
+describe('parseAoiIdleMusicLearningState', () => {
+  it('accepts a valid state and drops junk mood values', () => {
+    const parsed = parseAoiIdleMusicLearningState({
+      version: 1,
+      moodFeedback: { focus: 2, chill: 'broken' },
+      recentQueries: ['fromis_9'],
+      lastOfferedAt: 42,
+    });
+    expect(parsed).toEqual({
+      version: 1,
+      moodFeedback: { focus: 2 },
+      recentQueries: ['fromis_9'],
+      lastOfferedAt: 42,
+    });
+  });
+
+  it('rejects version mismatches and malformed shapes', () => {
+    expect(parseAoiIdleMusicLearningState(null)).toBeNull();
+    expect(
+      parseAoiIdleMusicLearningState({ version: 2, moodFeedback: {}, recentQueries: [] }),
+    ).toBeNull();
+    expect(
+      parseAoiIdleMusicLearningState({ version: 1, moodFeedback: {}, recentQueries: [7] }),
+    ).toBeNull();
+  });
+});
+
+describe('server-side persistence', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    loadPersistedConfigMock.mockReset().mockResolvedValue(null);
+    savePersistedConfigMock.mockReset().mockResolvedValue(undefined);
+  });
+
+  it('writes through to the server copy on save', async () => {
+    loadPersistedConfigMock.mockResolvedValue({ llm: undefined });
+    const state = recordYouTubeSearch(DEFAULT_AOI_MUSIC_TASTE_STATE, { query: 'fromis_9' });
+    saveAoiMusicTasteState(state);
+    await awaitPendingAoiMusicCloudWrites();
+
+    expect(savePersistedConfigMock).toHaveBeenCalled();
+    const written = savePersistedConfigMock.mock.calls.at(-1)?.[0];
+    expect(written?.aoiMusicTaste?.taste).toMatchObject({ recentSearches: ['fromis_9'] });
+    expect(written?.aoiMusicTaste?.idleLearning).toMatchObject({ version: 1 });
+  });
+
+  it('coalesces a burst of saves into serialized writes', async () => {
+    loadPersistedConfigMock.mockResolvedValue({});
+    saveAoiMusicTasteState(makeTasteState({ recentSearches: ['a'] }));
+    saveAoiIdleMusicLearningState(makeIdleState({ lastOfferedAt: 1 }));
+    saveAoiMusicTasteState(makeTasteState({ recentSearches: ['b'] }));
+    await awaitPendingAoiMusicCloudWrites();
+
+    // The queued flag collapses back-to-back saves; at least one write must
+    // carry the final localStorage contents.
+    const written = savePersistedConfigMock.mock.calls.at(-1)?.[0];
+    expect(written?.aoiMusicTaste?.taste).toMatchObject({ recentSearches: ['b'] });
+  });
+
+  it('hydrates a fresh browser from the server copy', async () => {
+    loadPersistedConfigMock.mockResolvedValue({
+      aoiMusicTaste: {
+        version: 1,
+        updatedAt: NOW,
+        taste: makeTasteState({
+          recentSearches: ['fromis_9'],
+          recentPlays: ['Vitamin ME - fromis_9'],
+        }) as unknown as Record<string, unknown>,
+        idleLearning: makeIdleState({ lastOfferedAt: 777 }) as unknown as Record<string, unknown>,
+      },
+    });
+
+    const hydrated = await hydrateAoiMusicStateFromCloud();
+
+    expect(hydrated?.taste.recentSearches).toEqual(['fromis_9']);
+    expect(hydrated?.idleLearning.lastOfferedAt).toBe(777);
+    // The merged state must land in localStorage for the next sync load.
+    expect(loadAoiMusicTasteState().recentSearches).toEqual(['fromis_9']);
+    expect(loadAoiIdleMusicLearningState().lastOfferedAt).toBe(777);
+  });
+
+  it('keeps local state and seeds the server when the cloud field is missing', async () => {
+    loadPersistedConfigMock.mockResolvedValue({});
+    saveAoiMusicTasteState(makeTasteState({ recentSearches: ['fromis_9'] }));
+    await awaitPendingAoiMusicCloudWrites();
+    savePersistedConfigMock.mockClear();
+
+    const hydrated = await hydrateAoiMusicStateFromCloud();
+    await awaitPendingAoiMusicCloudWrites();
+
+    expect(hydrated?.taste.recentSearches).toEqual(['fromis_9']);
+    expect(savePersistedConfigMock).toHaveBeenCalled();
+  });
+
+  it('returns null and keeps local state when the config API is unreachable', async () => {
+    loadPersistedConfigMock.mockResolvedValue(null);
+    saveAoiMusicTasteState(makeTasteState({ recentSearches: ['fromis_9'] }));
+    await awaitPendingAoiMusicCloudWrites();
+
+    expect(await hydrateAoiMusicStateFromCloud()).toBeNull();
+    expect(loadAoiMusicTasteState().recentSearches).toEqual(['fromis_9']);
+  });
+
+  it('does not re-upload when the server copy already matches', async () => {
+    const taste = makeTasteState({ recentSearches: ['fromis_9'] });
+    const idle = makeIdleState({ lastOfferedAt: 5 });
+    localStorage.setItem('aoi-music-taste-v1', JSON.stringify(taste));
+    localStorage.setItem('aoi:idleMusicState:v1', JSON.stringify(idle));
+    loadPersistedConfigMock.mockResolvedValue({
+      aoiMusicTaste: {
+        version: 1,
+        updatedAt: NOW,
+        taste: taste as unknown as Record<string, unknown>,
+        idleLearning: idle as unknown as Record<string, unknown>,
+      },
+    });
+
+    await hydrateAoiMusicStateFromCloud();
+    await awaitPendingAoiMusicCloudWrites();
+
+    expect(savePersistedConfigMock).not.toHaveBeenCalled();
   });
 });

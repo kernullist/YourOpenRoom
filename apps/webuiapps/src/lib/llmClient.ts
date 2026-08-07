@@ -163,6 +163,8 @@ export async function saveConfig(
       : {}),
     ...(existing?.gmail ? { gmail: existing.gmail } : {}),
     ...(existing?.aoiEmbedding ? { aoiEmbedding: existing.aoiEmbedding } : {}),
+    ...(existing?.aoiMcpConnectors ? { aoiMcpConnectors: existing.aoiMcpConnectors } : {}),
+    ...(existing?.aoiMusicTaste ? { aoiMusicTaste: existing.aoiMusicTaste } : {}),
   };
   if (dialogLlmConfig && Object.keys(dialogLlmConfig).length > 0) {
     persisted.dialogLlm = dialogLlmConfig;

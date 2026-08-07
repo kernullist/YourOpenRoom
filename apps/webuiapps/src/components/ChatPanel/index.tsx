@@ -68,14 +68,18 @@ import {
   buildAoiMusicTastePromptBlock,
   buildAoiMusicTasteRecommendCopy,
   deriveTasteProfile,
+  hydrateAoiMusicStateFromCloud,
+  loadAoiIdleMusicLearningState,
   loadAoiMusicTasteState,
   parseAoiMusicPreferenceSeed,
   parseAoiMusicTasteChatIntent,
   pickNextTasteQuestion,
+  planIdleMusicNudge,
   recordTasteAnswer,
   recordTasteQuestionAsked,
   recordYouTubePlay,
   recordYouTubeSearch,
+  saveAoiIdleMusicLearningState,
   saveAoiMusicTasteState,
   shouldAskTasteQuestion,
   type AoiMusicTasteState,
@@ -104,7 +108,6 @@ import {
   DEFAULT_AOI_IDLE_MUSIC_STATE,
   recordIdleMusicOffered,
   recordIdleMusicOutcome,
-  shouldOfferIdleMusic,
   type AoiIdleMusicLearningState,
 } from '@/lib/aoiIdleMusicNudge';
 import {
@@ -1680,47 +1683,9 @@ function buildIdleMusicErrorAck(lang: NudgeLang): string {
   }
 }
 
-const AOI_IDLE_MUSIC_STORAGE_KEY = 'aoi:idleMusicState:v1';
-
-function loadAoiIdleMusicState(): AoiIdleMusicLearningState {
-  const fallback: AoiIdleMusicLearningState = {
-    ...DEFAULT_AOI_IDLE_MUSIC_STATE,
-    moodFeedback: {},
-    recentQueries: [],
-  };
-  try {
-    const raw = localStorage.getItem(AOI_IDLE_MUSIC_STORAGE_KEY);
-    if (!raw) {
-      return fallback;
-    }
-    const parsed = JSON.parse(raw) as Partial<AoiIdleMusicLearningState> | null;
-    if (
-      parsed &&
-      parsed.version === DEFAULT_AOI_IDLE_MUSIC_STATE.version &&
-      Array.isArray(parsed.recentQueries) &&
-      typeof parsed.moodFeedback === 'object' &&
-      parsed.moodFeedback !== null
-    ) {
-      return {
-        version: DEFAULT_AOI_IDLE_MUSIC_STATE.version,
-        moodFeedback: parsed.moodFeedback,
-        recentQueries: parsed.recentQueries,
-        lastOfferedAt: typeof parsed.lastOfferedAt === 'number' ? parsed.lastOfferedAt : 0,
-      };
-    }
-  } catch {
-    // Ignore malformed storage and start clean.
-  }
-  return fallback;
-}
-
-function saveAoiIdleMusicState(state: AoiIdleMusicLearningState): void {
-  try {
-    localStorage.setItem(AOI_IDLE_MUSIC_STORAGE_KEY, JSON.stringify(state));
-  } catch {
-    // Best-effort persistence; ignore quota / privacy-mode failures.
-  }
-}
+// Idle-music learning state persistence lives in @/lib/aoiMusicTaste together
+// with the taste state: both write through localStorage to the server copy so
+// taste follows the user across browser profiles.
 
 // --- Aoi cyber-news nudge: localized copy + persisted learning state ---------
 
@@ -6007,10 +5972,23 @@ const ChatPanel: React.FC<{
   const pendingPreferencePollRef = useRef<PendingPreferencePoll | null>(null);
 
   useEffect(() => {
-    idleMusicStateRef.current = loadAoiIdleMusicState();
+    idleMusicStateRef.current = loadAoiIdleMusicLearningState();
     newsStateRef.current = loadAoiNewsState();
     musicTasteStateRef.current = loadAoiMusicTasteState();
     selfObservationStateRef.current = loadAoiSelfObservationState();
+    // Merge the server copy of the taste + idle-music learning state into this
+    // browser's cache. Without this a fresh profile (in-app preview browser,
+    // second PC) sees zero taste and its idle nudge degrades to pool picks.
+    void hydrateAoiMusicStateFromCloud()
+      .then((hydrated) => {
+        if (hydrated) {
+          musicTasteStateRef.current = hydrated.taste;
+          idleMusicStateRef.current = hydrated.idleLearning;
+        }
+      })
+      .catch(() => {
+        // Config API unavailable: the localStorage state loaded above stands.
+      });
     // Nudge cards and their chips are restored from chat history, so a pending
     // offer must survive a reload too; otherwise a restored play chip skips the
     // accept path and falls through to the generic intent parser.
@@ -6577,7 +6555,7 @@ const ChatPanel: React.FC<{
             mood: pendingIdleMusicOffer.mood,
             accepted: true,
           });
-          saveAoiIdleMusicState(idleMusicStateRef.current);
+          saveAoiIdleMusicLearningState(idleMusicStateRef.current);
           const lang = resolveNudgeLang();
           try {
             await dispatchAgentAction({
@@ -6609,7 +6587,7 @@ const ChatPanel: React.FC<{
             mood: pendingIdleMusicOffer.mood,
             accepted: false,
           });
-          saveAoiIdleMusicState(idleMusicStateRef.current);
+          saveAoiIdleMusicLearningState(idleMusicStateRef.current);
           // "Another" style chips re-roll a taste-backed pick; soft "later" chips just stop.
           const wantsAnother = /다른|別|换一|Another/i.test(messageText);
           if (wantsAnother) {
@@ -6634,7 +6612,7 @@ const ChatPanel: React.FC<{
               query: recommendation.query,
               now,
             });
-            saveAoiIdleMusicState(idleMusicStateRef.current);
+            saveAoiIdleMusicLearningState(idleMusicStateRef.current);
             pendingIdleMusicOfferRef.current = {
               playPrompt: copy.playPrompt,
               dismissPrompt: copy.dismissPrompt,
@@ -6666,7 +6644,7 @@ const ChatPanel: React.FC<{
           mood: pendingIdleMusicOffer.mood,
           accepted: false,
         });
-        saveAoiIdleMusicState(idleMusicStateRef.current);
+        saveAoiIdleMusicLearningState(idleMusicStateRef.current);
       }
 
       // Aoi cyber-news nudge: answer a pending "interesting news?" offer here.
@@ -6859,7 +6837,7 @@ const ChatPanel: React.FC<{
             query: recommendation.query,
             now,
           });
-          saveAoiIdleMusicState(idleMusicStateRef.current);
+          saveAoiIdleMusicLearningState(idleMusicStateRef.current);
           pendingIdleMusicOfferRef.current = {
             playPrompt: copy.playPrompt,
             dismissPrompt: copy.dismissPrompt,
@@ -6939,7 +6917,7 @@ const ChatPanel: React.FC<{
           query: recommendation.query,
           now,
         });
-        saveAoiIdleMusicState(idleMusicStateRef.current);
+        saveAoiIdleMusicLearningState(idleMusicStateRef.current);
 
         if (tasteChatIntent.autoplay) {
           try {
@@ -10234,6 +10212,40 @@ const ChatPanel: React.FC<{
     };
   }, [aoiAutonomyStatus?.policy?.enabled, aoiAutonomyPanelSettings.quietMode, visible, loading]);
 
+  // Emit one taste-poll card now: pick the next unanswered question, set the
+  // pending card, stamp the poll cooldown, and post the message. Shared by the
+  // taste-poll cadence below and the idle-music diversion for taste-less
+  // sessions. Returns false when the question bank is exhausted.
+  const askTasteQuestionNow = useCallback(
+    (now: number): boolean => {
+      const state = musicTasteStateRef.current;
+      const question = pickNextTasteQuestion(state);
+      if (!question) {
+        return false;
+      }
+      const lang = resolveNudgeLang();
+      const options = question.options.map((option) => ({
+        id: option.id,
+        label: option.labels[lang],
+      }));
+      pendingTastePollRef.current = { questionId: question.id, options };
+      savePendingTastePoll(pendingTastePollRef.current);
+      musicTasteStateRef.current = recordTasteQuestionAsked(state, { now });
+      saveAoiMusicTasteState(musicTasteStateRef.current);
+      emitAssistantMessage(
+        {
+          id: `aoi-taste-poll-${now}`,
+          role: 'assistant',
+          content: question.prompts[lang],
+          suggestedReplies: options.map((option) => option.label),
+        },
+        { updateSuggestedReplies: true, speak: false },
+      );
+      return true;
+    },
+    [emitAssistantMessage, resolveNudgeLang],
+  );
+
   // When the user has been quietly idle in the panel, offer a mood-based song.
   // Tapping the play chip plays it in the YouTube app (handled in handleSend).
   useEffect(() => {
@@ -10257,19 +10269,26 @@ const ChatPanel: React.FC<{
       }
       const state = idleMusicStateRef.current;
       const musicActive = getWindows().some((win) => win.appId === YOUTUBE_APP_ID);
-      if (
-        !shouldOfferIdleMusic({
-          now,
-          userIdleMs: now - lastUserActivityAtRef.current,
-          autonomyEnabled: gate.autonomyEnabled,
-          quietMode: gate.quietMode,
-          musicActive,
-          lastOfferedAt: state.lastOfferedAt,
-        })
-      ) {
+      const taste = deriveTasteProfile(musicTasteStateRef.current);
+      const plan = planIdleMusicNudge({
+        now,
+        userIdleMs: now - lastUserActivityAtRef.current,
+        autonomyEnabled: gate.autonomyEnabled,
+        quietMode: gate.quietMode,
+        musicActive,
+        otherOfferPending: false,
+        idleMusicLastOfferedAt: state.lastOfferedAt,
+        hasTasteSignal: taste.hasTasteSignal,
+        hasUnansweredTasteQuestion: pickNextTasteQuestion(musicTasteStateRef.current) !== null,
+        tastePollLastAskedAt: musicTasteStateRef.current.lastAskedAt,
+      });
+      if (plan === 'skip') {
         return;
       }
-      const taste = deriveTasteProfile(musicTasteStateRef.current);
+      if (plan === 'ask-taste-question') {
+        askTasteQuestionNow(now);
+        return;
+      }
       const recommendation = buildAoiMusicRecommendation({
         now,
         recentQueries: state.recentQueries,
@@ -10295,7 +10314,7 @@ const ChatPanel: React.FC<{
         query: recommendation.query,
         now,
       });
-      saveAoiIdleMusicState(idleMusicStateRef.current);
+      saveAoiIdleMusicLearningState(idleMusicStateRef.current);
       emitAssistantMessage(
         {
           id: `aoi-idle-music-${now}`,
@@ -10307,7 +10326,7 @@ const ChatPanel: React.FC<{
       );
     }, IDLE_MUSIC_CHECK_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [emitAssistantMessage, resolveNudgeLang]);
+  }, [askTasteQuestionNow, emitAssistantMessage, resolveNudgeLang]);
 
   // Aoi taste poll: occasionally ask one multiple-choice music-taste question
   // and remember the answer for future recommendations. Shares the idle-music
@@ -10323,9 +10342,7 @@ const ChatPanel: React.FC<{
         return;
       }
       const state = musicTasteStateRef.current;
-      const question = pickNextTasteQuestion(state);
       if (
-        !question ||
         !shouldAskTasteQuestion({
           now,
           userIdleMs: now - lastUserActivityAtRef.current,
@@ -10338,32 +10355,15 @@ const ChatPanel: React.FC<{
             pendingPreferencePollRef.current,
           ),
           lastAskedAt: state.lastAskedAt,
-          hasUnansweredQuestion: true,
+          hasUnansweredQuestion: pickNextTasteQuestion(state) !== null,
         })
       ) {
         return;
       }
-      const lang = resolveNudgeLang();
-      const options = question.options.map((option) => ({
-        id: option.id,
-        label: option.labels[lang],
-      }));
-      pendingTastePollRef.current = { questionId: question.id, options };
-      savePendingTastePoll(pendingTastePollRef.current);
-      musicTasteStateRef.current = recordTasteQuestionAsked(state, { now });
-      saveAoiMusicTasteState(musicTasteStateRef.current);
-      emitAssistantMessage(
-        {
-          id: `aoi-taste-poll-${now}`,
-          role: 'assistant',
-          content: question.prompts[lang],
-          suggestedReplies: options.map((option) => option.label),
-        },
-        { updateSuggestedReplies: true, speak: false },
-      );
+      askTasteQuestionNow(now);
     }, TASTE_POLL_CHECK_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [emitAssistantMessage, resolveNudgeLang]);
+  }, [askTasteQuestionNow, emitAssistantMessage, resolveNudgeLang]);
 
   // Aoi preference poll: occasionally ask one multiple-choice question about the
   // user's technical interests and working style, then persist the answer as a

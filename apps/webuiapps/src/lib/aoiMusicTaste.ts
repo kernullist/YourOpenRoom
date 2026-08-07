@@ -7,6 +7,18 @@
 // Everything except the storage helpers is pure and deterministic for unit tests.
 
 import type { AoiMusicMood } from './aoiMusicRecommendation';
+import {
+  AOI_IDLE_MUSIC_MAX_RECENT_QUERIES,
+  AOI_IDLE_MUSIC_STATE_VERSION,
+  DEFAULT_AOI_IDLE_MUSIC_STATE,
+  shouldOfferIdleMusic,
+  type AoiIdleMusicLearningState,
+} from './aoiIdleMusicNudge';
+import {
+  loadPersistedConfig,
+  savePersistedConfig,
+  type AoiMusicPersistedState,
+} from './configPersistence';
 
 export type AoiTasteLang = 'ko' | 'ja' | 'zh' | 'en';
 
@@ -708,9 +720,70 @@ export function buildAoiMusicTasteRecommendCopy(input: {
   };
 }
 
+// --- Idle nudge planning ---------------------------------------------------------
+
+export type AoiIdleMusicNudgePlan = 'offer-music' | 'ask-taste-question' | 'skip';
+
+export interface PlanIdleMusicNudgeInput {
+  now: number;
+  userIdleMs: number | undefined;
+  autonomyEnabled: boolean;
+  quietMode: boolean;
+  musicActive: boolean;
+  otherOfferPending: boolean;
+  idleMusicLastOfferedAt: number;
+  hasTasteSignal: boolean;
+  hasUnansweredTasteQuestion: boolean;
+  tastePollLastAskedAt: number;
+}
+
+// One decision for the 30s idle tick. The unsolicited idle nudge must never
+// advertise a generic mood-pool pick: a session with zero taste signal (fresh
+// browser profile, cleared storage) once pushed "lofi hip hop radio beats..."
+// into the shared conversation as if it were a recommendation. With no taste
+// evidence the nudge diverts to a taste-poll question when the poll's own
+// gates allow it, and otherwise stays quiet for this tick.
+export function planIdleMusicNudge(input: PlanIdleMusicNudgeInput): AoiIdleMusicNudgePlan {
+  if (input.otherOfferPending) {
+    return 'skip';
+  }
+  if (
+    !shouldOfferIdleMusic({
+      now: input.now,
+      userIdleMs: input.userIdleMs,
+      autonomyEnabled: input.autonomyEnabled,
+      quietMode: input.quietMode,
+      musicActive: input.musicActive,
+      lastOfferedAt: input.idleMusicLastOfferedAt,
+    })
+  ) {
+    return 'skip';
+  }
+  if (input.hasTasteSignal) {
+    return 'offer-music';
+  }
+  if (
+    shouldAskTasteQuestion({
+      now: input.now,
+      userIdleMs: input.userIdleMs,
+      autonomyEnabled: input.autonomyEnabled,
+      quietMode: input.quietMode,
+      otherOfferPending: false,
+      lastAskedAt: input.tastePollLastAskedAt,
+      hasUnansweredQuestion: input.hasUnansweredTasteQuestion,
+    })
+  ) {
+    return 'ask-taste-question';
+  }
+  return 'skip';
+}
+
 // --- Persistence ---------------------------------------------------------------
 
 const TASTE_STATE_STORAGE_KEY = 'aoi-music-taste-v1';
+// Key kept from the original ChatPanel-local persistence so browsers that
+// learned mood feedback before this refactor keep their state.
+const IDLE_MUSIC_STORAGE_KEY = 'aoi:idleMusicState:v1';
 
 function normalizeStringList(value: unknown, max: number): string[] {
   if (!Array.isArray(value)) {
@@ -767,33 +840,70 @@ function normalizeTasteState(state: AoiMusicTasteState | null | undefined): AoiM
   };
 }
 
+// Validate an untrusted taste-state value (localStorage or the server copy).
+// Returns null when the shape is not usable.
+export function parseAoiMusicTasteState(raw: unknown): AoiMusicTasteState | null {
+  const parsed = raw as Partial<AoiMusicTasteState> | null | undefined;
+  if (
+    parsed &&
+    parsed.version === AOI_MUSIC_TASTE_STATE_VERSION &&
+    typeof parsed.answers === 'object' &&
+    parsed.answers !== null &&
+    Array.isArray(parsed.recentSearches) &&
+    parsed.recentSearches.every((item) => typeof item === 'string')
+  ) {
+    return {
+      version: AOI_MUSIC_TASTE_STATE_VERSION,
+      answers: Object.fromEntries(
+        Object.entries(parsed.answers).filter(([, value]) => typeof value === 'string'),
+      ),
+      recentSearches: normalizeStringList(parsed.recentSearches, MAX_TASTE_SEARCHES),
+      recentPlays: normalizeStringList(
+        (parsed as { recentPlays?: unknown }).recentPlays,
+        MAX_TASTE_PLAYS,
+      ),
+      lastAskedAt: typeof parsed.lastAskedAt === 'number' ? parsed.lastAskedAt : 0,
+    };
+  }
+  return null;
+}
+
+// Validate an untrusted idle-music learning state (localStorage or server copy).
+export function parseAoiIdleMusicLearningState(raw: unknown): AoiIdleMusicLearningState | null {
+  const parsed = raw as Partial<AoiIdleMusicLearningState> | null | undefined;
+  if (
+    parsed &&
+    parsed.version === AOI_IDLE_MUSIC_STATE_VERSION &&
+    Array.isArray(parsed.recentQueries) &&
+    parsed.recentQueries.every((item) => typeof item === 'string') &&
+    typeof parsed.moodFeedback === 'object' &&
+    parsed.moodFeedback !== null
+  ) {
+    const moodFeedback: Partial<Record<AoiMusicMood, number>> = {};
+    for (const [mood, value] of Object.entries(parsed.moodFeedback)) {
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        moodFeedback[mood as AoiMusicMood] = value;
+      }
+    }
+    return {
+      version: AOI_IDLE_MUSIC_STATE_VERSION,
+      moodFeedback,
+      recentQueries: normalizeStringList(parsed.recentQueries, AOI_IDLE_MUSIC_MAX_RECENT_QUERIES),
+      lastOfferedAt: typeof parsed.lastOfferedAt === 'number' ? parsed.lastOfferedAt : 0,
+    };
+  }
+  return null;
+}
+
 export function loadAoiMusicTasteState(): AoiMusicTasteState {
   try {
     const raw = localStorage.getItem(TASTE_STATE_STORAGE_KEY);
     if (!raw) {
       return normalizeTasteState(null);
     }
-    const parsed = JSON.parse(raw) as Partial<AoiMusicTasteState> | null;
-    if (
-      parsed &&
-      parsed.version === AOI_MUSIC_TASTE_STATE_VERSION &&
-      typeof parsed.answers === 'object' &&
-      parsed.answers !== null &&
-      Array.isArray(parsed.recentSearches) &&
-      parsed.recentSearches.every((item) => typeof item === 'string')
-    ) {
-      return {
-        version: AOI_MUSIC_TASTE_STATE_VERSION,
-        answers: Object.fromEntries(
-          Object.entries(parsed.answers).filter(([, value]) => typeof value === 'string'),
-        ),
-        recentSearches: normalizeStringList(parsed.recentSearches, MAX_TASTE_SEARCHES),
-        recentPlays: normalizeStringList(
-          (parsed as { recentPlays?: unknown }).recentPlays,
-          MAX_TASTE_PLAYS,
-        ),
-        lastAskedAt: typeof parsed.lastAskedAt === 'number' ? parsed.lastAskedAt : 0,
-      };
+    const parsed = parseAoiMusicTasteState(JSON.parse(raw));
+    if (parsed) {
+      return parsed;
     }
   } catch {
     // Malformed storage; start clean.
@@ -801,10 +911,178 @@ export function loadAoiMusicTasteState(): AoiMusicTasteState {
   return normalizeTasteState(null);
 }
 
-export function saveAoiMusicTasteState(state: AoiMusicTasteState): void {
+export function loadAoiIdleMusicLearningState(): AoiIdleMusicLearningState {
+  try {
+    const raw = localStorage.getItem(IDLE_MUSIC_STORAGE_KEY);
+    if (!raw) {
+      return { ...DEFAULT_AOI_IDLE_MUSIC_STATE, moodFeedback: {}, recentQueries: [] };
+    }
+    const parsed = parseAoiIdleMusicLearningState(JSON.parse(raw));
+    if (parsed) {
+      return parsed;
+    }
+  } catch {
+    // Malformed storage; start clean.
+  }
+  return { ...DEFAULT_AOI_IDLE_MUSIC_STATE, moodFeedback: {}, recentQueries: [] };
+}
+
+function writeLocalTasteState(state: AoiMusicTasteState): void {
   try {
     localStorage.setItem(TASTE_STATE_STORAGE_KEY, JSON.stringify(normalizeTasteState(state)));
   } catch {
     // Best-effort persistence; ignore quota / privacy-mode failures.
   }
+}
+
+function writeLocalIdleMusicState(state: AoiIdleMusicLearningState): void {
+  try {
+    localStorage.setItem(IDLE_MUSIC_STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // Best-effort persistence; ignore quota / privacy-mode failures.
+  }
+}
+
+export function saveAoiMusicTasteState(state: AoiMusicTasteState): void {
+  writeLocalTasteState(state);
+  scheduleAoiMusicCloudWrite();
+}
+
+export function saveAoiIdleMusicLearningState(state: AoiIdleMusicLearningState): void {
+  writeLocalIdleMusicState(state);
+  scheduleAoiMusicCloudWrite();
+}
+
+// --- Server-side persistence -----------------------------------------------------
+//
+// localStorage is per browser PROFILE while the conversation is shared through
+// the server, so a fresh profile (in-app preview browser, second PC, cleared
+// site data) used to look like a user with no taste at all and its generic
+// pool nudges landed in the shared transcript. The server copy in config.json
+// (field: aoiMusicTaste) makes taste follow the user; localStorage stays the
+// synchronous cache each browser reads first.
+
+function mergeStringLists(primary: readonly string[], secondary: readonly string[], max: number) {
+  return normalizeStringList([...primary, ...secondary], max);
+}
+
+// Union merge, local side winning conflicts: the browser the user is typing in
+// has the freshest evidence, while the union keeps whatever only the other
+// side knows. Monotone, so repeated syncs from any number of browsers converge.
+export function mergeAoiMusicTasteStates(
+  local: AoiMusicTasteState,
+  cloud: AoiMusicTasteState,
+): AoiMusicTasteState {
+  return {
+    version: AOI_MUSIC_TASTE_STATE_VERSION,
+    answers: { ...cloud.answers, ...local.answers },
+    recentSearches: mergeStringLists(
+      local.recentSearches,
+      cloud.recentSearches,
+      MAX_TASTE_SEARCHES,
+    ),
+    recentPlays: mergeStringLists(local.recentPlays, cloud.recentPlays, MAX_TASTE_PLAYS),
+    lastAskedAt: Math.max(local.lastAskedAt, cloud.lastAskedAt),
+  };
+}
+
+// Max on lastOfferedAt is the cross-browser cooldown: a browser that never
+// offered music locally must still respect an offer another browser just made.
+export function mergeAoiIdleMusicLearningStates(
+  local: AoiIdleMusicLearningState,
+  cloud: AoiIdleMusicLearningState,
+): AoiIdleMusicLearningState {
+  return {
+    version: AOI_IDLE_MUSIC_STATE_VERSION,
+    moodFeedback: { ...cloud.moodFeedback, ...local.moodFeedback },
+    recentQueries: mergeStringLists(
+      local.recentQueries,
+      cloud.recentQueries,
+      AOI_IDLE_MUSIC_MAX_RECENT_QUERIES,
+    ),
+    lastOfferedAt: Math.max(local.lastOfferedAt, cloud.lastOfferedAt),
+  };
+}
+
+// Serialized fire-and-forget upload of the CURRENT localStorage state. Reads
+// happen at write time, so a burst of saves collapses into one config write.
+let cloudWriteChain: Promise<void> = Promise.resolve();
+let cloudWriteQueued = false;
+
+function scheduleAoiMusicCloudWrite(): void {
+  if (cloudWriteQueued) {
+    return;
+  }
+  cloudWriteQueued = true;
+  cloudWriteChain = cloudWriteChain
+    .then(async () => {
+      cloudWriteQueued = false;
+      const persisted: AoiMusicPersistedState = {
+        version: 1,
+        updatedAt: Date.now(),
+        taste: loadAoiMusicTasteState() as unknown as Record<string, unknown>,
+        idleLearning: loadAoiIdleMusicLearningState() as unknown as Record<string, unknown>,
+      };
+      const existing = await loadPersistedConfig();
+      if (!existing) {
+        // Cannot read the current config (API down or no config yet): writing
+        // just this field could clobber every other persisted setting.
+        return;
+      }
+      await savePersistedConfig({ ...existing, aoiMusicTaste: persisted });
+    })
+    .catch(() => {
+      cloudWriteQueued = false;
+      // Best-effort: the localStorage copy stays authoritative for this browser.
+    });
+}
+
+// Test/diagnostic hook: resolves when every queued cloud write has settled.
+export function awaitPendingAoiMusicCloudWrites(): Promise<void> {
+  return cloudWriteChain;
+}
+
+export interface AoiMusicHydratedState {
+  taste: AoiMusicTasteState;
+  idleLearning: AoiIdleMusicLearningState;
+}
+
+// Merge the server copy into this browser's localStorage on startup and return
+// the merged state for the in-memory refs. Null means the config API was
+// unreachable -- callers keep the local state they already loaded. A missing
+// or invalid server field still returns the local state and seeds the server.
+export async function hydrateAoiMusicStateFromCloud(): Promise<AoiMusicHydratedState | null> {
+  let cloudField: AoiMusicPersistedState | undefined;
+  try {
+    const persisted = await loadPersistedConfig();
+    if (!persisted) {
+      return null;
+    }
+    cloudField = persisted.aoiMusicTaste;
+  } catch {
+    return null;
+  }
+
+  const localTaste = loadAoiMusicTasteState();
+  const localIdle = loadAoiIdleMusicLearningState();
+  const cloudTaste = parseAoiMusicTasteState(cloudField?.taste);
+  const cloudIdle = parseAoiIdleMusicLearningState(cloudField?.idleLearning);
+  const taste = cloudTaste ? mergeAoiMusicTasteStates(localTaste, cloudTaste) : localTaste;
+  const idleLearning = cloudIdle
+    ? mergeAoiIdleMusicLearningStates(localIdle, cloudIdle)
+    : localIdle;
+
+  writeLocalTasteState(taste);
+  writeLocalIdleMusicState(idleLearning);
+
+  const cloudInSync =
+    cloudTaste !== null &&
+    cloudIdle !== null &&
+    JSON.stringify(cloudTaste) === JSON.stringify(taste) &&
+    JSON.stringify(cloudIdle) === JSON.stringify(idleLearning);
+  if (!cloudInSync) {
+    scheduleAoiMusicCloudWrite();
+  }
+
+  return { taste, idleLearning };
 }

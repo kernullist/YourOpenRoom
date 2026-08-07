@@ -123,6 +123,19 @@ export interface IdaPeConfig {
   backendUrl?: string;
 }
 
+// Server copy of the learned music taste + idle-music learning state. The
+// canonical field types and all validation live in aoiMusicTaste.ts; this
+// wrapper stays structural so configPersistence never imports that module.
+// Purpose: taste must follow the USER, not one browser profile -- a fresh
+// profile (in-app preview browser, second PC) with empty localStorage used to
+// emit generic mood-pool picks into the shared conversation.
+export interface AoiMusicPersistedState {
+  version: 1;
+  updatedAt: number;
+  taste?: Record<string, unknown>;
+  idleLearning?: Record<string, unknown>;
+}
+
 export interface PersistedConfig {
   llm?: LLMConfig;
   dialogLlm?: DialogLlmConfig;
@@ -141,6 +154,7 @@ export interface PersistedConfig {
   // server resolves a connector by id from here; the proposal never supplies a
   // raw endpoint. See aoiMcpConnectorRegistry.ts.
   aoiMcpConnectors?: AoiMcpConnectorsConfig;
+  aoiMusicTaste?: AoiMusicPersistedState;
 }
 
 const CONFIG_API = '/api/llm-config';
@@ -161,6 +175,7 @@ const KNOWN_CONFIG_KEYS = [
   'idaPe',
   'aoiEmbedding',
   'aoiMcpConnectors',
+  'aoiMusicTaste',
 ];
 
 export function normalizeUserProfileDisplayName(raw: string | null | undefined): string {

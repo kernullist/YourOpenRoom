@@ -33,7 +33,8 @@ export const DEFAULT_AOI_IDLE_MUSIC_STATE: AoiIdleMusicLearningState = {
 // nudges. Conservative so Aoi is a quiet companion, not a nag.
 export const DEFAULT_IDLE_MUSIC_MIN_IDLE_MS = 3 * 60 * 1000; // 3 min idle
 export const DEFAULT_IDLE_MUSIC_COOLDOWN_MS = 45 * 60 * 1000; // 45 min between offers
-const MAX_RECENT_QUERIES = 12;
+export const AOI_IDLE_MUSIC_MAX_RECENT_QUERIES = 12;
+const MAX_RECENT_QUERIES = AOI_IDLE_MUSIC_MAX_RECENT_QUERIES;
 // Feedback is bounded so a long streak cannot permanently pin one mood.
 const MOOD_FEEDBACK_MIN = -3;
 const MOOD_FEEDBACK_MAX = 3;
