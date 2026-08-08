@@ -65,6 +65,11 @@ interface AoiAutonomyLoopLockRecord {
 
 let acquireSequence = 0;
 
+// Instance ids this process is currently holding. Membership -- not a pid match
+// -- is what proves a lock on disk is ours; see
+// isAoiAutonomyLoopLockHeldByThisProcess.
+const issuedInstanceIds = new Set<string>();
+
 export interface AoiAutonomyLoopLockDeps {
   // Identity of THIS process. Injectable so tests can simulate distinct holders
   // without spawning real processes.
@@ -244,12 +249,14 @@ export function acquireAoiAutonomyLoopLock(
 
   const makeHandle = (): AoiAutonomyLoopLockHandle => {
     let released = false;
+    issuedInstanceIds.add(instanceId);
     return {
       release: () => {
         if (released) {
           return;
         }
         released = true;
+        issuedInstanceIds.delete(instanceId);
         try {
           // Only remove the lock if we still own it -- never delete a lock a
           // different process has since taken over.
@@ -353,6 +360,34 @@ export function acquireAoiAutonomyLoopLock(
   }
   warn(`lost a race to reclaim ${lockPath}; not starting a second ${role}`);
   return null;
+}
+
+// Whether THIS process already owns the dir, in any role.
+//
+// A caller that is about to mutate the memory files needs to know the difference
+// between "nobody has it, take it" and "we already have it". The autonomy loop's
+// handle lives in the starter's closure, so a route in the same process cannot
+// ask it -- but a second acquire from the holder's own process would refuse and
+// make the operator's action fail for no reason.
+//
+// Ownership requires an instance id THIS process actually issued, not just a
+// matching pid: a stale lock left by a dead process whose pid the OS later
+// reused would otherwise read as ours, and we would mutate the store with no
+// lock at all. Cross-process safety is unaffected -- another process's record
+// never matches, so it still has to take the lock.
+export function isAoiAutonomyLoopLockHeldByThisProcess(
+  sessionsDir: string,
+  deps: AoiAutonomyLoopLockDeps = {},
+): boolean {
+  const pid = deps.pid ?? process.pid;
+  const host = deps.host ?? hostname();
+  const record = readLockRecord(join(sessionsDir, LOCK_FILE_NAME));
+  return (
+    record !== null &&
+    record.pid === pid &&
+    record.host === host &&
+    issuedInstanceIds.has(record.instance)
+  );
 }
 
 // A self-healing holder for the MAINTENANCE side of the lock.

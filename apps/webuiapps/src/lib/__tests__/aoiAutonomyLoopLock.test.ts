@@ -6,6 +6,7 @@ import { join } from 'path';
 import {
   acquireAoiAutonomyLoopLock,
   createAoiAutonomyLoopLockKeeper,
+  isAoiAutonomyLoopLockHeldByThisProcess,
 } from '../aoiAutonomyLoopLock';
 
 const LOCK_FILE = '.aoi-autonomy-loop.lock';
@@ -349,6 +350,61 @@ describe('acquireAoiAutonomyLoopLock roles', () => {
     expect(fs.existsSync(lockPath(dir))).toBe(true);
     expect(loop?.isOwner()).toBe(true);
     loop?.release();
+  });
+});
+
+describe('isAoiAutonomyLoopLockHeldByThisProcess', () => {
+  const alive = () => true;
+
+  it('is false when no lock exists', () => {
+    expect(isAoiAutonomyLoopLockHeldByThisProcess(makeTempDir(), { pid: 1, host: 'h1' })).toBe(
+      false,
+    );
+  });
+
+  it('is true for a lock this process wrote, in either role', () => {
+    for (const role of ['loop', 'maintenance'] as const) {
+      const dir = makeTempDir();
+      const handle = acquireAoiAutonomyLoopLock(dir, { pid: 100, host: 'h1', role });
+      expect(handle).not.toBeNull();
+      expect(isAoiAutonomyLoopLockHeldByThisProcess(dir, { pid: 100, host: 'h1' })).toBe(true);
+      handle?.release();
+      // ...and false again once released.
+      expect(isAoiAutonomyLoopLockHeldByThisProcess(dir, { pid: 100, host: 'h1' })).toBe(false);
+    }
+  });
+
+  it('is false for a stale record that merely shares our pid (pid reuse)', () => {
+    // A dead holder's lock file whose pid the OS later handed to us. Believing it
+    // is ours would mutate the store with no lock at all -- and the record is
+    // also now "live" to everyone else, so it starves them at the same time.
+    const dir = makeTempDir();
+    fs.writeFileSync(
+      lockPath(dir),
+      JSON.stringify({
+        kind: 'aoi-autonomy-loop',
+        pid: 100,
+        host: 'h1',
+        startedAt: 1,
+        role: 'loop',
+        instance: 'h1.100.1.1',
+      }),
+    );
+    expect(isAoiAutonomyLoopLockHeldByThisProcess(dir, { pid: 100, host: 'h1' })).toBe(false);
+  });
+
+  it('is false for another process holding it, so that process still has to take the lock', () => {
+    const dir = makeTempDir();
+    const other = acquireAoiAutonomyLoopLock(dir, {
+      pid: 100,
+      host: 'h1',
+      role: 'loop',
+      isPidAlive: alive,
+    });
+    expect(isAoiAutonomyLoopLockHeldByThisProcess(dir, { pid: 200, host: 'h1' })).toBe(false);
+    // Same pid on a DIFFERENT host is a different process too.
+    expect(isAoiAutonomyLoopLockHeldByThisProcess(dir, { pid: 100, host: 'h2' })).toBe(false);
+    other?.release();
   });
 });
 

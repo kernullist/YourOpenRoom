@@ -1,3 +1,5 @@
+import { resolve } from 'path';
+
 import { createServerAoiEmbeddingProvider } from './aoiMemoryEmbeddingServer';
 import { embedAndPersistServerAoiMemories } from './aoiMemoryServerWriter';
 import type { AoiEmbeddingProvider } from './aoiMemoryEmbedding';
@@ -136,17 +138,68 @@ export interface AoiMemoryMaintenanceCycleOptions {
   runConsolidationCycle?: typeof runAoiMemoryConsolidationSweepCycle;
 }
 
+// In-process serialization, keyed by session store. The single-instance lock is
+// a CROSS-process guard; within one process there are three paths that mutate the
+// same memory files -- the standalone sweep's timer, the loop's post-cycle pass,
+// and the operator's "Run now" route -- and each has its own in-flight guard that
+// says nothing about the others. Two of them overlapping at an await is a lost
+// update: a consolidation status flip overwritten by a concurrent embed write.
+//
+// A promise chain per store is enough: passes are bounded and infrequent, so
+// queueing behind the one in flight costs nothing and removes the interleaving.
+const maintenanceChains = new Map<string, Promise<void>>();
+
+function runSerializedPerStore<T>(sessionsDir: string, fn: () => Promise<T>): Promise<T> {
+  // Normalized, so two spellings of the same directory cannot end up on two
+  // chains and silently stop serializing against each other.
+  const key = resolve(sessionsDir);
+  const previous = maintenanceChains.get(key) ?? Promise.resolve();
+  const result = previous.then(fn);
+  // The stored chain swallows failures so one bad pass cannot poison the queue.
+  maintenanceChains.set(
+    key,
+    result.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return result;
+}
+
 // One maintenance pass: embed backfill, then consolidation. Consolidation runs
 // AFTER embedding so any vectors the backfill just added are already eligible to
 // collapse.
 //
-// Extracted so the two drivers share one body and cannot drift: the standalone
-// timer below, and the autonomy loop's own cycle. Which one drives it depends on
-// who holds the single-instance lock -- the loop host must run this itself,
-// because a loop with no enabled session performs no maintenance of its own and
-// would otherwise leave the store unmaintained while holding the lock that stops
-// anyone else from doing it.
+// Extracted so every driver shares one body and they cannot drift: the standalone
+// timer below, the autonomy loop's own cycle, and the run-now route. Which one
+// drives it depends on who holds the single-instance lock -- the loop host must
+// run this itself, because a loop with no enabled session performs no maintenance
+// of its own and would otherwise leave the store unmaintained while holding the
+// lock that stops anyone else from doing it.
 export async function runAoiMemoryMaintenanceCycle(
+  options: AoiMemoryMaintenanceCycleOptions,
+): Promise<void> {
+  return runSerializedPerStore(options.sessionsDir, () => runAoiMemoryMaintenancePass(options));
+}
+
+// Queue an arbitrary mutation of a memory store behind whatever pass is already
+// running for it. For callers that do their own embed/consolidation rather than
+// a full cycle -- the autonomy wakeup does exactly that, and used to be able to
+// interleave with the sweep and the run-now route.
+//
+// Do NOT call runAoiMemoryMaintenanceCycle from inside `run`: it takes the same
+// chain and would wait for the pass it is part of. Use
+// runAoiMemoryMaintenancePass, which is the unserialized body.
+export function runSerializedAoiMemoryMaintenance<T>(
+  sessionsDir: string,
+  run: () => Promise<T>,
+): Promise<T> {
+  return runSerializedPerStore(sessionsDir, run);
+}
+
+// The pass itself, with no serialization. Exported for callers that are already
+// inside runSerializedAoiMemoryMaintenance.
+export async function runAoiMemoryMaintenancePass(
   options: AoiMemoryMaintenanceCycleOptions,
 ): Promise<void> {
   const runCycle = options.runCycle ?? runAoiMemoryEmbedSweepCycle;

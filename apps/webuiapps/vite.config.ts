@@ -15,6 +15,7 @@ import { cyberNewsProxyPlugin } from './src/lib/cyberNewsProxyPlugin';
 import { dewdropCanvasPlugin } from './src/lib/dewdropCanvasPlugin';
 import { writtenByMePlugin } from './src/lib/writtenByMePlugin';
 import { aoiAutonomyPlugin } from './src/lib/aoiAutonomyPlugin';
+import { isAoiAutonomyLoopLockHeldByThisProcess } from './src/lib/aoiAutonomyLoopLock';
 import { createAoiHostBridgeMiddleware } from './src/lib/aoiHostBridgePlugin';
 import { createSessionDataMiddleware } from './src/lib/sessionDataServer';
 import { aoiResearchPlugin } from './src/lib/aoiResearchPlugin';
@@ -1976,6 +1977,102 @@ function aoiDaemonHealthProxyPlugin(): Plugin {
   };
 }
 
+// Identity of the config store this server resolves. Compared against the
+// daemon's own storeId so a fixed-port relay never speaks for a process that is
+// pointed somewhere else. Must match aoiCapabilityStoreId in aoiAutonomyPlugin.
+function localAoiStoreId(): string {
+  // Both paths, because the config file and the sessions dir are configured
+  // independently: a daemon can share this config.json while writing a different
+  // memory store, and relaying to it would run the pass on the wrong files.
+  return createHash('sha256')
+    .update(`${resolve(LLM_CONFIG_FILE)} ${resolve(SESSIONS_DIR)}`)
+    .digest('hex')
+    .slice(0, 16);
+}
+
+function aoiDaemonPort(): number {
+  const parsed = Number.parseInt(process.env.AOI_DAEMON_PORT ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 7333;
+}
+
+/**
+ * Fixed-target loopback relay for the operator's "Run now" maintenance button.
+ *
+ * The pass mutates the shared memory files, so exactly one process may do it at a
+ * time -- and when the 24/7 daemon is up, that process is the daemon (it holds
+ * the single-instance lock). Running the button locally would either race the
+ * daemon's own pass or, now that the route takes the lock, fail with a 409 the
+ * operator can do nothing about. So the request is forwarded to the daemon, which
+ * runs it in the process that owns the store.
+ *
+ * Falls through to the local route (next()) when there is no daemon, when it is
+ * on a different store, or when it errors -- then this server is the holder (or
+ * can become one) and runs the pass itself.
+ */
+function aoiDaemonMaintenanceRunProxyPlugin(): Plugin {
+  const DAEMON_RUN_TIMEOUT_MS = 60_000;
+  return {
+    name: 'aoi-daemon-maintenance-run-proxy',
+    configureServer(server) {
+      server.middlewares.use('/api/aoi-autonomy/memory/maintenance/run', (req, res, next) => {
+        if ((req.method ?? 'GET') !== 'POST') {
+          next();
+          return;
+        }
+        // This server already owns the store (its own loop or sweep holds the
+        // lock): the local route will just run the pass, while the daemon's would
+        // refuse with a 409 the operator can do nothing about.
+        if (isAoiAutonomyLoopLockHeldByThisProcess(SESSIONS_DIR)) {
+          next();
+          return;
+        }
+        void (async () => {
+          const port = aoiDaemonPort();
+          let answer: { status: number; body: string } | null = null;
+          try {
+            const probe = await fetch(`http://127.0.0.1:${port}/api/aoi-autonomy/capabilities`, {
+              signal: AbortSignal.timeout(2000),
+            });
+            if (probe.ok) {
+              const probeBody = (await probe.json()) as Record<string, unknown>;
+              if (probeBody.storeId === localAoiStoreId()) {
+                // A maintenance pass embeds up to `max` memories through a
+                // provider, so it gets a far longer budget than a status probe.
+                const upstream = await fetch(
+                  `http://127.0.0.1:${port}/api/aoi-autonomy/memory/maintenance/run`,
+                  {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    signal: AbortSignal.timeout(DAEMON_RUN_TIMEOUT_MS),
+                  },
+                );
+                // 409 means the daemon did not run it, so there is nothing to
+                // duplicate: try locally, which succeeds if this server can take
+                // the lock and returns the same refusal if it cannot.
+                if (upstream.status !== 409) {
+                  answer = { status: upstream.status, body: await upstream.text() };
+                }
+              }
+            }
+          } catch {
+            // Daemon down, unreachable, or slow: let this server handle it.
+          }
+          // Writing the response is deliberately OUTSIDE the try: a throw from
+          // writeHead (headers already sent) must never fall through to next()
+          // and run a SECOND pass on top of the one the daemon just ran.
+          if (!answer) {
+            next();
+            return;
+          }
+          res.setHeader('Content-Type', 'application/json');
+          res.writeHead(answer.status);
+          res.end(answer.body);
+        })();
+      });
+    },
+  };
+}
+
 /**
  * Fixed-target loopback relay for the daemon's capability view.
  *
@@ -2018,11 +2115,7 @@ function aoiDaemonCapabilitiesProxyPlugin(): Plugin {
           // The port is fixed, so a dev server pointed at a different
           // OPENROOM_HOME (the e2e suite does exactly this) would otherwise
           // display an unrelated daemon's settings as its own.
-          const localStoreId = createHash('sha256')
-            .update(resolve(LLM_CONFIG_FILE))
-            .digest('hex')
-            .slice(0, 16);
-          if (payload.storeId !== localStoreId) {
+          if (payload.storeId !== localAoiStoreId()) {
             res.writeHead(200);
             res.end(JSON.stringify({ ok: true, status: 'other_store', port }));
             return;
@@ -4129,6 +4222,9 @@ const config = ({ mode }: ConfigEnv): UserConfigExport => {
     llmConfigPlugin(),
     aoiDaemonHealthProxyPlugin(),
     aoiDaemonCapabilitiesProxyPlugin(),
+    // Before aoiAutonomyPlugin, so it can forward to the daemon and fall through
+    // to the local route when there is none.
+    aoiDaemonMaintenanceRunProxyPlugin(),
     sessionDataPlugin(),
     gmailPlugin({
       configFile: LLM_CONFIG_FILE,

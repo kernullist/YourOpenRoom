@@ -332,6 +332,93 @@ describe('runAoiMemoryMaintenanceCycle', () => {
     expect(order).toEqual(['embed:8', 'consolidate:4']);
   });
 
+  it('serializes concurrent passes over the same store instead of interleaving', async () => {
+    // Three paths in one process mutate the same memory files -- the sweep timer,
+    // the loop's post-cycle pass, and the run-now route -- and each has its own
+    // in-flight guard that says nothing about the others. Overlapping at an await
+    // is a lost update.
+    const order: string[] = [];
+    const makePass = (tag: string) =>
+      runAoiMemoryMaintenanceCycle({
+        sessionsDir: '/tmp/aoi-embed-sweep-serialized',
+        embedSweep: { enabled: true, max: 8 },
+        consolidation: { enabled: true, max: 4 },
+        runCycle: async () => {
+          order.push(`${tag}:embed-start`);
+          await new Promise((r) => setTimeout(r, 5));
+          order.push(`${tag}:embed-end`);
+          return { ran: true, embeddedCount: 0, pendingCount: 0 };
+        },
+        runConsolidationCycle: () => {
+          order.push(`${tag}:consolidate`);
+          return { ran: true, clusterCount: 0, supersededCount: 0 };
+        },
+      });
+
+    await Promise.all([makePass('a'), makePass('b')]);
+
+    expect(order).toEqual([
+      'a:embed-start',
+      'a:embed-end',
+      'a:consolidate',
+      'b:embed-start',
+      'b:embed-end',
+      'b:consolidate',
+    ]);
+  });
+
+  it('serializes two spellings of the same store', async () => {
+    // An unnormalized key would put these on separate chains and silently stop
+    // serializing them against each other.
+    const order: string[] = [];
+    const pass = (dir: string, tag: string) =>
+      runAoiMemoryMaintenanceCycle({
+        sessionsDir: dir,
+        embedSweep: { enabled: true, max: 8 },
+        consolidation: { enabled: false, max: 4 },
+        runCycle: async () => {
+          order.push(`${tag}:start`);
+          await new Promise((r) => setTimeout(r, 5));
+          order.push(`${tag}:end`);
+          return { ran: true, embeddedCount: 0, pendingCount: 0 };
+        },
+      });
+
+    await Promise.all([
+      pass('/tmp/aoi-embed-sweep-spelling', 'a'),
+      pass('/tmp/aoi-embed-sweep-spelling/nested/..', 'b'),
+    ]);
+
+    expect(order).toEqual(['a:start', 'a:end', 'b:start', 'b:end']);
+  });
+
+  it('keeps serializing after a pass throws', async () => {
+    const order: string[] = [];
+    const failing = runAoiMemoryMaintenanceCycle({
+      sessionsDir: '/tmp/aoi-embed-sweep-serialized-throw',
+      embedSweep: { enabled: true, max: 8 },
+      consolidation: { enabled: false, max: 4 },
+      runCycle: async () => {
+        order.push('boom');
+        throw new Error('pass failed');
+      },
+    });
+    const following = runAoiMemoryMaintenanceCycle({
+      sessionsDir: '/tmp/aoi-embed-sweep-serialized-throw',
+      embedSweep: { enabled: true, max: 8 },
+      consolidation: { enabled: false, max: 4 },
+      runCycle: async () => {
+        order.push('after');
+        return { ran: true, embeddedCount: 0, pendingCount: 0 };
+      },
+    });
+
+    await expect(failing).rejects.toThrow('pass failed');
+    await following;
+    // One bad pass must not poison the queue behind it.
+    expect(order).toEqual(['boom', 'after']);
+  });
+
   it('stops before consolidating when the lock is taken over mid-cycle', async () => {
     const order: string[] = [];
     let owned = true;

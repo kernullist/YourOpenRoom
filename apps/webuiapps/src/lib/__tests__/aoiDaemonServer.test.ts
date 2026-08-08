@@ -10,6 +10,8 @@ import {
   type AoiDaemonHandle,
 } from '../aoiDaemonServer';
 import { startAoiAutonomyBackgroundFromEnv } from '../aoiAutonomyPlugin';
+import { acquireAoiAutonomyLoopLock } from '../aoiAutonomyLoopLock';
+import { spawn } from 'child_process';
 import { saveAoiStrategicBrief } from '../aoiStrategicBrief';
 import { loadServerAoiRunLedger } from '../aoiRunLedgerServer';
 import { buildAoiAppOperationDispatch } from '../aoiAppOperationDispatch';
@@ -1014,6 +1016,101 @@ describe('daemon session-data store', () => {
     expect(res.status).toBe(404);
     const body = (await res.json()) as { code?: string };
     expect(body.code).toBe('route_not_found');
+  });
+});
+
+describe('memory maintenance run-now route', () => {
+  it('runs the pass when this process already owns the dir lock', async () => {
+    // The daemon starts its loop by default, so its own lock is held by this very
+    // process. A second acquire would refuse and make the operator's button fail
+    // for no reason, so ownership is detected instead.
+    const handle = await bootTestDaemon();
+    const res = await fetch(
+      `http://127.0.0.1:${handle.port}/api/aoi-autonomy/memory/maintenance/run`,
+      { method: 'POST' },
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok?: boolean; embed?: unknown; settings?: unknown };
+    expect(body.ok).toBe(true);
+    expect(body.embed).toBeDefined();
+    expect(body.settings).toBeDefined();
+  });
+
+  it('refuses with 409 while ANOTHER live process owns the dir lock', async () => {
+    // AOI_AUTONOMY_BACKGROUND=0 keeps the daemon from taking its own lock, so the
+    // simulated other holder is genuinely a different owner.
+    const handle = await bootTestDaemon({ AOI_AUTONOMY_BACKGROUND: '0' });
+    const sessionsDir = tempRoots[tempRoots.length - 1];
+    // A REAL live pid that is not us: the route runs the genuine liveness probe,
+    // so an invented pid reads as a dead holder and gets reclaimed as stale.
+    // process.ppid is not usable here -- under vitest it is the launching shell,
+    // which Windows does not keep alive for us -- so spawn a child we control.
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+      stdio: 'ignore',
+    });
+    await new Promise((r) => setTimeout(r, 150));
+    expect(child.pid).toBeGreaterThan(0);
+    const other = acquireAoiAutonomyLoopLock(sessionsDir, {
+      pid: child.pid as number,
+      host: os.hostname(),
+      role: 'loop',
+    });
+    expect(other).not.toBeNull();
+
+    try {
+      const res = await fetch(
+        `http://127.0.0.1:${handle.port}/api/aoi-autonomy/memory/maintenance/run`,
+        { method: 'POST' },
+      );
+      expect(res.status).toBe(409);
+      const body = (await res.json()) as { code?: string };
+      expect(body.code).toBe('maintenance_lock_held');
+      // The other holder's lock is untouched.
+      expect(other?.isOwner()).toBe(true);
+    } finally {
+      other?.release();
+      child.kill();
+    }
+  });
+
+  it('does not let a second run-now slip through without the lock', async () => {
+    // Taken outside the queue, the second request would see the first request's
+    // own lock record, conclude "already ours", skip acquiring -- and then run
+    // its whole pass after the first released, with no lock at all.
+    const handle = await bootTestDaemon({ AOI_AUTONOMY_BACKGROUND: '0' });
+    const sessionsDir = tempRoots[tempRoots.length - 1];
+    const url = `http://127.0.0.1:${handle.port}/api/aoi-autonomy/memory/maintenance/run`;
+
+    const [first, second] = await Promise.all([
+      fetch(url, { method: 'POST' }),
+      fetch(url, { method: 'POST' }),
+    ]);
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    await Promise.all([first.json(), second.json()]);
+
+    // Both finished, and neither left the dir locked.
+    const after = acquireAoiAutonomyLoopLock(sessionsDir, { role: 'maintenance' });
+    expect(after).not.toBeNull();
+    after?.release();
+  });
+
+  it('releases the lock it took, so the dir is free afterwards', async () => {
+    const handle = await bootTestDaemon({ AOI_AUTONOMY_BACKGROUND: '0' });
+    const sessionsDir = tempRoots[tempRoots.length - 1];
+
+    const res = await fetch(
+      `http://127.0.0.1:${handle.port}/api/aoi-autonomy/memory/maintenance/run`,
+      { method: 'POST' },
+    );
+    expect(res.status).toBe(200);
+
+    const after = acquireAoiAutonomyLoopLock(sessionsDir, {
+      role: 'maintenance',
+      isPidAlive: () => true,
+    });
+    expect(after).not.toBeNull();
+    after?.release();
   });
 });
 

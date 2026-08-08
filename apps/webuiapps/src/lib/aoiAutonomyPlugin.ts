@@ -11,7 +11,11 @@ import {
   type AoiAutonomyBackgroundCycleResult,
   type AoiAutonomyBackgroundRunnerHandle,
 } from './aoiAutonomyBackgroundRunner';
-import { acquireAoiAutonomyLoopLock, createAoiAutonomyLoopLockKeeper } from './aoiAutonomyLoopLock';
+import {
+  acquireAoiAutonomyLoopLock,
+  createAoiAutonomyLoopLockKeeper,
+  isAoiAutonomyLoopLockHeldByThisProcess,
+} from './aoiAutonomyLoopLock';
 import {
   archiveServerAoiMemories,
   computeServerAoiMemoryDecayDryRun,
@@ -25,12 +29,14 @@ import { loadAoiProactiveTrendReadinessFromStores } from './aoiProactiveTrendRea
 import { recordServerAoiRunLedgerEvent } from './aoiRunLedgerServer';
 import { recordAoiOutcomeFeedbackFromUserMessage } from './aoiOutcomeFeedbackServer';
 import {
-  runAoiMemoryEmbedSweepCycle,
   runAoiMemoryMaintenanceCycle,
+  runAoiMemoryMaintenancePass,
+  runSerializedAoiMemoryMaintenance,
   startAoiMemoryEmbedSweep,
+  type AoiMemoryEmbedSweepCycleResult,
   type AoiMemoryEmbedSweepHandle,
 } from './aoiMemoryEmbedSweep';
-import { runAoiMemoryConsolidationSweepCycle } from './aoiMemoryConsolidationSweep';
+import type { AoiMemoryConsolidationSweepCycleResult } from './aoiMemoryConsolidationSweep';
 import {
   loadAoiMemoryMaintenanceSettings,
   writeAoiMemoryMaintenanceConfigToFile,
@@ -2206,7 +2212,7 @@ export async function handleAoiAutonomyRequest(
         // relaying this answer can refuse to show it as its own when the two
         // processes are pointed at different stores. Hashed rather than the raw
         // path: the check only needs equality.
-        storeId: aoiCapabilityStoreId(configFile),
+        storeId: aoiCapabilityStoreId(configFile, sessionsDir),
         settings: loadAoiAutonomyCapabilitySettings({ configFile }),
         envOnly: describeAoiEnvOnlyAutonomyGates(process.env),
       });
@@ -2282,21 +2288,67 @@ export async function handleAoiAutonomyRequest(
     // Run one bounded maintenance pass right now. This is what makes the UI
     // toggle usable immediately: the periodic sweep only starts with the server,
     // so without this the operator would still be waiting for a restart.
+    //
+    // It mutates the same memory files as the loop and the sweep, so it obeys the
+    // same single-instance rule. This route is served by BOTH the dev server and
+    // the daemon, and pressing the button in one while the other was mid-pass was
+    // the one maintenance path that could still write concurrently. When this
+    // process already owns the dir (its own loop or sweep holds the lock) the
+    // pass just runs -- serialized in-process by runAoiMemoryMaintenanceCycle.
     if (req.method === 'POST' && route === '/memory/maintenance/run') {
       const settings = loadAoiMemoryMaintenanceSettings({ configFile });
-      const embed = settings.embedSweep.enabled
-        ? await runAoiMemoryEmbedSweepCycle({
+      let embed: AoiMemoryEmbedSweepCycleResult = {
+        ran: false,
+        embeddedCount: 0,
+        pendingCount: 0,
+      };
+      let consolidation: AoiMemoryConsolidationSweepCycleResult = {
+        ran: false,
+        clusterCount: 0,
+        supersededCount: 0,
+      };
+      // The lock is taken INSIDE the queue, not before it. Taken outside, a
+      // second request arriving while the first held it would see this process's
+      // own record, conclude "already ours", skip acquiring -- and then run its
+      // whole pass after the first released, with no lock at all.
+      const ran = await runSerializedAoiMemoryMaintenance(sessionsDir, async () => {
+        const alreadyOurs = isAoiAutonomyLoopLockHeldByThisProcess(sessionsDir);
+        const lock = alreadyOurs
+          ? null
+          : acquireAoiAutonomyLoopLock(sessionsDir, { role: 'maintenance', quiet: true });
+        if (!alreadyOurs && !lock) {
+          return false;
+        }
+        try {
+          await runAoiMemoryMaintenancePass({
             sessionsDir,
             configFile,
-            max: settings.embedSweep.max,
-          })
-        : { ran: false, embeddedCount: 0, pendingCount: 0 };
-      const consolidation = settings.consolidation.enabled
-        ? runAoiMemoryConsolidationSweepCycle({
-            sessionsDir,
-            max: settings.consolidation.max,
-          })
-        : { ran: false, clusterCount: 0, supersededCount: 0 };
+            embedSweep: settings.embedSweep,
+            consolidation: settings.consolidation,
+            // The authoritative loop may take the lock over while the embed half
+            // awaits its provider; stop rather than consolidate without it.
+            ownsLock: () =>
+              alreadyOurs ? isAoiAutonomyLoopLockHeldByThisProcess(sessionsDir) : lock!.isOwner(),
+            onCycle: (result) => {
+              embed = result;
+            },
+            onConsolidation: (result) => {
+              consolidation = result;
+            },
+          });
+        } finally {
+          lock?.release();
+        }
+        return true;
+      });
+      if (!ran) {
+        writeJson(res, 409, {
+          error:
+            'Another process is maintaining this memory store right now. It runs on its own schedule; try again in a moment.',
+          code: 'maintenance_lock_held',
+        });
+        return true;
+      }
       const status = loadAoiMemoryEmbeddingStatus(sessionsDir, { configFile });
       // `settings` is included so the panel can refresh its coverage line from
       // this response; its parser requires that field and was discarding the
@@ -3548,8 +3600,13 @@ const MAINTENANCE_SLOW_PASS_MS = 30_000;
 // Stable identity for the config store a process is using. Two processes agree
 // only when they resolve the SAME file; a dev server pointed at a throwaway
 // OPENROOM_HOME must not display a daemon's unrelated settings as its own.
-export function aoiCapabilityStoreId(configFile: string): string {
-  return createHash('sha256').update(resolve(configFile)).digest('hex').slice(0, 16);
+export function aoiCapabilityStoreId(configFile: string, sessionsDir: string): string {
+  // Both paths, because they are configured independently: two processes can
+  // share a config.json while writing different memory stores.
+  return createHash('sha256')
+    .update(`${resolve(configFile)} ${resolve(sessionsDir)}`)
+    .digest('hex')
+    .slice(0, 16);
 }
 
 // A request with no Origin is same-origin by definition (curl, a server-side

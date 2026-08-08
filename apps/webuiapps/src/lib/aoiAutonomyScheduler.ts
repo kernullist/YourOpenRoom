@@ -41,6 +41,7 @@ import {
 } from './aoiMemoryServerWriter';
 import { loadAoiMemoryMaintenanceSettings } from './aoiMemoryMaintenanceSettings';
 import { loadAoiAutonomyCapabilitySettings } from './aoiAutonomyCapabilitySettings';
+import { runSerializedAoiMemoryMaintenance } from './aoiMemoryEmbedSweep';
 import {
   buildAoiAutonomyStatus,
   createAoiAutonomyId,
@@ -2020,31 +2021,41 @@ async function runWakeupInternal(
   const maintenanceSettings = loadAoiMemoryMaintenanceSettings({
     ...(input.configFile ? { configFile: input.configFile } : {}),
   });
-  if (budget.allowNetwork && embeddingProvider && maintenanceSettings.embedSweep.enabled) {
-    try {
-      await embedAndPersistServerAoiMemories(input.sessionsDir, embeddingProvider, {
-        max: maintenanceSettings.embedSweep.max,
-      });
-    } catch {
-      // best-effort; embeddings never block the wakeup
+  //
+  // Both halves run inside the shared maintenance queue for this store. The
+  // single-instance lock keeps OTHER processes out, but within this one the
+  // sweep timer, the loop's post-cycle pass and the operator's run-now button
+  // mutate the same files -- and this path is the most frequent of all (every
+  // wakeup, including a plain /wakeup request). Its embed half awaits a provider
+  // holding a pre-await snapshot of the whole store, so an unqueued overlap
+  // silently reverted whatever the other pass had just written.
+  await runSerializedAoiMemoryMaintenance(input.sessionsDir, async () => {
+    if (budget.allowNetwork && embeddingProvider && maintenanceSettings.embedSweep.enabled) {
+      try {
+        await embedAndPersistServerAoiMemories(input.sessionsDir, embeddingProvider, {
+          max: maintenanceSettings.embedSweep.max,
+        });
+      } catch {
+        // best-effort; embeddings never block the wakeup
+      }
     }
-  }
 
-  // Loop-side memory consolidation (best-effort): when opted in, collapse near-
-  // duplicate active memories right AFTER the embed backfill so any vectors it just
-  // added are eligible. OFF by default; reads only on-disk vectors (no provider /
-  // network) and is non-destructive (superseded originals keep their files). This is
-  // the loop-ON counterpart of the loop-independent maintenance sweep (which no-ops
-  // while the loop holds the single-instance lock). Never blocks the wakeup.
-  if (maintenanceSettings.consolidation.enabled) {
-    try {
-      consolidateServerAoiMemories(input.sessionsDir, {
-        maxClusters: maintenanceSettings.consolidation.max,
-      });
-    } catch {
-      // best-effort; consolidation never blocks the wakeup
+    // Loop-side memory consolidation (best-effort): when opted in, collapse near-
+    // duplicate active memories right AFTER the embed backfill so any vectors it just
+    // added are eligible. OFF by default; reads only on-disk vectors (no provider /
+    // network) and is non-destructive (superseded originals keep their files). This is
+    // the loop-ON counterpart of the loop-independent maintenance sweep (which no-ops
+    // while the loop holds the single-instance lock). Never blocks the wakeup.
+    if (maintenanceSettings.consolidation.enabled) {
+      try {
+        consolidateServerAoiMemories(input.sessionsDir, {
+          maxClusters: maintenanceSettings.consolidation.max,
+        });
+      } catch {
+        // best-effort; consolidation never blocks the wakeup
+      }
     }
-  }
+  });
 
   const tickRan = Boolean(tickResult);
   const tickOk = tickResult?.ok ?? false;
