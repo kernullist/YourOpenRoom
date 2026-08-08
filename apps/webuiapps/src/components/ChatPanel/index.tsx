@@ -16053,6 +16053,31 @@ const SettingsModal: React.FC<{
                               {aoiAutonomyPolicy?.fieldShadowCaptureEnabled ? 'On' : 'Off'}
                             </button>
                           </div>
+                          {/* Already a policy field with no control of its own: the
+                              only way to change it was to pick a different autonomy
+                              mode, which moves five other switches with it. */}
+                          <div className={styles.promptBudgetMetric}>
+                            <span className={styles.promptBudgetLabel}>Agentic reflection</span>
+                            <button
+                              type="button"
+                              className={
+                                aoiAutonomyPolicy?.agenticReflectionEnabled
+                                  ? styles.saveBtn
+                                  : styles.cancelBtn
+                              }
+                              onClick={() =>
+                                void onUpdateAoiAutonomyPolicy({
+                                  agenticReflectionEnabled:
+                                    !aoiAutonomyPolicy?.agenticReflectionEnabled,
+                                })
+                              }
+                              disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
+                              title="Lets Aoi run a bounded reason-act-observe loop with tools instead of a single pass. Costs extra tokens per tick."
+                              data-testid="aoi-agentic-reflection-toggle"
+                            >
+                              {aoiAutonomyPolicy?.agenticReflectionEnabled ? 'On' : 'Off'}
+                            </button>
+                          </div>
                           <div className={styles.promptBudgetMetric}>
                             <span className={styles.promptBudgetLabel}>Scout policy</span>
                             <button
