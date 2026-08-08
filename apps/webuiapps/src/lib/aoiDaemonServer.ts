@@ -313,10 +313,16 @@ function parsePortEnv(value: string | undefined, fallback: number): number {
 export function resolveAoiDaemonOptionsFromEnv(
   env: Record<string, string | undefined>,
 ): AoiDaemonOptions {
-  const home = homedir();
+  // OPENROOM_HOME is what the dev server resolves its config and sessions under.
+  // Honouring it here keeps the two pointed at the SAME files: the operator's
+  // settings now decide autonomy capabilities, and a daemon reading a different
+  // config.json would leave every toggle silently doing nothing.
+  const openroomHome = env.OPENROOM_HOME
+    ? resolve(env.OPENROOM_HOME)
+    : resolve(homedir(), '.openroom');
   return {
-    sessionsDir: env.AOI_DAEMON_SESSIONS_DIR ?? resolve(home, '.openroom', 'sessions'),
-    configFile: env.AOI_DAEMON_CONFIG_FILE ?? resolve(home, '.openroom', 'config.json'),
+    sessionsDir: env.AOI_DAEMON_SESSIONS_DIR ?? resolve(openroomHome, 'sessions'),
+    configFile: env.AOI_DAEMON_CONFIG_FILE ?? resolve(openroomHome, 'config.json'),
     workspaceRoot: env.AOI_DAEMON_WORKSPACE_ROOT ?? process.cwd(),
     host: env.AOI_DAEMON_HOST ?? DEFAULT_DAEMON_HOST,
     port: parsePortEnv(env.AOI_DAEMON_PORT, DEFAULT_DAEMON_PORT),

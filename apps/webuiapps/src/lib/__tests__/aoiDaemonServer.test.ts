@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import { createHash } from 'crypto';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import {
   resolveAoiDaemonOptionsFromEnv,
   startAoiDaemon,
@@ -1037,6 +1037,26 @@ describe('resolveAoiDaemonOptionsFromEnv', () => {
     expect(options.configFile).toBe('/custom/config.json');
     expect(options.host).toBe('0.0.0.0');
     expect(options.port).toBe(9999);
+  });
+
+  it('resolves under OPENROOM_HOME so it reads the same config the UI writes', () => {
+    // The dev server resolves config.json and sessions under OPENROOM_HOME. The
+    // operator's settings now decide autonomy capabilities, so a daemon reading a
+    // different config.json would leave every toggle silently doing nothing.
+    const home = join('/custom', 'openroom');
+    const options = resolveAoiDaemonOptionsFromEnv({ OPENROOM_HOME: home });
+    expect(options.sessionsDir).toBe(resolve(home, 'sessions'));
+    expect(options.configFile).toBe(resolve(home, 'config.json'));
+  });
+
+  it('lets an explicit AOI_DAEMON_* override beat OPENROOM_HOME', () => {
+    const home = join('/custom', 'openroom');
+    const options = resolveAoiDaemonOptionsFromEnv({
+      OPENROOM_HOME: home,
+      AOI_DAEMON_CONFIG_FILE: join('/elsewhere', 'config.json'),
+    });
+    expect(options.configFile).toBe(join('/elsewhere', 'config.json'));
+    expect(options.sessionsDir).toBe(resolve(home, 'sessions'));
   });
 
   it('falls back to the default port for an out-of-range or invalid value', () => {

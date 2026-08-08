@@ -14,6 +14,7 @@
 // other kind, a missing/invalid standing approval, or a recompute/preflight error BLOCKS. The loop
 // itself stays OFF unless AOI_AUTONOMY_SELF_EXECUTE is set.
 import { createAoiActionCheckpoint } from './aoiActionCheckpoint';
+import { loadAoiAutonomyCapabilitySettings } from './aoiAutonomyCapabilitySettings';
 import { hasAoiApprovalSandboxRecoveryEvidence } from './aoiApprovalSandbox';
 import { normalizeAoiApprovedAppActionPolicy } from './aoiApprovedAppActionPolicy';
 import { normalizeAoiApprovedFileMutationPolicy } from './aoiApprovedFileMutationPolicy';
@@ -193,11 +194,12 @@ export function createAoiAutonomousExecuteProductionDeps(
   };
 }
 
-// The daemon wakeup entry point. ENV-GATE FIRST: in production (AOI_AUTONOMY_SELF_EXECUTE unset)
-// this returns inert WITHOUT computing readiness, building deps, or touching the execute path --
-// a near-zero-cost no-op. Only when explicitly enabled does it resolve readiness once, build the
-// production deps, and run the bounded loop. The scheduler calls this best-effort so it can never
-// break a wakeup.
+// The daemon wakeup entry point. CAPABILITY GATE FIRST: when the operator has not
+// enabled self-execute (Settings -> Advanced -> Autonomy, or AOI_AUTONOMY_SELF_EXECUTE
+// for a headless deployment) this returns inert WITHOUT computing readiness, building
+// deps, or touching the execute path -- a near-zero-cost no-op. Only when explicitly
+// enabled does it resolve readiness once, build the production deps, and run the
+// bounded loop. The scheduler calls this best-effort so it can never break a wakeup.
 export async function runAoiAutonomousExecuteForWakeup(params: {
   sessionsDir: string;
   sessionPath: string;
@@ -212,7 +214,8 @@ export async function runAoiAutonomousExecuteForWakeup(params: {
   deps?: AoiAutonomousExecuteLoopDeps;
 }): Promise<AoiAutonomousExecuteLoopResult> {
   const env = params.env ?? process.env;
-  if (env.AOI_AUTONOMY_SELF_EXECUTE !== '1') {
+  const capabilities = loadAoiAutonomyCapabilitySettings({ configFile: params.configFile, env });
+  if (!capabilities.selfExecute) {
     return { enabled: false, executed: [], skipped: [] };
   }
   const readinessLevel =
@@ -237,6 +240,9 @@ export async function runAoiAutonomousExecuteForWakeup(params: {
     sessionPath: params.sessionPath,
     now: params.now,
     sessionBudget: params.sessionBudget,
+    // Forwarded so the loop's own gate resolves from the same source; without it
+    // the inner check would fall back to env and refuse what the UI enabled.
+    configFile: params.configFile,
     env,
     deps,
   });

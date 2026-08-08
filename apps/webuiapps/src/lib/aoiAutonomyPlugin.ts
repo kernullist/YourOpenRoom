@@ -36,7 +36,9 @@ import {
   writeAoiMemoryMaintenanceConfigToFile,
 } from './aoiMemoryMaintenanceSettings';
 import {
+  normalizeAoiAutonomyCapabilitiesConfig,
   normalizeAoiMemoryMaintenanceConfig,
+  type AoiAutonomyCapabilitiesConfig,
   type AoiMemoryMaintenanceConfig,
 } from './configPersistence';
 import { loadAoiMainLlmConfig } from './dewdropCanvasPlugin';
@@ -126,6 +128,11 @@ import type { AoiDaemonHealthSnapshot } from './aoiDaemonHealth';
 import { resolveAoiWorkspaceCodeFingerprint } from './aoiWorkspaceCodeFingerprint';
 import { embedAoiQuery } from './aoiMemoryEmbedding';
 import { createServerAoiEmbeddingProvider } from './aoiMemoryEmbeddingServer';
+import {
+  loadAoiAutonomyCapabilitySettings,
+  writeAoiAutonomyCapabilitiesConfigToFile,
+} from './aoiAutonomyCapabilitySettings';
+import { describeAoiEnvOnlyAutonomyGates } from './aoiAutonomyEnvOnlyGates';
 // Import the model id from the pure core, never from aoiLocalEmbedding: that one
 // pulls node:crypto in and has broken the client bundle here before.
 import { AOI_LOCAL_EMBEDDING_MODEL } from './aoiLocalEmbeddingCore';
@@ -2188,6 +2195,90 @@ export async function handleAoiAutonomyRequest(
       writeJson(res, 200, { ok: true, settings, status });
       return true;
     }
+    // Autonomy capability settings, owned by the settings UI. Like the block
+    // above, these were env-var only: the Autonomy panel showed a configurable
+    // system whose capabilities could only be turned on by editing system
+    // environment variables and restarting.
+    if (req.method === 'GET' && route === '/capabilities') {
+      writeJson(res, 200, {
+        ok: true,
+        // Identifies WHICH config.json these settings came from, so a caller
+        // relaying this answer can refuse to show it as its own when the two
+        // processes are pointed at different stores. Hashed rather than the raw
+        // path: the check only needs equality.
+        storeId: aoiCapabilityStoreId(configFile),
+        settings: loadAoiAutonomyCapabilitySettings({ configFile }),
+        envOnly: describeAoiEnvOnlyAutonomyGates(process.env),
+      });
+      return true;
+    }
+    if (req.method === 'POST' && route === '/capabilities') {
+      // This route grants self-execute and sets an outbound push URL, so it must
+      // not be reachable as a cross-site "simple request". Requiring a JSON
+      // content type forces a preflight, and a cross-origin Origin is refused
+      // outright: without either, any page the operator visits could POST here.
+      const contentType = String(req.headers['content-type'] ?? '');
+      if (!contentType.toLowerCase().includes('application/json')) {
+        writeJson(res, 415, {
+          error: 'Capability settings must be sent as application/json.',
+          code: 'unsupported_media_type',
+        });
+        return true;
+      }
+      if (!isSameOriginRequest(req)) {
+        writeJson(res, 403, {
+          error: 'Cross-origin capability writes are refused.',
+          code: 'cross_origin_forbidden',
+        });
+        return true;
+      }
+      const body = await readJsonBody(req);
+      const normalized = normalizeAoiAutonomyCapabilitiesConfig(
+        body as Partial<AoiAutonomyCapabilitiesConfig>,
+      );
+      // Clearing the block hands every capability back to the environment, which
+      // can silently RE-ENABLE something the operator turned off, so it needs its
+      // own signal rather than being what an empty or misspelled body does.
+      const clearRequested = (body as { clear?: unknown }).clear === true;
+      if (!normalized && !clearRequested) {
+        writeJson(res, 400, {
+          error:
+            'Provide at least one capability field, or {"clear":true} to fall back to environment variables.',
+          code: 'invalid_capability_settings',
+        });
+        return true;
+      }
+      // A webhook URL the normalizer rejected is dropped rather than stored. Say
+      // so instead of answering 200 with the old value still in place, which
+      // reads as "saved" for an outbound target that was never accepted.
+      const requestedWebhook = (body as { pushWebhookUrl?: unknown }).pushWebhookUrl;
+      if (
+        typeof requestedWebhook === 'string' &&
+        requestedWebhook.trim().length > 0 &&
+        normalized?.pushWebhookUrl === undefined
+      ) {
+        writeJson(res, 400, {
+          error: 'Push webhook must be an http(s) URL.',
+          code: 'invalid_push_webhook_url',
+        });
+        return true;
+      }
+      try {
+        writeAoiAutonomyCapabilitiesConfigToFile(configFile, normalized);
+      } catch (error) {
+        writeJson(res, 500, {
+          error: error instanceof Error ? error.message : 'Failed to save capability settings.',
+          code: 'capability_save_failed',
+        });
+        return true;
+      }
+      writeJson(res, 200, {
+        ok: true,
+        settings: loadAoiAutonomyCapabilitySettings({ configFile }),
+        envOnly: describeAoiEnvOnlyAutonomyGates(process.env),
+      });
+      return true;
+    }
     // Run one bounded maintenance pass right now. This is what makes the UI
     // toggle usable immediately: the periodic sweep only starts with the server,
     // so without this the operator would still be waiting for a restart.
@@ -3454,6 +3545,35 @@ export function createAoiAutonomyMiddleware(
 // than this is delaying autonomy cycles and the operator should be able to see it.
 const MAINTENANCE_SLOW_PASS_MS = 30_000;
 
+// Stable identity for the config store a process is using. Two processes agree
+// only when they resolve the SAME file; a dev server pointed at a throwaway
+// OPENROOM_HOME must not display a daemon's unrelated settings as its own.
+export function aoiCapabilityStoreId(configFile: string): string {
+  return createHash('sha256').update(resolve(configFile)).digest('hex').slice(0, 16);
+}
+
+// A request with no Origin is same-origin by definition (curl, a server-side
+// caller, a same-origin fetch that omits it). One WITH an Origin must match the
+// Host it was sent to; anything else is another site driving the operator's
+// browser at this server.
+export function isSameOriginRequest(req: {
+  headers: Record<string, string | string[] | undefined>;
+}): boolean {
+  const origin = req.headers.origin;
+  if (typeof origin !== 'string' || origin.length === 0) {
+    return true;
+  }
+  const host = req.headers.host;
+  if (typeof host !== 'string' || host.length === 0) {
+    return false;
+  }
+  try {
+    return new URL(origin).host === host;
+  } catch {
+    return false;
+  }
+}
+
 function logMaintenance(message: string): void {
   // ASCII-only operational logging.
   console.info(`[aoi-memory-maintenance] ${message}`);
@@ -3482,7 +3602,12 @@ export function startAoiAutonomyBackgroundFromEnv(
     onError?: (error: unknown) => void;
   } = {},
 ): AoiAutonomyBackgroundRunnerHandle | null {
-  const backgroundConfig = resolveAoiAutonomyBackgroundConfigFromEnv(env);
+  // The capability halves of this config (goal synthesis, idle confidence surge)
+  // come from the operator's settings when a config file is present.
+  const backgroundConfig = resolveAoiAutonomyBackgroundConfigFromEnv(
+    env,
+    resolve(options.configFile),
+  );
   // defaultStart hosts (the standalone daemon) run the loop unless AOI_AUTONOMY_BACKGROUND
   // is EXPLICITLY off, so the operator controls on/off from the settings UI (per-session
   // policy.enabled, default false -> a safe idle no-op) without touching env. The Vite
@@ -3609,6 +3734,13 @@ export function startAoiAutonomyBackgroundFromEnv(
     maxBackgroundTickRuntimeMs: backgroundConfig.maxBackgroundTickRuntimeMs,
     llmDailyTokenBudget: backgroundConfig.llmDailyTokenBudget,
     goalSynthesisEnabled: backgroundConfig.goalSynthesisEnabled,
+    // Re-read every cycle so flipping a capability in the UI takes effect on the
+    // next tick. Without this the two flags are frozen at process start, and on
+    // an always-on daemon switching one OFF would silently do nothing.
+    resolveCapabilities: () => {
+      const live = loadAoiAutonomyCapabilitySettings({ configFile, env });
+      return { goalSynthesis: live.goalSynthesis, idleConfidenceSurge: live.idleConfidenceSurge };
+    },
     scoutNetworkDailyBudget: backgroundConfig.scoutNetworkDailyBudget,
     directChatDailyBudget: backgroundConfig.directChatDailyBudget,
     idleConfidenceSurgeEnabled: backgroundConfig.idleConfidenceSurgeEnabled,

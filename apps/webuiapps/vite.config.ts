@@ -1976,6 +1976,70 @@ function aoiDaemonHealthProxyPlugin(): Plugin {
   };
 }
 
+/**
+ * Fixed-target loopback relay for the daemon's capability view.
+ *
+ * The capability settings resolve from config.json (shared) AND from environment
+ * variables (per process). The autonomy env only ever reaches the DAEMON --
+ * Set-AoiDaemonEnv runs inside the daemon's own process, and the boot-installed
+ * scheduled task never touches this server's environment. So a panel served from
+ * here would report ITS env: a capability the daemon has on via env would render
+ * "Disabled (default)", and the read-only ceiling rows would read Off while the
+ * daemon has them on. That is a safety display lying about the process that acts.
+ *
+ * This asks the daemon instead. The panel falls back to the local answer when the
+ * daemon is down, and says which one it is showing.
+ */
+function aoiDaemonCapabilitiesProxyPlugin(): Plugin {
+  const DAEMON_PROBE_TIMEOUT_MS = 2000;
+  return {
+    name: 'aoi-daemon-capabilities-proxy',
+    configureServer(server) {
+      server.middlewares.use('/api/aoi-daemon/capabilities', async (req, res) => {
+        res.setHeader('Content-Type', 'application/json');
+        if ((req.method ?? 'GET') !== 'GET') {
+          res.writeHead(405);
+          res.end(JSON.stringify({ error: 'Method not allowed' }));
+          return;
+        }
+        const parsedPort = Number.parseInt(process.env.AOI_DAEMON_PORT ?? '', 10);
+        const port = Number.isFinite(parsedPort) && parsedPort > 0 ? parsedPort : 7333;
+        try {
+          const upstream = await fetch(`http://127.0.0.1:${port}/api/aoi-autonomy/capabilities`, {
+            signal: AbortSignal.timeout(DAEMON_PROBE_TIMEOUT_MS),
+          });
+          if (!upstream.ok) {
+            res.writeHead(200);
+            res.end(JSON.stringify({ ok: true, status: 'unreachable', port }));
+            return;
+          }
+          const payload = (await upstream.json()) as Record<string, unknown>;
+          // Only trust the daemon's answer when it resolves the SAME config.json.
+          // The port is fixed, so a dev server pointed at a different
+          // OPENROOM_HOME (the e2e suite does exactly this) would otherwise
+          // display an unrelated daemon's settings as its own.
+          const localStoreId = createHash('sha256')
+            .update(resolve(LLM_CONFIG_FILE))
+            .digest('hex')
+            .slice(0, 16);
+          if (payload.storeId !== localStoreId) {
+            res.writeHead(200);
+            res.end(JSON.stringify({ ok: true, status: 'other_store', port }));
+            return;
+          }
+          res.writeHead(200);
+          res.end(JSON.stringify({ ok: true, status: 'running', port, ...payload }));
+        } catch {
+          // Daemon down or unreachable: the panel keeps its own answer, and
+          // labels it as this server's view rather than the daemon's.
+          res.writeHead(200);
+          res.end(JSON.stringify({ ok: true, status: 'not_running', port }));
+        }
+      });
+    },
+  };
+}
+
 /** Content-addressed version token for config.json, for optimistic concurrency. */
 function readLlmConfigWithEtag(): { content: string; etag: string } {
   const content = fs.existsSync(LLM_CONFIG_FILE) ? fs.readFileSync(LLM_CONFIG_FILE, 'utf-8') : '{}';
@@ -1995,6 +2059,40 @@ function readLlmConfigWithEtag(): { content: string; etag: string } {
  * re-read and retry. Sending no If-Match keeps the old unconditional behavior,
  * so writers that have not been migrated are unaffected.
  */
+// Keep the on-disk aoiAutonomyCapabilities block no matter what the incoming
+// body says. Returns the body unchanged (byte for byte, so the ETag stays the
+// hash of what is actually written) when neither side carries the block.
+function preserveAutonomyCapabilities(
+  parsedBody: unknown,
+  currentContent: string,
+  rawBody: string,
+): string {
+  const KEY = 'aoiAutonomyCapabilities';
+  if (!parsedBody || typeof parsedBody !== 'object' || Array.isArray(parsedBody)) {
+    return rawBody;
+  }
+  let onDisk: unknown;
+  try {
+    const parsedCurrent = JSON.parse(currentContent) as unknown;
+    if (parsedCurrent && typeof parsedCurrent === 'object' && !Array.isArray(parsedCurrent)) {
+      onDisk = (parsedCurrent as Record<string, unknown>)[KEY];
+    }
+  } catch {
+    // Unreadable current config: fall through, the body decides nothing extra.
+  }
+  const next = { ...(parsedBody as Record<string, unknown>) };
+  const incoming = next[KEY];
+  if (onDisk === undefined && incoming === undefined) {
+    return rawBody;
+  }
+  if (onDisk === undefined) {
+    delete next[KEY];
+  } else {
+    next[KEY] = onDisk;
+  }
+  return JSON.stringify(next, null, 2);
+}
+
 function llmConfigPlugin(): Plugin {
   return {
     name: 'llm-config',
@@ -2020,12 +2118,22 @@ function llmConfigPlugin(): Plugin {
           req.on('data', (chunk: Buffer) => chunks.push(chunk));
           req.on('end', () => {
             try {
-              const body = Buffer.concat(chunks).toString();
+              const rawBody = Buffer.concat(chunks).toString();
               // Validate JSON before writing
-              JSON.parse(body);
+              const parsedBody = JSON.parse(rawBody);
 
               const ifMatch = req.headers['if-match'];
               const current = readLlmConfigWithEtag();
+
+              // The autonomy capability block is NOT writable through this
+              // endpoint. It decides whether Aoi may act without a per-action
+              // human click, and this route is an unauthenticated whole-file
+              // writer that every settings panel posts to -- so a stray page, or
+              // a stale in-memory copy from a panel that never knew about the
+              // block, must not be able to grant that or wipe an operator's
+              // explicit "off". Whatever is on disk is kept; the dedicated
+              // /api/aoi-autonomy/capabilities route is the only way to change it.
+              const body = preserveAutonomyCapabilities(parsedBody, current.content, rawBody);
               if (typeof ifMatch === 'string' && ifMatch !== '*' && ifMatch !== current.etag) {
                 res.setHeader('ETag', current.etag);
                 res.writeHead(409);
@@ -4020,6 +4128,7 @@ const config = ({ mode }: ConfigEnv): UserConfigExport => {
   const plugins: PluginOption[] = [
     llmConfigPlugin(),
     aoiDaemonHealthProxyPlugin(),
+    aoiDaemonCapabilitiesProxyPlugin(),
     sessionDataPlugin(),
     gmailPlugin({
       configFile: LLM_CONFIG_FILE,

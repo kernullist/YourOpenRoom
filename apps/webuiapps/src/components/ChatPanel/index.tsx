@@ -739,6 +739,7 @@ import {
 import CharacterPanel from './CharacterPanel';
 import ModPanel from './ModPanel';
 import { AoiMcpConnectorsSettings } from './AoiMcpConnectorsSettings';
+import { AoiAutonomyCapabilityPanel } from './AoiAutonomyCapabilityPanel';
 import { AoiAutonomyRuntimePanel } from './AoiAutonomyRuntimePanel';
 import { AoiMemoryDecayPanel } from './AoiMemoryDecayPanel';
 import { AoiMemoryMaintenancePanel } from './AoiMemoryMaintenancePanel';
@@ -14974,6 +14975,8 @@ const SettingsModal: React.FC<{
               </p>
 
               {advancedSection === 'autonomy' && <AoiAutonomyRuntimePanel />}
+
+              {advancedSection === 'autonomy' && <AoiAutonomyCapabilityPanel />}
 
               {advancedSection === 'autonomy' && (
                 <div className={styles.settingsSectionCard} data-testid="aoi-autonomy-panel">

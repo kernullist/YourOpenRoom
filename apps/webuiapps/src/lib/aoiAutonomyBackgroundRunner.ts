@@ -2,6 +2,7 @@ import type { LLMConfig } from './llmModels';
 import type { AoiAutonomyPolicy, AoiAutonomyWakeupResult } from './aoiAutonomyTypes';
 import { listAoiAutonomySessionPaths, loadAoiAutonomyPolicy } from './aoiAutonomyStore';
 import { runAoiAutonomyWakeup, type AoiAutonomyWakeupInput } from './aoiAutonomyScheduler';
+import { loadAoiAutonomyCapabilitySettings } from './aoiAutonomyCapabilitySettings';
 
 // Guard rails so a misconfiguration cannot hammer the loop or fan out forever.
 const MIN_BACKGROUND_INTERVAL_MS = 30_000;
@@ -38,6 +39,13 @@ export interface AoiAutonomyBackgroundCycleOptions {
   // P3-2b: explicit opt-in for the user-return lull confidence-floor relief, threaded to each
   // wakeup. Default/false -> no relief (byte-identical). Only ever applies on the background path.
   idleConfidenceSurgeEnabled?: boolean;
+  // Re-read the operator's capability settings at the START of every cycle, so a
+  // toggle flipped in the settings UI takes effect on the next tick instead of
+  // requiring a restart. Without it the two flags above are frozen at process
+  // start, and the safety-relevant direction -- switching something OFF -- fails
+  // silently on an always-on daemon. Absent -> the static values above are used,
+  // which is what the env-only callers and tests rely on.
+  resolveCapabilities?: () => { goalSynthesis: boolean; idleConfidenceSurge: boolean };
   llmConfig?: LLMConfig | null;
   // Lazily resolve the main LLM config (e.g. from the config file) each cycle.
   // Without this the background loop runs deterministic-only (no LLM reasoning).
@@ -101,6 +109,21 @@ export async function runAoiAutonomyBackgroundCycle(
   const llmConfig = ceilingPermitsNetwork
     ? (options.llmConfig ?? options.loadLlmConfig?.() ?? null)
     : null;
+  // Live capability settings win over the values captured at start(), so a toggle
+  // in the settings UI applies on the next tick rather than at the next restart.
+  // A resolver failure keeps the startup values -- it must never fall OPEN, since
+  // these enable LLM egress and louder interruption.
+  let goalSynthesisEnabled = options.goalSynthesisEnabled;
+  let idleConfidenceSurgeEnabled = options.idleConfidenceSurgeEnabled;
+  if (options.resolveCapabilities) {
+    try {
+      const live = options.resolveCapabilities();
+      goalSynthesisEnabled = live.goalSynthesis;
+      idleConfidenceSurgeEnabled = live.idleConfidenceSurge;
+    } catch {
+      // Keep the startup values.
+    }
+  }
   const result: AoiAutonomyBackgroundCycleResult = {
     startedAt,
     durationMs: 0,
@@ -167,17 +190,15 @@ export async function runAoiAutonomyBackgroundCycle(
           ...(typeof options.llmDailyTokenBudget === 'number'
             ? { llmDailyTokenBudget: options.llmDailyTokenBudget }
             : {}),
-          ...(typeof options.goalSynthesisEnabled === 'boolean'
-            ? { goalSynthesisEnabled: options.goalSynthesisEnabled }
-            : {}),
+          ...(typeof goalSynthesisEnabled === 'boolean' ? { goalSynthesisEnabled } : {}),
           ...(typeof options.scoutNetworkDailyBudget === 'number'
             ? { scoutNetworkDailyBudget: options.scoutNetworkDailyBudget }
             : {}),
           ...(typeof options.directChatDailyBudget === 'number'
             ? { directChatDailyBudget: options.directChatDailyBudget }
             : {}),
-          ...(typeof options.idleConfidenceSurgeEnabled === 'boolean'
-            ? { idleConfidenceSurgeEnabled: options.idleConfidenceSurgeEnabled }
+          ...(typeof idleConfidenceSurgeEnabled === 'boolean'
+            ? { idleConfidenceSurgeEnabled }
             : {}),
         },
         // A fixed clock is only a test seam. Passing the real cycle start as a
@@ -333,9 +354,20 @@ function parseTokenBudgetEnv(value: string | undefined): number | undefined {
 // Background autonomy is OFF by default. Operators opt in via env so the loop
 // never self-activates without explicit intent (safety-first posture). Network
 // access (LLM reflection + proactive scout) is a separate, also-opt-in flag.
+// goalSynthesis and idleConfidenceSurge are capability enablement, so the
+// settings UI owns them (config.json: aoiAutonomyCapabilities) with the env vars
+// as the headless fallback. configFile is optional so every existing caller and
+// test keeps resolving from env alone. Everything else here -- the intervals,
+// budgets, and the tri-state network ceiling -- stays env: they are deployment
+// bounds, not capabilities.
 export function resolveAoiAutonomyBackgroundConfigFromEnv(
   env: Record<string, string | undefined>,
+  configFile?: string,
 ): AoiAutonomyBackgroundEnvConfig {
+  const capabilities = loadAoiAutonomyCapabilitySettings({
+    ...(configFile ? { configFile } : {}),
+    env,
+  });
   return {
     enabled: parseBoolEnv(env.AOI_AUTONOMY_BACKGROUND),
     intervalMs: parseIntEnv(
@@ -356,9 +388,9 @@ export function resolveAoiAutonomyBackgroundConfigFromEnv(
       DEFAULT_MAX_SESSIONS_PER_CYCLE,
     ),
     llmDailyTokenBudget: parseTokenBudgetEnv(env.AOI_AUTONOMY_LLM_DAILY_TOKEN_BUDGET),
-    goalSynthesisEnabled: parseBoolEnv(env.AOI_AUTONOMY_GOAL_SYNTHESIS),
+    goalSynthesisEnabled: capabilities.goalSynthesis,
     scoutNetworkDailyBudget: parseTokenBudgetEnv(env.AOI_AUTONOMY_SCOUT_NETWORK_DAILY_BUDGET),
     directChatDailyBudget: parseTokenBudgetEnv(env.AOI_AUTONOMY_DIRECT_CHAT_DAILY_BUDGET),
-    idleConfidenceSurgeEnabled: parseBoolEnv(env.AOI_AUTONOMY_IDLE_CONFIDENCE_SURGE),
+    idleConfidenceSurgeEnabled: capabilities.idleConfidenceSurge,
   };
 }

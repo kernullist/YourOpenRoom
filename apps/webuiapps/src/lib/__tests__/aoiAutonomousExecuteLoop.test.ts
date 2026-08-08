@@ -90,6 +90,65 @@ const eligibleInput: AoiAutonomousExecuteEligibilityInput = {
   now: NOW,
 };
 
+describe('runAoiAutonomousExecuteLoop capability gate', () => {
+  function writeCapabilities(root: string, selfExecuteEnabled: boolean): string {
+    const configFile = join(root, 'config.json');
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({ aoiAutonomyCapabilities: { version: 1, selfExecuteEnabled } }),
+    );
+    return configFile;
+  }
+
+  it('runs when the operator enabled it in settings, with no env var set', async () => {
+    const root = makeRoot();
+    seed(root, makeProposal(), makeDecision());
+    const executeProposal = vi.fn(async () => ({ executed: true }));
+    const result = await runAoiAutonomousExecuteLoop({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      now: NOW,
+      configFile: writeCapabilities(root, true),
+      env: {},
+      deps: { resolveEligibility: () => eligibleInput, executeProposal },
+    });
+    expect(result.enabled).toBe(true);
+    expect(result.executed).toEqual(['proposal-x']);
+  });
+
+  it('stays inert when settings say off, even with the env var set', async () => {
+    const root = makeRoot();
+    seed(root, makeProposal(), makeDecision());
+    const executeProposal = vi.fn(async () => ({ executed: true }));
+    const result = await runAoiAutonomousExecuteLoop({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      now: NOW,
+      configFile: writeCapabilities(root, false),
+      env: { AOI_AUTONOMY_SELF_EXECUTE: '1' },
+      deps: { resolveEligibility: () => eligibleInput, executeProposal },
+    });
+    expect(result).toEqual({ enabled: false, executed: [], skipped: [] });
+    expect(executeProposal).not.toHaveBeenCalled();
+  });
+
+  it('still honours the env var when there is no config block (headless)', async () => {
+    const root = makeRoot();
+    seed(root, makeProposal(), makeDecision());
+    const executeProposal = vi.fn(async () => ({ executed: true }));
+    const result = await runAoiAutonomousExecuteLoop({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      now: NOW,
+      configFile: join(root, 'config.json'),
+      env: { AOI_AUTONOMY_SELF_EXECUTE: '1' },
+      deps: { resolveEligibility: () => eligibleInput, executeProposal },
+    });
+    expect(result.enabled).toBe(true);
+    expect(result.executed).toEqual(['proposal-x']);
+  });
+});
+
 describe('runAoiAutonomousExecuteLoop (P2.3)', () => {
   it('is inert (does nothing) unless the env gate is on', async () => {
     const root = makeRoot();

@@ -40,6 +40,7 @@ import {
   loadServerAoiMemories,
 } from './aoiMemoryServerWriter';
 import { loadAoiMemoryMaintenanceSettings } from './aoiMemoryMaintenanceSettings';
+import { loadAoiAutonomyCapabilitySettings } from './aoiAutonomyCapabilitySettings';
 import {
   buildAoiAutonomyStatus,
   createAoiAutonomyId,
@@ -1558,10 +1559,12 @@ async function runProactiveScoutForWakeup(params: {
     // configured webhook URL (the operator's opt-in): absent -> pushOptIn false, so nothing is
     // appended and the inert transport delivers nothing. Own try -> never affects the advisor.
     try {
-      const webhookUrl =
-        typeof process.env.AOI_PUSH_WEBHOOK_URL === 'string'
-          ? process.env.AOI_PUSH_WEBHOOK_URL.trim()
-          : '';
+      // The operator owns this in Settings -> Advanced -> Autonomy; the env var
+      // stays the fallback for headless deployments. Empty either way -> pushOptIn
+      // false, so nothing is appended and the inert transport delivers nothing.
+      const webhookUrl = loadAoiAutonomyCapabilitySettings({
+        ...(params.input.configFile ? { configFile: params.input.configFile } : {}),
+      }).pushWebhookUrl;
       await runAoiProactivePushForSession({
         sessionsDir: params.input.sessionsDir,
         sessionPath,
@@ -1934,10 +1937,11 @@ async function runWakeupInternal(
   // records/field-events only (recordAoiFieldShadowDecisionIntegration); it writes
   // no autonomy level or trust, and never labels or promotes.
   // P5.4 field-shadow capture gate (records-only + zero-mutation):
-  //   env=0/false/no  -> hard off (ops ceiling)
-  //   policy.on        -> on (settings toggle / ignition)
-  //   env=1 alone      -> soft on ONLY when policy is not explicitly false
-  // Operator toggle OFF must win over launcher soft default env=1.
+  //   env=0/false/no -> hard off (ops ceiling), whatever the policy says
+  //   otherwise      -> the session policy decides, and ONLY the policy
+  // env=1 does not enable anything on its own: isAoiFieldShadowCaptureEnabled
+  // returns policyEnabled === true. (This comment used to claim env=1 alone was a
+  // soft on; the code has never done that, and the code is the safer behavior.)
   const fieldShadowPolicy = loadAoiAutonomyPolicy(input.sessionsDir, sessionPath);
   if (
     isAoiFieldShadowCaptureEnabled({

@@ -176,6 +176,88 @@ export function normalizeAoiMemoryMaintenanceConfig(
   return Object.keys(normalized).length > 1 ? normalized : null;
 }
 
+// Operator-facing autonomy CAPABILITY settings. Same problem the maintenance
+// block above solved: these were env-var only, so the panel showed autonomy
+// toggles while the capabilities behind them could only be turned on by editing
+// system environment variables and restarting.
+//
+// The line drawn here is deliberate and narrow: what moves into the app is
+// capability ENABLEMENT. Trust escalation and approval weakening stay env-only
+// (AOI_AUTONOMY_AUTO_PROMOTE, AOI_AUTONOMY_APPROVAL_TTL, AOI_MCP_SIDE_EFFECTING_RPC)
+// because moving those would change the safety posture, not just its
+// accessibility -- an operator with the app open must not be able to raise Aoi's
+// own trust level or widen the fresh-approval window for irreversible actions.
+// The hard-off env ceilings (AOI_AUTONOMY_BACKGROUND=0 and friends) likewise stay
+// authoritative over anything set here.
+export interface AoiAutonomyCapabilitiesConfig {
+  version: 1;
+  // Lets accepted proposals execute without a per-execution human click. The
+  // 7-invariant eligibility gate behind it is untouched: this only decides
+  // whether that gate is consulted at all.
+  selfExecuteEnabled?: boolean;
+  // Dispatches an approved app_operation to a connected client instead of handing
+  // it to a Kira review. The L5 + content-addressed approval gate still governs it.
+  appOpLiveDispatchEnabled?: boolean;
+  // Out-of-panel push for direct-chat cards. A URL, not a toggle: empty means off.
+  pushWebhookUrl?: string;
+  // Lets the loop synthesize new goals from observed patterns (LLM, network).
+  goalSynthesisEnabled?: boolean;
+  // Raises proposal confidence while the user is idle.
+  idleConfidenceSurgeEnabled?: boolean;
+}
+
+function normalizeWebhookUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    // An explicit empty string is a real setting -- "off, decided here" -- and
+    // must survive so it beats an env-supplied URL.
+    return '';
+  }
+  // Only http(s) is a push transport. Anything else (file:, javascript:, a bare
+  // hostname) is rejected rather than stored, so a typo cannot become an
+  // outbound target that silently fails or reaches somewhere unintended.
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return undefined;
+    }
+    return trimmed;
+  } catch {
+    return undefined;
+  }
+}
+
+// Absent fields are preserved as absent (undefined), NOT defaulted: absence is
+// what hands the decision to the env fallback.
+export function normalizeAoiAutonomyCapabilitiesConfig(
+  raw: Partial<AoiAutonomyCapabilitiesConfig> | null | undefined,
+): AoiAutonomyCapabilitiesConfig | null {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const webhookUrl = normalizeWebhookUrl(raw.pushWebhookUrl);
+  const normalized: AoiAutonomyCapabilitiesConfig = {
+    version: 1,
+    ...(typeof raw.selfExecuteEnabled === 'boolean'
+      ? { selfExecuteEnabled: raw.selfExecuteEnabled }
+      : {}),
+    ...(typeof raw.appOpLiveDispatchEnabled === 'boolean'
+      ? { appOpLiveDispatchEnabled: raw.appOpLiveDispatchEnabled }
+      : {}),
+    ...(webhookUrl !== undefined ? { pushWebhookUrl: webhookUrl } : {}),
+    ...(typeof raw.goalSynthesisEnabled === 'boolean'
+      ? { goalSynthesisEnabled: raw.goalSynthesisEnabled }
+      : {}),
+    ...(typeof raw.idleConfidenceSurgeEnabled === 'boolean'
+      ? { idleConfidenceSurgeEnabled: raw.idleConfidenceSurgeEnabled }
+      : {}),
+  };
+  return Object.keys(normalized).length > 1 ? normalized : null;
+}
+
 export interface GmailConfig {
   clientId?: string;
   clientSecret?: string;
@@ -226,6 +308,7 @@ export interface PersistedConfig {
   aoiMcpConnectors?: AoiMcpConnectorsConfig;
   aoiMusicTaste?: AoiMusicPersistedState;
   aoiMemoryMaintenance?: AoiMemoryMaintenanceConfig;
+  aoiAutonomyCapabilities?: AoiAutonomyCapabilitiesConfig;
 }
 
 const CONFIG_API = '/api/llm-config';
@@ -250,6 +333,7 @@ export const KNOWN_CONFIG_KEYS = [
   'aoiMcpConnectors',
   'aoiMusicTaste',
   'aoiMemoryMaintenance',
+  'aoiAutonomyCapabilities',
 ];
 
 export function normalizeUserProfileDisplayName(raw: string | null | undefined): string {

@@ -3,7 +3,9 @@
 // It CONSULTS the eligibility gate (aoiAutonomousExecuteEligibility, which encodes all 7 safety
 // invariants) and self-invokes the executor ONLY for a gate-passing op. Every safety layer is
 // stacked:
-//   * OFF by default -- inert unless AOI_AUTONOMY_SELF_EXECUTE === '1'.
+//   * OFF by default -- inert unless the operator enables it in Settings ->
+//     Advanced -> Autonomy (config.json: aoiAutonomyCapabilities.selfExecuteEnabled),
+//     or, for a headless deployment with no config block, AOI_AUTONOMY_SELF_EXECUTE === '1'.
 //   * CONSUME, never AUTHOR -- it only ever acts on decisions a human already ACCEPTED
 //     (actor 'user', action 'accept'); it never creates an acceptance.
 //   * fail-closed eligibility -- the default resolver blocks everything (no checkpoint / no
@@ -17,6 +19,7 @@
 // The eligibility resolver + the executor are injectable so the loop is unit-testable without
 // real stores or real execution.
 import { loadAoiActiveProposals, loadAoiProposalDecisions } from './aoiAutonomyStore';
+import { loadAoiAutonomyCapabilitySettings } from './aoiAutonomyCapabilitySettings';
 import {
   classifyAoiAutonomousExecuteEligibility,
   type AoiAutonomousExecuteBlockReason,
@@ -82,12 +85,21 @@ export async function runAoiAutonomousExecuteLoop(params: {
   sessionPath: string;
   now: number;
   sessionBudget?: number;
+  // Where the operator's setting lives. Omitted -> env-only, which is what a
+  // headless caller (and every existing test) gets.
+  configFile?: string;
   env?: Record<string, string | undefined>;
   deps?: AoiAutonomousExecuteLoopDeps;
 }): Promise<AoiAutonomousExecuteLoopResult> {
   const env = params.env ?? process.env;
-  // OFF by default.
-  if (env.AOI_AUTONOMY_SELF_EXECUTE !== '1') {
+  // OFF by default. The settings UI owns this now; the env var stays the
+  // fallback, and the safety gate below is untouched either way -- this only
+  // decides whether the gate is consulted at all.
+  const capabilities = loadAoiAutonomyCapabilitySettings({
+    ...(params.configFile ? { configFile: params.configFile } : {}),
+    env,
+  });
+  if (!capabilities.selfExecute) {
     return { enabled: false, executed: [], skipped: [] };
   }
 

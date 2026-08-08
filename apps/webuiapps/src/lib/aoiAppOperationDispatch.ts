@@ -10,15 +10,25 @@
 //
 // OFF by default. Server-only (reads process.env by default); never import from
 // client-reachable code.
+import { loadAoiAutonomyCapabilitySettings } from './aoiAutonomyCapabilitySettings';
 import type { AoiAppOperationDispatch } from './aoiAutonomyTypes';
 
-// OFF by default. When set, an approved app_operation is queued for client-mediated
-// live dispatch instead of the Kira review handoff. Separate from every other gate;
-// the existing L5 + content-addressed approval gate still governs the operation.
+// OFF by default. When enabled, an approved app_operation is queued for
+// client-mediated live dispatch instead of the Kira review handoff. Separate from
+// every other gate; the existing L5 + content-addressed approval gate still
+// governs the operation.
+//
+// The operator owns this in Settings -> Advanced -> Autonomy
+// (config.json: aoiAutonomyCapabilities.appOpLiveDispatchEnabled). The env var
+// stays the fallback for headless deployments, and still takes a strict '1'.
 export function isAoiAppOpLiveDispatchEnabled(
   env: Record<string, string | undefined> = process.env,
+  configFile?: string,
 ): boolean {
-  return env.AOI_AUTONOMY_APP_OP_LIVE_DISPATCH === '1';
+  return loadAoiAutonomyCapabilitySettings({
+    ...(configFile ? { configFile } : {}),
+    env,
+  }).appOpLiveDispatch;
 }
 
 export interface AoiAppOperationDispatchDraft {

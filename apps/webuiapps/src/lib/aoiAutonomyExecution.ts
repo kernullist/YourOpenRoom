@@ -416,9 +416,10 @@ function maybeQueueAppOperationDispatch(params: {
   decisionId: string;
   policy?: AoiApprovedAppActionPolicy;
   appActionResult: AoiApprovedAppActionResult;
+  configFile?: string;
   now: number;
 }): AoiAppOperationDispatch | null {
-  if (!isAoiAppOpLiveDispatchEnabled()) {
+  if (!isAoiAppOpLiveDispatchEnabled(process.env, params.configFile)) {
     return null;
   }
   // Only a pure app_operation is eligible -- file_backed routing already mutated on
@@ -1830,6 +1831,7 @@ export async function executeAoiProposal(params: {
           decisionId: transition.decision.id,
           policy: approvedAppActionPolicyForExecution,
           appActionResult,
+          configFile: params.configFile,
           now,
         });
         if (queued) {
