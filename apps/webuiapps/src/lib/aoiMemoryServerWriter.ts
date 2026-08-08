@@ -402,9 +402,15 @@ function readJsonFile<T>(filePath: string): T | null {
   }
 }
 
+// Every memory/episode write goes through the atomic path. A plain writeFileSync
+// truncates and then writes, so a reader (or a second writer -- the maintenance
+// sweep and the autonomy loop live in different processes) can observe a
+// half-written file. A truncated memory does not fail loudly: readJsonFile
+// swallows the parse error and returns null, and the memory silently disappears
+// from recall. temp+rename makes the replacement a single atomic step, so a
+// concurrent write can at worst lose an update, never destroy the file.
 function writeJsonFile(filePath: string, value: unknown): void {
-  fs.mkdirSync(dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify(value), 'utf-8');
+  writeJsonFileAtomic(filePath, value);
 }
 
 function writeJsonFileAtomic(filePath: string, value: unknown): void {

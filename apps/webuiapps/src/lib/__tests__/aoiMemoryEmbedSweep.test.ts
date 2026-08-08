@@ -6,9 +6,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   resolveAoiMemoryEmbedSweepConfigFromEnv,
   runAoiMemoryEmbedSweepCycle,
+  runAoiMemoryMaintenanceCycle,
   startAoiMemoryEmbedSweep,
 } from '../aoiMemoryEmbedSweep';
-import { startAoiMemoryEmbedSweepFromEnv } from '../aoiAutonomyPlugin';
+import {
+  startAoiAutonomyBackgroundFromEnv,
+  startAoiMemoryEmbedSweepFromEnv,
+} from '../aoiAutonomyPlugin';
 import { acquireAoiAutonomyLoopLock } from '../aoiAutonomyLoopLock';
 import { loadServerAoiMemories, saveServerAoiMemoryCandidates } from '../aoiMemoryServerWriter';
 import type { AoiEmbeddingProvider } from '../aoiMemoryEmbedding';
@@ -224,6 +228,70 @@ describe('startAoiMemoryEmbedSweep', () => {
     expect(order).toEqual(['embed', 'consolidate:4', 'onConsolidation']);
   });
 
+  it('yields the whole cycle -- reading nothing, writing nothing -- when ownsLock is false', async () => {
+    let embeds = 0;
+    let consolidations = 0;
+    let settingsReads = 0;
+    const handle = startAoiMemoryEmbedSweep({
+      sessionsDir: '/tmp/aoi-embed-sweep-noop',
+      intervalMs: 30_000,
+      runImmediately: true,
+      ownsLock: () => false,
+      runCycle: async () => {
+        embeds += 1;
+        return { ran: true, embeddedCount: 0, pendingCount: 0 };
+      },
+      consolidation: { enabled: true, max: 4 },
+      runConsolidationCycle: () => {
+        consolidations += 1;
+        return { ran: true, clusterCount: 0, supersededCount: 0 };
+      },
+      resolveCycleSettings: () => {
+        settingsReads += 1;
+        return {
+          embedSweep: { enabled: true, max: 8 },
+          consolidation: { enabled: true, max: 4 },
+        };
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 0));
+    handle.stop();
+
+    expect(embeds).toBe(0);
+    expect(consolidations).toBe(0);
+    // The ownership check comes before everything, including the settings read.
+    expect(settingsReads).toBe(0);
+  });
+
+  it('resumes cycles once ownsLock reports the lock back', async () => {
+    vi.useFakeTimers();
+    try {
+      let owned = false;
+      let embeds = 0;
+      const handle = startAoiMemoryEmbedSweep({
+        sessionsDir: '/tmp/aoi-embed-sweep-noop',
+        intervalMs: 30_000,
+        ownsLock: () => owned,
+        runCycle: async () => {
+          embeds += 1;
+          return { ran: true, embeddedCount: 0, pendingCount: 0 };
+        },
+      });
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(embeds).toBe(0);
+
+      owned = true;
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(embeds).toBe(1);
+
+      handle.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not run the consolidation cycle when consolidation is not enabled', async () => {
     let consolidations = 0;
     const handle = startAoiMemoryEmbedSweep({
@@ -244,6 +312,211 @@ describe('startAoiMemoryEmbedSweep', () => {
   });
 });
 
+describe('runAoiMemoryMaintenanceCycle', () => {
+  it('embeds first, then consolidates', async () => {
+    const order: string[] = [];
+    await runAoiMemoryMaintenanceCycle({
+      sessionsDir: '/tmp/aoi-embed-sweep-noop',
+      embedSweep: { enabled: true, max: 8 },
+      consolidation: { enabled: true, max: 4 },
+      runCycle: async (opts) => {
+        order.push(`embed:${opts.max}`);
+        return { ran: true, embeddedCount: 0, pendingCount: 0 };
+      },
+      runConsolidationCycle: (opts) => {
+        order.push(`consolidate:${opts.max}`);
+        return { ran: true, clusterCount: 0, supersededCount: 0 };
+      },
+    });
+
+    expect(order).toEqual(['embed:8', 'consolidate:4']);
+  });
+
+  it('stops before consolidating when the lock is taken over mid-cycle', async () => {
+    const order: string[] = [];
+    let owned = true;
+    await runAoiMemoryMaintenanceCycle({
+      sessionsDir: '/tmp/aoi-embed-sweep-noop',
+      embedSweep: { enabled: true, max: 8 },
+      consolidation: { enabled: true, max: 4 },
+      ownsLock: () => owned,
+      runCycle: async () => {
+        order.push('embed');
+        // The authoritative loop takes the dir over while embedding awaits.
+        owned = false;
+        return { ran: true, embeddedCount: 0, pendingCount: 0 };
+      },
+      runConsolidationCycle: () => {
+        order.push('consolidate');
+        return { ran: true, clusterCount: 0, supersededCount: 0 };
+      },
+    });
+
+    expect(order).toEqual(['embed']);
+  });
+
+  it('skips each half independently when it is disabled', async () => {
+    const order: string[] = [];
+    await runAoiMemoryMaintenanceCycle({
+      sessionsDir: '/tmp/aoi-embed-sweep-noop',
+      embedSweep: { enabled: false, max: 8 },
+      consolidation: { enabled: true, max: 4 },
+      runCycle: async () => {
+        order.push('embed');
+        return { ran: true, embeddedCount: 0, pendingCount: 0 };
+      },
+      runConsolidationCycle: () => {
+        order.push('consolidate');
+        return { ran: true, clusterCount: 0, supersededCount: 0 };
+      },
+    });
+
+    expect(order).toEqual(['consolidate']);
+  });
+});
+
+describe('startAoiAutonomyBackgroundFromEnv maintenance', () => {
+  function writeMaintenanceConfig(configFile: string): void {
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({
+        aoiMemoryMaintenance: {
+          version: 1,
+          embedSweepEnabled: true,
+          embedSweepIntervalMinutes: 1,
+          embedSweepMax: 16,
+          consolidationEnabled: false,
+          // Offline hash embedder: real vectors, no egress, no key.
+          localEmbedderEnabled: true,
+        },
+      }),
+    );
+  }
+
+  it('maintains the store from its own cycle even when NO session is enabled', async () => {
+    const root = makeRoot();
+    const configFile = join(root, 'config.json');
+    writeMaintenanceConfig(configFile);
+    seedMemory(root);
+    expect(loadServerAoiMemories(root)[0].embedding).toBeUndefined();
+
+    vi.useFakeTimers();
+    let handle: { stop: () => void } | null = null;
+    try {
+      handle = startAoiAutonomyBackgroundFromEnv(
+        { sessionsDir: root, configFile },
+        { AOI_AUTONOMY_BACKGROUND: '1', AOI_AUTONOMY_BACKGROUND_INTERVAL_MS: '30000' },
+        { runImmediately: true },
+      );
+      expect(handle).not.toBeNull();
+      // The loop holds the single-instance lock, so every other process yields to
+      // it. There is no session to wake, yet the store must still be maintained --
+      // otherwise taking the lock would silently stop maintenance altogether.
+      await vi.advanceTimersByTimeAsync(3 * 60_000);
+    } finally {
+      handle?.stop();
+      vi.useRealTimers();
+    }
+
+    expect(loadServerAoiMemories(root)[0].embedding).toBeDefined();
+  });
+
+  it('does not embed through a cloud provider when the network ceiling is hard-off', async () => {
+    const root = makeRoot();
+    const configFile = join(root, 'config.json');
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({
+        // A real cloud embedder: embedding it would be outbound egress.
+        aoiEmbedding: { apiKey: 'test-key', baseUrl: 'https://example.invalid/v1', model: 'm' },
+        aoiMemoryMaintenance: {
+          version: 1,
+          embedSweepEnabled: true,
+          embedSweepIntervalMinutes: 1,
+          embedSweepMax: 16,
+          consolidationEnabled: false,
+          localEmbedderEnabled: false,
+        },
+      }),
+    );
+    seedMemory(root);
+
+    vi.useFakeTimers();
+    let handle: { stop: () => Promise<void> } | null = null;
+    try {
+      handle = startAoiAutonomyBackgroundFromEnv(
+        { sessionsDir: root, configFile },
+        {
+          AOI_AUTONOMY_BACKGROUND: '1',
+          AOI_AUTONOMY_BACKGROUND_INTERVAL_MS: '30000',
+          // The documented hard-off ceiling: no autonomy egress from this host.
+          AOI_AUTONOMY_BACKGROUND_ALLOW_NETWORK: '0',
+        },
+        { runImmediately: true },
+      );
+      await vi.advanceTimersByTimeAsync(3 * 60_000);
+    } finally {
+      await handle?.stop();
+      vi.useRealTimers();
+    }
+
+    // No vector: the pass ran but refused to post memory text to the cloud.
+    expect(loadServerAoiMemories(root)[0].embedding).toBeUndefined();
+  });
+
+  it('still embeds under a hard-off ceiling when the embedder is the offline one', async () => {
+    const root = makeRoot();
+    const configFile = join(root, 'config.json');
+    // Offline local embedder: no egress, so the network ceiling does not apply.
+    writeMaintenanceConfig(configFile);
+    seedMemory(root);
+
+    vi.useFakeTimers();
+    let handle: { stop: () => Promise<void> } | null = null;
+    try {
+      handle = startAoiAutonomyBackgroundFromEnv(
+        { sessionsDir: root, configFile },
+        {
+          AOI_AUTONOMY_BACKGROUND: '1',
+          AOI_AUTONOMY_BACKGROUND_INTERVAL_MS: '30000',
+          AOI_AUTONOMY_BACKGROUND_ALLOW_NETWORK: '0',
+        },
+        { runImmediately: true },
+      );
+      await vi.advanceTimersByTimeAsync(3 * 60_000);
+    } finally {
+      await handle?.stop();
+      vi.useRealTimers();
+    }
+
+    expect(loadServerAoiMemories(root)[0].embedding).toBeDefined();
+  });
+
+  it('waits one configured interval before its first pass', async () => {
+    const root = makeRoot();
+    const configFile = join(root, 'config.json');
+    writeMaintenanceConfig(configFile);
+    seedMemory(root);
+
+    vi.useFakeTimers();
+    let handle: { stop: () => void } | null = null;
+    try {
+      handle = startAoiAutonomyBackgroundFromEnv(
+        { sessionsDir: root, configFile },
+        { AOI_AUTONOMY_BACKGROUND: '1', AOI_AUTONOMY_BACKGROUND_INTERVAL_MS: '30000' },
+        { runImmediately: true },
+      );
+      // One loop tick, but less than the maintenance interval: a sweep this loop
+      // just displaced may still be finishing its cycle, so nothing runs yet.
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(loadServerAoiMemories(root)[0].embedding).toBeUndefined();
+    } finally {
+      handle?.stop();
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('startAoiMemoryEmbedSweepFromEnv', () => {
   it('returns null when the sweep is not opted in', () => {
     const root = makeRoot();
@@ -255,39 +528,68 @@ describe('startAoiMemoryEmbedSweepFromEnv', () => {
     ).toBeNull();
   });
 
-  it('acquires the single-instance lock when enabled and releases it on stop', () => {
+  it('takes the single-instance lock as maintenance and releases it on stop', async () => {
     const root = makeRoot();
     const handle = startAoiMemoryEmbedSweepFromEnv(
       { sessionsDir: root, configFile: join(root, 'config.json') },
       { AOI_AUTONOMY_EMBED_SWEEP: '1' },
     );
     expect(handle).not.toBeNull();
-    // While the sweep owns the dir, a second acquire refuses (single writer).
-    expect(acquireAoiAutonomyLoopLock(root)).toBeNull();
+    // A second maintenance holder refuses: among equals the dir has one writer.
+    expect(acquireAoiAutonomyLoopLock(root, { role: 'maintenance' })).toBeNull();
 
-    handle?.stop();
-    // After release the dir is free again.
-    const reacquired = acquireAoiAutonomyLoopLock(root);
+    // stop() resolves only after the in-flight cycle drains AND the lock is
+    // released; a synchronous stop would free the dir mid-write.
+    await handle?.stop();
+    const reacquired = acquireAoiAutonomyLoopLock(root, { role: 'maintenance' });
     expect(reacquired).not.toBeNull();
     reacquired?.release();
   });
 
-  it('no-ops (returns null) when the autonomy loop already owns the dir lock', () => {
+  it('yields to an autonomy loop that starts later instead of blocking it', () => {
     const root = makeRoot();
-    // Simulate the background loop having taken the lock first.
-    const loopLock = acquireAoiAutonomyLoopLock(root);
-    expect(loopLock).not.toBeNull();
-
     const handle = startAoiMemoryEmbedSweepFromEnv(
       { sessionsDir: root, configFile: join(root, 'config.json') },
       { AOI_AUTONOMY_EMBED_SWEEP: '1' },
     );
-    expect(handle).toBeNull();
+    expect(handle).not.toBeNull();
 
+    // The always-on loop must be able to start even though the sweep got there
+    // first -- this is the regression the role split exists for.
+    // The real pid, so the liveness probe sees a genuinely live holder.
+    const loopLock = acquireAoiAutonomyLoopLock(root, { role: 'loop', pid: process.pid });
+    expect(loopLock).not.toBeNull();
+    expect(loopLock?.isOwner()).toBe(true);
+
+    // Stopping the displaced sweep must not remove the loop's lock.
+    handle?.stop();
+    expect(loopLock?.isOwner()).toBe(true);
     loopLock?.release();
   });
 
-  it('starts the maintenance sweep when ONLY consolidation is opted in', () => {
+  it('starts (in a yielded state) when the autonomy loop already owns the dir lock', () => {
+    const root = makeRoot();
+    // Simulate the background loop having taken the lock first.
+    // The real pid, so the liveness probe sees a genuinely live holder.
+    const loopLock = acquireAoiAutonomyLoopLock(root, { role: 'loop', pid: process.pid });
+    expect(loopLock).not.toBeNull();
+
+    // The sweep still starts: it re-checks ownership every cycle, so it resumes
+    // by itself if that loop ever stops. It just never mutates meanwhile.
+    const handle = startAoiMemoryEmbedSweepFromEnv(
+      { sessionsDir: root, configFile: join(root, 'config.json') },
+      { AOI_AUTONOMY_EMBED_SWEEP: '1' },
+    );
+    expect(handle).not.toBeNull();
+    // Maintenance never displaces a loop.
+    expect(loopLock?.isOwner()).toBe(true);
+
+    handle?.stop();
+    expect(loopLock?.isOwner()).toBe(true);
+    loopLock?.release();
+  });
+
+  it('starts the maintenance sweep when ONLY consolidation is opted in', async () => {
     const root = makeRoot();
     const handle = startAoiMemoryEmbedSweepFromEnv(
       { sessionsDir: root, configFile: join(root, 'config.json') },
@@ -295,10 +597,10 @@ describe('startAoiMemoryEmbedSweepFromEnv', () => {
     );
     expect(handle).not.toBeNull();
     // The combined sweep still takes the single-instance lock.
-    expect(acquireAoiAutonomyLoopLock(root)).toBeNull();
+    expect(acquireAoiAutonomyLoopLock(root, { role: 'maintenance' })).toBeNull();
 
-    handle?.stop();
-    const reacquired = acquireAoiAutonomyLoopLock(root);
+    await handle?.stop();
+    const reacquired = acquireAoiAutonomyLoopLock(root, { role: 'maintenance' });
     expect(reacquired).not.toBeNull();
     reacquired?.release();
   });

@@ -1096,7 +1096,7 @@ describe('startAoiAutonomyBackgroundFromEnv', () => {
 });
 
 describe('autonomy loop single-instance lock', () => {
-  it('refuses a second loop against the same session dir and frees it on stop', () => {
+  it('refuses a second loop against the same session dir and frees it on stop', async () => {
     const sessionsDir = makeTempSessionsDir();
     const options = { sessionsDir, configFile: join(sessionsDir, 'config.json') };
     const env = { AOI_AUTONOMY_BACKGROUND: '1' };
@@ -1109,11 +1109,12 @@ describe('autonomy loop single-instance lock', () => {
     const second = startAoiAutonomyBackgroundFromEnv(options, env);
     expect(second).toBeNull();
 
-    // After the first releases its lock on stop(), the dir can be locked again.
-    first?.stop();
+    // stop() resolves once the in-flight cycle has drained and the lock is
+    // released; only then can the dir be locked again.
+    await first?.stop();
     const third = startAoiAutonomyBackgroundFromEnv(options, env);
     expect(third).not.toBeNull();
-    third?.stop();
+    await third?.stop();
   });
 });
 

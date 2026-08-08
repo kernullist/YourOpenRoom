@@ -8,11 +8,18 @@ import {
 
 // Loop-independent server memory maintenance sweep (embed + consolidation).
 //
-// This owns the single loop-independent maintenance timer. Its primary job is the
-// embed backfill; when consolidation is opted in (see aoiMemoryConsolidationSweep),
-// the SAME timer runs a bounded consolidation pass right after the embed cycle,
-// under the SAME reused single-instance loop lock, so the two never both mutate the
-// memory files and a just-vectorised memory is immediately eligible to collapse.
+// This owns the single loop-independent maintenance timer, for hosts that run NO
+// autonomy loop of their own (typically a dev server alongside the daemon). Its
+// primary job is the embed backfill; when consolidation is opted in (see
+// aoiMemoryConsolidationSweep) the SAME timer runs a bounded consolidation pass
+// right after the embed cycle, so a just-vectorised memory is immediately eligible
+// to collapse.
+//
+// It takes the single-instance loop lock as the subordinate 'maintenance' role and
+// re-checks ownership every cycle: an autonomy loop starting anywhere takes the
+// lock over, and from then on this sweep yields (that loop runs the same pass
+// itself) until the lock comes back. Note the run-now route serves the same
+// maintenance on demand WITHOUT the lock, so the lock is not the only writer.
 //
 // The bulk embed backfill (embedAndPersistServerAoiMemories) only runs inside the
 // autonomy wakeup, so a server memory written while the background loop is OFF (the
@@ -101,7 +108,70 @@ export async function runAoiMemoryEmbedSweepCycle(options: {
 }
 
 export interface AoiMemoryEmbedSweepHandle {
-  stop: () => void;
+  // Stops the timer and resolves once the in-flight cycle has drained. A cycle
+  // already awaiting its embedding provider keeps writing memory files until it
+  // finishes, so the lock must not be released until this settles -- otherwise a
+  // shutdown deterministically hands the dir to the next process while the old
+  // one is still mutating it.
+  stop: () => Promise<void>;
+}
+
+export interface AoiMemoryMaintenanceCycleOptions {
+  sessionsDir: string;
+  configFile?: string;
+  embedSweep: { enabled: boolean; max: number };
+  consolidation: { enabled: boolean; max: number };
+  // Pre-resolved embedding provider. Passing null skips the embed half without
+  // touching the consolidation half; omitting it resolves per cycle as before.
+  provider?: AoiEmbeddingProvider | null;
+  onCycle?: (result: AoiMemoryEmbedSweepCycleResult) => void;
+  onConsolidation?: (result: AoiMemoryConsolidationSweepCycleResult) => void;
+  // Re-asked BETWEEN the two halves. Embedding awaits a provider, which can take
+  // long enough for the authoritative loop to take the lock over mid-cycle;
+  // continuing into consolidation then would have two processes rewriting the
+  // same memory files. Absent -> both halves run.
+  ownsLock?: () => boolean;
+  // Injectable seams for tests.
+  runCycle?: typeof runAoiMemoryEmbedSweepCycle;
+  runConsolidationCycle?: typeof runAoiMemoryConsolidationSweepCycle;
+}
+
+// One maintenance pass: embed backfill, then consolidation. Consolidation runs
+// AFTER embedding so any vectors the backfill just added are already eligible to
+// collapse.
+//
+// Extracted so the two drivers share one body and cannot drift: the standalone
+// timer below, and the autonomy loop's own cycle. Which one drives it depends on
+// who holds the single-instance lock -- the loop host must run this itself,
+// because a loop with no enabled session performs no maintenance of its own and
+// would otherwise leave the store unmaintained while holding the lock that stops
+// anyone else from doing it.
+export async function runAoiMemoryMaintenanceCycle(
+  options: AoiMemoryMaintenanceCycleOptions,
+): Promise<void> {
+  const runCycle = options.runCycle ?? runAoiMemoryEmbedSweepCycle;
+  const runConsolidationCycle =
+    options.runConsolidationCycle ?? runAoiMemoryConsolidationSweepCycle;
+  if (options.embedSweep.enabled) {
+    const result = await runCycle({
+      sessionsDir: options.sessionsDir,
+      ...(options.configFile ? { configFile: options.configFile } : {}),
+      max: options.embedSweep.max,
+      ...(options.provider !== undefined ? { provider: options.provider } : {}),
+    });
+    options.onCycle?.(result);
+  }
+  // Ownership can change while the embed half awaits its provider.
+  if (options.ownsLock && !options.ownsLock()) {
+    return;
+  }
+  if (options.consolidation.enabled) {
+    const consolidationResult = runConsolidationCycle({
+      sessionsDir: options.sessionsDir,
+      max: options.consolidation.max,
+    });
+    options.onConsolidation?.(consolidationResult);
+  }
 }
 
 export interface AoiMemoryEmbedSweepOptions {
@@ -136,6 +206,13 @@ export interface AoiMemoryEmbedSweepOptions {
     embedSweep: { enabled: boolean; max: number };
     consolidation: { enabled: boolean; max: number };
   };
+  // Asked at the top of EVERY cycle, before anything is read or written. The
+  // single-instance lock this sweep holds can be taken over by the authoritative
+  // autonomy loop at any time, so ownership must be re-checked rather than
+  // assumed for the process lifetime -- otherwise a displaced sweep would keep
+  // mutating the same memory files the loop is mutating. Absent -> the sweep
+  // owns its cycles unconditionally (the historical behavior, used by tests).
+  ownsLock?: () => boolean;
 }
 
 // Start the loop-independent embed sweep interval. Overlapping cycles are blocked
@@ -151,6 +228,9 @@ export function startAoiMemoryEmbedSweep(
     options.runConsolidationCycle ?? runAoiMemoryConsolidationSweepCycle;
   let running = false;
   let stopped = false;
+  // The cycle currently in flight, so a caller can wait for it before releasing
+  // the lock this sweep holds.
+  let inFlight: Promise<void> = Promise.resolve();
   // Seeded from the values start() was called with; refreshed by
   // resolveCycleSettings on every successful resolve. Callers with no resolver
   // keep these forever, which is the historical behavior.
@@ -174,6 +254,12 @@ export function startAoiMemoryEmbedSweep(
     }
     running = true;
     try {
+      // Yield the whole cycle when this process no longer owns the store. Asked
+      // FIRST so a displaced sweep neither reads nor writes: the loop that took
+      // the lock over already performs this maintenance in its own tick.
+      if (options.ownsLock && !options.ownsLock()) {
+        return;
+      }
       // Live settings win over the values captured at start(), so the UI toggle
       // applies on the next tick. A resolver failure keeps the LAST KNOWN GOOD
       // settings (initially the ones start() was called with) -- it must never
@@ -186,27 +272,17 @@ export function startAoiMemoryEmbedSweep(
           // Keep lastKnownSettings as-is.
         }
       }
-      const embedEnabled = lastKnownSettings.embedSweep.enabled;
-      const embedMax = lastKnownSettings.embedSweep.max;
-      const consolidation = lastKnownSettings.consolidation;
-
-      if (embedEnabled) {
-        const result = await runCycle({
-          sessionsDir: options.sessionsDir,
-          ...(options.configFile ? { configFile: options.configFile } : {}),
-          ...(typeof embedMax === 'number' ? { max: embedMax } : {}),
-        });
-        options.onCycle?.(result);
-      }
-      // Consolidation runs AFTER embedding in the same cycle so any vectors the
-      // backfill just added are eligible; it is best-effort (never throws).
-      if (consolidation?.enabled) {
-        const consolidationResult = runConsolidationCycle({
-          sessionsDir: options.sessionsDir,
-          ...(typeof consolidation.max === 'number' ? { max: consolidation.max } : {}),
-        });
-        options.onConsolidation?.(consolidationResult);
-      }
+      await runAoiMemoryMaintenanceCycle({
+        sessionsDir: options.sessionsDir,
+        ...(options.configFile ? { configFile: options.configFile } : {}),
+        embedSweep: lastKnownSettings.embedSweep,
+        consolidation: lastKnownSettings.consolidation,
+        runCycle,
+        runConsolidationCycle,
+        ...(options.ownsLock ? { ownsLock: options.ownsLock } : {}),
+        ...(options.onCycle ? { onCycle: options.onCycle } : {}),
+        ...(options.onConsolidation ? { onConsolidation: options.onConsolidation } : {}),
+      });
     } catch (error) {
       options.onError?.(error);
     } finally {
@@ -214,19 +290,22 @@ export function startAoiMemoryEmbedSweep(
     }
   };
 
-  const handle = setInterval(() => {
-    void tick();
-  }, intervalMs);
+  const startTick = (): void => {
+    inFlight = tick();
+  };
+
+  const handle = setInterval(startTick, intervalMs);
   (handle as unknown as { unref?: () => void }).unref?.();
 
   if (options.runImmediately) {
-    void tick();
+    startTick();
   }
 
   return {
-    stop: () => {
+    stop: async () => {
       stopped = true;
       clearInterval(handle);
+      await inFlight;
     },
   };
 }

@@ -200,7 +200,11 @@ export async function runAoiAutonomyBackgroundCycle(
 }
 
 export interface AoiAutonomyBackgroundRunnerHandle {
-  stop: () => void;
+  // Stops the timer and resolves once the in-flight cycle has drained. Awaiting
+  // it matters to whoever holds the single-instance lock: a cycle mid-await is
+  // still mutating the session store, so releasing the lock before this settles
+  // hands the dir to the next process while this one is still writing.
+  stop: () => Promise<void>;
 }
 
 export interface AoiAutonomyBackgroundRunnerOptions extends AoiAutonomyBackgroundCycleOptions {
@@ -208,6 +212,12 @@ export interface AoiAutonomyBackgroundRunnerOptions extends AoiAutonomyBackgroun
   runImmediately?: boolean;
   onCycle?: (result: AoiAutonomyBackgroundCycleResult) => void;
   onError?: (error: unknown) => void;
+  // Ran after every cycle, INSIDE the in-flight guard, so whatever it does is
+  // serialized against the cycle it follows. This is how the loop host performs
+  // store-wide memory maintenance: it holds the single-instance lock, so no
+  // other process may touch the memory files, and a plain timer here could
+  // interleave with a cycle mid-await.
+  afterCycle?: () => Promise<void> | void;
 }
 
 // Start the self-initiating background loop. Overlapping cycles are prevented
@@ -219,6 +229,7 @@ export function startAoiAutonomyBackgroundRunner(
   const intervalMs = Math.max(MIN_BACKGROUND_INTERVAL_MS, options.intervalMs);
   let running = false;
   let stopped = false;
+  let inFlight: Promise<void> = Promise.resolve();
 
   const tick = async (): Promise<void> => {
     if (running || stopped) {
@@ -226,8 +237,17 @@ export function startAoiAutonomyBackgroundRunner(
     }
     running = true;
     try {
-      const result = await runAoiAutonomyBackgroundCycle(options);
-      options.onCycle?.(result);
+      try {
+        const result = await runAoiAutonomyBackgroundCycle(options);
+        options.onCycle?.(result);
+      } finally {
+        // afterCycle carries the store-wide memory maintenance this process is
+        // responsible for while it holds the single-instance lock. It must not
+        // depend on the cycle (or an onCycle observer) having succeeded -- a
+        // throwing cycle would otherwise stop maintenance for as long as it
+        // keeps throwing, with nothing else allowed to pick it up.
+        await options.afterCycle?.();
+      }
     } catch (error) {
       options.onError?.(error);
     } finally {
@@ -235,19 +255,22 @@ export function startAoiAutonomyBackgroundRunner(
     }
   };
 
-  const handle = setInterval(() => {
-    void tick();
-  }, intervalMs);
+  const startTick = (): void => {
+    inFlight = tick();
+  };
+
+  const handle = setInterval(startTick, intervalMs);
   (handle as unknown as { unref?: () => void }).unref?.();
 
   if (options.runImmediately) {
-    void tick();
+    startTick();
   }
 
   return {
-    stop: () => {
+    stop: async () => {
       stopped = true;
       clearInterval(handle);
+      await inFlight;
     },
   };
 }

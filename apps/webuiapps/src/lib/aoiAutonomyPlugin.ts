@@ -11,7 +11,7 @@ import {
   type AoiAutonomyBackgroundCycleResult,
   type AoiAutonomyBackgroundRunnerHandle,
 } from './aoiAutonomyBackgroundRunner';
-import { acquireAoiAutonomyLoopLock } from './aoiAutonomyLoopLock';
+import { acquireAoiAutonomyLoopLock, createAoiAutonomyLoopLockKeeper } from './aoiAutonomyLoopLock';
 import {
   archiveServerAoiMemories,
   computeServerAoiMemoryDecayDryRun,
@@ -26,6 +26,7 @@ import { recordServerAoiRunLedgerEvent } from './aoiRunLedgerServer';
 import { recordAoiOutcomeFeedbackFromUserMessage } from './aoiOutcomeFeedbackServer';
 import {
   runAoiMemoryEmbedSweepCycle,
+  runAoiMemoryMaintenanceCycle,
   startAoiMemoryEmbedSweep,
   type AoiMemoryEmbedSweepHandle,
 } from './aoiMemoryEmbedSweep';
@@ -125,6 +126,9 @@ import type { AoiDaemonHealthSnapshot } from './aoiDaemonHealth';
 import { resolveAoiWorkspaceCodeFingerprint } from './aoiWorkspaceCodeFingerprint';
 import { embedAoiQuery } from './aoiMemoryEmbedding';
 import { createServerAoiEmbeddingProvider } from './aoiMemoryEmbeddingServer';
+// Import the model id from the pure core, never from aoiLocalEmbedding: that one
+// pulls node:crypto in and has broken the client bundle here before.
+import { AOI_LOCAL_EMBEDDING_MODEL } from './aoiLocalEmbeddingCore';
 import {
   applyAoiOperatorPromotionReview,
   loadAoiOperatorReviewQueue,
@@ -3446,6 +3450,15 @@ export function createAoiAutonomyMiddleware(
   };
 }
 
+// A maintenance pass runs inside the loop's in-flight guard, so anything slower
+// than this is delaying autonomy cycles and the operator should be able to see it.
+const MAINTENANCE_SLOW_PASS_MS = 30_000;
+
+function logMaintenance(message: string): void {
+  // ASCII-only operational logging.
+  console.info(`[aoi-memory-maintenance] ${message}`);
+}
+
 // Start the self-initiating background autonomy loop from env config. This is
 // what lets Aoi "wake itself up" instead of only ticking on an inbound request.
 // Returns null when the loop is NOT opted in (AOI_AUTONOMY_BACKGROUND unset),
@@ -3491,14 +3504,103 @@ export function startAoiAutonomyBackgroundFromEnv(
   // the loop through this one function. OFF-by-default is preserved: the lock
   // is only touched after the enabled check above, so an un-opted-in process
   // never writes the lock file.
-  const loopLock = acquireAoiAutonomyLoopLock(sessionsDir);
+  // role 'loop': authoritative. It may take over a maintenance sweep's lock (a
+  // dev server holding it must not be able to keep the always-on loop from ever
+  // starting), but never another loop's.
+  const loopLock = acquireAoiAutonomyLoopLock(sessionsDir, { role: 'loop' });
   if (!loopLock) {
     return null;
   }
+  // Store-wide memory maintenance, driven by the loop's own cycle.
+  //
+  // Holding the lock makes this process responsible for maintenance: the sweep in
+  // any other process yields to it. The loop's per-session wakeup only embeds for
+  // sessions that are enabled AND allowed network, so a daemon with no enabled
+  // session would otherwise hold the lock and maintain nothing -- the store would
+  // silently stop being embedded and consolidated.
+  //
+  // Bounds, settings and provider resolution are the standalone sweep's, with one
+  // deliberate difference: the network ceiling. In THIS process a hard
+  // AOI_AUTONOMY_BACKGROUND_ALLOW_NETWORK=0 is supposed to mean no autonomy egress
+  // at all, and until now the only embedding path here was the wakeup's, which
+  // honours it. Running the sweep here unchanged would have opened a second,
+  // unceilinged path that POSTs memory text to a cloud embedder. So the embed half
+  // is skipped under a hard-off ceiling -- unless the resolved provider is the
+  // offline local embedder, which reaches no network and is therefore not what the
+  // ceiling is about. Consolidation uses no provider and is never gated.
+  //
+  // Due-gated on the operator's configured interval rather than the loop's, and
+  // seeded as if a pass had just run, so the first pass lands one interval after
+  // start -- by which time any sweep this loop displaced has finished its cycle.
+  let lastMaintenanceAt = Date.now();
+  const runMaintenanceIfDue = async (): Promise<void> => {
+    try {
+      // Ownership is re-read, never assumed: if this loop lost the dir (an
+      // operator deleting the lock, a reclaim race), it must stop writing.
+      if (!loopLock.isOwner()) {
+        return;
+      }
+      const settings = loadAoiMemoryMaintenanceSettings({ configFile, env });
+      if (!settings.embedSweep.enabled && !settings.consolidation.enabled) {
+        return;
+      }
+      const now = Date.now();
+      if (now - lastMaintenanceAt < settings.embedSweep.intervalMs) {
+        return;
+      }
+      lastMaintenanceAt = now;
+      const provider = settings.embedSweep.enabled
+        ? createServerAoiEmbeddingProvider({ configFile, env })
+        : null;
+      const providerReachesNetwork =
+        provider !== null && provider.model !== AOI_LOCAL_EMBEDDING_MODEL;
+      const embedBlockedByCeiling =
+        providerReachesNetwork && backgroundConfig.allowNetworkCeiling === false;
+      if (embedBlockedByCeiling) {
+        logMaintenance('embed skipped: network is disabled for this deployment');
+      }
+      await runAoiMemoryMaintenanceCycle({
+        sessionsDir,
+        configFile,
+        embedSweep: {
+          enabled: settings.embedSweep.enabled && !embedBlockedByCeiling,
+          max: settings.embedSweep.max,
+        },
+        consolidation: settings.consolidation,
+        provider: embedBlockedByCeiling ? null : provider,
+        ownsLock: loopLock.isOwner,
+        onCycle: (result) => {
+          if (result.embeddedCount > 0 || result.pendingCount > 0) {
+            logMaintenance(
+              `embedded ${result.embeddedCount}, ${result.pendingCount} still pending`,
+            );
+          }
+        },
+        onConsolidation: (result) => {
+          if (result.supersededCount > 0) {
+            logMaintenance(
+              `consolidated ${result.clusterCount} clusters, ${result.supersededCount} superseded`,
+            );
+          }
+        },
+      });
+      const elapsed = Date.now() - now;
+      if (elapsed > MAINTENANCE_SLOW_PASS_MS) {
+        // The pass runs inside the loop's in-flight guard, so a slow one delays
+        // wakeups. Silence would look like a healthy idle loop.
+        logMaintenance(`pass took ${elapsed}ms; autonomy cycles were held up that long`);
+      }
+    } catch (error) {
+      // Best-effort: maintenance never breaks the autonomy loop. Still say so --
+      // a permanently failing maintenance path must not be invisible.
+      logMaintenance(`pass failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
   const runnerHandle = startAoiAutonomyBackgroundRunner({
     sessionsDir,
     configFile,
     workspaceRoot,
+    afterCycle: runMaintenanceIfDue,
     intervalMs: backgroundConfig.intervalMs,
     runImmediately,
     allowNetworkCeiling: backgroundConfig.allowNetworkCeiling,
@@ -3518,10 +3620,15 @@ export function startAoiAutonomyBackgroundFromEnv(
   });
   // Release the lock when the loop stops so a clean shutdown frees the dir for
   // the next process (a crash leaves a stale lock that the next acquire reclaims).
+  // Only AFTER the in-flight cycle drains: releasing while one is still awaiting
+  // would hand the dir to the next process mid-write.
   return {
-    stop: () => {
-      runnerHandle.stop();
-      loopLock.release();
+    stop: async () => {
+      try {
+        await runnerHandle.stop();
+      } finally {
+        loopLock.release();
+      }
     },
   };
 }
@@ -3530,12 +3637,14 @@ export function startAoiAutonomyBackgroundFromEnv(
 // env config. Returns null when NEITHER half is opted in (AOI_AUTONOMY_EMBED_SWEEP
 // and AOI_AUTONOMY_CONSOLIDATION both unset). Shared by the Vite plugin and the
 // standalone daemon so the wiring is never forked. It REUSES the single-instance
-// loop lock: whichever process owns the dir runs the maintenance, so the sweep and
-// the autonomy tick's own backfill/consolidation never both mutate the memory files.
-// Because the caller starts the background loop FIRST, an enabled loop already holds
-// the lock (its tick covers embedding + consolidation) and this returns null; the
-// sweep only takes over when the loop is off. Only touched after the enabled check
-// -> OFF-by-default never writes the lock file.
+// loop lock -- the invariant being protected is "one process mutating the memory
+// files", not "one loop" -- but takes it as role 'maintenance', which is
+// subordinate: an autonomy loop starting later takes the lock over, and this sweep
+// yields its cycles from that moment (its work is exactly what the loop's own tick
+// does). The keeper re-checks per cycle, so maintenance also RESUMES if that loop
+// later stops. Callers must not start this in a process that started the loop --
+// one process does one or the other. Only touched after the enabled check -> OFF
+// by default never writes the lock file.
 export function startAoiMemoryEmbedSweepFromEnv(
   options: AoiAutonomyPluginOptions,
   env: Record<string, string | undefined> = process.env,
@@ -3549,11 +3658,13 @@ export function startAoiMemoryEmbedSweepFromEnv(
   if (!settings.embedSweep.enabled && !settings.consolidation.enabled) {
     return null;
   }
-  const loopLock = acquireAoiAutonomyLoopLock(sessionsDir);
-  if (!loopLock) {
-    return null;
-  }
+  const lockKeeper = createAoiAutonomyLoopLockKeeper(sessionsDir, { role: 'maintenance' });
+  // Claim the dir now rather than at the first tick, so ownership is observable
+  // from the moment the sweep starts (and logged once either way). A loop already
+  // owning it simply means the early cycles yield; the keeper retries every tick.
+  lockKeeper.ownsLock();
   const sweepHandle = startAoiMemoryEmbedSweep({
+    ownsLock: lockKeeper.ownsLock,
     sessionsDir,
     configFile,
     intervalMs: settings.embedSweep.intervalMs,
@@ -3571,9 +3682,14 @@ export function startAoiMemoryEmbedSweepFromEnv(
     },
   });
   return {
-    stop: () => {
-      sweepHandle.stop();
-      loopLock.release();
+    stop: async () => {
+      // Drain first: an in-flight cycle is still writing memory files, and the
+      // lock is what keeps the next process out of them.
+      try {
+        await sweepHandle.stop();
+      } finally {
+        lockKeeper.release();
+      }
     },
   };
 }
@@ -3581,11 +3697,13 @@ export function startAoiMemoryEmbedSweepFromEnv(
 export function aoiAutonomyPlugin(options: AoiAutonomyPluginOptions): Plugin {
   const middleware = createAoiAutonomyMiddleware(options);
 
-  // Background autonomy loop + the loop-independent memory embed sweep are started
-  // once and stopped on server close. Both are OFF unless opted in via env (each
-  // *FromEnv returns null otherwise). The loop is started FIRST so that when both
-  // are enabled it holds the single-instance lock and the sweep no-ops (the loop's
-  // tick backfill already embeds); the sweep only runs when the loop is off.
+  // Background autonomy loop + the loop-independent memory maintenance sweep are
+  // started once and stopped on server close. Both are OFF unless opted in (each
+  // *FromEnv returns null otherwise). A process runs ONE of them, never both: when
+  // this process started the loop, its tick already covers embedding and
+  // consolidation, so the sweep would only be dead weight competing for the same
+  // lock. The sweep is for hosts with no loop of their own -- typically a dev
+  // server alongside the standalone daemon.
   let backgroundHandle: AoiAutonomyBackgroundRunnerHandle | null = null;
   let sweepHandle: AoiMemoryEmbedSweepHandle | null = null;
   let lifecycleBound = false;
@@ -3596,15 +3714,17 @@ export function aoiAutonomyPlugin(options: AoiAutonomyPluginOptions): Plugin {
       return;
     }
     backgroundHandle = startAoiAutonomyBackgroundFromEnv(options);
-    sweepHandle = startAoiMemoryEmbedSweepFromEnv(options);
+    sweepHandle = backgroundHandle ? null : startAoiMemoryEmbedSweepFromEnv(options);
     if (!backgroundHandle && !sweepHandle) {
       return;
     }
     lifecycleBound = true;
     httpServer?.on?.('close', () => {
-      backgroundHandle?.stop();
+      // Vite's close hook is sync, so the drain (and the lock release that
+      // follows it) completes on its own; nothing here may block the server.
+      void backgroundHandle?.stop();
       backgroundHandle = null;
-      sweepHandle?.stop();
+      void sweepHandle?.stop();
       sweepHandle = null;
     });
   };

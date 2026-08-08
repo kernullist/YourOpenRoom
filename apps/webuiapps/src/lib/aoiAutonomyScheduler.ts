@@ -2004,12 +2004,15 @@ async function runWakeupInternal(
   // the loop is off. The key stays the opt-in -- no key means lexical-only. Never blocks the
   // wakeup. (embeddingProvider was resolved once above and is reused here.)
   //
-  // The operator's maintenance settings gate this too. While the background loop
-  // runs it holds the single-instance lock, so the loop-independent maintenance
-  // sweep no-ops and THIS is the only path that embeds -- reading env only (as it
+  // The operator's maintenance settings gate this too -- reading env only (as it
   // used to) meant the settings-panel toggles silently did nothing for anyone
   // running the loop, and "Embed backfill sweep: Disabled" still sent memory
   // bodies to the embedding provider.
+  //
+  // This is the PER-SESSION embed path. The loop host also runs a store-wide
+  // maintenance pass after each cycle (startAoiAutonomyBackgroundFromEnv), which
+  // covers memories no enabled session would ever reach; both are bounded and
+  // idempotent, so overlapping coverage only means the second finds less to do.
   const maintenanceSettings = loadAoiMemoryMaintenanceSettings({
     ...(input.configFile ? { configFile: input.configFile } : {}),
   });

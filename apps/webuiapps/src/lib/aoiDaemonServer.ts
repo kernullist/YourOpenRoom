@@ -248,15 +248,15 @@ export async function startAoiDaemon(options: AoiDaemonOptions): Promise<AoiDaem
     },
     onError: healthHooks.onError,
   });
-  // Loop-independent memory embed sweep (OFF unless AOI_AUTONOMY_EMBED_SWEEP is
-  // opted in). Started AFTER the loop so an enabled loop holds the single-instance
-  // lock and the sweep no-ops; the sweep only embeds when the loop is off. Its
-  // interval is unref'd, so like the loop it never keeps the process alive on its
-  // own -- the listening server does.
-  const sweepHandle: AoiMemoryEmbedSweepHandle | null = startAoiMemoryEmbedSweepFromEnv(
-    pluginOptions,
-    env,
-  );
+  // Loop-independent memory maintenance sweep (OFF unless opted in). Started only
+  // when this process did NOT start the loop: the loop's own tick performs the same
+  // embedding and consolidation, so a sweep here would be dead weight competing for
+  // the same single-instance lock. In practice the daemon runs the loop and a dev
+  // server runs the sweep. Its interval is unref'd, so like the loop it never keeps
+  // the process alive on its own -- the listening server does.
+  const sweepHandle: AoiMemoryEmbedSweepHandle | null = backgroundHandle
+    ? null
+    : startAoiMemoryEmbedSweepFromEnv(pluginOptions, env);
 
   const address = server.address();
   const port = address && typeof address === 'object' ? address.port : desiredPort;
@@ -267,8 +267,10 @@ export async function startAoiDaemon(options: AoiDaemonOptions): Promise<AoiDaem
       return;
     }
     closed = true;
-    backgroundHandle?.stop();
-    sweepHandle?.stop();
+    // Await the drain: a graceful stop must not release the single-instance lock
+    // (or exit) while a cycle is still writing the session store.
+    await backgroundHandle?.stop();
+    await sweepHandle?.stop();
     await new Promise<void>((resolveClose) => {
       server.close(() => {
         resolveClose();
