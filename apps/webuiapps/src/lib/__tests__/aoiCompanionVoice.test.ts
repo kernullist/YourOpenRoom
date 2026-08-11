@@ -323,6 +323,18 @@ describe('aoiCompanionVoice resume copy', () => {
     expect(buildAoiCompanionSelfInquiryNote(EN, { topicLabel: 'kernel telemetry' })).toContain(
       'poking at kernel telemetry',
     );
+    // Research audit prose must never leak into the spoken line.
+    expect(
+      buildAoiCompanionSelfInquiryNote(KO, {
+        topicLabel:
+          'Aoi completed research "2026년 개인정보 보호 메타데이터 수집 가이드라인" on 2026-07-17. Findings: scope.',
+      }),
+    ).toBe('나 요즘 2026년 개인정보 보호 메타데이터 수집 가이드라인 쪽 혼자 좀 들여다봤어.');
+    expect(
+      buildAoiCompanionSelfInquiryNote(EN, {
+        topicLabel: 'Aoi completed research "kernel telemetry" on 2026-07-17. Findings: x.',
+      }),
+    ).toBe('I have been poking at kernel telemetry on my own lately.');
     // No usable topic means no claim at all.
     expect(buildAoiCompanionSharedInterestNote(KO, { topicLabel: '  ' })).toBe('');
     expect(buildAoiCompanionSelfInquiryNote(EN, { topicLabel: '' })).toBe('');

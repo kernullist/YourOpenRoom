@@ -128,6 +128,21 @@ describe('aoiSelfObservationNudge state', () => {
     ).toBe(NOW);
   });
 
+  it('records the last spoken topic key for rotation', () => {
+    const next = recordAoiSelfObservationOffered(null, NOW, {
+      topicKey: 'privacy-metadata',
+    });
+    expect(next.lastSelfObservationAt).toBe(NOW);
+    expect(next.lastTopicKey).toBe('privacy-metadata');
+    expect(
+      normalizeAoiSelfObservationState({
+        version: 1,
+        lastSelfObservationAt: NOW,
+        lastTopicKey: '  privacy-metadata  ',
+      }).lastTopicKey,
+    ).toBe('privacy-metadata');
+  });
+
   it('does not mutate the state passed in', () => {
     const state = { version: 1 as const, lastSelfObservationAt: 0 };
     recordAoiSelfObservationOffered(state, NOW);

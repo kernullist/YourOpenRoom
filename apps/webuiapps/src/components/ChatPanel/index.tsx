@@ -10670,11 +10670,18 @@ const ChatPanel: React.FC<{
           // observation about Aoi's own work instead of a headline. Substituting
           // rather than adding keeps the interruption count unchanged, which the
           // no-new-interruption-class constraint requires.
+          const lastSharedTopicKey = selfObservationStateRef.current.lastTopicKey?.trim() || '';
           const selfInquiry = selectAoiSelfInquiryToShare(
             buildAoiSelfProfile({
               now: stamp,
               sources: buildAoiSelfInquirySourcesFromMemories(aoiMemoriesRef.current ?? []),
             }),
+            {
+              // Prefer a different inquiry than the last spoken one when more
+              // than one exists; still allow repeat when that is the only topic.
+              excludeTopicKeys: lastSharedTopicKey ? [lastSharedTopicKey] : [],
+              allowRepeatFallback: true,
+            },
           );
           if (
             shouldSubstituteAoiSelfObservation({
@@ -10692,10 +10699,14 @@ const ChatPanel: React.FC<{
               { lang: aoiCardLangRef.current },
               { topicLabel: selfInquiry.label },
             );
+            // Empty note means humanization refused the label (audit residue /
+            // unusable topic). Fall through to the host news nudge rather than
+            // stamping self-observation cooldown on a silent turn.
             if (note) {
               selfObservationStateRef.current = recordAoiSelfObservationOffered(
                 selfObservationStateRef.current,
                 stamp,
+                { topicKey: selfInquiry.topicKey },
               );
               saveAoiSelfObservationState(selfObservationStateRef.current);
               // Stamp the host cooldown but do NOT consume the article: passing an

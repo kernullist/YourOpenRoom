@@ -21,6 +21,7 @@
 
 import type { AoiCardLang } from './aoiAutonomyCardI18n';
 import type { AoiProactiveBriefMediaBucket } from './aoiAutonomyTypes';
+import { humanizeAoiSelfInquiryTopicLabel } from './aoiSelfProfile';
 
 export interface AoiCompanionVoice {
   lang: AoiCardLang;
@@ -48,6 +49,13 @@ function sanitizeCompanionText(value: string | null | undefined, maxChars: numbe
     return collapsed;
   }
   return `${collapsed.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+}
+
+// Research-audit prose must never reach spoken companion lines. Label
+// humanization lives in aoiSelfProfile so prompt blocks and chat hooks share
+// one parser; this only re-caps to the companion surface limit.
+function humanizeCompanionTopicLabel(value: string | null | undefined, maxChars: number): string {
+  return sanitizeCompanionText(humanizeAoiSelfInquiryTopicLabel(value), maxChars);
 }
 
 function pickCompanionCopy(lang: AoiCardLang, table: CompanionCopyTable): string {
@@ -433,7 +441,7 @@ export function buildAoiCompanionSharedInterestNote(
   voice: AoiCompanionVoice,
   params: AoiCompanionSharedInterestParams,
 ): string {
-  const topic = sanitizeCompanionText(params.topicLabel, 80);
+  const topic = humanizeCompanionTopicLabel(params.topicLabel, 80);
   if (!topic) {
     return '';
   }
@@ -453,7 +461,7 @@ export function buildAoiCompanionSelfInquiryNote(
   voice: AoiCompanionVoice,
   params: AoiCompanionSelfInquiryParams,
 ): string {
-  const topic = sanitizeCompanionText(params.topicLabel, 80);
+  const topic = humanizeCompanionTopicLabel(params.topicLabel, 80);
   if (!topic) {
     return '';
   }

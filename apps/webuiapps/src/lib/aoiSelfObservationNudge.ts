@@ -55,6 +55,9 @@ export function shouldSubstituteAoiSelfObservation(
 export interface AoiSelfObservationState {
   version: 1;
   lastSelfObservationAt: number;
+  // Topic key of the most recently voiced self-inquiry. Used so the next offer
+  // prefers a different inquiry when more than one exists.
+  lastTopicKey?: string;
 }
 
 export const DEFAULT_AOI_SELF_OBSERVATION_STATE: AoiSelfObservationState = {
@@ -67,6 +70,7 @@ export function normalizeAoiSelfObservationState(raw: unknown): AoiSelfObservati
   if (!value || value.version !== 1) {
     return { ...DEFAULT_AOI_SELF_OBSERVATION_STATE };
   }
+  const lastTopicKey = typeof value.lastTopicKey === 'string' ? value.lastTopicKey.trim() : '';
   return {
     version: 1,
     lastSelfObservationAt:
@@ -75,16 +79,27 @@ export function normalizeAoiSelfObservationState(raw: unknown): AoiSelfObservati
       value.lastSelfObservationAt >= 0
         ? value.lastSelfObservationAt
         : 0,
+    ...(lastTopicKey ? { lastTopicKey } : {}),
   };
 }
 
 export function recordAoiSelfObservationOffered(
   state: AoiSelfObservationState | null | undefined,
   now: number,
+  options?: { topicKey?: string },
 ): AoiSelfObservationState {
   const base = normalizeAoiSelfObservationState(state);
   if (!Number.isFinite(now) || now < 0) {
     return base;
   }
-  return { ...base, lastSelfObservationAt: now };
+  const topicKey = typeof options?.topicKey === 'string' ? options.topicKey.trim() : '';
+  return {
+    ...base,
+    lastSelfObservationAt: now,
+    ...(topicKey
+      ? { lastTopicKey: topicKey }
+      : base.lastTopicKey
+        ? { lastTopicKey: base.lastTopicKey }
+        : {}),
+  };
 }

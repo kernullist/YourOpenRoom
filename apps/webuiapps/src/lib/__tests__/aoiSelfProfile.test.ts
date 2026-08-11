@@ -4,7 +4,9 @@ import {
   buildAoiSelfInquirySourcesFromMemories,
   buildAoiSelfProfile,
   buildAoiSelfProfilePromptBlock,
+  deriveAoiSelfInquiryLabel,
   findAoiSharedInterests,
+  humanizeAoiSelfInquiryTopicLabel,
   normalizeAoiSelfTopicKey,
   selectAoiSelfInquiryToShare,
   type AoiSelfInquirySourceInput,
@@ -211,11 +213,19 @@ describe('selectAoiSelfInquiryToShare', () => {
     expect(
       selectAoiSelfInquiryToShare(profile, { excludeTopicKeys: ['newest-topic'] })?.label,
     ).toBe('Older topic');
+    // Default stays silent when every topic is excluded (pure selector contract).
     expect(
       selectAoiSelfInquiryToShare(profile, {
         excludeTopicKeys: ['newest-topic', 'older-topic'],
       }),
     ).toBeNull();
+    // Opt-in repeat for surfaces that prefer "say something" over silence.
+    expect(
+      selectAoiSelfInquiryToShare(profile, {
+        excludeTopicKeys: ['newest-topic', 'older-topic'],
+        allowRepeatFallback: true,
+      })?.label,
+    ).toBe('Newest topic');
     expect(selectAoiSelfInquiryToShare(null)).toBeNull();
     expect(selectAoiSelfInquiryToShare(buildAoiSelfProfile({ now: NOW }))).toBeNull();
   });
@@ -264,6 +274,99 @@ describe('buildAoiSelfProfilePromptBlock', () => {
   });
 });
 
+describe('deriveAoiSelfInquiryLabel', () => {
+  it('extracts the research title from audit memory content', () => {
+    expect(
+      deriveAoiSelfInquiryLabel({
+        content:
+          'Aoi completed research "2026년 개인정보 보호 메타데이터 수집 가이드라인" on 2026-07-17. Findings: scope; retention. accepted=4. claims=2. run=run_abc.',
+      }),
+    ).toBe('2026년 개인정보 보호 메타데이터 수집 가이드라인');
+  });
+
+  it('falls back to entities when the audit quote is missing', () => {
+    expect(
+      deriveAoiSelfInquiryLabel({
+        content: 'Aoi completed research on 2026-07-17. Findings: none. run=run_1.',
+        entities: ['Windows kernel BYOVD trends', 'run_1', '2026-07-17'],
+        tags: ['research', 'aoi-research'],
+      }),
+    ).toBe('Windows kernel BYOVD trends');
+  });
+
+  it('prefers the full entity title over a truncated mid-title content string', () => {
+    // Memory content is capped at 360 chars; a long title can lose its closing quote.
+    const truncated =
+      'Aoi completed research "' +
+      '개인정보 보호 메타데이터 수집 가이드라인과 장기 보관 정책 검토 '.repeat(8).trim() +
+      '...';
+    expect(truncated).not.toMatch(/" on /);
+    expect(
+      deriveAoiSelfInquiryLabel({
+        content: truncated,
+        entities: [
+          '개인정보 보호 메타데이터 수집 가이드라인 전체 제목',
+          'aoi-research-run-9',
+          '2026-07-17',
+        ],
+      }),
+    ).toBe('개인정보 보호 메타데이터 수집 가이드라인 전체 제목');
+  });
+
+  it('does not audit-strip ordinary memories that merely carry a research tag', () => {
+    // Tags alone used to trigger Findings: truncation and could rewrite real facts.
+    expect(
+      deriveAoiSelfInquiryLabel({
+        content: 'Procedure note with Findings: keep the report short and cite sources.',
+        tags: ['research', 'aoi-research', 'documentation'],
+      }),
+    ).toBe('Procedure note with Findings: keep the report short and cite sources.');
+  });
+
+  it('rejects run-id shaped entities so Aoi does not speak internal ids', () => {
+    expect(
+      deriveAoiSelfInquiryLabel({
+        content: 'Aoi completed research on 2026-07-17. run=aoi-research-test-1234.',
+        entities: ['aoi-research-test-1234', '2026-07-17'],
+      }),
+    ).toBe('');
+  });
+
+  it('keeps ordinary agent memory content as the label', () => {
+    expect(
+      deriveAoiSelfInquiryLabel({
+        content: 'kernel telemetry survey',
+      }),
+    ).toBe('kernel telemetry survey');
+  });
+
+  it('allows natural-language titles that start with English prepositions', () => {
+    expect(
+      deriveAoiSelfInquiryLabel({
+        content: 'Aoi completed research "On-device attestation for TPM 2.0" on 2026-07-17.',
+      }),
+    ).toBe('On-device attestation for TPM 2.0');
+  });
+});
+
+describe('humanizeAoiSelfInquiryTopicLabel', () => {
+  it('extracts a title for companion defense-in-depth', () => {
+    expect(
+      humanizeAoiSelfInquiryTopicLabel(
+        'Aoi completed research "kernel telemetry" on 2026-07-17. Findings: x.',
+      ),
+    ).toBe('kernel telemetry');
+  });
+
+  it('returns empty rather than speaking unparseable audit residue', () => {
+    expect(
+      humanizeAoiSelfInquiryTopicLabel(
+        'Aoi completed research on 2026-07-17. Findings: none. accepted=0. run=run_1.',
+      ),
+    ).toBe('');
+  });
+});
+
 describe('buildAoiSelfInquirySourcesFromMemories', () => {
   it('takes only active agent-scope memories, which are what Aoi researched', () => {
     const sources = buildAoiSelfInquirySourcesFromMemories([
@@ -289,6 +392,30 @@ describe('buildAoiSelfInquirySourcesFromMemories', () => {
         evidenceRefs: ['memory:m1'],
       },
     ]);
+  });
+
+  it('humanizes research-completion audit content into a topic title', () => {
+    const sources = buildAoiSelfInquirySourcesFromMemories([
+      {
+        id: 'm-research',
+        scope: 'agent',
+        status: 'active',
+        content:
+          'Aoi completed research "2026년 개인정보 보호 메타데이터 수집 가이드라인" on 2026-07-17. Findings: retention windows; consent metadata. accepted=3. run=run_privacy.',
+        entities: ['2026년 개인정보 보호 메타데이터 수집 가이드라인', 'run_privacy', '2026-07-17'],
+        tags: ['research', 'aoi-research', 'permanent'],
+        updatedAt: NOW,
+      },
+    ]);
+
+    expect(sources).toHaveLength(1);
+    expect(sources[0].label).toBe('2026년 개인정보 보호 메타데이터 수집 가이드라인');
+    expect(sources[0].kind).toBe('research_run');
+    expect(sources[0].label).not.toMatch(/Aoi completed research/i);
+    expect(sources[0].label).not.toMatch(/Findings:/i);
+
+    const profile = buildAoiSelfProfile({ now: NOW, sources });
+    expect(profile.inquiries[0]?.label).toBe('2026년 개인정보 보호 메타데이터 수집 가이드라인');
   });
 
   it('falls back to createdAt and tolerates a missing status', () => {
