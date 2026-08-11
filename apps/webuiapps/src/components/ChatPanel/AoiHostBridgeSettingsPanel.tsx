@@ -12,6 +12,7 @@ import {
   removeAoiHostRoot,
   fetchAoiHostApprovals,
   approveAoiHostApproval,
+  approveAndExecuteAoiHostApproval,
   fetchAoiBrowserDriveAllowlist,
   addAoiBrowserDriveAllowlistDomain,
   removeAoiBrowserDriveAllowlistDomain,
@@ -386,8 +387,32 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
 
   const approve = (fingerprint: string) =>
     void runAction(`approve:${fingerprint}`, async () => {
-      await approveAoiHostApproval(fingerprint);
+      const result = await approveAoiHostApproval(fingerprint);
       setApprovals(await fetchAoiHostApprovals());
+      setConsentNote(
+        result.note ||
+          (result.alreadyApproved
+            ? 'Already approved — use Run to execute.'
+            : 'Approved. Use Run to execute, or ask Aoi to continue.'),
+      );
+    });
+
+  const approveAndRun = (fingerprint: string) =>
+    void runAction(`approve-run:${fingerprint}`, async () => {
+      const result = await approveAndExecuteAoiHostApproval(fingerprint);
+      setApprovals(await fetchAoiHostApprovals());
+      if (!result.ok) {
+        throw new Error(
+          result.blockReasons.length > 0
+            ? `Spawn failed: ${result.blockReasons.join(', ')}`
+            : 'Spawn execute failed',
+        );
+      }
+      setConsentNote(
+        result.spawnedPid
+          ? `Started ${result.program || 'program'} (pid ${result.spawnedPid}).`
+          : `Started ${result.program || 'program'}.`,
+      );
     });
 
   const renderRootsSection = (
@@ -820,29 +845,64 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
             {hostSection === 'approvals' && (
               <div className={styles.connectorRow} data-testid="aoi-host-approvals">
                 <div className={styles.connectorRowHeader}>
-                  <strong>Pending approvals</strong>
-                  <span className={styles.modelHint}>{approvals.length} waiting</span>
+                  <strong>Approvals</strong>
+                  <span className={styles.modelHint}>{approvals.length} open</span>
                 </div>
+                <span className={styles.modelHint}>
+                  Primary flow is the in-chat Approve &amp; Run popup when Aoi proposes a PC launch.
+                  This list is a backup for entries that did not get the chat popup.
+                </span>
                 {approvals.length === 0 ? (
-                  <span className={styles.modelHint}>No pending approvals.</span>
+                  <span className={styles.modelHint}>No open approvals.</span>
                 ) : (
-                  approvals.map((entry) => (
-                    <div key={entry.id} className={styles.connectorToggleRow}>
-                      <span className={styles.modelHint}>
-                        <strong>{entry.capability}</strong> · {entry.targetSummary}
-                      </span>
-                      <button
-                        type="button"
-                        className={styles.saveBtn}
-                        onClick={() => approve(entry.approvalFingerprint)}
-                        disabled={busy === `approve:${entry.approvalFingerprint}`}
-                        title="Approve this single, time-bounded action"
-                      >
-                        <Check size={13} />
-                        Approve
-                      </button>
-                    </div>
-                  ))
+                  approvals.map((entry) => {
+                    const isPending = entry.state === 'pending';
+                    const isApproved = entry.state === 'approved';
+                    const canRun = entry.canExecute && (isPending || isApproved);
+                    return (
+                      <div key={entry.id} className={styles.connectorToggleRow}>
+                        <span className={styles.modelHint}>
+                          <strong>{entry.capability}</strong> · {entry.state} ·{' '}
+                          {entry.targetSummary}
+                        </span>
+                        {isPending && !entry.canExecute ? (
+                          <button
+                            type="button"
+                            className={styles.saveBtn}
+                            onClick={() => approve(entry.approvalFingerprint)}
+                            disabled={busy === `approve:${entry.approvalFingerprint}`}
+                            title="Approve this single, time-bounded action"
+                          >
+                            <Check size={13} />
+                            Approve
+                          </button>
+                        ) : null}
+                        {canRun ? (
+                          <button
+                            type="button"
+                            className={styles.saveBtn}
+                            onClick={() => approveAndRun(entry.approvalFingerprint)}
+                            disabled={busy === `approve-run:${entry.approvalFingerprint}`}
+                            title={
+                              isPending
+                                ? 'Approve and immediately start this allowlisted program'
+                                : 'Start the already-approved program now'
+                            }
+                            data-testid={`aoi-host-approve-run-${entry.id}`}
+                          >
+                            <Check size={13} />
+                            {isPending ? 'Approve & Run' : 'Run'}
+                          </button>
+                        ) : null}
+                        {isApproved && !entry.canExecute ? (
+                          <span className={styles.modelHint}>
+                            Approved — ask Aoi to run (no stored execute payload; re-request
+                            launch).
+                          </span>
+                        ) : null}
+                      </div>
+                    );
+                  })
                 )}
               </div>
             )}

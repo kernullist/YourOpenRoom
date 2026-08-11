@@ -7,7 +7,9 @@ import {
   getAppIdentityByReference,
   getAppIdentityById,
   getOsActionTargetApp,
+  isOpenableAppWindowId,
   loadActionsFromMeta,
+  parseOsTargetAppId,
   resetActionsCache,
   resolveAppAction,
 } from '../appRegistry';
@@ -44,6 +46,15 @@ describe('appRegistry app identity helpers', () => {
     expect(visibleInventory.every((entry) => entry.control_status === 'tool-backed')).toBe(true);
     expect(visibleInventory.map((entry) => entry.app_name)).toContain('kira');
     expect(visibleInventory.map((entry) => entry.app_name)).toContain('aoiresearch');
+  });
+
+  it('rejects non-openable OS target app ids (NaN / notepad / os)', () => {
+    expect(isOpenableAppWindowId(Number.NaN)).toBe(false);
+    expect(isOpenableAppWindowId(1)).toBe(false);
+    expect(isOpenableAppWindowId(3)).toBe(true);
+    expect(parseOsTargetAppId({})).toBeNull();
+    expect(parseOsTargetAppId({ app_id: 'notepad' })).toBeNull();
+    expect(parseOsTargetAppId({ app_id: '3' })).toBe(3);
   });
 
   it('resolves OS app_id params back to the target app identity', () => {

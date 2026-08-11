@@ -418,6 +418,31 @@ export function getAppDisplayName(appId: number): string {
   return APP_STATIC_REGISTRY.find((a) => a.appId === appId)?.displayName ?? `App ${appId}`;
 }
 
+/**
+ * True when appId can be opened as an in-room window.
+ * Rejects NaN/non-integers, the OS pseudo-app (id=1), and unknown ids so
+ * OPEN_APP never creates an "App NaN" ghost window.
+ */
+export function isOpenableAppWindowId(appId: number): boolean {
+  if (!Number.isInteger(appId) || appId <= 1) {
+    return false;
+  }
+  return getAppIdentityById(appId) !== null;
+}
+
+/** Parse OS OPEN/CLOSE/FOCUS app_id params. Returns null when invalid. */
+export function parseOsTargetAppId(params?: Record<string, string | undefined>): number | null {
+  const raw = params?.app_id;
+  if (raw === undefined || raw === null || String(raw).trim() === '') {
+    return null;
+  }
+  const appId = Number(raw);
+  if (!isOpenableAppWindowId(appId)) {
+    return null;
+  }
+  return appId;
+}
+
 function toAppIdentity(app: AppStaticDef | AppDef): AppIdentity {
   return {
     appId: app.appId,

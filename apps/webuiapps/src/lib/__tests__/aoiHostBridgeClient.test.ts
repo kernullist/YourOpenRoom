@@ -3,7 +3,9 @@ import {
   fetchAoiHostBridgeStatus,
   setAoiHostBridgeKillSwitch,
   fetchAoiHostSpawnAllowlist,
+  fetchAoiHostSpawnPreview,
   removeAoiHostSpawnAllowlistEntry,
+  runAoiHostSpawnExecute,
   fetchAoiHostRoots,
   fetchAoiHostProcesses,
   fetchAoiHostApprovals,
@@ -77,6 +79,43 @@ describe('aoiHostBridgeClient', () => {
     expect(entries[0]).toEqual({ id: 'np', path: 'C:\\a.exe', label: 'NP', fixedArgs: ['--x'] });
   });
 
+  it('posts spawn preview and execute bodies', async () => {
+    const previewMock = mockFetch({
+      ok: true,
+      preview: {
+        allowed: true,
+        blockReasons: [],
+        allowlistId: 'exe-notepad',
+        label: 'Notepad',
+        program: 'C:\\Windows\\System32\\notepad.exe',
+        args: [],
+        approvalFingerprint: 'fp',
+        expiresAt: 1,
+      },
+    });
+    const preview = await fetchAoiHostSpawnPreview({ allowlistId: 'exe-notepad' });
+    expect(preview.allowed).toBe(true);
+    expect(preview.approvalFingerprint).toBe('fp');
+    expect(previewMock.mock.calls[0][0] as string).toContain('/spawn/preview');
+
+    const runMock = mockFetch({
+      ok: true,
+      allowlistId: 'exe-notepad',
+      program: 'C:\\Windows\\System32\\notepad.exe',
+      spawnedPid: 99,
+      blockReasons: [],
+    });
+    const executed = await runAoiHostSpawnExecute({ allowlistId: 'exe-notepad' });
+    expect(executed).toEqual({
+      ok: true,
+      allowlistId: 'exe-notepad',
+      program: 'C:\\Windows\\System32\\notepad.exe',
+      spawnedPid: 99,
+      blockReasons: [],
+    });
+    expect(runMock.mock.calls[0][0] as string).toContain('/spawn/execute');
+  });
+
   it('removes a spawn entry via DELETE with an encoded id', async () => {
     const fetchMock = mockFetch({ ok: true, entries: [] });
     await removeAoiHostSpawnAllowlistEntry('a b');
@@ -133,14 +172,27 @@ describe('aoiHostBridgeClient', () => {
           targetSummary: 'write x',
           state: 'pending',
           expiresAt: 10,
+          canExecute: true,
         },
       ],
     });
     const approvals = await fetchAoiHostApprovals();
     expect(approvals[0].approvalFingerprint).toBe('fp');
+    expect(approvals[0].canExecute).toBe(true);
 
-    const fetchMock = mockFetch({ ok: true, approved: true });
-    await approveAoiHostApproval('fp123');
+    const fetchMock = mockFetch({
+      ok: true,
+      approved: true,
+      alreadyApproved: false,
+      canExecute: true,
+      note: 'Approved.',
+    });
+    const approved = await approveAoiHostApproval('fp123');
+    expect(approved).toEqual({
+      alreadyApproved: false,
+      canExecute: true,
+      note: 'Approved.',
+    });
     const url = fetchMock.mock.calls[0][0] as string;
     const init = fetchMock.mock.calls[0][1] as { body: string };
     expect(url).toContain('/approvals/approve');

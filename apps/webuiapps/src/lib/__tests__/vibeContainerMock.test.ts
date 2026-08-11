@@ -65,6 +65,27 @@ describe('dispatchAgentAction – event-driven listener wait', () => {
     vi.useRealTimers();
   });
 
+  it('OPEN_APP rejects missing or non-numeric app_id (no App NaN window)', async () => {
+    const { getWindows } = await import('../windowManager');
+    const before = getWindows().length;
+
+    const missing = await dispatchAgentAction({
+      app_id: 1,
+      action_type: 'OPEN_APP',
+      params: {},
+    });
+    expect(missing).toMatch(/^error: invalid OPEN_APP app_id/);
+    expect(missing).toMatch(/host_process_spawn/i);
+
+    const garbage = await dispatchAgentAction({
+      app_id: 1,
+      action_type: 'OPEN_APP',
+      params: { app_id: 'notepad' },
+    });
+    expect(garbage).toMatch(/^error: invalid OPEN_APP app_id/);
+    expect(getWindows().length).toBe(before);
+  });
+
   it('OPEN_APP then action: waits for listener registration, no fixed delay', async () => {
     await dispatchAgentAction({
       app_id: 1,

@@ -266,7 +266,9 @@ import {
   getHostProcessToolDefinitions,
   getHostProcessToolPendingSummary,
   isHostProcessTool,
+  parseHostSpawnApprovalRequired,
 } from '@/lib/aoiHostProcessTools';
+
 import {
   executeHostBrowserTool,
   getHostBrowserToolDefinitions,
@@ -487,7 +489,10 @@ import {
   inferAoiAutonomyMode,
   type AoiAutonomyMode,
 } from '@/lib/aoiAutonomyMode';
-import { setAoiHostBridgeKillSwitch } from '@/lib/aoiHostBridgeClient';
+import {
+  approveAndExecuteAoiHostApproval,
+  setAoiHostBridgeKillSwitch,
+} from '@/lib/aoiHostBridgeClient';
 import {
   buildAoiHostBridgeLinkedSourcePatch,
   getAoiHostBridgeConsentLink,
@@ -2338,7 +2343,8 @@ When the user wants to interact with an app, first identify the target app from 
 2a. get_app_schema — if available, use the machine-readable schema for the target app's data files.
 3. If you do not know the exact session app-storage path yet, use workspace_search to find candidate paths before file_read.
 3a. file_read/file_write/file_patch/file_list/file_delete and workspace_search operate only on Aoi session app storage, normally under apps/{appName}/. They do not access the real IDE or repository workspace.
-3a-1. host_process_list reads a metadata-only snapshot of real host OS processes (image name + pid; never command lines). Use it when the user asks what is running on the PC, whether an app/process is open, or wants a process summary. Prefer mode=summary; use mode=list with query for a specific image. If blocked, tell the user to enable Host Bridge process_activity and process-activity consent.
+3a-1. host_process_list reads a metadata-only snapshot of real host OS processes (image name + pid; never command lines). Use it when the user asks what is running on the PC, whether an app/process is open, or wants a process summary. Prefer mode=summary; use mode=list with query for a specific image. If blocked, tell the user to enable Host Bridge process_activity and process-activity consent. This tool does NOT start programs — never claim a launch from list results alone.
+3a-1b. Host PC program launch (메모장/notepad, 계산기/calc, chrome, etc. on the real machine) uses host_process_spawn_preview — NEVER app_action OPEN_APP. OPEN_APP only opens in-room apps by numeric app_id from list_apps. Flow: call host_process_spawn_preview(query="계산기"); the UI shows an in-chat approval popup. Tell the user a confirmation popup is open and wait — do NOT send them to Settings. Only claim success after they click Approve & Run in the popup (or host_process_spawn_run returns ok:true with spawned_pid). If preview says no allowlist match, tell them to add the Calculator/Notepad preset under Host PC → Spawn and enable Start process. Do not invent success from OPEN_APP or process-list lag.
 3a-2. host_browser_read opens a public http(s) URL with the operator PC's headless Chrome/Edge, renders the page, and returns a reader extract. Use it when the user asks Aoi to visit/read a webpage on their PC or to research a URL with a real browser. Prefer host_browser_read over read_url for JS-rendered pages when host browser is enabled; use read_url for quick network-only extracts. Private/local URLs are blocked. If gated, tell the user to enable Host Bridge Headless browser read (os_browser_read + host-browser-read consent).
 3a-3. browser_read_auth reads a page from the user's OWN already-logged-in browser (their real Chrome/Edge over CDP). Use it ONLY when the target needs the user's login -- their dashboard, feed, inbox/message listing, account or settings page on a site they are signed in to -- content host_browser_read/read_url cannot see. It is read-only (never clicks/types/submits) and only allowlisted domains are permitted. Prefer host_browser_read for public pages; use browser_read_auth for logged-in ones. If gated, tell the user to enable Host Bridge Browser drive (os_browser_drive + browser-drive consent) and add the domain to the browser-drive allowlist.
 3b. If the user names a repository/worktree path outside apps/{appName}/ or asks about real files, documents, source code, or configuration, use ide_search/ide_read_file/ide_patch_file/ide_write_file instead.
@@ -3154,6 +3160,18 @@ const ChatPanel: React.FC<{
 
   // Suggested replies from latest assistant message
   const [suggestedReplies, setSuggestedReplies] = useState<string[]>([]);
+  // In-chat operator confirmation for host PC spawn (not Settings).
+  const [hostSpawnApproval, setHostSpawnApproval] = useState<{
+    approvalFingerprint: string;
+    label: string;
+    program: string;
+    args: string[];
+    allowlistId: string;
+    expiresAt: number;
+    match: string;
+  } | null>(null);
+  const [hostSpawnApprovalBusy, setHostSpawnApprovalBusy] = useState(false);
+  const [hostSpawnApprovalError, setHostSpawnApprovalError] = useState('');
   const [showCharacterPanel, setShowCharacterPanel] = useState(false);
   const [showModPanel, setShowModPanel] = useState(false);
   const [initialEditModId, setInitialEditModId] = useState<string | undefined>();
@@ -5573,6 +5591,59 @@ const ChatPanel: React.FC<{
     },
     [addMessage, speakAssistantMessage],
   );
+
+  const presentHostSpawnApproval = useCallback((result: string) => {
+    const approval = parseHostSpawnApprovalRequired(result);
+    if (!approval) {
+      return;
+    }
+    setHostSpawnApprovalError('');
+    setHostSpawnApproval(approval);
+  }, []);
+
+  const denyHostSpawnApproval = useCallback(() => {
+    setHostSpawnApproval(null);
+    setHostSpawnApprovalBusy(false);
+    setHostSpawnApprovalError('');
+    emitAssistantMessage({
+      id: String(Date.now()),
+      role: 'assistant',
+      content: '알겠어, 실행 안 할게. 다시 필요하면 말해줘.',
+    });
+  }, [emitAssistantMessage]);
+
+  const confirmHostSpawnApproval = useCallback(async () => {
+    if (!hostSpawnApproval || hostSpawnApprovalBusy) {
+      return;
+    }
+    setHostSpawnApprovalBusy(true);
+    setHostSpawnApprovalError('');
+    try {
+      const result = await approveAndExecuteAoiHostApproval(hostSpawnApproval.approvalFingerprint);
+      if (!result.ok) {
+        const reason =
+          result.blockReasons.length > 0 ? result.blockReasons.join(', ') : 'spawn execute failed';
+        setHostSpawnApprovalError(reason);
+        setHostSpawnApprovalBusy(false);
+        return;
+      }
+      const label = hostSpawnApproval.label || hostSpawnApproval.program || 'program';
+      const pidPart =
+        typeof result.spawnedPid === 'number' && result.spawnedPid > 0
+          ? ` (pid ${result.spawnedPid})`
+          : '';
+      setHostSpawnApproval(null);
+      setHostSpawnApprovalBusy(false);
+      emitAssistantMessage({
+        id: String(Date.now()),
+        role: 'assistant',
+        content: `승인 확인. ${label} 실행했어${pidPart}.`,
+      });
+    } catch (error) {
+      setHostSpawnApprovalBusy(false);
+      setHostSpawnApprovalError(error instanceof Error ? error.message : String(error));
+    }
+  }, [emitAssistantMessage, hostSpawnApproval, hostSpawnApprovalBusy]);
 
   useEffect(() => {
     if (conversationPreferences?.ttsEnabled) return;
@@ -8077,12 +8148,22 @@ const ChatPanel: React.FC<{
             }
 
             if (isHostProcessTool(tc.function.name)) {
-              const result = await executeHostProcessTool(params, {
-                sessionPath: sessionPathRef.current,
-              });
+              const result = await executeHostProcessTool(
+                params,
+                {
+                  sessionPath: sessionPathRef.current,
+                },
+                tc.function.name,
+              );
+              if (tc.function.name === 'host_process_spawn_preview') {
+                presentHostSpawnApproval(result);
+              }
               return {
                 toolCallId: tc.id,
-                pendingSummary: getHostProcessToolPendingSummary(params),
+                pendingSummary: getHostProcessToolPendingSummary({
+                  ...params,
+                  __toolName: tc.function.name,
+                }),
                 summarizedResult: summarizeToolResultForModel(tc.function.name, result),
               };
             }
@@ -9045,23 +9126,36 @@ const ChatPanel: React.FC<{
           continue;
         }
 
-        // ---- Host process list (real PC, metadata-only) ----
+        // ---- Host process list / spawn (real PC) ----
         if (isHostProcessTool(tc.function.name)) {
-          pendingToolCallsRef.current.push(getHostProcessToolPendingSummary(params));
+          pendingToolCallsRef.current.push(
+            getHostProcessToolPendingSummary({ ...params, __toolName: tc.function.name }),
+          );
           try {
-            const result = await executeHostProcessTool(params, {
-              sessionPath: sessionPathRef.current,
+            const result = await executeHostProcessTool(
+              params,
+              {
+                sessionPath: sessionPathRef.current,
+              },
+              tc.function.name,
+            );
+            console.info('[ChatPanel] host process tool result', {
+              tool: tc.function.name,
+              resultPreview: result.slice(0, 240),
             });
-            console.info('[ChatPanel] host_process_list result', {
-              resultPreview: result.slice(0, 200),
-            });
+            if (tc.function.name === 'host_process_spawn_preview') {
+              presentHostSpawnApproval(result);
+            }
             const summarizedResult = summarizeToolResultForModel(tc.function.name, result);
             currentMessages = [
               ...currentMessages,
               { role: 'tool', content: summarizedResult, tool_call_id: tc.id },
             ];
           } catch (err) {
-            console.error('[ChatPanel] host_process_list failed', err);
+            console.error('[ChatPanel] host process tool failed', {
+              tool: tc.function.name,
+              err,
+            });
             currentMessages = [
               ...currentMessages,
               {
@@ -11370,6 +11464,80 @@ const ChatPanel: React.FC<{
           </div>
         </div>
       </div>
+
+      {hostSpawnApproval ? (
+        <div className={styles.overlay} data-testid="host-spawn-approval-overlay">
+          <div
+            className={`${styles.settingsModal} ${styles.settingsModalCompact}`}
+            data-testid="host-spawn-approval-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="host-spawn-approval-title"
+          >
+            <div className={styles.settingsHeader}>
+              <div className={styles.settingsHeading}>
+                <div className={styles.settingsTitle} id="host-spawn-approval-title">
+                  PC program launch
+                </div>
+                <div className={styles.settingsSubtitle}>
+                  Aoi wants to start an allowlisted program on this PC. Approve only if you asked
+                  for it.
+                </div>
+              </div>
+              <button
+                type="button"
+                className={styles.cancelBtn}
+                onClick={denyHostSpawnApproval}
+                disabled={hostSpawnApprovalBusy}
+              >
+                Close
+              </button>
+            </div>
+            <div className={styles.settingsBody}>
+              <div className={styles.settingsSection}>
+                <div className={styles.modelHint}>
+                  <strong>{hostSpawnApproval.label || 'Program'}</strong>
+                </div>
+                <div className={styles.modelHint}>{hostSpawnApproval.program}</div>
+                {hostSpawnApproval.args.length > 0 ? (
+                  <div className={styles.modelHint}>
+                    args: {hostSpawnApproval.args.join(' ').slice(0, 200)}
+                  </div>
+                ) : null}
+                {hostSpawnApproval.allowlistId ? (
+                  <div className={styles.modelHint}>allowlist: {hostSpawnApproval.allowlistId}</div>
+                ) : null}
+                {hostSpawnApprovalError ? (
+                  <div className={styles.aoiAutonomyError}>{hostSpawnApprovalError}</div>
+                ) : null}
+                <div
+                  className={styles.settingsActions}
+                  style={{ borderTop: 'none', paddingTop: 8 }}
+                >
+                  <button
+                    type="button"
+                    className={styles.cancelBtn}
+                    onClick={denyHostSpawnApproval}
+                    disabled={hostSpawnApprovalBusy}
+                    data-testid="host-spawn-approval-deny"
+                  >
+                    Deny
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.saveBtn}
+                    onClick={() => void confirmHostSpawnApproval()}
+                    disabled={hostSpawnApprovalBusy}
+                    data-testid="host-spawn-approval-confirm"
+                  >
+                    {hostSpawnApprovalBusy ? 'Starting…' : 'Approve & Run'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {showSettings && !persistedConfigLoaded && (
         <div className={styles.overlay}>

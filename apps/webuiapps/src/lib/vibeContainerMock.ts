@@ -70,6 +70,7 @@ export function onOSEvent(callback: OSEventCallback): () => void {
 // ============ OS Window Manager ============
 
 import { openWindow, closeWindow, focusWindow, getWindows as getWins } from './windowManager';
+import { parseOsTargetAppId } from './appRegistry';
 
 // ============ Listener-Ready Notification ============
 // Tracks callback count at the moment each window was opened so we can detect
@@ -133,22 +134,49 @@ export async function dispatchAgentAction(action: {
   // OS actions (app_id=1) are handled directly here
   if (action.app_id === 1) {
     if (action.action_type === 'OPEN_APP') {
-      const targetAppId = Number(action.params?.app_id);
-      openWindow(targetAppId);
+      const targetAppId = parseOsTargetAppId(action.params);
+      if (targetAppId === null) {
+        return (
+          'error: invalid OPEN_APP app_id ' +
+          `(got ${JSON.stringify(action.params?.app_id)}). ` +
+          'app_id must be a known in-room app numeric id from list_apps. ' +
+          'Host PC programs (notepad, calculator, chrome, …) are NOT opened with OPEN_APP — ' +
+          'use host_process_spawn_preview / host_process_spawn_run instead.'
+        );
+      }
+      if (!openWindow(targetAppId)) {
+        return `error: failed to open app_id=${targetAppId}`;
+      }
       windowOpenSnapshots.set(targetAppId, { callbackCount: agentMessageCallbacks.size });
       return 'success';
     }
     if (action.action_type === 'CLOSE_APP') {
-      const targetAppId = Number(action.params?.app_id);
+      const targetAppId = parseOsTargetAppId(action.params);
+      if (targetAppId === null) {
+        return (
+          'error: invalid CLOSE_APP app_id ' +
+          `(got ${JSON.stringify(action.params?.app_id)}). ` +
+          'app_id must be a known in-room app numeric id from list_apps.'
+        );
+      }
       closeWindow(targetAppId);
       windowOpenSnapshots.delete(targetAppId);
       return 'success';
     }
     if (action.action_type === 'FOCUS_APP') {
-      const targetAppId = Number(action.params?.app_id);
+      const targetAppId = parseOsTargetAppId(action.params);
+      if (targetAppId === null) {
+        return (
+          'error: invalid FOCUS_APP app_id ' +
+          `(got ${JSON.stringify(action.params?.app_id)}). ` +
+          'app_id must be a known in-room app numeric id from list_apps.'
+        );
+      }
       const isOpen = getWins().some((w) => w.appId === targetAppId);
       if (!isOpen) {
-        openWindow(targetAppId);
+        if (!openWindow(targetAppId)) {
+          return `error: failed to open app_id=${targetAppId}`;
+        }
         windowOpenSnapshots.set(targetAppId, { callbackCount: agentMessageCallbacks.size });
       } else {
         focusWindow(targetAppId);
@@ -180,7 +208,12 @@ export async function dispatchAgentAction(action: {
   const wins2 = getWins();
   const isOpen = wins2.some((w) => w.appId === action.app_id);
   if (!isOpen) {
-    openWindow(action.app_id);
+    if (!openWindow(action.app_id)) {
+      return (
+        `error: cannot open target app window for app_id=${action.app_id}. ` +
+        'Use a known in-room app id from list_apps (not a host PC program name).'
+      );
+    }
     windowOpenSnapshots.set(action.app_id, { callbackCount: agentMessageCallbacks.size });
   }
 

@@ -152,6 +152,75 @@ export async function removeAoiHostSpawnAllowlistEntry(
   );
 }
 
+// --- Process spawn preview / execute (HP2a) ----------------------------------
+
+export interface AoiHostSpawnPreviewView {
+  allowed: boolean;
+  blockReasons: string[];
+  allowlistId: string;
+  label: string;
+  program: string;
+  args: string[];
+  approvalFingerprint: string;
+  expiresAt: number;
+}
+
+export interface AoiHostSpawnExecuteView {
+  ok: boolean;
+  allowlistId: string;
+  program: string;
+  spawnedPid: number | null;
+  blockReasons: string[];
+}
+
+export interface AoiHostSpawnRequestBody {
+  allowlistId?: string;
+  programPath?: string;
+  args?: string[];
+}
+
+function parseSpawnPreview(value: unknown): AoiHostSpawnPreviewView {
+  const record = isRecord(value) ? value : {};
+  return {
+    allowed: record.allowed === true,
+    blockReasons: asStringArray(record.blockReasons),
+    allowlistId: asString(record.allowlistId),
+    label: asString(record.label),
+    program: asString(record.program),
+    args: asStringArray(record.args),
+    approvalFingerprint: asString(record.approvalFingerprint),
+    expiresAt: typeof record.expiresAt === 'number' ? record.expiresAt : 0,
+  };
+}
+
+export async function fetchAoiHostSpawnPreview(
+  body: AoiHostSpawnRequestBody,
+): Promise<AoiHostSpawnPreviewView> {
+  const payload = await sendJson('/spawn/preview', 'POST', {
+    ...(body.allowlistId ? { allowlistId: body.allowlistId } : {}),
+    ...(body.programPath ? { programPath: body.programPath } : {}),
+    ...(body.args ? { args: body.args } : {}),
+  });
+  return parseSpawnPreview(payload.preview);
+}
+
+export async function runAoiHostSpawnExecute(
+  body: AoiHostSpawnRequestBody,
+): Promise<AoiHostSpawnExecuteView> {
+  const payload = await sendJson('/spawn/execute', 'POST', {
+    ...(body.allowlistId ? { allowlistId: body.allowlistId } : {}),
+    ...(body.programPath ? { programPath: body.programPath } : {}),
+    ...(body.args ? { args: body.args } : {}),
+  });
+  return {
+    ok: payload.ok === true,
+    allowlistId: asString(payload.allowlistId),
+    program: asString(payload.program),
+    spawnedPid: typeof payload.spawnedPid === 'number' ? payload.spawnedPid : null,
+    blockReasons: asStringArray(payload.blockReasons),
+  };
+}
+
 // --- Read / write roots ------------------------------------------------------
 
 export interface AoiHostRootView {
@@ -651,6 +720,7 @@ export interface AoiHostBridgeApprovalView {
   targetSummary: string;
   state: string;
   expiresAt: number;
+  canExecute: boolean;
 }
 
 function parseApprovals(value: unknown): AoiHostBridgeApprovalView[] {
@@ -664,6 +734,7 @@ function parseApprovals(value: unknown): AoiHostBridgeApprovalView[] {
     targetSummary: asString(record.targetSummary),
     state: asString(record.state),
     expiresAt: typeof record.expiresAt === 'number' ? record.expiresAt : 0,
+    canExecute: record.canExecute === true,
   }));
 }
 
@@ -671,6 +742,38 @@ export async function fetchAoiHostApprovals(): Promise<AoiHostBridgeApprovalView
   return parseApprovals((await getJson('/approvals')).approvals);
 }
 
-export async function approveAoiHostApproval(approvalFingerprint: string): Promise<void> {
-  await sendJson('/approvals/approve', 'POST', { approvalFingerprint });
+export async function approveAoiHostApproval(approvalFingerprint: string): Promise<{
+  alreadyApproved: boolean;
+  canExecute: boolean;
+  note: string;
+}> {
+  const payload = await sendJson('/approvals/approve', 'POST', { approvalFingerprint });
+  return {
+    alreadyApproved: payload.alreadyApproved === true,
+    canExecute: payload.canExecute === true,
+    note: asString(payload.note),
+  };
+}
+
+export interface AoiHostApprovalExecuteView {
+  ok: boolean;
+  alreadyApproved: boolean;
+  program: string;
+  spawnedPid: number | null;
+  allowlistId: string;
+  blockReasons: string[];
+}
+
+export async function approveAndExecuteAoiHostApproval(
+  approvalFingerprint: string,
+): Promise<AoiHostApprovalExecuteView> {
+  const payload = await sendJson('/approvals/approve-and-execute', 'POST', { approvalFingerprint });
+  return {
+    ok: payload.ok === true,
+    alreadyApproved: payload.alreadyApproved === true,
+    program: asString(payload.program),
+    spawnedPid: typeof payload.spawnedPid === 'number' ? payload.spawnedPid : null,
+    allowlistId: asString(payload.allowlistId),
+    blockReasons: asStringArray(payload.blockReasons),
+  };
 }

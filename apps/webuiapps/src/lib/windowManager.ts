@@ -3,7 +3,7 @@
  * Manages App window states on the desktop
  */
 
-import { getAppDisplayName, getAppDefaultSize } from './appRegistry';
+import { getAppDisplayName, getAppDefaultSize, isOpenableAppWindowId } from './appRegistry';
 
 export interface WindowState {
   appId: number;
@@ -152,7 +152,13 @@ export function getWindows(): WindowState[] {
   return windows;
 }
 
-export function openWindow(appId: number): void {
+export function openWindow(appId: number): boolean {
+  // Refuse NaN / unknown ids so we never mint an "App NaN" ghost window.
+  if (!isOpenableAppWindowId(appId)) {
+    console.warn('[windowManager] openWindow refused invalid appId:', appId);
+    return false;
+  }
+
   const existing = windows.find((w) => w.appId === appId);
   if (existing) {
     // Focus existing window
@@ -160,7 +166,7 @@ export function openWindow(appId: number): void {
     existing.minimized = false;
     windows = [...windows];
     notify();
-    return;
+    return true;
   }
 
   const size = getAppDefaultSize(appId);
@@ -181,6 +187,7 @@ export function openWindow(appId: number): void {
 
   windows = [...windows, win];
   notify();
+  return true;
 }
 
 export function closeWindow(appId: number): void {

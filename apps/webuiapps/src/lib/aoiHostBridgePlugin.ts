@@ -1252,6 +1252,10 @@ export async function resolveAoiHostBridgeRoute(
     // Record a server-side PENDING approval so execute cannot self-approve by
     // echoing the preview: the operator must explicitly approve the fingerprint.
     if (policy.allowed) {
+      // Store REQUEST args (not policy.args): re-eval appends fixedArgs again.
+      const requestArgs = Array.isArray(params.body.args)
+        ? params.body.args.filter((arg): arg is string => typeof arg === 'string')
+        : undefined;
       const recorded = recordAoiHostBridgePendingApproval(
         loadAoiHostBridgeApprovalStore(params.openroomHome),
         {
@@ -1264,6 +1268,14 @@ export async function resolveAoiHostBridgeRoute(
             `spawn ${policy.label} (${policy.program} ${policy.args.join(' ').slice(0, 200)})`.trim(),
           expiresAt: policy.expiresAt,
           now: params.now,
+          // Bound the exact spawn body so Settings → Approvals can Approve & Run
+          // without needing the chat model to call host_process_spawn_run.
+          executePayload: {
+            kind: 'spawn',
+            ...(policy.allowlistId ? { allowlistId: policy.allowlistId } : {}),
+            ...(policy.program ? { programPath: policy.program } : {}),
+            ...(requestArgs && requestArgs.length > 0 ? { args: requestArgs } : {}),
+          },
         },
       );
       saveAoiHostBridgeApprovalStore(params.openroomHome, recorded.store);
@@ -1487,6 +1499,7 @@ export async function resolveAoiHostBridgeRoute(
         targetSummary: entry.targetSummary,
         state: entry.state,
         expiresAt: entry.expiresAt,
+        canExecute: Boolean(entry.executePayload),
       }));
     return { status: 200, payload: { ok: true, approvals } };
   }
@@ -1506,15 +1519,161 @@ export async function resolveAoiHostBridgeRoute(
       params.now,
     );
     saveAoiHostBridgeApprovalStore(params.openroomHome, result.store);
+    if (result.approved) {
+      return {
+        status: 200,
+        payload: {
+          ok: true,
+          approved: true,
+          alreadyApproved: result.alreadyApproved,
+          state: result.entry?.state ?? 'approved',
+          capability: result.entry?.capability ?? null,
+          canExecute: Boolean(result.entry?.executePayload),
+          note: result.alreadyApproved
+            ? 'Already approved. Use Approve & Run / Run, or ask Aoi to call host_process_spawn_run.'
+            : 'Approved. Use Approve & Run / Run to execute, or ask Aoi to call host_process_spawn_run.',
+        },
+      };
+    }
     return {
-      status: result.approved ? 200 : 404,
-      payload: result.approved
-        ? { ok: true, approved: true }
-        : {
-            ok: false,
-            error: 'no pending approval for that fingerprint',
-            code: 'approval_missing',
-          },
+      status: 404,
+      payload: {
+        ok: false,
+        error: 'no pending approval for that fingerprint',
+        code: 'approval_missing',
+      },
+    };
+  }
+
+  // Operator one-shot: approve (if still pending) then execute a stored spawn
+  // payload. This is the Settings → Approvals "Approve & Run" path so the chat
+  // model does not have to come back for host_process_spawn_run.
+  if (params.method === 'POST' && params.route === '/approvals/approve-and-execute') {
+    const approvalFingerprint =
+      typeof params.body.approvalFingerprint === 'string' ? params.body.approvalFingerprint : '';
+    if (!approvalFingerprint) {
+      return {
+        status: 400,
+        payload: { ok: false, error: 'approvalFingerprint is required', code: 'bad_request' },
+      };
+    }
+    const approved = approveAoiHostBridgeApproval(
+      loadAoiHostBridgeApprovalStore(params.openroomHome),
+      approvalFingerprint,
+      params.now,
+    );
+    saveAoiHostBridgeApprovalStore(params.openroomHome, approved.store);
+    if (!approved.approved || !approved.entry) {
+      return {
+        status: 404,
+        payload: {
+          ok: false,
+          error: 'no pending or approved approval for that fingerprint',
+          code: 'approval_missing',
+        },
+      };
+    }
+    const entry = approved.entry;
+    if (entry.capability !== AOI_HOST_SPAWN_CAPABILITY || entry.executePayload?.kind !== 'spawn') {
+      return {
+        status: 400,
+        payload: {
+          ok: false,
+          error:
+            'this approval cannot be executed from Settings (missing spawn payload). ' +
+            'Ask Aoi to call host_process_spawn_run with the same params after Approve.',
+          code: 'execute_payload_missing',
+          capability: entry.capability,
+          state: entry.state,
+        },
+      };
+    }
+    const gate = evaluateAoiHostBridgeGate({
+      authenticated: true,
+      killSwitchState: loadAoiHostBridgeKillSwitchState(params.openroomHome),
+      capabilityKey: AOI_HOST_SPAWN_CAPABILITY,
+      irreversible: true,
+      approvalSatisfied: true,
+    });
+    if (!gate.allowed) {
+      return {
+        status: 403,
+        payload: {
+          ok: false,
+          error: 'blocked',
+          denyReasons: gate.denyReasons,
+          detail: gate.detail,
+        },
+      };
+    }
+    const payload = entry.executePayload;
+    const allowlist = loadAoiHostSpawnAllowlist(params.openroomHome);
+    const spawnRequest = {
+      ...(payload.allowlistId ? { allowlistId: payload.allowlistId } : {}),
+      ...(payload.programPath ? { programPath: payload.programPath } : {}),
+      ...(payload.args ? { args: payload.args } : {}),
+      requestedAt: params.now,
+    };
+    const policy = evaluateAoiHostSpawnPolicy({
+      request: spawnRequest,
+      allowlist,
+      now: params.now,
+    });
+    if (!policy.allowed || policy.approvalFingerprint !== approvalFingerprint) {
+      return {
+        status: 400,
+        payload: {
+          ok: false,
+          error: 'spawn policy no longer matches the approved fingerprint',
+          code: 'approval_fingerprint_changed',
+          blockReasons: policy.blockReasons,
+          currentFingerprint: policy.approvalFingerprint,
+        },
+      };
+    }
+    const consumed = consumeAoiHostBridgeApproval(
+      loadAoiHostBridgeApprovalStore(params.openroomHome),
+      {
+        capability: AOI_HOST_SPAWN_CAPABILITY,
+        approvalFingerprint,
+        now: params.now,
+      },
+    );
+    if (!consumed.ok) {
+      return {
+        status: 403,
+        payload: {
+          ok: false,
+          error: 'blocked',
+          denyReasons: [consumed.reason ?? 'approval_missing'],
+        },
+      };
+    }
+    saveAoiHostBridgeApprovalStore(params.openroomHome, consumed.store);
+    const result = runAoiHostSpawn({
+      request: spawnRequest,
+      allowlist,
+      approvedSandbox: policy.approvalSandbox,
+      approvedExpiresAt: policy.expiresAt,
+      now: params.now,
+    });
+    if (result.ok && typeof result.spawnedPid === 'number' && result.spawnedPid > 0) {
+      recordAoiHostSpawnedProcess(
+        params.openroomHome,
+        { pid: result.spawnedPid, imageName: result.program },
+        params.now,
+      );
+    }
+    return {
+      status: result.ok ? 200 : 400,
+      payload: {
+        ok: result.ok,
+        alreadyApproved: approved.alreadyApproved,
+        program: result.program,
+        spawnedPid: result.spawnedPid,
+        allowlistId: result.allowlistId,
+        blockReasons: result.blockReasons,
+      },
     };
   }
 

@@ -55,7 +55,12 @@ describe('approval lifecycle: record -> approve -> consume', () => {
     // Approve, then consume -> ok, single-use.
     const approved = approveAoiHostBridgeApproval(recorded.store, FP, 3000);
     expect(approved.approved).toBe(true);
-    const consumed = consumeAoiHostBridgeApproval(approved.store, {
+    expect(approved.alreadyApproved).toBe(false);
+    // Second approve is idempotent (does not error as "missing").
+    const againApprove = approveAoiHostBridgeApproval(approved.store, FP, 3500);
+    expect(againApprove.approved).toBe(true);
+    expect(againApprove.alreadyApproved).toBe(true);
+    const consumed = consumeAoiHostBridgeApproval(againApprove.store, {
       capability: 'os_process_spawn',
       approvalFingerprint: FP,
       now: 4000,

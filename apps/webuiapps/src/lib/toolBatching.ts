@@ -24,6 +24,8 @@ const PARALLEL_SAFE_TOOLS = new Set([
   'get_research_status',
   'read_research_artifact',
   'host_process_list',
+  // spawn preview/run are NOT parallel-safe: they share allowlist resolution
+  // and a single-use approval fingerprint.
   'host_browser_read',
 ]);
 

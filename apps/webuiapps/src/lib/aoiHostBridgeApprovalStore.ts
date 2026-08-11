@@ -39,6 +39,16 @@ const FINGERPRINT_PATTERN = /^[a-f0-9]{4,64}$/i;
 
 export type AoiHostBridgeApprovalState = 'pending' | 'approved' | 'consumed';
 
+// Optional execute payload bound at preview time so the operator Approvals UI
+// can Approve & Run without re-deriving args (and so re-approve is not required
+// after the entry is already approved).
+export type AoiHostBridgeApprovalExecutePayload = {
+  kind: 'spawn';
+  allowlistId?: string;
+  programPath?: string;
+  args?: string[];
+};
+
 export interface AoiHostBridgeApproval {
   version: 1;
   id: string;
@@ -53,6 +63,7 @@ export interface AoiHostBridgeApproval {
   approvedAt?: number;
   consumedAt?: number;
   expiresAt: number;
+  executePayload?: AoiHostBridgeApprovalExecutePayload;
 }
 
 export interface AoiHostBridgeApprovalStoreData {
@@ -84,6 +95,7 @@ function normalizeApproval(raw: unknown): AoiHostBridgeApproval | null {
   ) {
     return null;
   }
+  const executePayload = normalizeExecutePayload(value.executePayload);
   return {
     version: 1,
     id: value.id,
@@ -95,6 +107,30 @@ function normalizeApproval(raw: unknown): AoiHostBridgeApproval | null {
     ...(typeof value.approvedAt === 'number' ? { approvedAt: value.approvedAt } : {}),
     ...(typeof value.consumedAt === 'number' ? { consumedAt: value.consumedAt } : {}),
     expiresAt: value.expiresAt,
+    ...(executePayload ? { executePayload } : {}),
+  };
+}
+
+function normalizeExecutePayload(raw: unknown): AoiHostBridgeApprovalExecutePayload | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return undefined;
+  }
+  const value = raw as Partial<AoiHostBridgeApprovalExecutePayload>;
+  if (value.kind !== 'spawn') {
+    return undefined;
+  }
+  const args = Array.isArray(value.args)
+    ? value.args.filter((entry): entry is string => typeof entry === 'string').slice(0, 24)
+    : undefined;
+  return {
+    kind: 'spawn',
+    ...(typeof value.allowlistId === 'string' && value.allowlistId.trim()
+      ? { allowlistId: value.allowlistId.trim().slice(0, 64) }
+      : {}),
+    ...(typeof value.programPath === 'string' && value.programPath.trim()
+      ? { programPath: value.programPath.trim().slice(0, 1024) }
+      : {}),
+    ...(args && args.length > 0 ? { args } : {}),
   };
 }
 
@@ -146,9 +182,11 @@ export function recordAoiHostBridgePendingApproval(
     targetSummary: string;
     expiresAt: number;
     now: number;
+    executePayload?: AoiHostBridgeApprovalExecutePayload;
   },
 ): { store: AoiHostBridgeApprovalStoreData; approval: AoiHostBridgeApproval } {
   const base = pruneAoiHostBridgeApprovals(normalizeAoiHostBridgeApprovalStore(store), params.now);
+  const executePayload = normalizeExecutePayload(params.executePayload);
   const approval: AoiHostBridgeApproval = {
     version: 1,
     id: `aoi-host-approval-${params.now.toString(36)}-${randomUUID().slice(0, 8)}`,
@@ -158,6 +196,7 @@ export function recordAoiHostBridgePendingApproval(
     state: 'pending',
     createdAt: params.now,
     expiresAt: params.expiresAt,
+    ...(executePayload ? { executePayload } : {}),
   };
   const approvals = [
     ...base.approvals.filter(
@@ -170,13 +209,26 @@ export function recordAoiHostBridgePendingApproval(
 
 // The operator approves a pending entry by fingerprint. Returns the updated
 // store and whether an entry was found + moved to 'approved'.
+// alreadyApproved=true means the fingerprint is currently approved (idempotent).
 export function approveAoiHostBridgeApproval(
   store: AoiHostBridgeApprovalStoreData | null | undefined,
   approvalFingerprint: string,
   now: number,
-): { store: AoiHostBridgeApprovalStoreData; approved: boolean } {
+): {
+  store: AoiHostBridgeApprovalStoreData;
+  approved: boolean;
+  alreadyApproved: boolean;
+  entry: AoiHostBridgeApproval | null;
+} {
   const base = pruneAoiHostBridgeApprovals(normalizeAoiHostBridgeApprovalStore(store), now);
+  const existing = base.approvals.find(
+    (entry) => entry.approvalFingerprint === approvalFingerprint && entry.expiresAt > now,
+  );
+  if (existing?.state === 'approved') {
+    return { store: base, approved: true, alreadyApproved: true, entry: existing };
+  }
   let approved = false;
+  let approvedEntry: AoiHostBridgeApproval | null = null;
   const approvals = base.approvals.map((entry) => {
     if (
       entry.approvalFingerprint === approvalFingerprint &&
@@ -184,11 +236,33 @@ export function approveAoiHostBridgeApproval(
       entry.expiresAt > now
     ) {
       approved = true;
-      return { ...entry, state: 'approved' as const, approvedAt: now };
+      approvedEntry = { ...entry, state: 'approved' as const, approvedAt: now };
+      return approvedEntry;
     }
     return entry;
   });
-  return { store: { version: 1, approvals, updatedAt: now }, approved };
+  return {
+    store: { version: 1, approvals, updatedAt: now },
+    approved,
+    alreadyApproved: false,
+    entry: approvedEntry,
+  };
+}
+
+export function findAoiHostBridgeApproval(
+  store: AoiHostBridgeApprovalStoreData | null | undefined,
+  approvalFingerprint: string,
+  now: number,
+): AoiHostBridgeApproval | null {
+  const base = pruneAoiHostBridgeApprovals(normalizeAoiHostBridgeApprovalStore(store), now);
+  return (
+    base.approvals.find(
+      (entry) =>
+        entry.approvalFingerprint === approvalFingerprint &&
+        entry.expiresAt > now &&
+        entry.state !== 'consumed',
+    ) ?? null
+  );
 }
 
 // Consume an APPROVED, unexpired entry for the fingerprint (single-use). Returns

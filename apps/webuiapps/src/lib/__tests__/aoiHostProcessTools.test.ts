@@ -5,7 +5,11 @@ import {
   formatHostProcessListingForChat,
   getHostProcessToolDefinitions,
   getHostProcessToolPendingSummary,
+  HOST_PROCESS_SPAWN_PREVIEW_TOOL,
+  HOST_PROCESS_SPAWN_RUN_TOOL,
   isHostProcessTool,
+  parseHostSpawnApprovalRequired,
+  resolveHostSpawnTarget,
 } from '../aoiHostProcessTools';
 
 const SAMPLE_LISTING: AoiHostProcessListingView = {
@@ -31,13 +35,35 @@ const SAMPLE_LISTING: AoiHostProcessListingView = {
 };
 
 describe('aoiHostProcessTools', () => {
-  it('registers host_process_list', () => {
+  it('registers list + spawn preview/run tools', () => {
     const defs = getHostProcessToolDefinitions();
-    expect(defs).toHaveLength(1);
-    expect(defs[0].function.name).toBe('host_process_list');
+    expect(defs.map((d) => d.function.name)).toEqual([
+      'host_process_list',
+      'host_process_spawn_preview',
+      'host_process_spawn_run',
+    ]);
     expect(isHostProcessTool('host_process_list')).toBe(true);
+    expect(isHostProcessTool(HOST_PROCESS_SPAWN_PREVIEW_TOOL)).toBe(true);
+    expect(isHostProcessTool(HOST_PROCESS_SPAWN_RUN_TOOL)).toBe(true);
     expect(isHostProcessTool('file_list')).toBe(false);
     expect(getHostProcessToolPendingSummary({ mode: 'list', query: 'chrome' })).toContain('chrome');
+  });
+
+  it('resolves Korean 메모장 against a notepad allowlist entry', () => {
+    const resolved = resolveHostSpawnTarget({ query: '메모장' }, [
+      { id: 'exe-notepad', path: 'C:\\Windows\\System32\\notepad.exe', label: 'Notepad' },
+    ]);
+    expect(resolved).toMatchObject({
+      body: { allowlistId: 'exe-notepad' },
+    });
+  });
+
+  it('returns a clear error when the spawn allowlist has no match', () => {
+    const resolved = resolveHostSpawnTarget({ query: '메모장' }, []);
+    expect(resolved).toMatchObject({ error: expect.stringMatching(/no spawn allowlist/i) });
+    if ('error' in resolved) {
+      expect(resolved.error).toMatch(/OPEN_APP/i);
+    }
   });
 
   it('formats a summary snapshot with optional image filter', () => {
@@ -132,5 +158,81 @@ describe('aoiHostProcessTools', () => {
     );
     expect(result).toMatch(/session consent/i);
     expect(result).toMatch(/toggle Process list/i);
+  });
+
+  it('spawn preview records approval_required and does not claim launch', async () => {
+    const previewSpawn = vi.fn(async () => ({
+      allowed: true,
+      blockReasons: [],
+      allowlistId: 'exe-notepad',
+      label: 'Notepad',
+      program: 'C:\\Windows\\System32\\notepad.exe',
+      args: [],
+      approvalFingerprint: 'fp-1',
+      expiresAt: 9_999,
+    }));
+    const result = await executeHostProcessTool(
+      { query: '메모장' },
+      {
+        sessionPath: 'aoi/default',
+        fetchAllowlist: async () => [
+          { id: 'exe-notepad', path: 'C:\\Windows\\System32\\notepad.exe', label: 'Notepad' },
+        ],
+        previewSpawn,
+      },
+      HOST_PROCESS_SPAWN_PREVIEW_TOOL,
+    );
+    const parsed = JSON.parse(result) as {
+      status: string;
+      ok: boolean;
+      approval_fingerprint: string;
+      note: string;
+    };
+    expect(previewSpawn).toHaveBeenCalledWith({ allowlistId: 'exe-notepad' });
+    expect(parsed.status).toBe('approval_required');
+    expect(parsed.ok).toBe(true);
+    expect(parsed.approval_fingerprint).toBe('fp-1');
+    expect(parsed.note).toMatch(/did NOT start/i);
+    expect(parsed.note).toMatch(/chat/i);
+    expect(parseHostSpawnApprovalRequired(result)).toEqual({
+      approvalFingerprint: 'fp-1',
+      label: 'Notepad',
+      program: 'C:\\Windows\\System32\\notepad.exe',
+      args: [],
+      allowlistId: 'exe-notepad',
+      expiresAt: 9_999,
+      match: expect.stringContaining('exe-notepad'),
+    });
+  });
+
+  it('spawn run only reports done when execute returns ok with pid', async () => {
+    const executeSpawn = vi.fn(async () => ({
+      ok: true,
+      allowlistId: 'exe-notepad',
+      program: 'C:\\Windows\\System32\\notepad.exe',
+      spawnedPid: 4242,
+      blockReasons: [],
+    }));
+    const result = await executeHostProcessTool(
+      { allowlist_id: 'exe-notepad' },
+      {
+        sessionPath: 'aoi/default',
+        fetchAllowlist: async () => [
+          { id: 'exe-notepad', path: 'C:\\Windows\\System32\\notepad.exe', label: 'Notepad' },
+        ],
+        executeSpawn,
+      },
+      HOST_PROCESS_SPAWN_RUN_TOOL,
+    );
+    const parsed = JSON.parse(result) as {
+      status: string;
+      ok: boolean;
+      spawned_pid: number;
+      note: string;
+    };
+    expect(parsed.status).toBe('done');
+    expect(parsed.ok).toBe(true);
+    expect(parsed.spawned_pid).toBe(4242);
+    expect(parsed.note).toMatch(/succeeded/i);
   });
 });

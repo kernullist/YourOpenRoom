@@ -260,6 +260,36 @@ const AOI_CAPABILITY_REGISTRY = {
     policyNotes:
       'Requires Host Bridge process_activity capability and process-activity environment-source consent.',
   },
+  host_process_spawn_preview: {
+    name: 'host_process_spawn_preview',
+    label: 'Host process spawn preview',
+    kind: 'tool',
+    surface: 'automation',
+    risk: 'high',
+    description:
+      'Propose launching an allowlisted host PC executable; records a pending operator approval (does not start the process).',
+    access: ['execute'],
+    sandboxEligible: false,
+    approval: 'user-confirmation',
+    promptVisible: true,
+    policyNotes:
+      'Requires Host Bridge os_process_spawn capability + spawn allowlist entry. Never use OPEN_APP for host programs.',
+  },
+  host_process_spawn_run: {
+    name: 'host_process_spawn_run',
+    label: 'Host process spawn run',
+    kind: 'tool',
+    surface: 'automation',
+    risk: 'high',
+    description:
+      'Execute a previously approved host PC spawn (single-use fingerprint). Only claim launch success when this returns ok with spawned_pid.',
+    access: ['execute', 'irreversible'],
+    sandboxEligible: false,
+    approval: 'user-confirmation',
+    promptVisible: true,
+    policyNotes:
+      'Consumes Host Bridge Approvals entry for the exact spawn fingerprint. Fail-closed without approval.',
+  },
   host_browser_read: {
     name: 'host_browser_read',
     label: 'Host headless browser read',

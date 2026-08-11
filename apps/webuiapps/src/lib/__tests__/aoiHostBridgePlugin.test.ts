@@ -1361,10 +1361,78 @@ describe('spawn preview -> approve -> execute (server-side approval binding)', (
     );
     const list = await call(home, sessionsDir, token, 'GET', '/approvals', {}, 2100);
     expect(list.status).toBe(200);
-    const approvals = (list.payload as { approvals: Array<{ state: string; capability: string }> })
-      .approvals;
+    const approvals = (
+      list.payload as {
+        approvals: Array<{ state: string; capability: string; canExecute?: boolean }>;
+      }
+    ).approvals;
     expect(approvals).toHaveLength(1);
-    expect(approvals[0]).toMatchObject({ state: 'pending', capability: 'os_process_spawn' });
+    expect(approvals[0]).toMatchObject({
+      state: 'pending',
+      capability: 'os_process_spawn',
+      canExecute: true,
+    });
+  });
+
+  it('approve is idempotent and approve-and-execute runs from stored payload', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    saveAoiHostFakeSpawnEntry(home);
+    saveAoiHostBridgeKillSwitchState(
+      home,
+      setAoiHostBridgeCapability(null, 'os_process_spawn', true, 1500),
+    );
+
+    const preview = await call(
+      home,
+      sessionsDir,
+      token,
+      'POST',
+      '/spawn/preview',
+      { allowlistId: 'fake' },
+      2000,
+    );
+    const fingerprint = (preview.payload as { preview: { approvalFingerprint: string } }).preview
+      .approvalFingerprint;
+
+    const first = await call(
+      home,
+      sessionsDir,
+      token,
+      'POST',
+      '/approvals/approve',
+      { approvalFingerprint: fingerprint },
+      2100,
+    );
+    expect(first.status).toBe(200);
+    expect((first.payload as { alreadyApproved?: boolean }).alreadyApproved).toBe(false);
+
+    // Re-click Approve must not 404 with "no pending approval".
+    const second = await call(
+      home,
+      sessionsDir,
+      token,
+      'POST',
+      '/approvals/approve',
+      { approvalFingerprint: fingerprint },
+      2200,
+    );
+    expect(second.status).toBe(200);
+    expect((second.payload as { alreadyApproved?: boolean }).alreadyApproved).toBe(true);
+
+    // Operator Approve & Run path executes from the stored payload.
+    const run = await call(
+      home,
+      sessionsDir,
+      token,
+      'POST',
+      '/approvals/approve-and-execute',
+      { approvalFingerprint: fingerprint },
+      2300,
+    );
+    // Fake exe fails at spawn_failed, but must NOT fail approval_missing.
+    const reasons = (run.payload as { blockReasons?: string[] }).blockReasons ?? [];
+    expect(reasons).not.toContain('approval_missing');
+    expect(reasons).toContain('spawn_failed');
   });
 });
 
