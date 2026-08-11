@@ -80,7 +80,11 @@ const PLAN_PARAM_SCHEMA = {
               type: 'string',
               description: 'CSS selector for the target element (act steps).',
             },
-            url: { type: 'string', description: 'Absolute allowlisted http(s) URL (navigate).' },
+            url: {
+              type: 'string',
+              description:
+                'Absolute http(s) URL to navigate (blocked only if host is on the browser-drive denylist).',
+            },
             text: { type: 'string', description: 'Text to fill (type).' },
             value: {
               type: 'string',
@@ -112,7 +116,7 @@ export function getBrowserDriveActToolDefinitions(): ToolDef[] {
           'This does NOT act -- it captures a before-screenshot and records a per-action approval the ' +
           'user must approve in Settings -> Advanced -> Host PC -> Approvals. After they approve, call ' +
           'browser_drive_run with the identical plan to perform it. Use for authenticated sites the user ' +
-          'asked Aoi to act on. Only allowlisted domains; passwords/payments/CAPTCHAs are never entered.',
+          'asked Aoi to act on. Domains default to allowed (denylist blocks only); passwords/payments/CAPTCHAs are never entered.',
         parameters: {
           type: 'object',
           properties: PLAN_PARAM_SCHEMA,
@@ -261,10 +265,22 @@ function formatActGateError(error: unknown): string {
   if (lowered.includes('plan_inadmissible') || lowered.includes('too_many_steps')) {
     return `error: the plan was rejected: ${message}. Keep it short and free of any forbidden step.`;
   }
-  if (lowered.includes('not_allowlisted') || lowered.includes('drift_off_allowlist')) {
+  if (lowered.includes('host_private')) {
     return (
-      `error: blocked by the domain allowlist: ${message}. ` +
-      'Add the domain in Settings -> Advanced -> Host PC -> Browser drive allowlist, then retry.'
+      `error: private/loopback hosts are never driven by browser-drive: ${message}. ` +
+      'Use a public https host.'
+    );
+  }
+  if (
+    lowered.includes('host_denylisted') ||
+    lowered.includes('not_allowlisted') ||
+    lowered.includes('drift_to_denylist') ||
+    lowered.includes('drift_off_allowlist') ||
+    lowered.includes('url_denylisted')
+  ) {
+    return (
+      `error: blocked by the browser-drive denylist: ${message}. ` +
+      'Remove the domain in Settings -> Advanced -> Host PC -> Browser drive denylist, then retry.'
     );
   }
   if (

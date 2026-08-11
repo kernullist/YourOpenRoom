@@ -16,9 +16,10 @@ import {
 import type { AoiBrowserDrivePlan } from '../aoiBrowserDrivePlan';
 import type { AoiBrowserDriveActionRequest } from '../aoiBrowserDriveAction';
 
+// Denylist: block evil.test. example.com and other hosts are allowed by default.
 const ALLOWLIST: AoiBrowserDriveAllowlist = addAoiBrowserDriveAllowlistEntry(
   { version: 1, entries: [], updatedAt: 0 },
-  { domain: 'example.com' },
+  { domain: 'evil.test' },
   1,
 ).allowlist;
 
@@ -136,7 +137,7 @@ describe('previewAoiBrowserDriveActStep', () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
-  it('fails when a prefix read drifts off-allowlist', async () => {
+  it('fails when a prefix read drifts onto a denylisted host', async () => {
     const page = fakePage({ landingUrl: 'https://evil.test/x' });
     const { factory, close } = sessionFactory(page);
     const result = await previewAoiBrowserDriveActStep({

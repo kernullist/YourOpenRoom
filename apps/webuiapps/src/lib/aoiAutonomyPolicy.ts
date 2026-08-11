@@ -249,7 +249,7 @@ const DEFAULT_AOI_ENVIRONMENT_SOURCES: readonly Omit<
     // Browser-drive: attach to the operator PC's OWN Chrome/Edge over CDP and act
     // on already-logged-in sites. Read/navigate is consented here; interactions
     // need per-action approval. Default OFF + kill-switch. Attaching to the MAIN
-    // profile means the domain allowlist is the only containment.
+    // profile means the domain denylist (default-allow) is the remaining host containment.
     id: 'browser-drive',
     kind: 'browser_drive',
     label: 'Host browser drive',

@@ -14,9 +14,10 @@ import {
 import type { AoiBrowserDrivePlan } from '../aoiBrowserDrivePlan';
 import type { AoiBrowserDriveActionRequest } from '../aoiBrowserDriveAction';
 
+// Denylist: block evil.test (and subdomains). example.com and others are allowed.
 const ALLOWLIST: AoiBrowserDriveAllowlist = addAoiBrowserDriveAllowlistEntry(
   { version: 1, entries: [], updatedAt: 0 },
-  { domain: 'example.com' },
+  { domain: 'evil.test' },
   1,
 ).allowlist;
 
@@ -217,7 +218,7 @@ describe('executeAoiBrowserDriveStep - guards', () => {
     expect(raw.fill).not.toHaveBeenCalled();
   });
 
-  it('refuses to act on a page that is not allowlisted', async () => {
+  it('refuses to act on a page that is denylisted', async () => {
     const { page, raw } = fakePage({ startUrl: 'https://evil.test/x' });
     const result = await executeAoiBrowserDriveStep({
       page,
@@ -228,7 +229,7 @@ describe('executeAoiBrowserDriveStep - guards', () => {
       now: 1,
     });
     expect(result.ok).toBe(false);
-    expect(result.stopReason).toBe('not_allowlisted');
+    expect(result.stopReason).toBe('host_denylisted');
     expect(raw.click).not.toHaveBeenCalled();
   });
 });
@@ -291,7 +292,7 @@ describe('executeAoiBrowserDriveStep - approval gating', () => {
 });
 
 describe('executeAoiBrowserDriveStep - ACT execution', () => {
-  it('executes an approved click and confirms it stayed on-allowlist', async () => {
+  it('executes an approved click and confirms it stayed off the denylist', async () => {
     const { page, raw } = fakePage({
       startUrl: 'https://example.com/x',
       actLandingUrl: 'https://example.com/y',
@@ -309,7 +310,7 @@ describe('executeAoiBrowserDriveStep - ACT execution', () => {
     expect(raw.click).toHaveBeenCalledWith('#go', expect.anything());
   });
 
-  it('blanks and stops when an ACT drifts off-allowlist', async () => {
+  it('blanks and stops when an ACT drifts onto a denylisted host', async () => {
     const { page, raw } = fakePage({
       startUrl: 'https://example.com/x',
       actLandingUrl: 'https://evil.test/steal',
@@ -323,7 +324,7 @@ describe('executeAoiBrowserDriveStep - ACT execution', () => {
       now: 1,
     });
     expect(result.ok).toBe(false);
-    expect(result.stopReason).toBe('drift_off_allowlist');
+    expect(result.stopReason).toBe('drift_to_denylist');
     expect(raw.goto).toHaveBeenCalledWith('about:blank', expect.anything());
   });
 
@@ -399,7 +400,7 @@ describe('executeAoiBrowserDriveStep - READ execution', () => {
     expect(result.extract?.hostname).toBe('example.com');
   });
 
-  it('navigate to a non-allowlisted url stops with not_allowlisted (no approval needed)', async () => {
+  it('navigate to a denylisted url stops with host_denylisted (no approval needed)', async () => {
     const { page, raw } = fakePage();
     const result = await executeAoiBrowserDriveStep({
       page,
@@ -410,7 +411,7 @@ describe('executeAoiBrowserDriveStep - READ execution', () => {
       now: 1,
     });
     expect(result.ok).toBe(false);
-    expect(result.stopReason).toBe('not_allowlisted');
+    expect(result.stopReason).toBe('host_denylisted');
     expect(raw.goto).not.toHaveBeenCalled();
   });
 
@@ -478,7 +479,7 @@ describe('executeAoiBrowserDriveStep - READ execution', () => {
     expect(back.ok).toBe(true);
   });
 
-  it('back that drifts off-allowlist is blanked and stopped', async () => {
+  it('back that drifts onto a denylisted host is blanked and stopped', async () => {
     const { page, raw } = fakePage({
       startUrl: 'https://example.com/x',
       actLandingUrl: 'https://evil.test/z',
@@ -492,7 +493,7 @@ describe('executeAoiBrowserDriveStep - READ execution', () => {
       now: 1,
     });
     expect(result.ok).toBe(false);
-    expect(result.stopReason).toBe('drift_off_allowlist');
+    expect(result.stopReason).toBe('drift_to_denylist');
     expect(raw.goto).toHaveBeenCalledWith('about:blank', expect.anything());
   });
 });

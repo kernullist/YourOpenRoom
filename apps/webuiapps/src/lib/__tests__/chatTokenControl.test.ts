@@ -420,6 +420,20 @@ describe('shouldUseDialogModel()', () => {
     expect(shouldUseDialogModel('Please use Kira for this')).toBe(false);
   });
 
+  it('keeps host Chrome / browser-drive access requests on the main model', () => {
+    // Regression: "접근해봐" used to fall through to the dialog route, which only
+    // exposes respond_to_user/finish_target, so Aoi claimed she had no browser
+    // tools even after Host PC browser capabilities were enabled.
+    expect(shouldUseDialogModel('크롬브라우저 접근해봐')).toBe(false);
+    expect(shouldUseDialogModel('내 PC 크롬 브라우저 접근해봐')).toBe(false);
+    expect(shouldUseDialogModel('내 크롬에 접속해봐')).toBe(false);
+    expect(shouldUseDialogModel('크롬 열어줘')).toBe(false);
+    expect(shouldUseDialogModel('Chrome 열어봐')).toBe(false);
+    expect(shouldUseDialogModel('Access my Chrome browser')).toBe(false);
+    expect(shouldUseDialogModel('host_browser_read 로 example.com 읽어봐')).toBe(false);
+    expect(shouldUseDialogModel('브라우저 드라이브로 네이버 확인해봐')).toBe(false);
+  });
+
   it('keeps Kira settings execution requests on the main model with app tools', () => {
     const history = [
       {

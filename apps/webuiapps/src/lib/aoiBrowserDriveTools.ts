@@ -1,7 +1,7 @@
 // Chat-facing browser-drive read tool (BD P1.3b). Reads a page from the operator's
 // OWN already-logged-in browser over CDP and returns a bounded reader snapshot.
 // Triple-gated server-side: os_browser_drive kill-switch + browser-drive consent +
-// the domain allowlist (the only containment for the CDP-attach model).
+// domain denylist (default-allow; private/loopback hosts always blocked).
 
 import type { ToolDef } from './llmClient';
 import {
@@ -27,15 +27,16 @@ export function getBrowserDriveToolDefinitions(): ToolDef[] {
           'and return a reader-style title/excerpt/text extract. Use this when the user asks Aoi ' +
           'to read/check a page on a site they are signed in to (their dashboard, feed, inbox ' +
           'listing, account page) -- content that host_browser_read/read_url cannot see because ' +
-          'they are not authenticated. Only allowlisted domains are permitted. Read-only: it ' +
-          'never clicks, types, or submits. Requires Host Bridge os_browser_drive capability + ' +
-          'browser-drive consent + the domain on the browser-drive allowlist.',
+          'they are not authenticated. Domains default to allowed; only browser-drive denylist ' +
+          'domains are blocked. Read-only: it never clicks, types, or submits. Requires Host ' +
+          'Bridge os_browser_drive capability + browser-drive consent.',
         parameters: {
           type: 'object',
           properties: {
             url: {
               type: 'string',
-              description: 'Absolute http(s) URL on an allowlisted domain.',
+              description:
+                'Absolute http(s) URL (blocked only if the host is on the browser-drive denylist).',
             },
           },
           required: ['url'],
@@ -57,16 +58,27 @@ export function getBrowserDriveToolPendingSummary(params: Record<string, unknown
 function formatGateError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   const lowered = message.toLowerCase();
-  if (lowered.includes('url_not_allowlisted') || lowered.includes('host_not_allowlisted')) {
+  if (lowered.includes('host_private')) {
     return (
-      `error: that domain is not on the browser-drive allowlist: ${message}. ` +
-      'Add it in Settings -> Advanced -> Host PC -> Browser drive allowlist, then retry.'
+      `error: private/loopback hosts are never driven by browser-drive: ${message}. ` +
+      'Use a public https host, or host_browser_read is also blocked for private targets.'
     );
   }
-  if (lowered.includes('drift_off_allowlist')) {
+  if (
+    lowered.includes('url_denylisted') ||
+    lowered.includes('host_denylisted') ||
+    lowered.includes('url_not_allowlisted') ||
+    lowered.includes('host_not_allowlisted')
+  ) {
     return (
-      `error: the page redirected off the allowlist and was blocked: ${message}. ` +
-      'Allowlist the destination domain if you trust it, then retry.'
+      `error: that domain is on the browser-drive denylist: ${message}. ` +
+      'Remove it in Settings -> Advanced -> Host PC -> Browser drive denylist, then retry.'
+    );
+  }
+  if (lowered.includes('drift_to_denylist') || lowered.includes('drift_off_allowlist')) {
+    return (
+      `error: the page redirected onto a denylisted domain and was blocked: ${message}. ` +
+      'Remove the destination from Settings -> Advanced -> Host PC -> Browser drive denylist if you trust it, then retry.'
     );
   }
   if (lowered.includes('source_not_consented') || lowered.includes('consent')) {
@@ -110,7 +122,7 @@ export function formatBrowserDrivePageForChat(page: AoiHostBrowserDrivePageView)
     blocks: page.blocks.slice(0, 16),
     text: page.text,
     note:
-      "Read from the operator's OWN logged-in browser over CDP (allowlisted domain only). " +
+      "Read from the operator's OWN logged-in browser over CDP (denylist-gated, default-allow). " +
       'Read-only snapshot; no clicks/typing/submits were performed.',
   });
 }

@@ -1,20 +1,30 @@
-// Aoi browser-drive domain allowlist (P1.1): the ONLY containment for the
-// CDP-attach model. Because Aoi attaches to the operator's MAIN browser (every
-// logged-in site is reachable), a navigation/extraction is permitted ONLY when its
-// hostname is on this operator-authored allowlist. Any drift off the allowlist
-// (a redirect, a link, a new tab to another host) is refused fail-closed.
+// Aoi browser-drive domain denylist (was P1.1 allowlist): containment for the
+// CDP-attach model. Aoi attaches to the operator's MAIN browser (every logged-in
+// site is reachable), so navigation defaults to ALLOWED for any http(s) host and
+// is refused only when the hostname matches an operator-authored denylist entry
+// (exact host or subdomain). Redirects onto a denylisted host are refused
+// fail-closed (tab blanked by the caller).
 //
-// Mirrors the host-bridge spawn-allowlist store: machine-global config under
-// <openroomHome>/host-bridge, auth-only to edit (configuring one's own scope), pure
-// normalize/add/remove + atomic persistence. SERVER-ONLY persistence; the pure
-// matcher (isAoiBrowserDriveUrlAllowed) is client-safe.
+// Mirrors the host-bridge spawn-allowlist store shape: machine-global config under
+// <openroomHome>/host-bridge, auth-only to edit, pure normalize/add/remove + atomic
+// persistence. SERVER-ONLY persistence; the pure matcher (isAoiBrowserDriveUrlAllowed)
+// is client-safe.
+//
+// Naming note: types keep the historical "Allowlist" suffix so call sites and
+// persisted version-1 entry shapes stay stable. Semantics are denylist: empty list
+// means allow-all. Persistence file is browser-drive-denylist.json (the old
+// browser-drive-allowlist.json is intentionally NOT migrated -- its entries meant
+// "permit these", which would wrongly become blocks).
 
 import * as fs from 'fs';
 import { dirname, resolve } from 'path';
+import { isAoiPrivateOrLocalHostname } from './aoiHostUrlSafety';
 
 const HOST_BRIDGE_DIR = 'host-bridge';
-const BROWSER_DRIVE_ALLOWLIST_FILE = 'browser-drive-allowlist.json';
-const MAX_ALLOWLIST_ENTRIES = 64;
+const BROWSER_DRIVE_DENYLIST_FILE = 'browser-drive-denylist.json';
+// Legacy filename kept only so operators can find orphan files; never loaded as a denylist.
+const LEGACY_BROWSER_DRIVE_ALLOWLIST_FILE = 'browser-drive-allowlist.json';
+const MAX_DENYLIST_ENTRIES = 64;
 const ENTRY_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 // A registrable hostname: >=2 dot-separated labels, each 1-63 chars, total <=253.
 const DOMAIN_PATTERN =
@@ -22,7 +32,7 @@ const DOMAIN_PATTERN =
 
 export interface AoiBrowserDriveAllowlistEntry {
   id: string;
-  // Registrable hostname, lowercased. Covers the exact host and any subdomain.
+  // Registrable hostname, lowercased. Blocks the exact host and any subdomain.
   domain: string;
   label: string;
   addedAt: number;
@@ -44,12 +54,16 @@ export type AoiBrowserDriveUrlDenyReason =
   | 'invalid_url'
   | 'scheme_not_allowed'
   | 'empty_host'
+  | 'host_private'
+  | 'host_denylisted'
+  // Legacy alias kept for older error strings / log greps.
   | 'host_not_allowlisted';
 
 export interface AoiBrowserDriveUrlDecision {
   allowed: boolean;
   hostname: string;
   reason?: AoiBrowserDriveUrlDenyReason;
+  /** Present when the host matched a denylist entry. */
   entry?: AoiBrowserDriveAllowlistEntry;
 }
 
@@ -131,7 +145,7 @@ export function normalizeAoiBrowserDriveAllowlist(raw: unknown): AoiBrowserDrive
     });
     seenIds.add(id);
     seenDomains.add(domain);
-    if (entries.length >= MAX_ALLOWLIST_ENTRIES) {
+    if (entries.length >= MAX_DENYLIST_ENTRIES) {
       break;
     }
   }
@@ -156,8 +170,8 @@ export function addAoiBrowserDriveAllowlistEntry(
   if (base.entries.some((existing) => existing.domain === domain)) {
     return { allowlist: base, added: false, reason: 'duplicate_domain' };
   }
-  if (base.entries.length >= MAX_ALLOWLIST_ENTRIES) {
-    return { allowlist: base, added: false, reason: 'allowlist_full' };
+  if (base.entries.length >= MAX_DENYLIST_ENTRIES) {
+    return { allowlist: base, added: false, reason: 'denylist_full' };
   }
   const id =
     typeof entry.id === 'string' && entry.id.trim() ? entry.id.trim() : slugifyDomainId(domain);
@@ -190,11 +204,23 @@ export function removeAoiBrowserDriveAllowlistEntry(
   };
 }
 
+function findDenylistMatch(
+  list: AoiBrowserDriveAllowlist,
+  hostname: string,
+): AoiBrowserDriveAllowlistEntry | undefined {
+  return list.entries.find(
+    (candidate) => hostname === candidate.domain || hostname.endsWith(`.${candidate.domain}`),
+  );
+}
+
 /**
- * The drift-block core. A URL is allowed ONLY when its scheme is http(s) and its
- * hostname exactly matches, or is a subdomain of, an allowlisted registrable
- * domain. `evil-github.com` never matches `github.com` (the subdomain test
- * requires a leading dot). Fail-closed on anything unparseable.
+ * Domain containment for browser-drive. Default ALLOW for public http(s) hosts.
+ * Hard-blocked always: bad scheme, unparseable URL, empty host, private/loopback/
+ * link-local/metadata hosts (same SSRF set as headless host-browser-read — under
+ * denylist default-allow those would otherwise pass, and they cannot be represented
+ * as denylist entries because entry normalize rejects single-label/IP hosts).
+ * Operator denylist: exact host or subdomain match (`evil-github.com` never matches
+ * denylist entry `github.com`; subdomain test requires a leading dot).
  */
 export function isAoiBrowserDriveUrlAllowed(
   allowlist: AoiBrowserDriveAllowlist | null | undefined,
@@ -216,18 +242,26 @@ export function isAoiBrowserDriveUrlAllowed(
   if (!hostname) {
     return { allowed: false, hostname: '', reason: 'empty_host' };
   }
-  const list = normalizeAoiBrowserDriveAllowlist(allowlist);
-  const entry = list.entries.find(
-    (candidate) => hostname === candidate.domain || hostname.endsWith(`.${candidate.domain}`),
-  );
-  if (!entry) {
-    return { allowed: false, hostname, reason: 'host_not_allowlisted' };
+  // Preserve the pre-denylist invariant that private hosts were unreachable
+  // (allowlist only accepted registrable public domains as entries).
+  if (isAoiPrivateOrLocalHostname(hostname)) {
+    return { allowed: false, hostname, reason: 'host_private' };
   }
-  return { allowed: true, hostname, entry };
+  const list = normalizeAoiBrowserDriveAllowlist(allowlist);
+  const entry = findDenylistMatch(list, hostname);
+  if (entry) {
+    return { allowed: false, hostname, reason: 'host_denylisted', entry };
+  }
+  return { allowed: true, hostname };
 }
 
 export function resolveAoiBrowserDriveAllowlistPath(openroomHome: string): string {
-  return resolve(openroomHome, HOST_BRIDGE_DIR, BROWSER_DRIVE_ALLOWLIST_FILE);
+  return resolve(openroomHome, HOST_BRIDGE_DIR, BROWSER_DRIVE_DENYLIST_FILE);
+}
+
+/** @deprecated Path of the pre-denylist permit-list file. Never auto-loaded. */
+export function resolveAoiBrowserDriveLegacyAllowlistPath(openroomHome: string): string {
+  return resolve(openroomHome, HOST_BRIDGE_DIR, LEGACY_BROWSER_DRIVE_ALLOWLIST_FILE);
 }
 
 export function loadAoiBrowserDriveAllowlist(openroomHome: string): AoiBrowserDriveAllowlist {

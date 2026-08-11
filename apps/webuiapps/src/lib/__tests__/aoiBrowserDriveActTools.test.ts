@@ -158,7 +158,7 @@ describe('run (browser_drive_run)', () => {
     const executeFetcher = vi.fn(async () => ({
       ok: false,
       stepIndex: 1,
-      stopReason: 'drift_off_allowlist',
+      stopReason: 'drift_to_denylist',
     }));
     const result = await executeBrowserDriveActTool(BROWSER_DRIVE_RUN_TOOL, PLAN_PARAMS, {
       sessionPath: 'aoi/default',
@@ -166,7 +166,7 @@ describe('run (browser_drive_run)', () => {
     });
     const parsed = JSON.parse(result);
     expect(parsed.status).toBe('failed');
-    expect(parsed.stop_reason).toBe('drift_off_allowlist');
+    expect(parsed.stop_reason).toBe('drift_to_denylist');
   });
 
   it('errors without a session and on a malformed plan', async () => {
@@ -264,8 +264,11 @@ describe('gate-error mapping', () => {
     ['prefix_contains_act', /at most one act/i],
     ['not_an_act', /must point at an act/i],
     ['plan_inadmissible: too_many_steps', /plan was rejected/i],
-    ['url_not_allowlisted', /domain allowlist/i],
-    ['drift_off_allowlist', /domain allowlist/i],
+    ['url_denylisted', /denylist/i],
+    ['host_denylisted', /denylist/i],
+    ['drift_to_denylist', /denylist/i],
+    ['url_not_allowlisted', /denylist/i],
+    ['drift_off_allowlist', /denylist/i],
     ['source_not_consented', /Enable Browser drive/i],
     ['attach_timeout', /could not drive the browser/i],
     ['session_start_failed', /could not drive the browser/i],

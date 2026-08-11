@@ -17,9 +17,9 @@
 //      financial commit can never run);
 //   3. ACT steps require an explicit per-action approval via the injected gate --
 //      a gate that denies, is missing, or throws is treated as fail-closed;
-//   4. every step is bound to the domain allowlist -- the current page must be
-//      allowlisted before we touch it, and after an ACT the FINAL url must STILL be
-//      allowlisted or the tab is blanked and the run stops (drift block reuse).
+//   4. every step is bound to the domain denylist (default-allow) -- the current
+//      page must not be denylisted before we touch it, and after an ACT the FINAL
+//      url must STILL not be denylisted or the tab is blanked and the run stops.
 //
 // This commit wires NOTHING to a route or tool -> importing it changes no runtime
 // behavior. The real approval-store binding + approval card + before-screenshot land
@@ -111,10 +111,12 @@ export type AoiBrowserDriveStepStopReason =
   | 'plan_inadmissible'
   | 'step_out_of_range'
   | 'forbidden'
-  | 'not_allowlisted'
+  | 'host_denylisted'
+  | 'not_allowlisted' // legacy alias of host_denylisted
   | 'approval_denied'
   | 'approval_gate_error'
-  | 'drift_off_allowlist'
+  | 'drift_to_denylist'
+  | 'drift_off_allowlist' // legacy alias of drift_to_denylist
   | 'action_failed';
 
 export interface AoiBrowserDriveStepResult {
@@ -172,9 +174,9 @@ function fnv1a(value: string, seed: number): string {
 //
 // `hostname` BINDS the approval to the page the act lands on: the preview records it
 // from the replayed prefix's final host, and the executor computes it from the live
-// page host at act time. An approval shown for one allowlisted host therefore cannot
-// be consumed to act on a DIFFERENT allowlisted host (the "approve what you saw"
-// guarantee), even though both hosts pass the allowlist.
+// page host at act time. An approval shown for one host therefore cannot be
+// consumed to act on a DIFFERENT host (the "approve what you saw" guarantee),
+// even when both hosts pass the denylist.
 export function computeAoiBrowserDriveActionFingerprint(
   goal: string,
   stepIndex: number,
@@ -295,9 +297,9 @@ export async function executeAoiBrowserDriveStep(
     url: beforeUrl,
   });
 
-  // 4) Allowlist binding. 'navigate' delegates its own pre/post drift checks to
+  // 4) Denylist binding. 'navigate' delegates its own pre/post checks to
   //    navigateAndExtract; every other step acts on the CURRENT page, which must
-  //    already be allowlisted before we touch it.
+  //    not be denylisted before we touch it.
   if (action.kind !== 'navigate') {
     const here = isAoiBrowserDriveUrlAllowed(allowlist, beforeUrl);
     if (!here.allowed) {
@@ -305,7 +307,7 @@ export async function executeAoiBrowserDriveStep(
         index: stepIndex,
         category: decision.category,
         ok: false,
-        stopReason: 'not_allowlisted',
+        stopReason: 'host_denylisted',
         detail: here.reason,
         finalUrl: beforeUrl,
       });
@@ -390,8 +392,8 @@ export async function executeAoiBrowserDriveStep(
     // ACT (approved above).
     await executeActStep({ page, action, timeout });
 
-    // Post-act drift: the effect may have navigated off-allowlist. If so, blank the
-    // tab so no off-allowlist content persists in the Aoi page, and stop.
+    // Post-act drift: the effect may have navigated onto a denylisted host. If so,
+    // blank the tab so blocked content does not persist in the Aoi page, and stop.
     const finalUrl = safeUrl(page);
     const post = isAoiBrowserDriveUrlAllowed(allowlist, finalUrl);
     if (!post.allowed) {
@@ -400,7 +402,7 @@ export async function executeAoiBrowserDriveStep(
         index: stepIndex,
         category: 'act',
         ok: false,
-        stopReason: 'drift_off_allowlist',
+        stopReason: 'drift_to_denylist',
         detail: post.reason,
         finalUrl,
         approvalFingerprint,
@@ -491,10 +493,10 @@ async function executeReadStep(params: {
         return {
           ok: false,
           stopReason:
-            outcome.reason === 'url_not_allowlisted'
-              ? 'not_allowlisted'
-              : outcome.reason === 'drift_off_allowlist'
-                ? 'drift_off_allowlist'
+            outcome.reason === 'url_denylisted' || outcome.reason === 'url_not_allowlisted'
+              ? 'host_denylisted'
+              : outcome.reason === 'drift_to_denylist' || outcome.reason === 'drift_off_allowlist'
+                ? 'drift_to_denylist'
                 : 'action_failed',
           detail: outcome.detail,
           finalUrl: safeUrl(page),
@@ -535,7 +537,7 @@ async function executeReadStep(params: {
       const post = isAoiBrowserDriveUrlAllowed(allowlist, finalUrl);
       if (!post.allowed) {
         await blankPage(page);
-        return { ok: false, stopReason: 'drift_off_allowlist', detail: post.reason, finalUrl };
+        return { ok: false, stopReason: 'drift_to_denylist', detail: post.reason, finalUrl };
       }
       return { ok: true, finalUrl };
     }

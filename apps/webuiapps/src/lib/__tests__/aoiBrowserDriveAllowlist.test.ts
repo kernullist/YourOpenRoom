@@ -54,7 +54,7 @@ describe('normalizeAoiBrowserDriveAllowlist', () => {
   });
 });
 
-describe('add/remove allowlist entries', () => {
+describe('add/remove denylist entries', () => {
   it('adds, rejects invalid/duplicate, and removes', () => {
     let list: AoiBrowserDriveAllowlist = { version: 1, entries: [], updatedAt: 0 };
 
@@ -78,47 +78,81 @@ describe('add/remove allowlist entries', () => {
   });
 });
 
-describe('isAoiBrowserDriveUrlAllowed (drift block)', () => {
-  const list = addAoiBrowserDriveAllowlistEntry(
-    { version: 1, entries: [], updatedAt: 0 },
-    { domain: 'github.com' },
-    1,
-  ).allowlist;
+describe('isAoiBrowserDriveUrlAllowed (denylist, default-allow)', () => {
+  const empty: AoiBrowserDriveAllowlist = { version: 1, entries: [], updatedAt: 0 };
+  const denylist = addAoiBrowserDriveAllowlistEntry(empty, { domain: 'evil.com' }, 1).allowlist;
 
-  it('allows the exact host and subdomains', () => {
-    expect(isAoiBrowserDriveUrlAllowed(list, 'https://github.com/kernullist').allowed).toBe(true);
-    expect(isAoiBrowserDriveUrlAllowed(list, 'https://gist.github.com/x').allowed).toBe(true);
+  it('allows any http(s) host when the denylist is empty', () => {
+    expect(isAoiBrowserDriveUrlAllowed(empty, 'https://github.com/x').allowed).toBe(true);
+    expect(isAoiBrowserDriveUrlAllowed(empty, 'https://google.com').allowed).toBe(true);
+    expect(isAoiBrowserDriveUrlAllowed(null, 'http://example.com/a').allowed).toBe(true);
   });
 
-  it('rejects lookalikes, other hosts, and bad schemes', () => {
-    expect(isAoiBrowserDriveUrlAllowed(list, 'https://evil-github.com/x')).toMatchObject({
+  it('blocks the exact host and subdomains on the denylist', () => {
+    expect(isAoiBrowserDriveUrlAllowed(denylist, 'https://evil.com/x')).toMatchObject({
       allowed: false,
-      reason: 'host_not_allowlisted',
+      reason: 'host_denylisted',
     });
-    expect(isAoiBrowserDriveUrlAllowed(list, 'https://githubXcom.example/x').allowed).toBe(false);
-    expect(isAoiBrowserDriveUrlAllowed(list, 'https://google.com').allowed).toBe(false);
-    expect(isAoiBrowserDriveUrlAllowed(list, 'file:///etc/passwd')).toMatchObject({
+    expect(isAoiBrowserDriveUrlAllowed(denylist, 'https://tracker.evil.com/x')).toMatchObject({
+      allowed: false,
+      reason: 'host_denylisted',
+    });
+  });
+
+  it('does not block lookalikes or unrelated hosts', () => {
+    expect(isAoiBrowserDriveUrlAllowed(denylist, 'https://evil-github.com/x').allowed).toBe(true);
+    expect(isAoiBrowserDriveUrlAllowed(denylist, 'https://notevil.com/x').allowed).toBe(true);
+    expect(isAoiBrowserDriveUrlAllowed(denylist, 'https://github.com').allowed).toBe(true);
+  });
+
+  it('still rejects bad schemes and junk', () => {
+    expect(isAoiBrowserDriveUrlAllowed(empty, 'file:///etc/passwd')).toMatchObject({
       reason: 'scheme_not_allowed',
     });
-    expect(isAoiBrowserDriveUrlAllowed(list, 'not a url')).toMatchObject({ reason: 'invalid_url' });
+    expect(isAoiBrowserDriveUrlAllowed(empty, 'not a url')).toMatchObject({
+      reason: 'invalid_url',
+    });
+  });
+
+  it('hard-blocks private/loopback hosts even when the denylist is empty', () => {
+    // Regression: default-allow denylist would otherwise open localhost/RFC1918
+    // targets that the old registrable-domain allowlist could never permit.
+    expect(isAoiBrowserDriveUrlAllowed(empty, 'http://localhost/admin')).toMatchObject({
+      allowed: false,
+      reason: 'host_private',
+    });
+    expect(isAoiBrowserDriveUrlAllowed(empty, 'http://127.0.0.1:8787/')).toMatchObject({
+      allowed: false,
+      reason: 'host_private',
+    });
+    expect(isAoiBrowserDriveUrlAllowed(empty, 'http://192.168.1.1/')).toMatchObject({
+      allowed: false,
+      reason: 'host_private',
+    });
+    expect(isAoiBrowserDriveUrlAllowed(empty, 'http://[::1]/')).toMatchObject({
+      allowed: false,
+      reason: 'host_private',
+    });
   });
 });
 
 describe('load/save persistence', () => {
-  it('round-trips through disk and returns default when absent', () => {
-    const home = fs.mkdtempSync(join(os.tmpdir(), 'aoi-bd-allowlist-'));
+  it('round-trips through the denylist file and returns empty default when absent', () => {
+    const home = fs.mkdtempSync(join(os.tmpdir(), 'aoi-bd-denylist-'));
     try {
       expect(loadAoiBrowserDriveAllowlist(home).entries).toEqual([]);
       const { allowlist } = addAoiBrowserDriveAllowlistEntry(
         loadAoiBrowserDriveAllowlist(home),
-        { domain: 'example.com', label: 'Example' },
+        { domain: 'blocked.com', label: 'Blocked' },
         1234,
       );
       const saved = saveAoiBrowserDriveAllowlist(home, allowlist);
       expect(saved.entries).toHaveLength(1);
-      expect(fs.existsSync(resolveAoiBrowserDriveAllowlistPath(home))).toBe(true);
+      const path = resolveAoiBrowserDriveAllowlistPath(home);
+      expect(path.endsWith('browser-drive-denylist.json')).toBe(true);
+      expect(fs.existsSync(path)).toBe(true);
       const reloaded = loadAoiBrowserDriveAllowlist(home);
-      expect(reloaded.entries[0]).toMatchObject({ domain: 'example.com', label: 'Example' });
+      expect(reloaded.entries[0]).toMatchObject({ domain: 'blocked.com', label: 'Blocked' });
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }

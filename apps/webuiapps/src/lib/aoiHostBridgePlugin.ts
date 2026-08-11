@@ -649,7 +649,7 @@ export async function resolveAoiHostBridgeRoute(
   }
 
   // --- POST /browser-drive-read (BD P1.3): drive the operator's OWN logged-in
-  //     browser over CDP and extract an allowlisted page (read-only) -----------
+  //     browser over CDP and extract a non-denylisted page (read-only) --------
   if (params.method === 'POST' && params.route === '/browser-drive-read') {
     const sessionPath = normalizeAoiAutonomySessionPath(
       typeof params.body.sessionPath === 'string' ? params.body.sessionPath : '',
@@ -686,8 +686,8 @@ export async function resolveAoiHostBridgeRoute(
         },
       };
     }
-    // Containment pre-check: refuse a non-allowlisted URL BEFORE launching a
-    // browser. navigateAndExtract re-checks (incl. redirect drift) fail-closed.
+    // Containment pre-check: refuse a denylisted URL BEFORE launching a browser.
+    // navigateAndExtract re-checks (incl. redirect drift) fail-closed.
     const allowlist = loadAoiBrowserDriveAllowlist(params.openroomHome);
     const allowed = isAoiBrowserDriveUrlAllowed(allowlist, url);
     if (!allowed.allowed) {
@@ -695,9 +695,9 @@ export async function resolveAoiHostBridgeRoute(
         status: 403,
         payload: {
           ok: false,
-          error: 'url_not_allowlisted',
-          code: 'url_not_allowlisted',
-          denyReasons: [allowed.reason ?? 'host_not_allowlisted'],
+          error: 'url_denylisted',
+          code: 'url_denylisted',
+          denyReasons: [allowed.reason ?? 'host_denylisted'],
           detail: allowed.hostname,
         },
       };
@@ -1021,10 +1021,13 @@ export async function resolveAoiHostBridgeRoute(
     }
   }
 
-  if (params.route === '/browser-drive-allowlist') {
+  // Domain denylist CRUD (default-allow). Route keeps the historical
+  // /browser-drive-allowlist path so existing clients keep working; semantics are
+  // denylist (empty = allow all). Also accepts /browser-drive-denylist.
+  if (params.route === '/browser-drive-allowlist' || params.route === '/browser-drive-denylist') {
     const current = loadAoiBrowserDriveAllowlist(params.openroomHome);
     if (params.method === 'GET') {
-      return { status: 200, payload: { ok: true, entries: current.entries } };
+      return { status: 200, payload: { ok: true, entries: current.entries, mode: 'denylist' } };
     }
     if (params.method === 'POST') {
       const id = typeof params.body.id === 'string' ? params.body.id : '';
@@ -1039,7 +1042,7 @@ export async function resolveAoiHostBridgeRoute(
         return { status: 400, payload: { ok: false, error: result.reason, code: 'bad_request' } };
       }
       const saved = saveAoiBrowserDriveAllowlist(params.openroomHome, result.allowlist);
-      return { status: 200, payload: { ok: true, entries: saved.entries } };
+      return { status: 200, payload: { ok: true, entries: saved.entries, mode: 'denylist' } };
     }
     if (params.method === 'DELETE') {
       const id = typeof params.body.id === 'string' ? params.body.id : '';
@@ -1047,7 +1050,7 @@ export async function resolveAoiHostBridgeRoute(
         params.openroomHome,
         removeAoiBrowserDriveAllowlistEntry(current, id, params.now),
       );
-      return { status: 200, payload: { ok: true, entries: saved.entries } };
+      return { status: 200, payload: { ok: true, entries: saved.entries, mode: 'denylist' } };
     }
   }
 

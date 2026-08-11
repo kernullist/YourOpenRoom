@@ -69,12 +69,12 @@ const CAPABILITIES: { key: string; label: string; hint: string }[] = [
   {
     key: 'os_browser_drive',
     label: 'Browser drive (my logged-in browser)',
-    hint: 'Let Aoi attach to your own Chrome/Edge over CDP and act on already-logged-in sites. Also grants browser-drive consent. Interactions still need per-action approval; passwords/payments/CAPTCHAs are never entered.',
+    hint: 'Let Aoi attach to your own Chrome/Edge over CDP and act on already-logged-in sites. Also grants browser-drive consent. Domains default to allowed; denylist blocks only. Interactions still need per-action approval; passwords/payments/CAPTCHAs are never entered.',
   },
   {
     key: 'os_browser_drive_standing',
     label: 'Browser drive: standing approval',
-    hint: 'HIGH RISK. While ON, an active standing grant lets Aoi act on its domain WITHOUT a per-action approval, up to the grant TTL + quota. Add grants under Standing grants. Panic and this toggle instantly disable it; forbidden actions and the domain allowlist still apply.',
+    hint: 'HIGH RISK. While ON, an active standing grant lets Aoi act on its domain WITHOUT a per-action approval, up to the grant TTL + quota. Add grants under Standing grants. Panic and this toggle instantly disable it; forbidden actions and the domain denylist still apply.',
   },
   {
     key: 'os_browser_drive_task',
@@ -158,7 +158,7 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
     { id: 'capabilities', label: 'Capabilities' },
     { id: 'spawn', label: 'Spawn' },
     { id: 'roots', label: 'File roots' },
-    { id: 'browserDrive', label: 'Browser drive' },
+    { id: 'browserDrive', label: 'Browser denylist' },
     { id: 'standing', label: 'Standing grants' },
     { id: 'activity', label: 'Activity' },
     { id: 'approvals', label: 'Approvals' },
@@ -661,16 +661,17 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
             )}
 
             {hostSection === 'browserDrive' && (
-              <div className={styles.connectorRow} data-testid="aoi-host-browser-drive-allowlist">
+              <div className={styles.connectorRow} data-testid="aoi-host-browser-drive-denylist">
                 <div className={styles.connectorRowHeader}>
-                  <strong>Browser-drive allowlist</strong>
-                  <span className={styles.modelHint}>{browserDriveEntries.length} domains</span>
+                  <strong>Browser-drive denylist</strong>
+                  <span className={styles.modelHint}>{browserDriveEntries.length} blocked</span>
                 </div>
                 <span className={styles.modelHint}>
-                  Aoi may drive your OWN logged-in browser ONLY on these domains (the exact host and
-                  its subdomains). This is the only containment: attaching to your main browser
-                  exposes every login, so keep this list minimal. Read-only today; interactions will
-                  still need per-action approval.
+                  Default ALLOW for public http(s) hosts. Domains listed here are blocked (exact
+                  host and subdomains). Private/loopback hosts are always blocked. Attach still
+                  exposes every login on the main profile — use this list for sites you never want
+                  automated. Interactions still need per-action approval;
+                  passwords/payments/CAPTCHAs are never entered.
                 </span>
                 {browserDriveEntries.map((entry) => (
                   <div key={entry.id} className={styles.connectorToggleRow}>
@@ -683,7 +684,7 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
                       className={styles.cancelBtn}
                       onClick={() => removeBrowserDriveDomain(entry.id)}
                       disabled={busy === `drive:del:${entry.id}`}
-                      title="Remove this domain"
+                      title="Unblock this domain"
                       data-testid={`aoi-host-drive-remove-${entry.id}`}
                     >
                       <Trash2 size={13} />
@@ -697,8 +698,8 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
                     onChange={(event) =>
                       setBrowserDriveDraft((prev) => ({ ...prev, domain: event.target.value }))
                     }
-                    placeholder="example.com"
-                    aria-label="Browser-drive allowlist domain"
+                    placeholder="blocked-site.com"
+                    aria-label="Browser-drive denylist domain"
                     data-testid="aoi-host-drive-domain-input"
                   />
                   <button
@@ -708,7 +709,7 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
                     disabled={!browserDriveDraft.domain.trim() || busy === 'drive:add'}
                     data-testid="aoi-host-drive-add"
                   >
-                    Add
+                    Block
                   </button>
                 </div>
               </div>
@@ -724,7 +725,7 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
                   HIGH RISK. A grant lets Aoi act on its domain WITHOUT a per-action approval, up to
                   the TTL and action quota. Honored only while the &quot;Browser drive: standing
                   approval&quot; capability is ON (Capabilities tab); panic disables it instantly.
-                  The domain must also be on the browser-drive allowlist; forbidden actions
+                  The domain must not be on the browser-drive denylist; forbidden actions
                   (passwords/payments/CAPTCHA) are never performed.
                 </span>
                 {!status?.killSwitch.enabledCapabilities.includes('os_browser_drive_standing') && (

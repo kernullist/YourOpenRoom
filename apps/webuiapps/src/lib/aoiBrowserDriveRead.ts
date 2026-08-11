@@ -1,12 +1,12 @@
-// Aoi browser-drive authenticated read (P1.2): navigate an allowlisted, already-
-// logged-in page in the Aoi-driven tab and return a reader snapshot. Read-only —
-// no side effects. Ties together the CDP session page (P0.2), the domain allowlist
-// drift-block (P1.1), and the existing pure reader extractor.
+// Aoi browser-drive authenticated read (P1.2): navigate an already-logged-in page
+// in the Aoi-driven tab and return a reader snapshot. Read-only — no side effects.
+// Ties together the CDP session page (P0.2), the domain denylist drift-block
+// (P1.1, default-allow), and the existing pure reader extractor.
 //
-// DRIFT BLOCK IS ENFORCED TWICE: before navigation (the requested URL must be
-// allowlisted) AND after (the FINAL URL after redirects must still be allowlisted).
-// A redirect onto a non-allowlisted host is refused and the tab is blanked so no
-// off-allowlist content is ever read. Fail-closed throughout.
+// DRIFT BLOCK IS ENFORCED TWICE: before navigation (requested URL must not be
+// denylisted) AND after (FINAL URL after redirects must still not be denylisted).
+// A redirect onto a denylisted host is refused and the tab is blanked so no
+// blocked content is ever read. Fail-closed on denylist hits.
 
 import {
   isAoiBrowserDriveUrlAllowed,
@@ -28,6 +28,9 @@ export interface AoiBrowserDriveNavigablePage {
 }
 
 export type AoiBrowserDriveReadDenyReason =
+  | 'url_denylisted'
+  | 'drift_to_denylist'
+  // Legacy aliases (older logs / clients).
   | 'url_not_allowlisted'
   | 'drift_off_allowlist'
   | 'navigation_failed'
@@ -64,12 +67,12 @@ export async function navigateAndExtractAoiBrowserDrive(params: {
 }): Promise<AoiBrowserDriveReadOutcome> {
   const { page, allowlist, url } = params;
 
-  // 1) Pre-navigation drift block: the requested URL must be allowlisted.
+  // 1) Pre-navigation denylist block: the requested URL must not be denylisted.
   const pre = isAoiBrowserDriveUrlAllowed(allowlist, url);
   if (!pre.allowed) {
     return {
       ok: false,
-      reason: 'url_not_allowlisted',
+      reason: 'url_denylisted',
       detail: pre.reason,
       hostname: pre.hostname,
     };
@@ -91,8 +94,8 @@ export async function navigateAndExtractAoiBrowserDrive(params: {
     };
   }
 
-  // 3) Post-navigation drift block: the FINAL url (after redirects) must STILL be
-  //    allowlisted. If it drifted, blank the tab so no off-allowlist content leaks.
+  // 3) Post-navigation denylist block: the FINAL url (after redirects) must STILL
+  //    not be denylisted. If it drifted onto a blocked host, blank the tab.
   const finalUrl = page.url();
   const post = isAoiBrowserDriveUrlAllowed(allowlist, finalUrl);
   if (!post.allowed) {
@@ -103,7 +106,7 @@ export async function navigateAndExtractAoiBrowserDrive(params: {
     }
     return {
       ok: false,
-      reason: 'drift_off_allowlist',
+      reason: 'drift_to_denylist',
       detail: post.reason,
       hostname: post.hostname,
     };

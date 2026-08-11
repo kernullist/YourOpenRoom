@@ -3,7 +3,7 @@
 // hard budget, fail-stopping on the first non-ok step. It sits ON TOP of the P2.3b
 // per-call runner and relaxes NOTHING: each task step still opens its own stateless
 // session and passes every executor gate (standing grant / per-action approval,
-// domain allowlist, forbidden hard-blocks, drift block, audit, panic). This module
+// domain denylist, forbidden hard-blocks, drift block, audit, panic). This module
 // only adds three things a chat loop cannot be trusted to enforce itself:
 //
 //   1. consume-not-author -- the task MUST carry owner='user'. Aoi never authors its

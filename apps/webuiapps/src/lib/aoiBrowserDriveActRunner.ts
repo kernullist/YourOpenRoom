@@ -174,7 +174,7 @@ async function openSession(
 }
 
 // Replay steps [0, targetStepIndex) as reads on the open page. Stops at the first
-// non-ok read (e.g. a navigate that drifts off-allowlist).
+// non-ok read (e.g. a navigate that drifts onto a denylisted host).
 async function replayReadPrefix(
   page: AoiBrowserDriveActablePage,
   params: AoiBrowserDriveActRunParams,
@@ -250,13 +250,13 @@ export async function previewAoiBrowserDriveActStep(
       };
     }
     const finalUrl = currentUrl(session.page);
-    // The current page must still be allowlisted before we present it for approval.
+    // The current page must still not be denylisted before we present it for approval.
     const here = isAoiBrowserDriveUrlAllowed(params.allowlist, finalUrl);
     if (!here.allowed) {
       return {
         ok: false,
         reason: 'prefix_failed',
-        detail: here.reason ?? 'not allowlisted',
+        detail: here.reason ?? 'host_denylisted',
         prefix: prefix.results,
       };
     }

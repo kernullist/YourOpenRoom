@@ -375,16 +375,15 @@ describe('resolveAoiHostBridgeRoute /browser-drive-read (BD gate)', () => {
     );
   }
 
-  function allowExample(home: string): void {
+  function blockEvil(home: string): void {
     saveAoiBrowserDriveAllowlist(
       home,
-      addAoiBrowserDriveAllowlistEntry(null, { domain: 'example.com' }, 1000).allowlist,
+      addAoiBrowserDriveAllowlistEntry(null, { domain: 'evil.com' }, 1000).allowlist,
     );
   }
 
   it('blocks when capability/consent is off', async () => {
     const { home, sessionsDir, token } = makeDaemonHome();
-    allowExample(home);
     const result = await resolveAoiHostBridgeRoute({
       method: 'POST',
       route: '/browser-drive-read',
@@ -398,9 +397,10 @@ describe('resolveAoiHostBridgeRoute /browser-drive-read (BD gate)', () => {
     expect(result.status).toBe(403);
   });
 
-  it('blocks a non-allowlisted URL before launching a browser', async () => {
+  it('blocks a denylisted URL before launching a browser', async () => {
     const { home, sessionsDir, token } = makeDaemonHome();
     enableDriveConsent(sessionsDir, home);
+    blockEvil(home);
     let launched = false;
     const result = await resolveAoiHostBridgeRoute({
       method: 'POST',
@@ -416,14 +416,14 @@ describe('resolveAoiHostBridgeRoute /browser-drive-read (BD gate)', () => {
       },
     });
     expect(result.status).toBe(403);
-    expect((result.payload as { code: string }).code).toBe('url_not_allowlisted');
+    expect((result.payload as { code: string }).code).toBe('url_denylisted');
     expect(launched).toBe(false);
   });
 
-  it('returns an allowlisted authenticated page extract', async () => {
+  it('returns an authenticated page extract when the host is not denylisted', async () => {
     const { home, sessionsDir, token } = makeDaemonHome();
     enableDriveConsent(sessionsDir, home);
-    allowExample(home);
+    // Empty denylist = allow all hosts.
     const result = await resolveAoiHostBridgeRoute({
       method: 'POST',
       route: '/browser-drive-read',
@@ -455,7 +455,6 @@ describe('resolveAoiHostBridgeRoute /browser-drive-read (BD gate)', () => {
   it('maps a drive failure to 422', async () => {
     const { home, sessionsDir, token } = makeDaemonHome();
     enableDriveConsent(sessionsDir, home);
-    allowExample(home);
     const result = await resolveAoiHostBridgeRoute({
       method: 'POST',
       route: '/browser-drive-read',
@@ -466,12 +465,12 @@ describe('resolveAoiHostBridgeRoute /browser-drive-read (BD gate)', () => {
       now: 2000,
       browserDriveReadImpl: async () => ({
         ok: false,
-        reason: 'drift_off_allowlist',
+        reason: 'drift_to_denylist',
         hostname: 'tracker.evil.com',
       }),
     });
     expect(result.status).toBe(422);
-    expect((result.payload as { code: string }).code).toBe('drift_off_allowlist');
+    expect((result.payload as { code: string }).code).toBe('drift_to_denylist');
   });
 });
 
@@ -488,10 +487,8 @@ describe('resolveAoiHostBridgeRoute /browser-drive/preview + /execute (BD P2.3)'
       home,
       setAoiHostBridgeCapability(null, 'os_browser_drive', true, 1500),
     );
-    saveAoiBrowserDriveAllowlist(
-      home,
-      addAoiBrowserDriveAllowlistEntry(null, { domain: 'example.com' }, 1000).allowlist,
-    );
+    // Empty denylist = all hosts allowed by default (example.com included).
+    saveAoiBrowserDriveAllowlist(home, { version: 1, entries: [], updatedAt: 1500 });
   }
 
   const PLAN = {
@@ -1033,7 +1030,7 @@ describe('registration CRUD (auth-only)', () => {
     expect((del.payload as { entries: unknown[] }).entries).toEqual([]);
   });
 
-  it('adds, lists, and removes a browser-drive allowlist domain; rejects junk', async () => {
+  it('adds, lists, and removes a browser-drive denylist domain; rejects junk', async () => {
     const { home, sessionsDir, token } = makeDaemonHome();
     const add = await resolveAoiHostBridgeRoute({
       method: 'POST',
@@ -1045,14 +1042,18 @@ describe('registration CRUD (auth-only)', () => {
       now: 1000,
     });
     expect(add.status).toBe(200);
-    const entries = (add.payload as { entries: Array<{ id: string; domain: string }> }).entries;
-    expect(entries).toEqual([
+    const addPayload = add.payload as {
+      entries: Array<{ id: string; domain: string }>;
+      mode?: string;
+    };
+    expect(addPayload.mode).toBe('denylist');
+    expect(addPayload.entries).toEqual([
       { id: 'github-com', domain: 'github.com', label: 'GitHub', addedAt: 1000 },
     ]);
 
     const bad = await resolveAoiHostBridgeRoute({
       method: 'POST',
-      route: '/browser-drive-allowlist',
+      route: '/browser-drive-denylist',
       body: { domain: 'not a domain' },
       token,
       openroomHome: home,
@@ -1063,14 +1064,15 @@ describe('registration CRUD (auth-only)', () => {
 
     const list = await resolveAoiHostBridgeRoute({
       method: 'GET',
-      route: '/browser-drive-allowlist',
+      route: '/browser-drive-denylist',
       body: {},
       token,
       openroomHome: home,
       sessionsDir,
       now: 1500,
     });
-    expect((list.payload as { entries: unknown[] }).entries).toHaveLength(1);
+    expect((list.payload as { entries: unknown[]; mode: string }).entries).toHaveLength(1);
+    expect((list.payload as { mode: string }).mode).toBe('denylist');
 
     const del = await resolveAoiHostBridgeRoute({
       method: 'DELETE',

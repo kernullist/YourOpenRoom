@@ -7,6 +7,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Changed
+
+- Browser-drive domain policy is now a **denylist (default allow)** instead of an allowlist
+  (default deny). Empty list permits public http(s) hosts; listed domains (and subdomains) are
+  blocked. Private/loopback/metadata hosts stay hard-blocked. Persistence moved to
+  `host-bridge/browser-drive-denylist.json` (legacy allowlist file is not migrated). Settings UI:
+  Host PC → Browser denylist.
+- Chat routing treats host Chrome/browser-drive intents (including Korean `접근해봐` / `크롬`) as
+  main-model turns so dialog-only tool arrays no longer make Aoi claim browser access is unavailable.
+
 ### Added
 
 - Desktop app icons can now be rearranged by drag and drop, with the custom order persisted across

@@ -712,16 +712,20 @@ function hasExplicitAppMention(text: string): boolean {
 
 function hasBrowserIntent(text: string): boolean {
   return [
-    /\b(open|show|save|bookmark|visit)\b.*\b(url|link|page|browser|site|website)\b/i,
-    /\b(url|link|page|browser|site|website)\b.*\b(open|show|save|bookmark|visit)\b/i,
-    /\b(read|summarize|extract|analyze)\b.*\b(url|link|page|article|website)\b/i,
-    /\b(url|link|page|article|website)\b.*\b(read|summarize|extract|analyze)\b/i,
+    /\b(open|show|save|bookmark|visit|access|attach|drive|control|use)\b.*\b(url|link|page|browser|site|website|chrome|edge|chromium)\b/i,
+    /\b(url|link|page|browser|site|website|chrome|edge|chromium)\b.*\b(open|show|save|bookmark|visit|access|attach|drive|control|use)\b/i,
+    /\b(read|summarize|extract|analyze|check)\b.*\b(url|link|page|article|website|browser|chrome|edge)\b/i,
+    /\b(url|link|page|article|website|browser|chrome|edge)\b.*\b(read|summarize|extract|analyze|check)\b/i,
     /\b(open|visit|read|summarize|extract|analyze)\b.*https?:\/\//i,
     /https?:\/\/\S+.*\b(open|visit|read|summarize|extract|analyze)\b/i,
-    /(링크|주소|브라우저|페이지).*(열어줘|보여줘|저장해|북마크)/,
-    /(열어줘|보여줘|저장해|북마크).*(링크|주소|브라우저|페이지)/,
-    /(링크|주소|페이지|기사).*(읽어줘|요약해|추출해|분석해)/,
-    /(읽어줘|요약해|추출해|분석해).*(링크|주소|페이지|기사)/,
+    // Host-PC browser drive / CDP attach (operator's real Chrome/Edge), not in-room apps.
+    /\b(host[_\s-]?browser|browser[_\s-]?drive|browser_read_auth|host_browser_read|remote[_\s-]?debugging|cdp)\b/i,
+    /\b(my|the|real|logged[-\s]?in)\b.*\b(chrome|edge|browser)\b/i,
+    /\b(chrome|edge|browser)\b.*\b(my|pc|host|logged[-\s]?in|session)\b/i,
+    /(링크|주소|브라우저|페이지|크롬|엣지|chrome|edge).*(열어|띄워|켜|보여|저장|북마크|접근|접속|붙여|조작|제어|읽어|요약|추출|분석|확인)/i,
+    /(열어|띄워|켜|보여|저장|북마크|접근|접속|붙여|조작|제어|읽어|요약|추출|분석|확인).*(링크|주소|브라우저|페이지|크롬|엣지|chrome|edge)/i,
+    /(내|제|호스트|host)\s*(pc|피씨|피시)?\s*(크롬|엣지|chrome|edge|브라우저)/i,
+    /(크롬|엣지|chrome|edge|브라우저).*(host\s*pc|호스트|내\s*pc|내\s*컴퓨터|로그인)/i,
   ].some((pattern) => pattern.test(text));
 }
 
@@ -795,10 +799,12 @@ function isShortAffirmativeFollowUp(text: string): boolean {
 
 function hasDirectOperationalIntent(text: string): boolean {
   return [
-    /\b(open|launch|run|start|show|close|reload|refresh|search|look up|play|listen|save|delete|remove|create|update|edit|set|configure|apply|change|enable|disable|continue|proceed|approve|bookmark|visit|read|summarize|extract|analyze|inspect|check|write|generate|prepare|remember|record|store|commit|push|test|build|install|deploy|execute)\b/i,
+    /\b(open|launch|run|start|show|close|reload|refresh|search|look up|play|listen|save|delete|remove|create|update|edit|set|configure|apply|change|enable|disable|continue|proceed|approve|bookmark|visit|access|attach|drive|control|read|summarize|extract|analyze|inspect|check|write|generate|prepare|remember|record|store|commit|push|test|build|install|deploy|execute)\b/i,
     /(?:^|[.!?]\s*)(?:please\s+)?use\b/i,
     /\b(?:can you|could you|would you|please)\s+use\b/i,
-    /(열어줘|띄워줘|켜줘|보여줘|닫아줘|새로고침|검색해|찾아줘|조사해|틀어줘|재생해|저장해|삭제해|만들어줘|생성해|수정해|편집해|설정해|설정하자|적용해|적용하자|변경해|바꿔|맞춰|사용해|진행해|진행하자|계속해|이어가|처리해|승인해|읽어줘|요약해|추출해|분석해|확인해|써줘|작성해|추가해|붙여넣어|반영해|기억해|기록해|커밋|푸시|테스트|빌드|설치|배포|실행)/,
+    // Include bare "해봐/해줘" imperatives (열어봐, 접근해봐, 읽어봐) — operators
+    // use those forms for try/check requests, not only the soft "해줘" endings.
+    /(열어줘|열어봐|띄워줘|띄워봐|켜줘|켜봐|보여줘|보여봐|닫아줘|닫아봐|새로고침|검색해|찾아줘|찾아봐|조사해|틀어줘|재생해|저장해|삭제해|만들어줘|생성해|수정해|편집해|설정해|설정하자|적용해|적용하자|변경해|바꿔|맞춰|사용해|접근해|접속해|붙여|조작해|제어해|진행해|진행하자|계속해|이어가|처리해|승인해|읽어줘|읽어봐|요약해|추출해|분석해|확인해|확인해봐|써줘|작성해|추가해|붙여넣어|반영해|기억해|기록해|커밋|푸시|테스트|빌드|설치|배포|실행)/,
   ].some((pattern) => pattern.test(text));
 }
 
@@ -936,6 +942,10 @@ export function shouldUseDialogModel(
   if (heavyIntentPatterns.some((pattern) => pattern.test(latestUserMessage))) return false;
   if (hasAppStateIntent(latestUserMessage)) return false;
   if (hasCodebaseIntent(latestUserMessage)) return false;
+  // Host-browser / CDP drive requests must never ride the dialog route: that
+  // path only exposes respond_to_user + finish_target, so the model honestly
+  // (and wrongly) reports that browser access is not available this session.
+  if (hasBrowserIntent(latestUserMessage)) return false;
   if (hasActionableAppIntent(latestUserMessage)) return false;
 
   const recentContext = normalizeWhitespace(

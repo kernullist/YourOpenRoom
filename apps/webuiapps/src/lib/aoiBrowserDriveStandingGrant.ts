@@ -1,7 +1,7 @@
 // Aoi browser-drive standing grants (P3.1a): the ONLY relaxation of Phase 2's per-
 // ACT human approval, and the highest-risk surface of the whole feature. A standing
 // grant is an operator-created, TTL-bounded, quota-limited pre-authorization for Aoi
-// to act on ONE allowlisted domain WITHOUT a per-action Approvals-inbox click.
+// to act on ONE domain WITHOUT a per-action Approvals-inbox click.
 //
 // What a grant does NOT relax (all still enforced per-act, elsewhere): the domain
 // allowlist, the forbidden hard-blocks (passwords/payment/OTP/CAPTCHA/financial

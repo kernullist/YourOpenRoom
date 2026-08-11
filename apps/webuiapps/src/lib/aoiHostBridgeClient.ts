@@ -651,7 +651,7 @@ export async function removeAoiBrowserDriveStandingGrant(
   );
 }
 
-// --- Browser-drive domain allowlist (auth-only config CRUD) ------------------
+// --- Browser-drive domain denylist (auth-only config CRUD; default-allow) ----
 
 export interface AoiBrowserDriveAllowlistEntryView {
   id: string;

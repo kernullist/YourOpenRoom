@@ -318,7 +318,7 @@ const AOI_CAPABILITY_REGISTRY = {
     approval: 'policy-gated',
     promptVisible: true,
     policyNotes:
-      'Requires Host Bridge os_browser_drive capability + browser-drive consent + a domain allowlist. Attaches to the MAIN profile, so the allowlist is the only containment; interactions need per-action approval, and passwords/payments/CAPTCHAs are never entered.',
+      'Requires Host Bridge os_browser_drive capability + browser-drive consent. Attaches to the MAIN profile; domains default to allowed and only the operator denylist blocks hosts. Interactions need per-action approval, and passwords/payments/CAPTCHAs are never entered.',
   },
   // The four tool names the browser-drive surface actually exposes to the model.
   // os_browser_drive above is the host-bridge CAPABILITY name, which is what the
@@ -340,7 +340,7 @@ const AOI_CAPABILITY_REGISTRY = {
     approval: 'policy-gated',
     promptVisible: true,
     policyNotes:
-      'Requires Host Bridge os_browser_drive capability + browser-drive consent + the domain on the allowlist. Read-only: never clicks, types, or submits. Reads authenticated session content, which is why it is graded high despite not writing.',
+      'Requires Host Bridge os_browser_drive capability + browser-drive consent. Domains default to allowed; denylist blocks only. Read-only: never clicks, types, or submits. Reads authenticated session content, which is why it is graded high despite not writing.',
   },
   browser_drive_act: {
     name: 'browser_drive_act',
@@ -370,7 +370,7 @@ const AOI_CAPABILITY_REGISTRY = {
     approval: 'user-confirmation',
     promptVisible: true,
     policyNotes:
-      'Fails unless the operator approved this exact plan. Acts on authenticated sites with no undo surface of its own, so the approval and the domain allowlist are the only containment.',
+      'Fails unless the operator approved this exact plan. Acts on authenticated sites with no undo surface of its own, so the approval and the domain denylist are the remaining containment.',
   },
   browser_drive_task: {
     name: 'browser_drive_task',

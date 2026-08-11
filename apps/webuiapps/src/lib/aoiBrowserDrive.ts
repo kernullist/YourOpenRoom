@@ -14,8 +14,9 @@
 //     ephemeral port, and PIN --remote-allow-origins to that exact loopback endpoint
 //     (never `*`). M111+ Chrome rejects the CDP websocket without a matching origin.
 //   - BLAST RADIUS = EVERY LOGGED-IN SITE. Because we attach to the MAIN profile
-//     (not a throwaway one), the domain allowlist (a later phase) is the ONLY
-//     containment; there is no cryptographic isolation of cookies here.
+//     (not a throwaway one), containment is: operator domain denylist (default-allow
+//     public hosts) + hard private-host block + per-action approval for ACTs; there
+//     is no cryptographic isolation of cookies here.
 
 export const AOI_BROWSER_DRIVE_CAPABILITY = 'os_browser_drive';
 export const AOI_BROWSER_DRIVE_SOURCE_ID = 'browser-drive';

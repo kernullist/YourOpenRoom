@@ -62,18 +62,18 @@ describe('executeBrowserDriveTool', () => {
     );
   });
 
-  it('maps an allowlist gate error to an actionable hint', async () => {
+  it('maps a denylist gate error to an actionable hint', async () => {
     const result = await executeBrowserDriveTool(
       { url: 'https://evil.com' },
       {
         sessionPath: 'aoi/default',
         fetchPage: async () => {
-          throw new Error('url_not_allowlisted [host_not_allowlisted]');
+          throw new Error('url_denylisted [host_denylisted]');
         },
       },
     );
-    expect(result).toContain('not on the browser-drive allowlist');
-    expect(result).toContain('allowlist');
+    expect(result).toContain('on the browser-drive denylist');
+    expect(result).toContain('denylist');
   });
 
   it('maps a consent gate error to a settings hint', async () => {

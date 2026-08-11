@@ -8,11 +8,13 @@ import {
   type AoiBrowserDriveAllowlist,
 } from '../aoiBrowserDriveAllowlist';
 
-const ALLOWLIST: AoiBrowserDriveAllowlist = addAoiBrowserDriveAllowlistEntry(
+// Denylist: only evil.com (and subdomains) is blocked; everything else is allowed.
+const DENYLIST: AoiBrowserDriveAllowlist = addAoiBrowserDriveAllowlistEntry(
   { version: 1, entries: [], updatedAt: 0 },
-  { domain: 'example.com' },
+  { domain: 'evil.com' },
   1,
 ).allowlist;
+const EMPTY: AoiBrowserDriveAllowlist = { version: 1, entries: [], updatedAt: 0 };
 
 const SAMPLE_HTML =
   '<html><head><title>Dashboard</title></head><body><h1>My account</h1>' +
@@ -37,11 +39,11 @@ function fakePage(
 }
 
 describe('navigateAndExtractAoiBrowserDrive', () => {
-  it('navigates an allowlisted page and returns a reader snapshot', async () => {
+  it('navigates a non-denylisted page and returns a reader snapshot', async () => {
     const page = fakePage();
     const result = await navigateAndExtractAoiBrowserDrive({
       page,
-      allowlist: ALLOWLIST,
+      allowlist: EMPTY,
       url: 'https://example.com/account',
       now: 1000,
     });
@@ -55,27 +57,27 @@ describe('navigateAndExtractAoiBrowserDrive', () => {
     }
   });
 
-  it('blocks a non-allowlisted URL before navigating', async () => {
+  it('blocks a denylisted URL before navigating', async () => {
     const page = fakePage();
     const result = await navigateAndExtractAoiBrowserDrive({
       page,
-      allowlist: ALLOWLIST,
+      allowlist: DENYLIST,
       url: 'https://evil.com/x',
       now: 1000,
     });
-    expect(result).toMatchObject({ ok: false, reason: 'url_not_allowlisted' });
+    expect(result).toMatchObject({ ok: false, reason: 'url_denylisted' });
     expect(page.goto).not.toHaveBeenCalled();
   });
 
-  it('blocks and blanks the tab when a redirect drifts off the allowlist', async () => {
+  it('blocks and blanks the tab when a redirect drifts onto a denylisted host', async () => {
     const page = fakePage({ landingUrl: 'https://tracker.evil.com/landing' });
     const result = await navigateAndExtractAoiBrowserDrive({
       page,
-      allowlist: ALLOWLIST,
+      allowlist: DENYLIST,
       url: 'https://example.com/login',
       now: 1000,
     });
-    expect(result).toMatchObject({ ok: false, reason: 'drift_off_allowlist' });
+    expect(result).toMatchObject({ ok: false, reason: 'drift_to_denylist' });
     // The tab was blanked after the drift was detected.
     expect(page.goto).toHaveBeenLastCalledWith('about:blank', expect.anything());
   });
@@ -87,7 +89,7 @@ describe('navigateAndExtractAoiBrowserDrive', () => {
     }) as unknown as typeof page.goto;
     const result = await navigateAndExtractAoiBrowserDrive({
       page,
-      allowlist: ALLOWLIST,
+      allowlist: EMPTY,
       url: 'https://example.com/slow',
       now: 1000,
     });
@@ -98,7 +100,7 @@ describe('navigateAndExtractAoiBrowserDrive', () => {
     const page = fakePage({ content: async () => '   ' });
     const result = await navigateAndExtractAoiBrowserDrive({
       page,
-      allowlist: ALLOWLIST,
+      allowlist: EMPTY,
       url: 'https://example.com/empty',
       now: 1000,
     });
@@ -113,7 +115,7 @@ describe('navigateAndExtractAoiBrowserDrive', () => {
     });
     const result = await navigateAndExtractAoiBrowserDrive({
       page,
-      allowlist: ALLOWLIST,
+      allowlist: EMPTY,
       url: 'https://example.com/account',
       now: 1000,
     });
