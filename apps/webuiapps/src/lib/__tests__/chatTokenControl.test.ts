@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildWebSearchPolicyPromptBlock,
   condenseConversationHistory,
+  isVolatileClaimChallenge,
   resolveAoiActionConfirmationRequest,
   resolveAoiResearchConfirmationRequest,
   shouldEnableAppTools,
@@ -559,6 +561,132 @@ describe('shouldUseDialogModel()', () => {
     expect(shouldEnableAppTools('좋네', history)).toBe(false);
     expect(shouldUseDialogModel('좋네', history)).toBe(true);
     expect(shouldUseDialogModel('고마워, 그럼 그렇게 하자', history)).toBe(true);
+  });
+});
+
+describe('isVolatileClaimChallenge()', () => {
+  // Verbatim shape of the turn that produced "이 환경에서는 살아있는 페이지를
+  // 직접 긁어서 확인이 안 돼": Aoi reported a shipped pricing tier, the user said
+  // it was not on their account, and the rebuttal routed to the dialog model,
+  // which has no search_web to re-check with.
+  const shippedPlanHistory = [
+    {
+      role: 'user' as const,
+      content: 'Grok Build 구독 $100 플랜이 출시할거란 뉴스를 예전에 봤었는데 아직 소식이 없어?',
+    },
+    {
+      role: 'assistant' as const,
+      content:
+        '소식 있어, 꿀보. 그 $100 플랜은 "SuperGrok Plus"라는 이름으로 떴어. 7월 31일 보도로 월 $100 미드티어 플랜 출시가 확인됐고, $30 SuperGrok과 $300 Heavy 사이 등급이야.',
+    },
+  ];
+
+  it('routes a challenge to a just-made volatile claim back to the tool-capable model', () => {
+    const message = '그런데 나한테는 $100 플랜이 안보여';
+
+    // The user's own words carry no freshness cue, which is exactly why the
+    // pre-existing router missed this turn.
+    expect(shouldUseWebSearch(message)).toBe(false);
+
+    expect(isVolatileClaimChallenge(message, shippedPlanHistory)).toBe(true);
+    expect(shouldUseDialogModel(message, shippedPlanHistory)).toBe(false);
+  });
+
+  it('recognizes the same rebuttal in English and other Korean phrasings', () => {
+    const englishHistory = [
+      {
+        role: 'assistant' as const,
+        content: 'The $100 mid-tier plan launched on 2026-07-31 and is available now.',
+      },
+    ];
+
+    expect(shouldUseWebSearch("I don't see it on my account")).toBe(false);
+    expect(isVolatileClaimChallenge("I don't see it on my account", englishHistory)).toBe(true);
+    expect(shouldUseDialogModel("I don't see it on my account", englishHistory)).toBe(false);
+
+    expect(isVolatileClaimChallenge('내 계정에는 그런 거 없는데', shippedPlanHistory)).toBe(true);
+    expect(isVolatileClaimChallenge('그거 진짜 맞아', shippedPlanHistory)).toBe(true);
+  });
+
+  it('ignores doubt when the preceding claim was not about volatile outside state', () => {
+    const history = [{ role: 'assistant' as const, content: '네 말이 맞아, 그렇게 하자.' }];
+
+    expect(isVolatileClaimChallenge('확실해?', history)).toBe(false);
+    expect(shouldUseDialogModel('확실해?', history)).toBe(true);
+  });
+
+  it('does not treat doubt about our own workspace as a question about the world', () => {
+    expect(isVolatileClaimChallenge('그 파일이 나한테는 안 보이는데?', shippedPlanHistory)).toBe(
+      false,
+    );
+    expect(isVolatileClaimChallenge('그 함수 확실해?', shippedPlanHistory)).toBe(false);
+  });
+
+  it('requires both a challenge and a prior assistant turn', () => {
+    expect(isVolatileClaimChallenge('그럼 그걸로 가자', shippedPlanHistory)).toBe(false);
+    expect(isVolatileClaimChallenge('나한테는 안 보여')).toBe(false);
+    expect(isVolatileClaimChallenge('', shippedPlanHistory)).toBe(false);
+  });
+});
+
+describe('buildWebSearchPolicyPromptBlock()', () => {
+  it('instructs search_web only when search_web is in the turn tools', () => {
+    const block = buildWebSearchPolicyPromptBlock({
+      hasWebSearchTool: true,
+      webSearchConfigured: true,
+      toolCallRuntimeAvailable: true,
+    });
+
+    expect(block).toContain('Web search rule:');
+    expect(block).toContain('use search_web first');
+  });
+
+  // The regression itself: a configured key used to emit the "use search_web
+  // first" rule on a dialog turn, where the tools array holds only
+  // respond_to_user/finish_target.
+  it('never asks for a search_web call on a turn that was not given the tool', () => {
+    const block = buildWebSearchPolicyPromptBlock({
+      hasWebSearchTool: false,
+      webSearchConfigured: true,
+      toolCallRuntimeAvailable: true,
+    });
+
+    expect(block).not.toContain('use search_web first');
+    expect(block).not.toContain('Web search rule:');
+    expect(block).toContain('Web search availability:');
+  });
+
+  it('tells the model its lack of search is one turn, not the environment', () => {
+    const block = buildWebSearchPolicyPromptBlock({
+      hasWebSearchTool: false,
+      webSearchConfigured: true,
+      toolCallRuntimeAvailable: true,
+    });
+
+    expect(block).toContain('Live web search IS configured for you');
+    expect(block).toContain('Never tell the user you cannot see the web');
+    expect(block).toContain('Do not claim or imply that you searched anything on this turn.');
+  });
+
+  it('stays silent when web search is genuinely unavailable', () => {
+    // No key at all: there is nothing truthful to promise.
+    expect(
+      buildWebSearchPolicyPromptBlock({
+        hasWebSearchTool: false,
+        webSearchConfigured: false,
+        toolCallRuntimeAvailable: true,
+      }),
+    ).toBe('');
+
+    // Provider cannot emit tool calls, so "the next turn will carry the tool"
+    // would be false. The no-tool-runtime prompt branch covers this case.
+    expect(
+      buildWebSearchPolicyPromptBlock({
+        hasWebSearchTool: false,
+        webSearchConfigured: true,
+        toolCallRuntimeAvailable: false,
+      }),
+    ).toBe('');
   });
 });
 

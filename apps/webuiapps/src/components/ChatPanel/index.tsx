@@ -197,6 +197,7 @@ import {
 import { createAoiLocalEmbeddingBrowserProvider } from '@/lib/aoiLocalEmbeddingBrowser';
 import { logger } from '@/lib/logger';
 import {
+  buildWebSearchPolicyPromptBlock,
   condenseConversationHistory,
   resolveAoiActionConfirmationRequest,
   resolveAoiResearchConfirmationRequest,
@@ -2281,7 +2282,9 @@ function buildSystemPrompt(
   // Kept as a positional placeholder so the long call site stays aligned; the
   // legacy per-session memories are no longer injected into the prompt.
   _legacyMemories: MemoryEntry[] = [],
-  hasTavily = false,
+  // search_web is in THIS turn's tools array -- not merely configured. See the
+  // call site: the dialog route ships a two-tool array without it.
+  hasWebSearchTool = false,
   hasResearchTools = false,
   aoiMemoryPrompt = '',
   missionPrompt = '',
@@ -2298,6 +2301,10 @@ function buildSystemPrompt(
   // app/IDE/workspace tools are exposed at all, and the policy for them has to
   // follow that decision or it describes tools the model was not given.
   includeAppTools = true,
+  // A Tavily key exists, whether or not search_web made it into this turn.
+  // Distinct from hasWebSearchTool so the "not this turn" case can be stated
+  // accurately instead of being silently indistinguishable from "never".
+  webSearchConfigured = false,
 ): BuiltSystemPrompt {
   let prompt = getCharacterPromptContext(character);
   // R7.2: the persona is immediately followed by ~150 lines of tool policy and
@@ -2435,15 +2442,11 @@ Tool availability:
 - If the request requires an app action or workspace mutation, say what is missing and give the next safe manual step.`;
   }
 
-  if (hasTavily) {
-    prompt += `
-
-Web search rule:
-- When the user asks you to search, look up, verify, compare current information, find recent news, or answer a fact that may have changed, use search_web first.
-- Korean verification questions like "진짜야?", "사실이야?", or "맞아?" require search_web first when they mention dates, API availability, product/model changes, vendor policy, releases, or support status.
-- Base current-information answers on search_web results instead of guessing.
-- When helpful, mention the source site names or URLs naturally in your reply.`;
-  }
+  prompt += buildWebSearchPolicyPromptBlock({
+    hasWebSearchTool,
+    webSearchConfigured,
+    toolCallRuntimeAvailable,
+  });
 
   if (hasResearchTools) {
     prompt += `
@@ -7167,6 +7170,12 @@ const ChatPanel: React.FC<{
       toolCallRuntimeAvailable &&
       !useDialogModel &&
       shouldEnableAppTools(latestUserMessage, history);
+    // Whether search_web is actually in this turn's tools array. hasTavily only
+    // says a key is configured; the dialog route ships a two-tool array, so the
+    // key being present there does not mean the model can search. The system
+    // prompt has to follow this flag rather than hasTavily, or it instructs a
+    // procedure the model was not given.
+    const hasWebSearchTool = toolCallRuntimeAvailable && !useDialogModel && hasTavily;
     const hasResearchTools = toolCallRuntimeAvailable && !useDialogModel && hasTavily;
     const confirmedResearchRequest = resolveAoiResearchConfirmationRequest(
       latestUserMessage,
@@ -7189,7 +7198,7 @@ const ChatPanel: React.FC<{
             getFinishTargetToolDef(),
             ...getMemoryToolDefinitions(),
             ...(outcomeFeedbackContract ? [getAoiOutcomeFeedbackToolDefinition()] : []),
-            ...(hasTavily ? getTavilyToolDefinitions() : []),
+            ...(hasWebSearchTool ? getTavilyToolDefinitions() : []),
             ...(hasResearchTools ? getAoiResearchToolDefinitions() : []),
             ...(hasImageGen ? getImageGenToolDefinitions() : []),
             ...getHostProcessToolDefinitions(),
@@ -7377,7 +7386,7 @@ const ChatPanel: React.FC<{
       userProfileRef.current,
       conversationPreferencesRef.current,
       currentMemories,
-      hasTavily && toolCallRuntimeAvailable,
+      hasWebSearchTool,
       hasResearchTools,
       `${currentAoiMemoryPrompt}${currentAoiSelfPrompt}`,
       currentAoiMissionPrompt,
@@ -7405,6 +7414,7 @@ const ChatPanel: React.FC<{
           : null,
       }),
       includeAppTools,
+      hasTavily,
     );
     // Budget accounting stays on the combined text so the snapshots remain
     // comparable to the ones recorded before the split.

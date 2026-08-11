@@ -919,6 +919,9 @@ export function shouldUseDialogModel(
   if (shouldUseAoiResearchRun(latestUserMessage, history)) return false;
   if (resolveAoiActionConfirmationRequest(latestUserMessage, history)) return false;
   if (shouldUseWebSearch(latestUserMessage)) return false;
+  // The user's words alone carry no freshness cue here; the staleness lives in
+  // the claim they are answering, so this has to be checked against history.
+  if (isVolatileClaimChallenge(latestUserMessage, history)) return false;
   if (isAppOnlySocialTurn(latestUserMessage)) return true;
 
   const heavyIntentPatterns = [
@@ -1007,13 +1010,19 @@ const WEB_SEARCH_FRESHNESS_CUE_PATTERNS = [
 // question about the world, so the implicit path stays off. Explicit requests
 // ("검색해줘", "웹에서 찾아봐") are unaffected: they match the direct patterns
 // above and never reach this gate.
+// A bare demonstrative. Enough to mean "the thing in front of us" when a
+// question is otherwise unanchored, which is why the web-search gate counts it
+// -- but it is also simply how anyone refers back to what was just said, so the
+// volatile-claim challenge below deliberately does not count it.
+const DEICTIC_REFERENCE_PATTERN = /(이거|그거|저거|이건|그건|이걸|그걸)/;
+
 const WEB_SEARCH_LOCAL_CONTEXT_PATTERNS = [
   // A source artifact named anywhere in the message.
   /(파일|코드|함수|클래스|메서드|메소드|모듈|필드|변수|타입|인터페이스|테스트|스크립트|커밋|브랜치|레포|리포|저장소|디렉터리|디렉토리|폴더)/,
   /\b(file|code|function|class|method|module|field|variable|type|interface|test|script|commit|branch|diff|repo|repository|directory|folder)\b/i,
   // Pointing at something already in front of us.
   /(이|그|저|해당|우리|내|네)\s*(기능|설정|옵션|플래그|동작|로직|부분|값)/,
-  /(이거|그거|저거|이건|그건|이걸|그걸)/,
+  DEICTIC_REFERENCE_PATTERN,
   // Work verbs that only make sense against our own code.
   /\b(refactor|implement|rewrite|debug|review)\b/i,
   /(리팩터|리팩토링|구현해|디버깅|고쳐줘|수정해|배포해도)/,
@@ -1159,4 +1168,125 @@ export function shouldUseWebSearch(latestUserMessage: string): boolean {
   }
 
   return WEB_SEARCH_VOLATILE_FACT_PATTERNS.some((pattern) => pattern.test(latest));
+}
+
+// A claim about the outside world that expires: money, plan tiers, the
+// release/availability lifecycle, dated announcements. Deliberately tighter
+// than WEB_SEARCH_VOLATILE_FACT_PATTERNS, whose domain-neutral words (model,
+// policy, support, change) appear in almost every ordinary coding turn -- reusing
+// that list here would turn every "that does not work" into a web search.
+// Vendor names alone are excluded for the same reason: naming Claude or GitHub
+// is not by itself a claim that can go stale.
+const ASSISTANT_VOLATILE_CLAIM_PATTERNS = [
+  // Money and plan tiers.
+  /\$\s?\d/,
+  /\b\d+\s*(?:usd|dollars?)\b/i,
+  /\b(?:pricing|subscription|free tier|paid plan|billing|quota)\b/i,
+  /(요금제|구독|유료\s*플랜|무료\s*플랜|과금|가격|요금)/,
+  // Release and availability lifecycle.
+  /\b(?:released|launched|rolling out|rolled out|rollout|available now|generally available|beta|public preview|deprecated|sunset|discontinued)\b/i,
+  /(출시|릴리스|릴리즈|베타|프리뷰|정식\s*공개|공개됐|공개된|단종|지원\s*종료)/,
+  // A dated claim is a claim that expires.
+  /\b20\d{2}[-./]\d{1,2}[-./]\d{1,2}\b/,
+  /\d{1,2}\s*월\s*\d{1,2}\s*일/,
+];
+
+// The same local-context gate shouldUseWebSearch applies -- a doubt about our
+// own code is not a doubt about the world -- minus the bare demonstratives.
+// Pointing at what was just said ("is that really right?") is the most natural
+// way to dispute a claim, and reaching this check already required the previous
+// turn to look like an outside-world claim, so the deictic carries no local
+// signal here.
+const CLAIM_CHALLENGE_LOCAL_CONTEXT_PATTERNS = WEB_SEARCH_LOCAL_CONTEXT_PATTERNS.filter(
+  (pattern) => pattern !== DEICTIC_REFERENCE_PATTERN,
+);
+
+// The user pushing back on what was just asserted -- absence from their own
+// vantage point ("I don't see it") or direct doubt ("are you sure?").
+const USER_CLAIM_CHALLENGE_PATTERNS = [
+  /\b(?:i|we)\s+(?:don'?t|do not|can'?t|cannot|couldn'?t|never)\s+(?:see|find|get|have)\b/i,
+  /\b(?:there'?s|there is|there are)\s+no\b/i,
+  /\b(?:not|isn'?t|aren'?t|doesn'?t)\s+(?:showing|there|available|visible|listed|appearing)\b/i,
+  /\bnothing\s+(?:like that|there|shows)\b/i,
+  /\b(?:are you sure|you sure|that'?s not right|that'?s wrong|is that real)\b/i,
+  /(안\s*보여|안\s*보이|안\s*떠|안\s*뜨|보이지\s*않|나오지\s*않|안\s*나와|안\s*나오|못\s*찾|찾을\s*수\s*없|없는데|없던데|그런\s*거\s*없|안\s*생겼)/u,
+  /(확실해|진짜\s*맞|정말\s*맞|틀린\s*거\s*아니|잘못\s*알고|아닌\s*것\s*같은데|아닌\s*거\s*같은데)/u,
+];
+
+/**
+ * The user is disputing a claim Aoi just made about the outside world
+ * ("the $100 plan shipped" -> "I don't see it on my account").
+ *
+ * The user's own words carry no freshness cue, so shouldUseWebSearch misses the
+ * turn and it fell through to the dialog model, whose tool array is only
+ * respond_to_user/finish_target. With no search_web to call, Aoi answered that
+ * it could not reach the web -- which reads as a permanent property of the
+ * environment rather than one turn's missing tool. Routing these back to the
+ * main model is the cheap direction to be wrong in: the cost is one
+ * tool-capable turn, and the model still decides whether to search.
+ */
+export function isVolatileClaimChallenge(
+  latestUserMessage: string,
+  history: ChatMessage[] = [],
+): boolean {
+  const latest = normalizeWhitespace(latestUserMessage);
+  if (!latest) return false;
+
+  if (CLAIM_CHALLENGE_LOCAL_CONTEXT_PATTERNS.some((pattern) => pattern.test(latest))) return false;
+  if (!USER_CLAIM_CHALLENGE_PATTERNS.some((pattern) => pattern.test(latest))) return false;
+
+  const previousAssistantMessage = getPreviousAssistantMessage(history);
+  if (!previousAssistantMessage) return false;
+
+  return ASSISTANT_VOLATILE_CLAIM_PATTERNS.some((pattern) =>
+    pattern.test(previousAssistantMessage),
+  );
+}
+
+/**
+ * The system-prompt text describing web search, derived from whether search_web
+ * is actually in this turn's tools array.
+ *
+ * This lives next to the routing predicates on purpose. The prompt used to be
+ * keyed off "a Tavily key exists" while the tools array was keyed off "the turn
+ * routed to the main model", so a dialog turn was told to call search_web first
+ * and handed no search_web to call. Faced with that contradiction the model
+ * either fabricated a search or told the user the environment had no web
+ * access -- both of which happened in production. Keeping the flag and the text
+ * in one place is what stops them drifting apart again.
+ */
+export function buildWebSearchPolicyPromptBlock(params: {
+  /** search_web is in THIS turn's tools array. */
+  hasWebSearchTool: boolean;
+  /** A Tavily key exists, regardless of this turn's routing. */
+  webSearchConfigured: boolean;
+  /** The provider can return structured tool calls at all. */
+  toolCallRuntimeAvailable: boolean;
+}): string {
+  if (params.hasWebSearchTool) {
+    return `
+
+Web search rule:
+- When the user asks you to search, look up, verify, compare current information, find recent news, or answer a fact that may have changed, use search_web first.
+- Korean verification questions like "진짜야?", "사실이야?", or "맞아?" require search_web first when they mention dates, API availability, product/model changes, vendor policy, releases, or support status.
+- Base current-information answers on search_web results instead of guessing.
+- When helpful, mention the source site names or URLs naturally in your reply.`;
+  }
+
+  // Tool-capable turn, key configured, but search_web was not attached (the
+  // dialog route ships a two-tool array). Left unexplained, the model guesses
+  // why the tool is missing, and the guess it reaches for is "this environment
+  // cannot reach the web" -- a claim about the deployment that is false and that
+  // the user has no easy way to disprove.
+  if (params.webSearchConfigured && params.toolCallRuntimeAvailable) {
+    return `
+
+Web search availability:
+- Live web search IS configured for you. It is only absent from this particular turn's tools.
+- Never tell the user you cannot see the web, that this environment cannot reach live pages, or that web access might arrive later. All of that is false.
+- If answering well needs live verification, say plainly that you want to check it and ask the user to confirm. The next turn will carry the search tool.
+- Do not claim or imply that you searched anything on this turn.`;
+  }
+
+  return '';
 }
