@@ -4,6 +4,8 @@
 // consumers -- the server writer and the greeting -- so the asked-once rule
 // cannot drift between them.
 
+import { isAoiInternalActionTitle } from './aoiAutonomyCardI18n';
+
 export const MAX_AOI_RELATIONSHIP_RECORDED_THREADS = 8;
 
 // Which strategic-brief threads belong on the relationship record.
@@ -18,13 +20,16 @@ export const MAX_AOI_RELATIONSHIP_RECORDED_THREADS = 8;
 // Asking would be a question with no available answer, which is exactly what the
 // asked-once rule exists to avoid. The governor and situation panels already
 // render the blocked set with its reasons; that is where that text belongs.
+//
+// Operator/recovery action titles ("리서치 좁혀서 재시도") are also excluded:
+// they are Aoi's next-step labels, not shared work the user left open.
 export function selectAoiRelationshipThreadTitles(brief: {
   readonly openThreads?: readonly string[] | null;
   readonly blockedThreads?: readonly string[] | null;
 }): string[] {
   return (brief.openThreads ?? [])
     .map((title) => (typeof title === 'string' ? title.trim() : ''))
-    .filter((title) => title.length > 0)
+    .filter((title) => title.length > 0 && !isAoiInternalActionTitle(title))
     .slice(0, MAX_AOI_RELATIONSHIP_RECORDED_THREADS);
 }
 

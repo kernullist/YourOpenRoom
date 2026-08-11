@@ -42,6 +42,14 @@ describe('selectAoiRelationshipThreadTitles', () => {
     ).toHaveLength(8);
   });
 
+  it('drops operator recovery action titles so greetings do not ask about them', () => {
+    expect(
+      selectAoiRelationshipThreadTitles({
+        openThreads: ['리서치 좁혀서 재시도', 'Ship the driver telemetry patch', '범위 좁히기'],
+      }),
+    ).toEqual(['Ship the driver telemetry patch']);
+  });
+
   it('treats an absent or malformed brief as nothing to record', () => {
     expect(selectAoiRelationshipThreadTitles({})).toEqual([]);
     expect(selectAoiRelationshipThreadTitles({ openThreads: null })).toEqual([]);

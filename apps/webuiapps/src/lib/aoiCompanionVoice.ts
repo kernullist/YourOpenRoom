@@ -21,7 +21,7 @@
 
 import type { AoiCardLang } from './aoiAutonomyCardI18n';
 import type { AoiProactiveBriefMediaBucket } from './aoiAutonomyTypes';
-import { humanizeAoiSelfInquiryTopicLabel } from './aoiSelfProfile';
+import { selectAoiSpeakableSessionSummary } from './aoiSelfProfile';
 
 export interface AoiCompanionVoice {
   lang: AoiCardLang;
@@ -51,11 +51,10 @@ function sanitizeCompanionText(value: string | null | undefined, maxChars: numbe
   return `${collapsed.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
 }
 
-// Research-audit prose must never reach spoken companion lines. Label
-// humanization lives in aoiSelfProfile so prompt blocks and chat hooks share
-// one parser; this only re-caps to the companion surface limit.
+// Machine/audit prose and operator-card action titles must never reach spoken
+// companion lines. Cleaning lives in aoiSelfProfile; this only re-caps length.
 function humanizeCompanionTopicLabel(value: string | null | undefined, maxChars: number): string {
-  return sanitizeCompanionText(humanizeAoiSelfInquiryTopicLabel(value), maxChars);
+  return sanitizeCompanionText(selectAoiSpeakableSessionSummary(value), maxChars);
 }
 
 function pickCompanionCopy(lang: AoiCardLang, table: CompanionCopyTable): string {
@@ -339,7 +338,14 @@ export function buildAoiCompanionSessionGreeting(
   }
   const name = sanitizedUserName(voice);
   const greeting = name ? `${name}, ${opener}` : opener;
-  const summary = sanitizeCompanionText(params.lastSessionSummary, MAX_GREETING_SUMMARY_CHARS);
+  // lastSessionSummary is often the strategic-brief focusSummary, which used to
+  // carry observation audit prose ("Active proposal ... status=accepted"). Strip
+  // that before it lands in a first-person greeting; if nothing speakable remains,
+  // open with the time-gap line only.
+  const summary = humanizeCompanionTopicLabel(
+    params.lastSessionSummary,
+    MAX_GREETING_SUMMARY_CHARS,
+  );
   if (!summary) {
     return greeting;
   }

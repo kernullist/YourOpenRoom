@@ -20,8 +20,10 @@
 // - Overlap requires a real match between a stored inquiry and a stored user
 //   topic. No match means silence, never a claimed affinity.
 // - display_only / mutationCount 0.
-// - Pure and dependency-free so the client can use it directly (the interest
-//   profile module touches node APIs and cannot be imported by value here).
+// - Mostly pure; the only external import is the operator-action title catalog
+//   used to keep internal recovery labels out of speakable continuity.
+
+import { isAoiInternalActionTitle } from './aoiAutonomyCardI18n';
 
 export type AoiSelfInquiryKind = 'research_run' | 'agent_memory';
 
@@ -254,6 +256,97 @@ export function humanizeAoiSelfInquiryTopicLabel(value: string | null | undefine
   }
   const stripped = stripResearchAuditBoilerplate(content);
   return stripped ? capLabel(stripped) : '';
+}
+
+// Broader speakable-topic cleaner for continuity/session surfaces. Covers
+// research-audit memories AND proposal/brief machine prose that used to leak
+// into greetings:
+//   Active proposal "리서치 좁혀서 재시도" status=accepted
+//   Pursuing: ...
+// Empty means "do not speak that detail" -- opener-only is better than audit.
+export function humanizeAoiSpeakableTopicLabel(value: string | null | undefined): string {
+  const content = collapseLabelText(value ?? '');
+  if (!content) {
+    return '';
+  }
+
+  // Active proposal "TITLE" status=...
+  const activeProposal = content.match(/^Active proposal\s+"([^"]+)"(?:\s+status=\S+.*)?$/i);
+  if (activeProposal?.[1]) {
+    return capLabel(activeProposal[1]);
+  }
+  const activeProposalLoose = content.match(/^Active proposal\s+"([^"]+)"/i);
+  if (activeProposalLoose?.[1]) {
+    return capLabel(activeProposalLoose[1]);
+  }
+
+  // Deterministic strategic-brief focus prefixes.
+  const briefPrefix = content.match(/^(?:Pursuing|Blocked|Outcome):\s*(.+)$/i);
+  if (briefPrefix?.[1]) {
+    const nested = humanizeAoiSpeakableTopicLabel(briefPrefix[1]);
+    return nested || capLabel(briefPrefix[1]);
+  }
+
+  // Goal track/continue templates: keep the user objective, drop the prefix.
+  const goalPrefix = content.match(/^(?:목표 추적|Track goal|목표 계속|Continue goal):\s*(.+)$/i);
+  if (goalPrefix?.[1]) {
+    const nested = humanizeAoiSpeakableTopicLabel(goalPrefix[1]);
+    return nested || capLabel(goalPrefix[1]);
+  }
+
+  // Legacy research-run observation: completed research "TITLE" phase=...
+  const statusResearch = content.match(/^(?:completed|failed)\s+research\s+"([^"]+)"/i);
+  if (statusResearch?.[1]) {
+    return capLabel(statusResearch[1]);
+  }
+
+  // Proposal "TITLE" is blocked...
+  const blockedProposal = content.match(/^Proposal\s+"([^"]+)"(?:\s+is blocked\b.*)?$/i);
+  if (blockedProposal?.[1]) {
+    return capLabel(blockedProposal[1]);
+  }
+
+  // Decision audit with proposal ids -- never speak.
+  if (/^Recent autonomy proposal decision\b/i.test(content)) {
+    return '';
+  }
+
+  // Generic: quoted title next to status= / phase= machine tails.
+  if (/\b(?:status|phase|accepted)=\S+/i.test(content)) {
+    const quoted = content.match(/"([^"]+)"/);
+    if (quoted?.[1] && !isWeakTopicLabel(quoted[1])) {
+      return capLabel(quoted[1]);
+    }
+  }
+
+  // Research-completion memory audit.
+  if (isResearchAuditContent(content)) {
+    return humanizeAoiSelfInquiryTopicLabel(content);
+  }
+  // Ordinary labels: do not hard-cap here. Companion/greeting surfaces apply
+  // their own maxChars (and ellipsis style) so long session summaries are not
+  // double-truncated with a different marker.
+  if (isWeakTopicLabel(content) && /Aoi completed research|\bFindings\s*:/i.test(content)) {
+    return '';
+  }
+  return content;
+}
+
+// Session-greeting continuity: humanize first, then refuse operator/recovery
+// action titles. "리서치 좁혀서 재시도" is Aoi's recovery card label, not a
+// topic the user was discussing -- speaking it is worse than omitting the clause.
+export function selectAoiSpeakableSessionSummary(value: string | null | undefined): string {
+  const humanized = humanizeAoiSpeakableTopicLabel(value);
+  if (!humanized) {
+    return '';
+  }
+  if (/^No active threads\.?$/i.test(humanized)) {
+    return '';
+  }
+  if (isAoiInternalActionTitle(humanized) || isAoiInternalActionTitle(value)) {
+    return '';
+  }
+  return humanized;
 }
 
 // Derive a companion-safe topic label from an agent-scope memory. Prefer a real

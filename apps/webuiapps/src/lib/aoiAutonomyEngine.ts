@@ -380,16 +380,17 @@ function researchRunToObservation(run: AoiResearchRunSummary): AoiObservation | 
     run.error?.code ? `error:${run.error.code}` : null,
     run.warningCount > 0 ? 'research-warnings' : null,
   ].filter((item): item is string => Boolean(item));
+  // Summary is a speakable topic title. Status/phase/counts already live in
+  // riskSignals + payloadRef; stuffing them into the summary leaks machine prose
+  // into strategic-brief focus and session greetings.
+  const researchTitle = truncateText(run.title || run.request || 'research run', 220);
   const observation: AoiObservation = {
     version: 1,
     id: makeObservationId('research', run.id),
     source: 'research_run',
     sessionPath: run.sessionPath,
     createdAt: run.updatedAt || run.createdAt,
-    summary: truncateText(
-      `${run.status} research "${run.title || run.request}" phase=${run.phase} accepted=${run.sourceCounts.accepted}`,
-      260,
-    ),
+    summary: researchTitle,
     payloadRef: `research:${run.id}`,
     memoryIds: [],
     artifactRefs,
@@ -436,13 +437,20 @@ function memoryToObservation(sessionPath: string, memory: AoiMemoryEntry): AoiOb
 }
 
 function activeProposalToObservation(proposal: AoiProposal): AoiObservation | null {
+  // Title only: "Active proposal ... status=accepted" used to become the
+  // strategic-brief focusSummary and then the session greeting ("지난번엔
+  // Active proposal ... 쪽 보고 있었어"). Status stays on dedupeKey/payload.
+  const title = truncateText(proposal.title || '', 220);
+  if (!title) {
+    return null;
+  }
   const observation: AoiObservation = {
     version: 1,
     id: makeObservationId('proposal', proposal.id),
     source: 'proposal',
     sessionPath: proposal.sessionPath,
     createdAt: proposal.updatedAt || proposal.createdAt,
-    summary: truncateText(`Active proposal "${proposal.title}" status=${proposal.status}`, 220),
+    summary: title,
     payloadRef: `proposal:${proposal.id}`,
     memoryIds: proposal.memoryIds,
     artifactRefs: proposal.artifactRefs,
@@ -460,13 +468,16 @@ function decisionToObservation(decision: {
   action: string;
   createdAt: number;
 }): AoiObservation {
+  // Keep decisions internal/audit-shaped out of speakable surfaces: a short
+  // action word is enough for the tick; proposal ids never belong in a greeting.
+  const action = truncateText(decision.action || 'decision', 80);
   return {
     version: 1,
     id: makeObservationId('decision', decision.id),
     source: 'proposal',
     sessionPath: decision.sessionPath,
     createdAt: decision.createdAt,
-    summary: `Recent autonomy proposal decision ${decision.action} for ${decision.proposalId}.`,
+    summary: action,
     payloadRef: `decision:${decision.id}`,
     memoryIds: [],
     artifactRefs: [`decision:${decision.id}`],

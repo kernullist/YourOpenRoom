@@ -526,6 +526,7 @@ import {
   buildAoiSelfProfilePromptBlock,
   findAoiSharedInterests,
   selectAoiSelfInquiryToShare,
+  selectAoiSpeakableSessionSummary,
 } from '@/lib/aoiSelfProfile';
 import {
   DEFAULT_AOI_SELF_OBSERVATION_STATE,
@@ -3555,11 +3556,20 @@ const ChatPanel: React.FC<{
     const openThreads = selectAoiRelationshipThreadTitles(aoiStrategicBrief).map((title) => ({
       title,
     }));
+    // Continuity summary for the next greeting must be user-meaningful. The
+    // strategic brief often leads with operator recovery titles ("리서치 좁혀서
+    // 재시도") which are Aoi's next-step labels, not what the user was talking
+    // about. Prefer a speakable focus; else the first open thread; else omit.
+    const speakableFocus = selectAoiSpeakableSessionSummary(aoiStrategicBrief.focusSummary);
+    const speakableThread = openThreads
+      .map((thread) => selectAoiSpeakableSessionSummary(thread.title))
+      .find((title) => Boolean(title));
+    const continuitySummary = speakableFocus || speakableThread || '';
     // Dedupe on CONTENT, not object identity: refreshAoiAutonomy runs after many
     // user actions and hands back a fresh brief object each time, so keying off
     // the reference alone would rewrite the record on every settings poke.
     const summaryKey = JSON.stringify([
-      aoiStrategicBrief.focusSummary,
+      continuitySummary,
       openThreads.map((thread) => thread.title),
     ]);
     if (summaryKey === lastSessionSummaryKeyRef.current) {
@@ -3567,7 +3577,7 @@ const ChatPanel: React.FC<{
     }
     lastSessionSummaryKeyRef.current = summaryKey;
     void reportAoiRelationshipSessionSummary(sessionPathRef.current, {
-      summary: aoiStrategicBrief.focusSummary,
+      summary: continuitySummary,
       openThreads,
     })
       .then((relationship) => {

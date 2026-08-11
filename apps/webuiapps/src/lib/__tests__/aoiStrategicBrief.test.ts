@@ -184,6 +184,18 @@ describe('synthesizeAoiStrategicBrief', () => {
     });
     expect(observationOnly.focusSummary).toBe('Branch changed to feature/x');
 
+    const proposalAuditOnly = synthesizeAoiStrategicBrief({
+      ...baseSynthInput(),
+      observations: [
+        makeObservation({
+          id: 'o-proposal',
+          summary: 'Active proposal "리서치 좁혀서 재시도" status=accepted',
+        }),
+      ],
+    });
+    expect(proposalAuditOnly.focusSummary).toBe('리서치 좁혀서 재시도');
+    expect(proposalAuditOnly.focusSummary).not.toMatch(/Active proposal|status=/i);
+
     const empty = synthesizeAoiStrategicBrief(baseSynthInput());
     expect(empty.focusSummary).toBe('No active threads.');
     expect(empty.openThreads).toEqual([]);

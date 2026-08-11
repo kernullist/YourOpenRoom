@@ -17,6 +17,7 @@ import { dirname, isAbsolute, relative, resolve } from 'path';
 import { randomUUID } from 'crypto';
 import { normalizeAoiAutonomySessionPath } from './aoiAutonomyStore';
 import { redactAoiSensitiveContent, stripAoiSourceInstructions } from './aoiMemoryShared';
+import { humanizeAoiSpeakableTopicLabel } from './aoiSelfProfile';
 import type {
   AoiAutonomyBlockedProposal,
   AoiAutonomyTickReason,
@@ -239,7 +240,15 @@ export function synthesizeAoiStrategicBrief(
 
   // Focus priority: what Aoi just decided to pursue, then what is blocked, then a
   // fresh outcome, then the active mission, then a notable observation.
+  //
+  // Observation highlights can still be legacy audit prose (Active proposal
+  // "..." status=...). Prefer a speakable humanization before promoting them to
+  // focusSummary -- that field is re-injected into recall AND session greetings.
   const missionFocus = missionFocusOrEmpty(input.mission);
+  const observationFocus =
+    observationHighlights
+      .map((line) => humanizeAoiSpeakableTopicLabel(line) || '')
+      .find((line) => line.length > 0) || '';
   const focusSummary = sanitizeText(
     openThreads[0]
       ? `Pursuing: ${openThreads[0]}`
@@ -249,8 +258,8 @@ export function synthesizeAoiStrategicBrief(
           ? `Outcome: ${recentOutcomes[0]}`
           : missionFocus
             ? missionFocus
-            : observationHighlights[0]
-              ? observationHighlights[0]
+            : observationFocus
+              ? observationFocus
               : 'No active threads.',
     FOCUS_MAX_CHARS,
   );

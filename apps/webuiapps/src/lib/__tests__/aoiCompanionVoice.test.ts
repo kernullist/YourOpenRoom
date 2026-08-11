@@ -265,6 +265,38 @@ describe('aoiCompanionVoice resume copy', () => {
     expect(en).toBe('Back again. Last time we were on the flaky e2e.');
   });
 
+  it('humanizes proposal audit prose in the session greeting', () => {
+    // Real user topic buried in audit prose: speak the topic only.
+    const en = buildAoiCompanionSessionGreeting(EN, {
+      gapMs: 2 * 3_600_000,
+      lastSessionSummary: 'Pursuing: Active proposal "kernel path" status=accepted',
+    });
+    expect(en).toBe('Back again. Last time we were on kernel path.');
+    expect(en).not.toMatch(/Active proposal|status=|Pursuing:/i);
+  });
+
+  it('omits internal recovery action titles instead of speaking them as topics', () => {
+    // "리서치 좁혀서 재시도" is Aoi's recovery-card action label, not a user topic.
+    expect(
+      buildAoiCompanionSessionGreeting(KO, {
+        gapMs: 2 * 3_600_000,
+        lastSessionSummary: 'Active proposal "리서치 좁혀서 재시도" status=accepted',
+      }),
+    ).toBe('또 왔네.');
+    expect(
+      buildAoiCompanionSessionGreeting(KO, {
+        gapMs: 2 * 3_600_000,
+        lastSessionSummary: '리서치 좁혀서 재시도',
+      }),
+    ).toBe('또 왔네.');
+    expect(
+      buildAoiCompanionSessionGreeting(EN, {
+        gapMs: 2 * 3_600_000,
+        lastSessionSummary: 'Pursuing: Refresh research narrowly',
+      }),
+    ).toBe('Back again.');
+  });
+
   it('omits the reference when no summary was stored and caps a long one', () => {
     expect(buildAoiCompanionSessionGreeting(KO, { gapMs: 0, lastSessionSummary: '  ' })).toBe(
       '또 왔네.',

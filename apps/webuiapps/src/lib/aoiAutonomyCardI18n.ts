@@ -538,6 +538,90 @@ export function aoiCardRecoveryText(
   return { title: pick(lang, labels[failureKind]), body, reason };
 }
 
+// Catalog of operator/recovery/proposal ACTION titles. These are Aoi's internal
+// next-step labels (e.g. "리서치 좁혀서 재시도"), not topics the user was talking
+// about. Continuity greetings and relationship open-threads must not surface them
+// as "what we left off on" -- that reads as gibberish to the user.
+const AOI_CARD_PROPOSAL_TEXT_KEYS: readonly AoiCardProposalTextKey[] = [
+  'research_followup',
+  'stale_research',
+  'procedure_candidate',
+  'repeated_research',
+  'repeated_kira',
+  'kira_attention',
+];
+
+const AOI_FAILURE_KINDS: readonly AoiFailureKind[] = [
+  'policy_blocked',
+  'missing_evidence',
+  'scope_too_broad',
+  'stale_confirmation',
+  'research_failed',
+  'research_insufficient_sources',
+  'kira_needs_clarification',
+  'kira_validation_failed',
+  'kira_review_blocked',
+  'execution_exception',
+];
+
+let cachedInternalActionTitles: Set<string> | null = null;
+
+function normalizeInternalActionTitle(value: string): string {
+  return value.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+export function listAoiInternalActionTitles(): ReadonlySet<string> {
+  if (cachedInternalActionTitles) {
+    return cachedInternalActionTitles;
+  }
+  const titles = new Set<string>();
+  for (const lang of ['ko', 'en'] as const) {
+    for (const key of AOI_CARD_PROPOSAL_TEXT_KEYS) {
+      const title = aoiCardProposalText(lang, key).title;
+      if (title) {
+        titles.add(normalizeInternalActionTitle(title));
+      }
+    }
+    for (const kind of AOI_FAILURE_KINDS) {
+      const title = aoiCardRecoveryText(lang, kind, { sourceRef: 'source' }).title;
+      if (title) {
+        titles.add(normalizeInternalActionTitle(title));
+      }
+    }
+  }
+  cachedInternalActionTitles = titles;
+  return titles;
+}
+
+// True when the string is (or is only) an operator-card action title. Used by
+// continuity/greeting surfaces so Aoi does not say
+// "지난번엔 리서치 좁혀서 재시도 쪽 보고 있었어" about her own recovery card.
+export function isAoiInternalActionTitle(value: string | null | undefined): boolean {
+  const collapsed = (value ?? '').replace(/\s+/g, ' ').trim();
+  if (!collapsed) {
+    return false;
+  }
+  if (listAoiInternalActionTitles().has(normalizeInternalActionTitle(collapsed))) {
+    return true;
+  }
+  // Defensive: bare recovery/operator phrasing that drifted from the catalog.
+  if (
+    /^(?:Refresh research|Ask one clarification|Ask for missing evidence|Narrow scope|Refresh confirmation|Ask Kira clarification|Prepare Kira follow-up|Prepare review follow-up|Mark blocked)/i.test(
+      collapsed,
+    )
+  ) {
+    return true;
+  }
+  if (
+    /^(?:리서치 좁혀서 재시도|출처 점검하며 리서치 재시도|명확화 한 가지 질문|누락된 근거 요청|범위 좁히기|확인 갱신|Kira 명확화 질문|Kira 후속 준비|리뷰 후속 준비|사유와 함께 차단 표시)$/u.test(
+      collapsed,
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
 // Goal proposal card text (goal_candidate / goal_continuation). Interpolated
 // values (the user's objective text and plan step titles) are passed through
 // verbatim -- only the surrounding template is localized. Unlocalized languages

@@ -7,8 +7,10 @@ import {
   deriveAoiSelfInquiryLabel,
   findAoiSharedInterests,
   humanizeAoiSelfInquiryTopicLabel,
+  humanizeAoiSpeakableTopicLabel,
   normalizeAoiSelfTopicKey,
   selectAoiSelfInquiryToShare,
+  selectAoiSpeakableSessionSummary,
   type AoiSelfInquirySourceInput,
 } from '../aoiSelfProfile';
 
@@ -364,6 +366,46 @@ describe('humanizeAoiSelfInquiryTopicLabel', () => {
         'Aoi completed research on 2026-07-17. Findings: none. accepted=0. run=run_1.',
       ),
     ).toBe('');
+  });
+});
+
+describe('humanizeAoiSpeakableTopicLabel', () => {
+  it('extracts proposal titles from active-proposal audit prose', () => {
+    expect(
+      humanizeAoiSpeakableTopicLabel('Active proposal "리서치 좁혀서 재시도" status=accepted'),
+    ).toBe('리서치 좁혀서 재시도');
+  });
+
+  it('strips strategic-brief focus prefixes', () => {
+    expect(humanizeAoiSpeakableTopicLabel('Pursuing: kernel telemetry')).toBe('kernel telemetry');
+    expect(humanizeAoiSpeakableTopicLabel('Blocked: Risky delete -- needs L5')).toBe(
+      'Risky delete -- needs L5',
+    );
+  });
+
+  it('drops decision-id audit lines rather than speaking them', () => {
+    expect(
+      humanizeAoiSpeakableTopicLabel(
+        'Recent autonomy proposal decision accept for proposal_abc123.',
+      ),
+    ).toBe('');
+  });
+});
+
+describe('selectAoiSpeakableSessionSummary', () => {
+  it('keeps real user topics after humanizing audit wrappers', () => {
+    expect(
+      selectAoiSpeakableSessionSummary('Pursuing: Active proposal "kernel path" status=accepted'),
+    ).toBe('kernel path');
+  });
+
+  it('refuses operator recovery action titles as continuity topics', () => {
+    expect(selectAoiSpeakableSessionSummary('리서치 좁혀서 재시도')).toBe('');
+    expect(
+      selectAoiSpeakableSessionSummary('Active proposal "리서치 좁혀서 재시도" status=accepted'),
+    ).toBe('');
+    expect(selectAoiSpeakableSessionSummary('Refresh research narrowly')).toBe('');
+    expect(selectAoiSpeakableSessionSummary('일치하는 Aoi 리서치 보고서 열기')).toBe('');
   });
 });
 
