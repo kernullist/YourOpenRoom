@@ -347,6 +347,46 @@ describe('YouTubeApp – in-app viewer UX', () => {
     expect(screen.getByTestId('yt-popup-title').textContent).toBe('Queue Mix');
   });
 
+  it('PLAY_LAST_PLAYLIST rehydrates cloud state on cold open before reacting', async () => {
+    // Mirrors dispatchAgentAction opening a closed YouTube window: the agent
+    // fires PLAY_LAST_PLAYLIST as soon as the listener registers, often while
+    // React still holds the empty DEFAULT_STATE. The handler must re-read
+    // state.json instead of trusting the first render's empty playlists.
+    mockStateContent = stateWithPlaylist(QUEUE_PLAYLIST, {
+      lastPlayedPlaylistId: 'pl-queue',
+      lastPlayedPlaylistMode: 'sequential',
+    });
+    render(<YouTubeApp />);
+    await waitFor(() => expect(capturedAgentHandler).toBeTruthy());
+
+    let result: string | undefined;
+    await act(async () => {
+      result = await capturedAgentHandler!({ action_type: 'PLAY_LAST_PLAYLIST', params: {} });
+    });
+    expect(result).toBe('success');
+
+    await waitFor(() => expect(screen.getByTestId('yt-results-popup')).toBeTruthy());
+    expect(screen.getByTestId('yt-popup-title').textContent).toBe('Queue Mix');
+  });
+
+  it('PLAY_LAST_PLAYLIST plays the active My Playlist when lastPlayed is unset', async () => {
+    mockStateContent = stateWithPlaylist({
+      id: 'playlist-default',
+      name: 'My Playlist',
+      items: [playlistItem('vid-aaa', 'First Fixture Video')],
+    });
+    await renderApp();
+
+    let result: string | undefined;
+    await act(async () => {
+      result = await capturedAgentHandler!({ action_type: 'PLAY_LAST_PLAYLIST', params: {} });
+    });
+    expect(result).toBe('success');
+
+    await waitFor(() => expect(screen.getByTestId('yt-results-popup')).toBeTruthy());
+    expect(screen.getByTestId('yt-popup-title').textContent).toBe('My Playlist');
+  });
+
   it('handles OPEN_HOME and OPEN_SEARCH agent actions', async () => {
     await renderApp();
 

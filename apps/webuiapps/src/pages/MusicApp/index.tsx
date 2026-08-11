@@ -244,6 +244,9 @@ const YouTubeApp: React.FC = () => {
   const [playlistPickerOpen, setPlaylistPickerOpen] = useState(false);
   const [newPlaylistDraft, setNewPlaylistDraft] = useState('');
   const [isLoading, setIsLoading] = useState(true);
+  // Mirror for agent handlers that may fire while the init effect is still
+  // awaiting cloud state (cold open via dispatchAgentAction).
+  const isLoadingRef = useRef(true);
   const [resultsOpen, setResultsOpen] = useState(false);
   const [resultQuery, setResultQuery] = useState('');
   const [searchResults, setSearchResults] = useState<YoutubeSearchResult[]>([]);
@@ -284,11 +287,11 @@ const YouTubeApp: React.FC = () => {
   }, []);
 
   // Reads state.json from the cloud and applies every field. Used both at
-  // init and for the SYNC_STATE agent action. Returns false when the state
-  // file has no content yet.
-  const applyCloudState = useCallback(async (): Promise<boolean> => {
+  // init and for the SYNC_STATE / PLAY_LAST_PLAYLIST agent actions. Returns
+  // the normalized snapshot, or null when the state file has no content yet.
+  const applyCloudState = useCallback(async (): Promise<AppState | null> => {
     const stateResult = await youtubeFileApi.readFile(STATE_FILE);
-    if (!stateResult.content) return false;
+    if (!stateResult.content) return null;
     const parsed =
       typeof stateResult.content === 'string'
         ? JSON.parse(stateResult.content)
@@ -313,7 +316,17 @@ const YouTubeApp: React.FC = () => {
     // source of truth. The sync effect below rewrites it right away, so a
     // stale persisted claim (app closed mid-playback) self-heals on reload
     // and an agent-written value can never fake an active playback.
-    return true;
+    return normalized;
+  }, []);
+
+  const waitForInit = useCallback(async () => {
+    if (!isLoadingRef.current) {
+      return;
+    }
+    const deadline = Date.now() + 15_000;
+    while (isLoadingRef.current && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
   }, []);
 
   const persistState = useCallback(
@@ -711,16 +724,47 @@ const YouTubeApp: React.FC = () => {
     [openResultsViewer, persistState, playlists, resultsAutoHide],
   );
 
-  const playLastPlayedPlaylist = useCallback((): string => {
+  const playLastPlayedPlaylist = useCallback(async (): Promise<string> => {
+    // Cold-open race: dispatchAgentAction opens YouTube and fires
+    // PLAY_LAST_PLAYLIST as soon as the listener registers, often before the
+    // init effect has applied state.json. Waiting + rehydrating avoids playing
+    // from the empty DEFAULT_STATE and never wiping cloud playlists via a
+    // stale persistState closure.
+    await waitForInit();
+
+    let snapshot: AppState | null = null;
+    try {
+      snapshot = await applyCloudState();
+    } catch (error) {
+      console.error('[YouTubeApp] Failed to rehydrate before playlist play:', error);
+    }
+
+    if (!snapshot) {
+      snapshot = {
+        searchQuery,
+        recentSearches,
+        favoriteTopics,
+        playlists,
+        activePlaylistId,
+        lastPlayedPlaylistId,
+        lastPlayedPlaylistMode,
+        sidebarOpen,
+        resultsAutoHide,
+        loopPlayback,
+        playerZoom,
+        nowPlaying,
+      };
+    }
+
     const targetPlaylist =
-      resolvePlaylist(playlists, lastPlayedPlaylistId) ||
-      resolvePlaylist(playlists, activePlaylistId);
+      resolvePlaylist(snapshot.playlists, snapshot.lastPlayedPlaylistId) ||
+      resolvePlaylist(snapshot.playlists, snapshot.activePlaylistId);
 
     if (!targetPlaylist || targetPlaylist.items.length === 0) {
       return 'error: no playlist available to play';
     }
 
-    const mode = lastPlayedPlaylistMode ?? 'sequential';
+    const mode = snapshot.lastPlayedPlaylistMode ?? 'sequential';
     const playback = buildPlaylistPlayback(targetPlaylist.id, targetPlaylist.items, mode);
     if (!playback) {
       return 'error: no playlist available to play';
@@ -728,28 +772,42 @@ const YouTubeApp: React.FC = () => {
 
     const orderedItems = resolvePlaybackItems(targetPlaylist.items, playback);
     const orderedResults = playlistItemsToResults(orderedItems);
-    persistState((prev) => ({
-      ...prev,
+    const nextState: AppState = {
+      ...snapshot,
       activePlaylistId: targetPlaylist.id,
       lastPlayedPlaylistId: targetPlaylist.id,
       lastPlayedPlaylistMode: mode,
-    }));
+    };
+    setActivePlaylistId(nextState.activePlaylistId);
+    setLastPlayedPlaylistId(nextState.lastPlayedPlaylistId);
+    setLastPlayedPlaylistMode(nextState.lastPlayedPlaylistMode);
+    setPlaylists(nextState.playlists);
+    void saveState(nextState);
     openResultsViewer({
       title: targetPlaylist.name,
       results: orderedResults,
       selected: orderedResults[0] ?? null,
       playback,
-      hideResults: resultsAutoHide,
+      hideResults: snapshot.resultsAutoHide,
     });
     return 'success';
   }, [
     activePlaylistId,
+    applyCloudState,
+    favoriteTopics,
     lastPlayedPlaylistId,
     lastPlayedPlaylistMode,
+    loopPlayback,
+    nowPlaying,
     openResultsViewer,
-    persistState,
     playlists,
+    playerZoom,
+    recentSearches,
     resultsAutoHide,
+    saveState,
+    searchQuery,
+    sidebarOpen,
+    waitForInit,
   ]);
 
   const removeItemFromPlaylist = useCallback(
@@ -935,7 +993,7 @@ const YouTubeApp: React.FC = () => {
             return 'success';
           }
           case 'PLAY_LAST_PLAYLIST': {
-            return playLastPlayedPlaylist();
+            return await playLastPlayedPlaylist();
           }
           case 'OPEN_HOME': {
             doOpenHome();
@@ -1012,11 +1070,13 @@ const YouTubeApp: React.FC = () => {
           await saveState(DEFAULT_STATE);
         }
 
+        isLoadingRef.current = false;
         setIsLoading(false);
         reportLifecycle(AppLifecycle.LOADED);
         manager.ready();
       } catch (error) {
         console.error('[YouTubeApp] Init error:', error);
+        isLoadingRef.current = false;
         setIsLoading(false);
         reportLifecycle(AppLifecycle.ERROR, String(error));
       }

@@ -42,7 +42,7 @@ import {
   type ChatMessage,
   type CurrentModelUsageStatus,
 } from '@/lib/llmClient';
-import { parseDirectMusicIntent } from '@/lib/chatDirectActions';
+import { isDirectPlaylistPlaybackIntent, parseDirectMusicIntent } from '@/lib/chatDirectActions';
 import {
   loadPendingIdleMusicOffer,
   loadPendingNewsOffer,
@@ -1943,20 +1943,6 @@ function mapMemoryCategoryToAoiType(category: string | undefined): AoiMemoryType
     default:
       return 'fact';
   }
-}
-
-function isDirectPlaylistPlaybackIntent(text: string): boolean {
-  const trimmed = text.trim();
-  if (!trimmed) return false;
-
-  const patterns = [
-    /^(?:마지막|최근|방금|아까)?\s*(?:들었던|재생한)?\s*(?:유튜브\s*)?플레이리스트\s*(?:틀어줘|재생해줘|재생해|틀어|실행해|들려줘)?$/i,
-    /^(?:플레이리스트|playlist)\s*(?:틀어줘|재생해줘|재생해|틀어|play|resume)$/i,
-    /^(?:play|resume)\s+(?:the\s+)?(?:last\s+)?playlist$/i,
-    /^(?:유튜브\s*)?플레이리스트\s*(?:다시\s*)?(?:틀어줘|재생해줘|재생해)$/i,
-  ];
-
-  return patterns.some((pattern) => pattern.test(trimmed));
 }
 
 function buildPlaylistPlaybackAck(

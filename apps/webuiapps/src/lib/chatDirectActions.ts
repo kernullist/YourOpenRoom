@@ -11,6 +11,36 @@ const MUSIC_QUERY_SUFFIX_PATTERN = /\s*(?:노래|음악|곡|track|song|music)\s*
 // normal conversation instead.
 const MUSIC_QUERY_WORD_CHAR_PATTERN = /[\p{L}\p{N}]/u;
 
+/**
+ * Detect in-app YouTube "play my saved playlist" intents.
+ *
+ * Must stay stricter than generic music-search patterns: phrases like
+ * "lofi chill playlist 틀어줘" remain YouTube search queries, while
+ * "내 플레이 리스트 틀어줘" / "My Playlist 틀어줘" dispatch PLAY_LAST_PLAYLIST.
+ */
+export function isDirectPlaylistPlaybackIntent(text: string): boolean {
+  const trimmed = text.trim().replace(/\s+/g, ' ');
+  if (!trimmed) {
+    return false;
+  }
+
+  // Normalize common spacing variants before matching.
+  const normalized = trimmed
+    .replace(/플레이\s*리스트/gi, '플레이리스트')
+    .replace(/\bmy\s+playlist\b/gi, 'my playlist');
+
+  const patterns = [
+    // Korean: optional ownership / recency / saved / in-app YouTube + 플레이리스트 + play verb
+    /^(?:(?:내|나의|마이|my)\s+)?(?:(?:마지막|최근|방금|아까)\s*)?(?:(?:들었던|재생한|저장한|등록한)\s*)?(?:(?:인앱\s*)?(?:유튜브|youtube)\s*)?플레이리스트\s*(?:다시\s*)?(?:틀어줘|재생해줘|재생해|틀어|실행해|들려줘|play|resume)?[.!?]?$/i,
+    // English / mixed: bare playlist (optional "my") + play verb
+    /^(?:my\s+)?playlist\s*(?:틀어줘|재생해줘|재생해|틀어|play|resume)[.!?]?$/i,
+    /^(?:play|resume)\s+(?:the\s+)?(?:my\s+)?(?:last\s+|saved\s+)?playlist[.!?]?$/i,
+    /^play\s+my\s+playlist[.!?]?$/i,
+  ];
+
+  return patterns.some((pattern) => pattern.test(normalized));
+}
+
 function cleanMusicQuery(value: string): string {
   const cleaned = value.trim().replace(MUSIC_QUERY_SUFFIX_PATTERN, '').trim();
   return MUSIC_QUERY_WORD_CHAR_PATTERN.test(cleaned) ? cleaned : '';
@@ -74,6 +104,12 @@ export function parseDirectMusicIntent(
 ): DirectMusicIntent | null {
   const trimmed = text.trim();
   if (!trimmed) return null;
+
+  // Saved in-app playlist playback is handled by PLAY_LAST_PLAYLIST. Never
+  // collapse those phrases into a YouTube search for "내 플레이 리스트".
+  if (isDirectPlaylistPlaybackIntent(trimmed)) {
+    return null;
+  }
 
   // Deferral phrases ("play that one / you pick") must resolve against the
   // recommendation in recent context BEFORE the generic suffix patterns run:
