@@ -78,7 +78,8 @@ function MissionControl(): JSX.Element {
   const [bucket, setBucket] = useState<'compact' | 'regular' | 'expanded'>('regular');
 
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const inFlightRef = useRef<Set<MissionControlPanelKey>>(new Set());
+  // Panel -> the session its in-flight request was issued for.
+  const inFlightRef = useRef<Map<MissionControlPanelKey, string>>(new Map());
   const stateRef = useRef(state);
   stateRef.current = state;
   const fileApi = useMemo(() => createAppFileApi(APP_STORAGE_NAME), []);
@@ -110,55 +111,80 @@ function MissionControl(): JSX.Element {
   /**
    * Load one panel.
    *
-   * The in-flight guard matters more than it looks: the poll timer, a view
-   * switch, and a manual refresh can all fire within the same tick, and letting
-   * three identical reads race means the slowest one wins and can install older
-   * data than what is already on screen.
+   * The in-flight guard is keyed by SESSION, not just by panel. Keying it by
+   * panel alone produced the one failure this console must never have: a read
+   * for session A still in flight would make the switch to session B skip its
+   * own fetch, then A's response would land and be rendered under B's label --
+   * the operator reading one session's queue while the strip named another.
+   *
+   * So a request for a different session is allowed to overlap, and the result
+   * is dropped on arrival if the observed session has moved on since. A slow
+   * response can no longer install data that belongs to somewhere else.
    */
   const loadPanel = useCallback(
     async (key: MissionControlPanelKey): Promise<void> => {
-      if (inFlightRef.current.has(key)) {
-        return;
-      }
       const sessionPath = sessionRef.current;
-      if (key !== 'sessions' && key !== 'runtime' && !sessionPath) {
+      const scoped = key !== 'sessions' && key !== 'runtime';
+      if (scoped && !sessionPath) {
         return;
       }
-      inFlightRef.current.add(key);
+      // Session-less panels use a fixed token so they still dedupe against
+      // themselves.
+      const requestSession = scoped ? (sessionPath as string) : '*';
+      if (inFlightRef.current.get(key) === requestSession) {
+        return;
+      }
+      inFlightRef.current.set(key, requestSession);
       try {
+        // Every branch resolves its state first, then commits only if the
+        // observed session still matches what was asked for.
+        const commit = <K extends MissionControlPanelKey>(
+          panelKey: K,
+          next: MissionControlPanels[K],
+        ): void => {
+          if (scoped && sessionRef.current !== requestSession) {
+            return;
+          }
+          setPanel(panelKey, next);
+        };
+
         switch (key) {
           case 'sessions':
-            setPanel('sessions', await fetchSessions());
+            commit('sessions', await fetchSessions());
             break;
           case 'runtime':
-            setPanel('runtime', await fetchRuntime());
+            commit('runtime', await fetchRuntime());
             break;
           case 'status':
-            setPanel('status', await fetchStatus(sessionPath as string));
+            commit('status', await fetchStatus(requestSession));
             break;
           case 'snapshot':
-            setPanel('snapshot', await fetchSnapshot(sessionPath as string));
+            commit('snapshot', await fetchSnapshot(requestSession));
             break;
           case 'scheduler':
-            setPanel('scheduler', await fetchScheduler(sessionPath as string));
+            commit('scheduler', await fetchScheduler(requestSession));
             break;
           case 'proposals':
-            setPanel('proposals', await fetchProposals(sessionPath as string));
+            commit('proposals', await fetchProposals(requestSession));
             break;
           case 'timeline':
-            setPanel('timeline', await fetchTimeline(sessionPath as string));
+            commit('timeline', await fetchTimeline(requestSession));
             break;
           case 'flight':
-            setPanel('flight', await fetchFlight(sessionPath as string));
+            commit('flight', await fetchFlight(requestSession));
             break;
           case 'metrics':
-            setPanel('metrics', await fetchMetrics(sessionPath as string));
+            commit('metrics', await fetchMetrics(requestSession));
             break;
           default:
             break;
         }
       } finally {
-        inFlightRef.current.delete(key);
+        // Only clear the slot if it is still ours; a newer request for another
+        // session may have taken it over.
+        if (inFlightRef.current.get(key) === requestSession) {
+          inFlightRef.current.delete(key);
+        }
       }
     },
     [setPanel],
@@ -384,7 +410,8 @@ function MissionControl(): JSX.Element {
           }
           let known = panels.sessions;
           if (known.kind !== 'ready') {
-            await loadPanel('sessions');
+            // One fetch, not two: loadPanel('sessions') followed by a bare
+            // fetchSessions() hit the route twice for the same answer.
             known = await fetchSessions();
             setPanel('sessions', known);
           }

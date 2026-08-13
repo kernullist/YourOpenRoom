@@ -47,6 +47,40 @@ interface StoredHabit {
   archived?: unknown;
 }
 
+/**
+ * Whether the user has consented to sharing habit momentum.
+ *
+ * Read here, next to the data, rather than trusted from the caller: the toggle
+ * lives in the app's own state.json and nothing upstream knows about it. Without
+ * this check the switch in the settings panel would be decoration -- the server
+ * would read the habit files either way, which is worse than not offering the
+ * switch at all.
+ *
+ * Defaults to TRUE only when the file is present and simply omits the field
+ * (matching the app's own default). A missing or unreadable state.json means we
+ * cannot establish consent, so the answer is no.
+ */
+function hasMomentumConsent(sessionsDir: string, sessionPath: string): boolean {
+  const statePath = resolve(
+    sessionsDir,
+    sessionPath,
+    'apps',
+    APP_STORAGE_NAME,
+    'data',
+    'state.json',
+  );
+  try {
+    const parsed = JSON.parse(fs.readFileSync(statePath, 'utf-8')) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return false;
+    }
+    const flag = (parsed as Record<string, unknown>).shareMomentumWithAoi;
+    return flag === undefined ? true : flag === true;
+  } catch {
+    return false;
+  }
+}
+
 function readHabits(sessionsDir: string, sessionPath: string): StoredHabit[] {
   const normalized = normalizeAoiAutonomySessionPath(sessionPath);
   if (!normalized) {
@@ -109,6 +143,10 @@ export function loadHabitMomentumForSession(
   todayKey: string,
 ): HabitMomentumValue | null {
   if (!isHabitDayKey(todayKey)) {
+    return null;
+  }
+  const normalizedSession = normalizeAoiAutonomySessionPath(sessionPath);
+  if (!normalizedSession || !hasMomentumConsent(sessionsDir, normalizedSession)) {
     return null;
   }
   const habits = readHabits(sessionsDir, sessionPath).filter((habit) => habit.archived !== true);

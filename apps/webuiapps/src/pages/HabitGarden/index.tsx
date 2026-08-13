@@ -68,6 +68,15 @@ function draftCadence(draft: HabitDraft): HabitCadence {
     : { kind: 'daily' };
 }
 
+/** Agent-supplied weekly targets arrive as free-form strings; 1-7 or the default. */
+function clampTimesPerWeek(raw: string | undefined): number {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) {
+    return 3;
+  }
+  return Math.min(Math.max(Math.trunc(parsed), 1), 7);
+}
+
 function HabitGarden(): JSX.Element {
   const [habits, setHabits] = useState<Habit[]>([]);
   const [state, setState] = useState<HabitGardenState>(DEFAULT_HABIT_GARDEN_STATE);
@@ -78,6 +87,7 @@ function HabitGarden(): JSX.Element {
   const [deleteArmed, setDeleteArmed] = useState(false);
   const [toast, setToast] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
   const [ready, setReady] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const rootRef = useRef<HTMLDivElement | null>(null);
   const habitsRef = useRef(habits);
@@ -96,16 +106,29 @@ function HabitGarden(): JSX.Element {
   );
 
   const loadAll = useCallback(async (): Promise<void> => {
-    const [loadedState, loadedHabits] = await Promise.all([repo.loadState(), repo.loadHabits()]);
+    const loadedState = await repo.loadState();
     setState(loadedState);
-    setHabits(loadedHabits);
     stateLoadedRef.current = true;
+    try {
+      setHabits(await repo.loadHabits());
+      setLoadError(null);
+    } catch (error) {
+      // Distinct from an empty garden: onboarding here would invite the user to
+      // re-create habits they already have.
+      setLoadError(error instanceof Error ? error.message : String(error));
+    }
   }, [repo]);
 
   const refreshHabits = useCallback(async (): Promise<Habit[]> => {
-    const loaded = await repo.refresh();
-    setHabits(loaded);
-    return loaded;
+    try {
+      const loaded = await repo.refresh();
+      setHabits(loaded);
+      setLoadError(null);
+      return loaded;
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : String(error));
+      return habitsRef.current;
+    }
   }, [repo]);
 
   useEffect(() => {
@@ -384,10 +407,13 @@ function HabitGarden(): JSX.Element {
           if (!name) {
             return 'error: name is required';
           }
-          const times = Number(params.timesPerWeek ?? params.times_per_week ?? 3);
+          // Clamped at the WRITE, not just on read: normalizeHabit would fix it
+          // on the way back in, but only after a file that violates its own
+          // schema had already been persisted.
+          const times = clampTimesPerWeek(params.timesPerWeek ?? params.times_per_week);
           const cadence: HabitCadence =
             params.cadence === 'weekly'
-              ? { kind: 'weekly', timesPerWeek: Number.isFinite(times) ? times : 3 }
+              ? { kind: 'weekly', timesPerWeek: times }
               : { kind: 'daily' };
           return createHabit(name, cadence, true);
         }
@@ -397,13 +423,16 @@ function HabitGarden(): JSX.Element {
           if (!habit) {
             return `error: habit not found ${String(habitId)}`;
           }
-          const times = Number(params.timesPerWeek ?? params.times_per_week ?? 3);
+          // Clamped at the WRITE, not just on read: normalizeHabit would fix it
+          // on the way back in, but only after a file that violates its own
+          // schema had already been persisted.
+          const times = clampTimesPerWeek(params.timesPerWeek ?? params.times_per_week);
           const updated: Habit = {
             ...habit,
             name: params.name ? params.name.trim().slice(0, 40) : habit.name,
             cadence:
               params.cadence === 'weekly'
-                ? { kind: 'weekly', timesPerWeek: Number.isFinite(times) ? times : 3 }
+                ? { kind: 'weekly', timesPerWeek: times }
                 : params.cadence === 'daily'
                   ? { kind: 'daily' }
                   : habit.cadence,
@@ -485,7 +514,7 @@ function HabitGarden(): JSX.Element {
     };
   }, [loadAll]);
 
-  const showEmpty = ready && habits.length === 0 && !editorDraft;
+  const showEmpty = ready && !loadError && habits.length === 0 && !editorDraft;
 
   return (
     <div className={styles.root} data-width={bucket} ref={rootRef} data-testid="habit-garden">
@@ -506,6 +535,16 @@ function HabitGarden(): JSX.Element {
         <>
           <div className={styles.body}>
             <div className={styles.gardenColumn}>
+              {loadError ? (
+                <div className={styles.loadError} data-testid="habit-garden-load-error">
+                  <p className={styles.loadErrorTitle}>정원을 불러오지 못했어요.</p>
+                  <p className={styles.loadErrorBody}>
+                    기록이 사라진 것이 아니라 읽지 못한 것입니다. 잠시 후 다시 열어 보세요.
+                  </p>
+                  <p className={styles.loadErrorDetail}>{loadError}</p>
+                </div>
+              ) : null}
+
               {showEmpty ? (
                 <EmptyGarden
                   suggestions={HABIT_SUGGESTIONS}

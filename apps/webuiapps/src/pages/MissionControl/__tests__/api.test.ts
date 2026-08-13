@@ -220,7 +220,12 @@ describe('fetchStatus', () => {
 
   it('returns the status payload on success', async () => {
     fetchMock.mockResolvedValue(
-      mockResponse({ json: { ok: true, status: { version: 1, sessionPath: SESSION } } }),
+      mockResponse({
+        json: {
+          ok: true,
+          status: { version: 1, sessionPath: SESSION, policy: { version: 1, enabled: true } },
+        },
+      }),
     );
 
     const state = await fetchStatus(SESSION);
@@ -235,6 +240,22 @@ describe('fetchStatus', () => {
     const state = await fetchStatus(SESSION);
 
     expect(state.kind).toBe('error');
+  });
+
+  it('errors on a status without a policy instead of letting the panel crash', async () => {
+    // RuntimeSection dereferences data.policy.enabled. A truncated payload used
+    // to take the whole app down with a TypeError; it now surfaces as a panel
+    // error like every other bad read.
+    fetchMock.mockResolvedValue(
+      mockResponse({ json: { ok: true, status: { version: 1, sessionPath: SESSION } } }),
+    );
+
+    const state = await fetchStatus(SESSION);
+
+    expect(state.kind).toBe('error');
+    if (state.kind === 'error') {
+      expect(state.code).toBe('unexpected_payload');
+    }
   });
 });
 

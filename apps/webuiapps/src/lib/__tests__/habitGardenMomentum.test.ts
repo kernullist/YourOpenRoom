@@ -25,6 +25,18 @@ function writeHabit(root: string, id: string, habit: unknown): void {
   const dir = habitsDir(root);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(join(dir, `${id}.json`), JSON.stringify(habit), 'utf8');
+  // Habits without a state file would be unreadable now that consent is checked,
+  // so seed the app's default consent unless a test overrides it.
+  const statePath = join(dir, '..', 'state.json');
+  if (!fs.existsSync(statePath)) {
+    fs.writeFileSync(statePath, JSON.stringify({ shareMomentumWithAoi: true }), 'utf8');
+  }
+}
+
+function writeState(root: string, state: unknown, sessionPath = 'aoi/space_adventure'): void {
+  const dir = join(root, ...sessionPath.split('/'), 'apps', 'habitgarden', 'data');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(join(dir, 'state.json'), JSON.stringify(state), 'utf8');
 }
 
 /** Day keys counting back from an anchor, using the same local-noon walk as the module. */
@@ -134,6 +146,49 @@ describe('loadHabitMomentumForSession', () => {
 
     // Only the one real key counts, and it lands in the recent window.
     expect(loadHabitMomentumForSession(root, 'aoi/space_adventure', TODAY)).toBe('growing');
+  });
+
+  it('returns null when the user turned momentum sharing off', () => {
+    // The switch in the settings panel has to actually gate the read. Without
+    // this check it was decoration -- the server took the data either way, which
+    // is worse than never offering the switch.
+    const root = makeTempRoot();
+    writeHabit(root, 'a', { checkIns: daysBack(TODAY, [0, 1, 2, 3]) });
+    writeState(root, { shareMomentumWithAoi: false });
+
+    expect(loadHabitMomentumForSession(root, 'aoi/space_adventure', TODAY)).toBeNull();
+  });
+
+  it('shares when the state file omits the flag, matching the app default', () => {
+    const root = makeTempRoot();
+    writeHabit(root, 'a', { checkIns: daysBack(TODAY, [0, 1, 2, 3]) });
+    writeState(root, { activeTab: 'garden' });
+
+    expect(loadHabitMomentumForSession(root, 'aoi/space_adventure', TODAY)).toBe('growing');
+  });
+
+  it('refuses to share when consent cannot be established at all', () => {
+    // No state file means we cannot show the user ever agreed. Absence of a
+    // record is not consent.
+    const root = makeTempRoot();
+    const dir = habitsDir(root);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      join(dir, 'a.json'),
+      JSON.stringify({ checkIns: daysBack(TODAY, [0, 1, 2]) }),
+      'utf8',
+    );
+
+    expect(loadHabitMomentumForSession(root, 'aoi/space_adventure', TODAY)).toBeNull();
+  });
+
+  it('refuses to share when the state file is unparseable', () => {
+    const root = makeTempRoot();
+    writeHabit(root, 'a', { checkIns: daysBack(TODAY, [0, 1, 2]) });
+    const dir = habitsDir(root);
+    fs.writeFileSync(join(dir, '..', 'state.json'), '{ not json', 'utf8');
+
+    expect(loadHabitMomentumForSession(root, 'aoi/space_adventure', TODAY)).toBeNull();
   });
 
   it('treats a habit file that is an array as unusable', () => {

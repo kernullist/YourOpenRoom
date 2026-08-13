@@ -207,6 +207,61 @@ describe('MissionControl agent action surface', () => {
     await waitFor(() => expect(api.fetchStatus).toHaveBeenCalledWith('aoi/older'));
   });
 
+  it('does not let a slow read from the old session land under the new one', async () => {
+    // The bug this covers: an in-flight read for session A used to make the
+    // switch to B skip its own fetch, and then A's response was rendered under
+    // B's label -- the operator reading one session's data believing it was
+    // another's.
+    let releaseA: (() => void) | null = null;
+    vi.mocked(api.fetchStatus).mockImplementation((sessionPath: string) => {
+      if (sessionPath === 'aoi/newest') {
+        return new Promise((resolve) => {
+          releaseA = () =>
+            resolve({
+              kind: 'ready',
+              data: {
+                version: 1,
+                sessionPath: 'aoi/newest',
+                policy: { version: 1, enabled: true, level: 'L2' },
+                activeProposalCount: 99,
+              },
+              fetchedAt: 1,
+            } as never);
+        });
+      }
+      return Promise.resolve({
+        kind: 'ready',
+        data: {
+          version: 1,
+          sessionPath: 'aoi/older',
+          policy: { version: 1, enabled: false, level: 'L1' },
+          activeProposalCount: 1,
+        },
+        fetchedAt: 2,
+      } as never);
+    });
+
+    await renderApp();
+    await waitFor(() => expect(api.fetchStatus).toHaveBeenCalledWith('aoi/newest'));
+
+    // Switch while A is still hanging.
+    await act(async () =>
+      latestHandler()(action('SELECT_MISSION_CONTROL_SESSION', { sessionPath: 'aoi/older' })),
+    );
+    // B must get its own read rather than being starved by A's in-flight slot.
+    await waitFor(() => expect(api.fetchStatus).toHaveBeenCalledWith('aoi/older'));
+
+    // Now let A finish. Its result belongs to a session nobody is looking at.
+    await act(async () => {
+      releaseA?.();
+      await Promise.resolve();
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId('mission-control-rail-queue').textContent).not.toContain('99'),
+    );
+  });
+
   it('refuses a session that is not in the discovered list', async () => {
     await renderApp();
 

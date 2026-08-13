@@ -47,6 +47,38 @@
   min-width: 0;
 }
 
+/* Visually distinct from the empty state on purpose: "we could not look" must
+   never be mistaken for "nothing here yet". */
+.loadError {
+  margin: 16px;
+  padding: 12px 14px;
+  background: rgba(255, 63, 77, 0.08);
+  border: 1px solid rgba(255, 63, 77, 0.35);
+  border-radius: 12px;
+}
+
+.loadErrorTitle {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.loadErrorBody {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.loadErrorDetail {
+  margin: 6px 0 0;
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 11px;
+  color: var(--color-red);
+  word-break: break-word;
+}
+
 .editorWrap {
   padding: 0 16px 16px;
   max-width: 420px;

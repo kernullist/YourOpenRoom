@@ -14,6 +14,7 @@ const { store, capturedHandlers, roomCalls } = vi.hoisted(() => ({
     habits: new Map<string, unknown>(),
     state: null as unknown,
     failWrite: false,
+    failList: false,
   },
   capturedHandlers: [] as Array<(action: CharacterAppAction) => Promise<string>>,
   roomCalls: [] as string[],
@@ -25,19 +26,29 @@ vi.mock('@/lib', async () => {
     ...actual,
     createAppFileApi: () => ({
       listFiles: (path = '/') =>
-        Promise.resolve(
-          path === '/habits'
-            ? [...store.habits.keys()].map((id) => ({
-                id,
-                name: `${id}.json`,
-                path: `/habits/${id}.json`,
-                type: 'file',
-                parentId: null,
-              }))
-            : store.state
-              ? [{ id: 's', name: 'state.json', path: '/state.json', type: 'file', parentId: null }]
-              : [],
-        ),
+        store.failList
+          ? Promise.reject(new Error('backend down'))
+          : Promise.resolve(
+              path === '/habits'
+                ? [...store.habits.keys()].map((id) => ({
+                    id,
+                    name: `${id}.json`,
+                    path: `/habits/${id}.json`,
+                    type: 'file',
+                    parentId: null,
+                  }))
+                : store.state
+                  ? [
+                      {
+                        id: 's',
+                        name: 'state.json',
+                        path: '/state.json',
+                        type: 'file',
+                        parentId: null,
+                      },
+                    ]
+                  : [],
+            ),
       readFile: (path: string) => {
         if (path === '/state.json') {
           return Promise.resolve({ content: store.state });
@@ -120,6 +131,7 @@ beforeEach(() => {
   store.habits.clear();
   store.state = null;
   store.failWrite = false;
+  store.failList = false;
   capturedHandlers.length = 0;
   roomCalls.length = 0;
   vi.clearAllMocks();
@@ -142,6 +154,47 @@ describe('HabitGarden bootstrapping', () => {
     await renderApp();
 
     await waitFor(() => expect(screen.getByTestId('habit-garden-empty')).toBeTruthy());
+  });
+
+  it('reports a failed load as a failure, not as an empty garden', async () => {
+    // Onboarding here would invite the user to re-create habits they already
+    // have, and would read as "your data is gone".
+    store.failList = true;
+
+    await renderApp();
+
+    await waitFor(() => expect(screen.getByTestId('habit-garden-load-error')).toBeTruthy());
+    expect(screen.queryByTestId('habit-garden-empty')).toBeNull();
+  });
+
+  it('clamps an agent-supplied weekly target at the write', async () => {
+    await renderApp();
+
+    await act(async () =>
+      latestHandler()(
+        action('CREATE_HABIT', { name: '과한 목표', cadence: 'weekly', timesPerWeek: '99' }),
+      ),
+    );
+
+    const created = [...store.habits.values()][0] as Habit;
+    // normalizeHabit would fix this on read, but only after a file violating its
+    // own schema had already been written.
+    expect(created.cadence).toEqual({ kind: 'weekly', timesPerWeek: 7 });
+  });
+
+  it('falls back to the default weekly target for nonsense input', async () => {
+    await renderApp();
+
+    await act(async () =>
+      latestHandler()(
+        action('CREATE_HABIT', { name: '이상한 목표', cadence: 'weekly', timesPerWeek: 'many' }),
+      ),
+    );
+
+    expect(([...store.habits.values()][0] as Habit).cadence).toEqual({
+      kind: 'weekly',
+      timesPerWeek: 3,
+    });
   });
 
   it('renders existing habits as plants', async () => {

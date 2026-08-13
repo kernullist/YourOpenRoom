@@ -89,8 +89,11 @@ selection.
 - Default 10s, pausable from the strip, with a manual refresh button.
 - Only the current section's panels are polled; the status strip is polled regardless of section.
 - Polling stops while the window is hidden.
-- Concurrent reads of the same panel are suppressed so a slow response cannot install data older
-  than what is already on screen.
+- Concurrent reads of the same panel **and session** are suppressed so a slow response cannot
+  install data older than what is already on screen. The guard is keyed by session, not just by
+  panel: keying it by panel alone let an in-flight read for session A starve the switch to session
+  B, and then A's response rendered under B's label. Results are also dropped on arrival if the
+  observed session moved on while the request was out.
 
 ## Layout
 

@@ -286,6 +286,29 @@ describe('computeGardenWeather', () => {
     expect(result.weather).toBe('sunny');
   });
 
+  it('does not let a backdated check-in inflate a young garden', () => {
+    // The agent can pass an explicit dayKey, so completions CAN exist before the
+    // garden was created. Counting those against an expectation that only covers
+    // the garden's age used to score them for free.
+    const young = makeHabit({
+      createdAt: new Date(2026, 7, 10).getTime(), // 4 days before TODAY
+      checkIns: [
+        ...lastDayKeys(TODAY, 4),
+        // Backdated beyond the garden's own age.
+        shiftDayKey(TODAY, -5),
+        shiftDayKey(TODAY, -6),
+      ],
+    });
+
+    const result = computeGardenWeather([young], TODAY);
+
+    // Sample is the garden's age; completions are counted over that same span.
+    expect(result.sampleDays).toBe(4);
+    expect(result.completed).toBe(4);
+    expect(result.expected).toBe(4);
+    expect(result.adherenceRate).toBe(1);
+  });
+
   it('never reports a rate above 1', () => {
     const habit = makeHabit({
       cadence: { kind: 'weekly', timesPerWeek: 1 },

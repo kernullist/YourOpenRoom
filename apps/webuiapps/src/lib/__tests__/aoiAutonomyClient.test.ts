@@ -14,6 +14,7 @@ import {
   recordAoiOutcomeSignal,
   recordAoiProactiveBriefFeedback,
   resetAoiProactiveBriefCooldown,
+  reportAoiRelationshipSessionOpen,
   runAoiAutonomyManualTick,
   runAoiAutonomyManualWakeup,
   runAoiProactiveBriefScoutNow,
@@ -1285,6 +1286,40 @@ describe('recordAoiActivityEvent (SA1.3)', () => {
 
     await expect(recordAoiActivityEvent('aoi/default', { kind: 'chat_turn' })).rejects.toThrow(
       'Activity event was not recorded.',
+    );
+  });
+});
+
+describe('reportAoiRelationshipSessionOpen', () => {
+  it("sends the caller's local day key so habit momentum can be resolved", async () => {
+    // Without this the server has no local calendar day to compare habit
+    // check-ins against, and skips the momentum input entirely -- which left the
+    // whole habit-to-mood path dead while looking wired up.
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
+      jsonResponse({ ok: true, relationship: null, mood: null }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await reportAoiRelationshipSessionOpen('aoi/default');
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body)) as Record<string, unknown>;
+    expect(body.sessionPath).toBe('aoi/default');
+    expect(body.todayKey).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it('uses the LOCAL date, not UTC', async () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
+      jsonResponse({ ok: true, relationship: null, mood: null }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await reportAoiRelationshipSessionOpen('aoi/default');
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body)) as Record<string, unknown>;
+    const now = new Date();
+    const pad = (value: number): string => (value < 10 ? `0${value}` : String(value));
+    expect(body.todayKey).toBe(
+      `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`,
     );
   });
 });

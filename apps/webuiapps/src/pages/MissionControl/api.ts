@@ -166,6 +166,13 @@ export async function fetchStatus(sessionPath: string): Promise<PanelState<AoiAu
   if (!status || typeof status !== 'object') {
     return failed('상태 페이로드가 비어 있습니다.', 'unexpected_payload', result.status);
   }
+  // The policy block is dereferenced unguarded by the runtime panel, so a
+  // truncated or malformed payload would take the whole app down with a
+  // TypeError instead of showing a panel error. Validate the shape here, where
+  // every other honesty decision is already made.
+  if (!(status as { policy?: unknown }).policy) {
+    return failed('상태 페이로드에 policy 가 없습니다.', 'unexpected_payload', result.status);
+  }
   return ready(status as AoiAutonomyStatus);
 }
 

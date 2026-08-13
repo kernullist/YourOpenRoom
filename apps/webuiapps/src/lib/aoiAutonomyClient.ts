@@ -813,6 +813,20 @@ function parseSessionOpenRetrospective(
   };
 }
 
+/**
+ * The caller's LOCAL calendar day, as YYYY-MM-DD.
+ *
+ * Sent with the session-open request because only the browser knows which day
+ * the user is actually in. The server process may run in a different timezone,
+ * and habit check-ins are recorded against local day keys -- deriving the day
+ * server-side would compare against the wrong one for anybody east or west of
+ * the host.
+ */
+function localDayKey(now: Date = new Date()): string {
+  const pad = (value: number): string => (value < 10 ? `0${value}` : String(value));
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
 // Marks a session as opened: creates the record on a first-ever open and
 // increments the session count only past the store's gap floor.
 export async function reportAoiRelationshipSessionOpen(
@@ -821,7 +835,7 @@ export async function reportAoiRelationshipSessionOpen(
   const response = await fetch(`${API_PREFIX}/relationship/session-open`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sessionPath }),
+    body: JSON.stringify({ sessionPath, todayKey: localDayKey() }),
   });
   const payload = await readJsonRecord(response, 'Failed to record an Aoi session open.');
   const relationship = payload.relationship;

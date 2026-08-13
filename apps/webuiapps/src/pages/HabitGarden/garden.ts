@@ -204,9 +204,6 @@ export function computeGardenWeather(
     return { weather: 'unknown', adherenceRate: null, sampleDays: 0, expected: 0, completed: 0 };
   }
 
-  const window = lastDayKeys(todayKey, windowDays);
-  const windowSet = new Set(window);
-
   // The sample is bounded by how long the garden has existed, so a brand-new
   // garden cannot borrow credibility from an empty window.
   const oldestCreatedAt = Math.min(...active.map((habit) => habit.createdAt));
@@ -214,6 +211,12 @@ export function computeGardenWeather(
     ? daysBetween(toDayKeyFromTimestamp(oldestCreatedAt), todayKey) + 1
     : 0;
   const sampleDays = Math.max(0, Math.min(windowDays, gardenAgeDays));
+
+  // Counted over the SAME span the expectation covers. Counting completions over
+  // the full 7 days while expecting only `sampleDays` of them inflates the rate
+  // for a young garden -- backdated check-ins (the agent can pass an explicit
+  // dayKey) would land outside the sample and still score.
+  const windowSet = new Set(lastDayKeys(todayKey, sampleDays));
 
   let completed = 0;
   let expected = 0;

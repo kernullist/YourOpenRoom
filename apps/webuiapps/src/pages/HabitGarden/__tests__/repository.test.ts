@@ -3,9 +3,9 @@ import type { FileNode, FileOperations } from '@/types/fileSystem';
 import {
   createHabitDraft,
   createHabitGardenRepository,
+  HabitStoreUnavailableError,
   pickHabitColor,
   setCheckIn,
-  toggleCheckIn,
   trimCheckIns,
 } from '../repository';
 import { DEFAULT_HABIT_GARDEN_STATE, HABIT_COLORS, MAX_CHECKIN_DAYS, type Habit } from '../types';
@@ -114,13 +114,20 @@ describe('loadHabits', () => {
     expect(await repo.loadHabits()).toEqual([]);
   });
 
-  it('returns an empty garden when listFiles throws', async () => {
+  it('raises rather than reporting an empty garden when the store cannot be read', async () => {
+    // Returning [] here would render a backend outage as onboarding, inviting
+    // the user to re-create habits they already have.
     const throwing = makeApi();
     throwing.listFiles = vi.fn(async () => {
       throw new Error('backend down');
     });
 
-    expect(await createHabitGardenRepository(throwing).loadHabits()).toEqual([]);
+    await expect(createHabitGardenRepository(throwing).loadHabits()).rejects.toThrow(
+      HabitStoreUnavailableError,
+    );
+    await expect(createHabitGardenRepository(throwing).loadHabits()).rejects.toThrow(
+      'backend down',
+    );
   });
 
   it('loads habits and sorts them by creation time', async () => {
@@ -274,15 +281,15 @@ describe('saveState', () => {
   });
 });
 
-describe('toggleCheckIn / setCheckIn', () => {
-  it('adds a day when absent and removes it when present', () => {
+describe('setCheckIn', () => {
+  it('adds a day and clears it again', () => {
     const base = makeHabit();
 
-    const added = toggleCheckIn(base, '2026-08-13', 5000);
+    const added = setCheckIn(base, '2026-08-13', true, 5000);
     expect(added.checkIns).toEqual(['2026-08-13']);
     expect(added.updatedAt).toBe(5000);
 
-    const removed = toggleCheckIn(added, '2026-08-13', 6000);
+    const removed = setCheckIn(added, '2026-08-13', false, 6000);
     expect(removed.checkIns).toEqual([]);
   });
 
@@ -290,7 +297,7 @@ describe('toggleCheckIn / setCheckIn', () => {
     const base = makeHabit({ checkIns: ['2026-08-12'] });
     const snapshot = [...base.checkIns];
 
-    toggleCheckIn(base, '2026-08-13', 1);
+    setCheckIn(base, '2026-08-13', true, 1);
 
     expect(base.checkIns).toEqual(snapshot);
   });

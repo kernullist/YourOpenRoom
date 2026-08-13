@@ -79,14 +79,28 @@ export interface HabitGardenRepository {
   saveState(state: HabitGardenState): Promise<void>;
 }
 
+/**
+ * Raised when the habit store could not be read at all.
+ *
+ * Swallowing this and returning [] would render a backend outage as an empty
+ * garden -- the user would be shown onboarding for habits they already have, and
+ * might re-create them. "Nothing here yet" and "we could not look" have to stay
+ * distinguishable all the way up to the screen.
+ */
+export class HabitStoreUnavailableError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = 'HabitStoreUnavailableError';
+  }
+}
+
 export function createHabitGardenRepository(api: FileOperations): HabitGardenRepository {
   const loadHabits = async (): Promise<Habit[]> => {
     let entries: FileNode[] = [];
     try {
       entries = await api.listFiles(HABITS_DIR);
-    } catch {
-      // A missing habits directory is the normal first-run state, not an error.
-      return [];
+    } catch (error) {
+      throw new HabitStoreUnavailableError(error);
     }
 
     const jsonFiles = entries.filter(
@@ -152,18 +166,13 @@ export function createHabitGardenRepository(api: FileOperations): HabitGardenRep
   };
 }
 
-/** Toggle one day on a habit, returning a new habit (never mutating the input). */
-export function toggleCheckIn(habit: Habit, dayKey: DayKey, now: number): Habit {
-  const done = new Set(habit.checkIns);
-  if (done.has(dayKey)) {
-    done.delete(dayKey);
-  } else {
-    done.add(dayKey);
-  }
-  return { ...habit, checkIns: trimCheckIns([...done]), updatedAt: now };
-}
-
-/** Idempotent: checking in twice is success, not an error. */
+/**
+ * Set or clear one day, returning a new habit (never mutating the input).
+ *
+ * Idempotent by design rather than a toggle: the UI already knows which way it
+ * is going, and an agent asked to record "I stretched today" twice must not undo
+ * the first one.
+ */
 export function setCheckIn(habit: Habit, dayKey: DayKey, done: boolean, now: number): Habit {
   const set = new Set(habit.checkIns);
   if (done) {

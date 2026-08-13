@@ -4,19 +4,18 @@ Habits as plants. One click a day.
 
 ## What it is for
 
-A habit tracker fails the moment it becomes a spreadsheet. The apps that work (Finch, First
-Voyage) put a thing to care for on screen and let the user move for its sake rather than their
-own. So the first screen here is a garden, not a statistic — numbers exist, but you have to go
-looking for them.
+A habit tracker fails the moment it becomes a spreadsheet. The apps that work (Finch, First Voyage)
+put a thing to care for on screen and let the user move for its sake rather than their own. So the
+first screen here is a garden, not a statistic — numbers exist, but you have to go looking for them.
 
 ## Rules the UI keeps
 
 - **Check-in is one click, with no confirmation, and the same click undoes it.** Every bit of
   friction converts directly into skipped days.
 - **A lapse never kills a plant.** Growth stage is accumulated achievement and only moves with the
-  streak; vitality is recent condition. A 12-day habit missed twice is a *wilting bud*, not a seed.
-- **Today being unchecked does not break a streak.** The day is not over. Showing an 8-day streak
-  as 0 at 10am would be both demoralizing and wrong.
+  streak; vitality is recent condition. A 12-day habit missed twice is a _wilting bud_, not a seed.
+- **Today being unchecked does not break a streak.** The day is not over. Showing an 8-day streak as
+  0 at 10am would be both demoralizing and wrong.
 - **A young garden gets no weather verdict.** Below 3 days of history the strip says so instead of
   declaring rain.
 
@@ -27,24 +26,24 @@ downstream re-derives a date from a timestamp. That removes three separate bugs 
 check-in landing on the previous UTC day, the daemon disagreeing with the browser because its
 process timezone differs, and DST or travel retroactively relocating history.
 
-`shiftDayKey` anchors at local **noon** rather than midnight, because on a spring-forward date
-local midnight can be a time that does not exist.
+`shiftDayKey` anchors at local **noon** rather than midnight, because on a spring-forward date local
+midnight can be a time that does not exist.
 
 ## Growth
 
-| Streak | Stage |
-|---|---|
-| 0 | seed |
-| 1–2 | sprout |
-| 3–6 | leaf |
-| 7–20 | bud |
-| 21+ | bloom |
+| Streak | Stage  |
+| ------ | ------ |
+| 0      | seed   |
+| 1–2    | sprout |
+| 3–6    | leaf   |
+| 7–20   | bud    |
+| 21+    | bloom  |
 
 Thresholds are the first hurdle, one week, and the popular habit-formation figure — spaced so the
 next stage always looks reachable, not because 21 is a scientific claim.
 
-Vitality is separate: `thriving` (done today, or one day out), `ok` (two days), `wilting` (three
-or more, or never done).
+Vitality is separate: `thriving` (done today, or one day out), `ok` (two days), `wilting` (three or
+more, or never done).
 
 **Weekly cadence counts weeks, not days.** A perfect Mon/Wed/Fri week under "3 times a week" would
 read as a 1-day streak if counted daily, so the unit matches the commitment. An in-progress week
@@ -52,9 +51,9 @@ neither counts toward the run nor breaks it.
 
 ## Weather
 
-Adherence across the whole garden over the last 7 days: `>= 0.8` sunny, `>= 0.5` cloudy, below
-that rain, and `unknown` under 3 days of history. Weekly habits scale their expected count, so
-"3 a week" done 3 times reads as full adherence rather than 3/7.
+Adherence across the whole garden over the last 7 days: `>= 0.8` sunny, `>= 0.5` cloudy, below that
+rain, and `unknown` under 3 days of history. Weekly habits scale their expected count, so "3 a week"
+done 3 times reads as full adherence rather than 3/7.
 
 ## Aoi integration
 
@@ -71,25 +70,31 @@ Three constraints hold this in place:
    otherwise neutral mood and never overrides a real work signal — a slipping week cannot turn into
    worry while actual work is going fine, which would read as nagging.
 2. **Never near a gate.** `aoiMoodGateIntegrity.test.ts` scans the eight gate modules for both mood
-   *and* habit references. Blocking mood while leaving its inputs unguarded would just move the hole
+   _and_ habit references. Blocking mood while leaving its inputs unguarded would just move the hole
    sideways.
 3. **Three values, nothing more.** `lib/habitGardenMomentum.ts` (server-only, uses node `fs`)
    summarizes on the server; the raw habit log never enters the autonomy store. It returns `null` —
-   not `steady` — when there is no garden, so no claim is made about someone who does not use the app.
+   not `steady` — when there is no garden, so no claim is made about someone who does not use the
+   app.
+4. **The switch actually gates the read.** `loadHabitMomentumForSession` reads
+   `shareMomentumWithAoi` from the app's own `state.json` before touching a habit file, and returns
+   `null` when it is off. It also returns `null` when consent cannot be established at all (no state
+   file, or an unparseable one) — absence of a record is not consent.
 
-The day key comes from the client in the `session-open` request body, because only the browser knows
-the user's local calendar day. A missing or malformed key skips the input rather than guessing.
+The day key comes from the client in the `session-open` request body
+(`reportAoiRelationshipSessionOpen` computes it locally), because only the browser knows the user's
+local calendar day. A missing or malformed key skips the input rather than guessing.
 
 ## Room reflection
 
 Optional, **default off**. Missing a habit must not silently repaint someone's desktop.
 
-| Weather | Room item |
-|---|---|
-| rain | `rainy-window-desk` |
-| cloudy | `lofi-cafe-night` |
-| sunny | `pixel-arcade` |
-| unknown | nothing applied |
+| Weather | Room item           |
+| ------- | ------------------- |
+| rain    | `rainy-window-desk` |
+| cloudy  | `lofi-cafe-night`   |
+| sunny   | `pixel-arcade`      |
+| unknown | nothing applied     |
 
 It applies **only when the weather changes** (`lastAppliedWeather` guard) — otherwise every poll
 would overwrite a theme the user just picked in RoomShop, and the desktop would appear to reject
@@ -101,16 +106,16 @@ by touching the theme key directly. The Shell picks the change up across the ifr
 
 ## Actions
 
-| Action | Params | Behavior |
-|---|---|---|
-| `CHECK_IN_HABIT` | `habitId`, `dayKey?` | Idempotent completion |
-| `UNDO_HABIT_CHECK_IN` | `habitId`, `dayKey?` | Remove a completion |
-| `CREATE_HABIT` | `name`, `cadence?`, `timesPerWeek?` | Plant a habit |
-| `UPDATE_HABIT` | `habitId`, `name?`, `cadence?`, `timesPerWeek?` | Rename / re-cadence |
-| `DELETE_HABIT` | `habitId` | Remove habit and history |
-| `SELECT_HABIT` | `habitId` | Open detail |
-| `REFRESH_HABIT_GARDEN` | `habitId?` | Reload, optionally focus |
-| `SYNC_STATE` | — | Re-read `state.json` defensively |
+| Action                 | Params                                          | Behavior                         |
+| ---------------------- | ----------------------------------------------- | -------------------------------- |
+| `CHECK_IN_HABIT`       | `habitId`, `dayKey?`                            | Idempotent completion            |
+| `UNDO_HABIT_CHECK_IN`  | `habitId`, `dayKey?`                            | Remove a completion              |
+| `CREATE_HABIT`         | `name`, `cadence?`, `timesPerWeek?`             | Plant a habit                    |
+| `UPDATE_HABIT`         | `habitId`, `name?`, `cadence?`, `timesPerWeek?` | Rename / re-cadence              |
+| `DELETE_HABIT`         | `habitId`                                       | Remove habit and history         |
+| `SELECT_HABIT`         | `habitId`                                       | Open detail                      |
+| `REFRESH_HABIT_GARDEN` | `habitId?`                                      | Reload, optionally focus         |
+| `SYNC_STATE`           | —                                               | Re-read `state.json` defensively |
 
 **Not exposed, on purpose:** `SET_GARDEN_SETTINGS`, `SET_REFLECT_WEATHER_IN_ROOM`,
 `SET_SHARE_MOMENTUM_WITH_AOI`. Writes to habits are the user's own record; the consent switches are
@@ -120,26 +125,26 @@ not.
 
 `apps/habitgarden/data/habits/{id}.json`
 
-| Field | Type | Notes |
-|---|---|---|
-| `id` | `string` | |
-| `name` | `string` | ≤ 40 chars |
-| `cadence` | `{kind:'daily'} \| {kind:'weekly',timesPerWeek:1-7}` | |
-| `color` | `string` | design token |
-| `createdAt` / `updatedAt` | `number` | |
-| `checkIns` | `DayKey[]` | Order **not** guaranteed; normalized to a Set on read. Trimmed to the most recent 400 on write |
-| `archived` | `boolean?` | |
+| Field                     | Type                                                 | Notes                                                                                          |
+| ------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `id`                      | `string`                                             |                                                                                                |
+| `name`                    | `string`                                             | ≤ 40 chars                                                                                     |
+| `cadence`                 | `{kind:'daily'} \| {kind:'weekly',timesPerWeek:1-7}` |                                                                                                |
+| `color`                   | `string`                                             | design token                                                                                   |
+| `createdAt` / `updatedAt` | `number`                                             |                                                                                                |
+| `checkIns`                | `DayKey[]`                                           | Order **not** guaranteed; normalized to a Set on read. Trimmed to the most recent 400 on write |
+| `archived`                | `boolean?`                                           |                                                                                                |
 
 `apps/habitgarden/data/state.json`
 
-| Field | Type | Default |
-|---|---|---|
-| `activeTab` | `'garden' \| 'settings'` | `'garden'` |
-| `selectedHabitId` | `string \| null` | `null` |
-| `reflectWeatherInRoom` | `boolean` | `false` |
-| `shareMomentumWithAoi` | `boolean` | `true` |
-| `restoreRoomItemId` | `string \| null` | `null` |
-| `lastAppliedWeather` | `string \| null` | `null` |
+| Field                  | Type                     | Default    |
+| ---------------------- | ------------------------ | ---------- |
+| `activeTab`            | `'garden' \| 'settings'` | `'garden'` |
+| `selectedHabitId`      | `string \| null`         | `null`     |
+| `reflectWeatherInRoom` | `boolean`                | `false`    |
+| `shareMomentumWithAoi` | `boolean`                | `true`     |
+| `restoreRoomItemId`    | `string \| null`         | `null`     |
+| `lastAppliedWeather`   | `string \| null`         | `null`     |
 
 `state.json` is checked with `listFiles('/')` before the first read and created with defaults when
 absent. `mergeHabitGardenState` merges field by field so a partial write cannot flip a consent
