@@ -13,12 +13,13 @@ added to `aoiHostBridgeClient` alongside the existing ones.
 
 **A process list is a photograph, not a feed.**
 
-The sample age is always shown and goes amber past 30 seconds. That is not decoration: a kill request
-carries a **pid**, pids get reused, and acting on a stale row is exactly how the wrong process gets
-terminated. Refusing to say how old the sample is would hide the one fact that makes the difference.
+The sample age is always shown and goes amber past 30 seconds. That is not decoration: a kill
+request carries a **pid**, pids get reused, and acting on a stale row is exactly how the wrong
+process gets terminated. Refusing to say how old the sample is would hide the one fact that makes
+the difference.
 
-For the same reason a missing memory reading renders as `-`, never `0 MB`, and sorts to the bottom of
-a biggest-first list rather than into the "uses nothing" slot — an absent measurement is not a
+For the same reason a missing memory reading renders as `-`, never `0 MB`, and sorts to the bottom
+of a biggest-first list rather than into the "uses nothing" slot — an absent measurement is not a
 measurement of zero.
 
 ## Kill loop
@@ -41,7 +42,7 @@ the moment of acting, and says plainly in the UI that this is not a security bou
 caller-supplied list as if it were a gate would be the more dangerous kind of wrong.
 
 An earlier draft of this app populated it from the **spawn** allowlist. That was a conceptual error:
-spawn entries are executable *paths* to launch, not image names to terminate. It was removed rather
+spawn entries are executable _paths_ to launch, not image names to terminate. It was removed rather
 than mapped.
 
 ## Panic
@@ -57,11 +58,11 @@ request was fine and an approval or policy said no — the system working), `err
 
 ## Actions
 
-| Action | Params | Behavior |
-|---|---|---|
-| `FILTER_HOST_PROCESSES` | `query?` | Set the image/pid filter |
-| `REFRESH_HOST_SENTINEL` | — | Take a fresh sample |
-| `SYNC_STATE` | — | Re-read `state.json` defensively |
+| Action                  | Params   | Behavior                         |
+| ----------------------- | -------- | -------------------------------- |
+| `FILTER_HOST_PROCESSES` | `query?` | Set the image/pid filter         |
+| `REFRESH_HOST_SENTINEL` | —        | Take a fresh sample              |
+| `SYNC_STATE`            | —        | Re-read `state.json` defensively |
 
 **Not exposed:** `PREVIEW_HOST_KILL`, `EXECUTE_HOST_KILL`, `APPROVE_HOST_KILL`,
 `SET_HOST_KILLSWITCH`, `CLEAR_HOST_PANIC`.
