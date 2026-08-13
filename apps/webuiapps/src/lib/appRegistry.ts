@@ -386,6 +386,26 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
     color: '#38bdf8',
     defaultSize: { width: 1180, height: 780 },
   },
+  {
+    appId: 29,
+    appName: 'hostsentinel',
+    route: '/host-sentinel',
+    displayName: 'Host Sentinel',
+    aliases: [
+      'processes',
+      'process monitor',
+      'task manager',
+      'host watch',
+      '프로세스',
+      '프로세스 감시',
+      '호스트 감시',
+      '작업 관리자',
+    ],
+    sourceDir: 'HostSentinel',
+    icon: 'Activity',
+    color: '#ef4444',
+    defaultSize: { width: 1180, height: 760 },
+  },
 ];
 
 // OS actions are built-in system actions, not from meta.yaml

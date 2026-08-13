@@ -1,0 +1,40 @@
+app_id: 29
+app_name: hostsentinel
+app_display_name: Host Sentinel
+version: '1.0.0'
+description: >
+  Host Sentinel shows a sampled process listing from the real machine with how old that sample is,
+  and runs the propose -> operator approval -> execute loop for terminating one process. The kill
+  switch state is shown, never changed from here.
+displayDesc: >
+  Watch host processes with an honest sample age, and terminate one through the approval loop.
+
+# Read and filter only, on purpose.
+#
+# Killing is irreversible and the execute path is fail-closed on a human-approved, single-use
+# approval. An agent action reaching preview -> approve -> execute would let Aoi terminate processes
+# on its own say-so. The kill switch is excluded for the mirrored reason: it is the operator's brake.
+# Enforced by src/pages/HostSentinel/__tests__/actionSafety.test.ts.
+actions:
+  - type: FILTER_HOST_PROCESSES
+    name: Filter Host Processes
+    description: Set the image-name or pid filter on the process table.
+    params:
+      - name: query
+        type: string
+        description: Text matched against image name and pid. Empty clears the filter.
+        required: false
+
+  - type: REFRESH_HOST_SENTINEL
+    name: Refresh Host Sentinel
+    description: Take a fresh process sample and re-read the bridge status.
+    params: []
+
+  - type: SYNC_STATE
+    name: Sync State
+    description: Re-read apps/hostsentinel/data/state.json and apply its fields defensively.
+    params: []
+
+storage:
+  - path: apps/hostsentinel/data/state.json
+    description: Filter text, sort order, and the observed session path.

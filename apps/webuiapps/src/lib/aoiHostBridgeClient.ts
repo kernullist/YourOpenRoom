@@ -777,3 +777,85 @@ export async function approveAndExecuteAoiHostApproval(
     blockReasons: asStringArray(payload.blockReasons),
   };
 }
+
+// --- Process kill: propose (preview) + run (execute) --------------------------
+//
+// Same three-step shape as browser-drive: preview records a PENDING approval,
+// the operator approves it in the Host Bridge inbox, and execute is fail-closed
+// without that approval.
+//
+// killAllowlistImages is CALLER-DECLARED by design -- the protected-process list
+// is the real guard, not this list. Callers should surface that honestly rather
+// than presenting the allowlist as a security boundary.
+
+export interface AoiHostKillPreviewView {
+  allowed: boolean;
+  pid: number;
+  imageName: string;
+  approvalFingerprint?: string;
+  targetSummary?: string;
+  denyReasons: string[];
+  expiresAt?: number;
+}
+
+export interface AoiHostKillExecuteView {
+  ok: boolean;
+  pid: number;
+  denyReasons: string[];
+  detail?: string;
+}
+
+export interface AoiHostKillRequest {
+  pid: number;
+  expectedImageName: string;
+  expectedStartTime?: string | number;
+  killAllowlistImages?: string[];
+}
+
+function killBody(request: AoiHostKillRequest): Record<string, unknown> {
+  return {
+    pid: request.pid,
+    expectedImageName: request.expectedImageName,
+    ...(request.expectedStartTime !== undefined
+      ? { expectedStartTime: request.expectedStartTime }
+      : {}),
+    killAllowlistImages: request.killAllowlistImages ?? [],
+  };
+}
+
+function parseDenyReasons(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === 'string')
+    : [];
+}
+
+export async function fetchAoiHostKillPreview(
+  request: AoiHostKillRequest,
+): Promise<AoiHostKillPreviewView> {
+  const payload = await sendJson('/kill/preview', 'POST', killBody(request));
+  const policy = isRecord(payload.policy) ? payload.policy : {};
+  return {
+    allowed: payload.ok === true && policy.allowed === true,
+    pid: typeof policy.pid === 'number' ? policy.pid : request.pid,
+    imageName: asString(policy.imageName) || request.expectedImageName,
+    ...(typeof policy.approvalFingerprint === 'string'
+      ? { approvalFingerprint: policy.approvalFingerprint }
+      : {}),
+    ...(typeof policy.targetSummary === 'string' ? { targetSummary: policy.targetSummary } : {}),
+    denyReasons: parseDenyReasons(policy.denyReasons ?? payload.denyReasons),
+    ...(typeof policy.expiresAt === 'number' ? { expiresAt: policy.expiresAt } : {}),
+  };
+}
+
+export async function runAoiHostKillExecute(
+  request: AoiHostKillRequest,
+): Promise<AoiHostKillExecuteView> {
+  const payload = await sendJson('/kill/execute', 'POST', killBody(request));
+  const result = isRecord(payload.result) ? payload.result : {};
+  return {
+    ok: payload.ok === true,
+    pid: typeof result.pid === 'number' ? result.pid : request.pid,
+    denyReasons: parseDenyReasons(payload.denyReasons ?? result.denyReasons),
+    ...(typeof payload.detail === 'string' ? { detail: payload.detail } : {}),
+  };
+}
