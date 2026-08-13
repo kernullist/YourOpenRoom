@@ -1,0 +1,95 @@
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.window {
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-placeholder);
+}
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(var(--mc-metric-columns, 2), minmax(0, 1fr));
+  gap: 8px;
+}
+
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  background: var(--bg-3);
+  border-radius: 8px;
+  min-width: 0;
+}
+
+.tileLabel {
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-placeholder);
+}
+
+.tileValue {
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 20px;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+/* "No signal" must not look like a low score. Smaller, dimmer, and dashed so it
+   reads as an absence rather than as a measurement. */
+.tile[data-unavailable='true'] {
+  border: 1px dashed var(--fill-white-10);
+  background: transparent;
+}
+
+.tile[data-unavailable='true'] .tileValue {
+  font-size: 12px;
+  color: var(--text-placeholder);
+}
+
+.tableWrap {
+  overflow-x: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 11px;
+
+  th,
+  td {
+    padding: 6px 10px;
+    text-align: right;
+    white-space: nowrap;
+    border-bottom: 1px solid var(--fill-white-4, rgba(255, 255, 255, 0.04));
+  }
+
+  thead th {
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-placeholder);
+    font-weight: 500;
+  }
+
+  tbody td {
+    color: var(--text-secondary);
+  }
+
+  tbody td[data-unavailable='true'] {
+    color: var(--text-placeholder);
+    font-style: italic;
+  }
+}
+
+.capability {
+  text-align: left !important;
+  color: var(--text-primary) !important;
+  font-weight: 500;
+}

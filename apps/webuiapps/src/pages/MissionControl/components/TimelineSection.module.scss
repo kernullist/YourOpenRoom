@@ -1,0 +1,104 @@
+.filter {
+  padding: 3px 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--fill-white-6, rgba(255, 255, 255, 0.06));
+  border: 1px solid var(--fill-white-10);
+  border-radius: 6px;
+  cursor: pointer;
+  max-width: 180px;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  border-bottom: 1px solid var(--fill-white-4, rgba(255, 255, 255, 0.04));
+
+  &:last-child {
+    border-bottom: none;
+  }
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 4px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+
+  &:hover {
+    background: var(--fill-white-4, rgba(255, 255, 255, 0.04));
+  }
+}
+
+.time {
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 10px;
+  color: var(--text-placeholder);
+  width: 72px;
+  flex-shrink: 0;
+  text-align: right;
+}
+
+.summary {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.risk {
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 10px;
+  color: var(--text-placeholder);
+  flex-shrink: 0;
+}
+
+.raw {
+  margin: 0 0 8px 82px;
+  max-height: 260px;
+  overflow: auto;
+  padding: 8px 10px;
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text-tertiary);
+  background: var(--bg-1);
+  border-radius: 6px;
+}
+
+/* A filter that matches nothing is NOT the same as an empty store, so it gets
+   its own wording instead of reusing the panel's empty state. */
+.filteredEmpty {
+  margin: 0;
+  padding: 12px 4px;
+  font-size: 12px;
+  color: var(--text-placeholder);
+}
+
+:global([data-width='compact']) {
+  .risk {
+    display: none;
+  }
+
+  .time {
+    width: 56px;
+  }
+
+  .raw {
+    margin-left: 0;
+  }
+}

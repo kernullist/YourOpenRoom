@@ -1,0 +1,174 @@
+.inspector {
+  display: flex;
+  flex-direction: column;
+  width: 360px;
+  max-height: calc(100vh - 140px);
+  flex-shrink: 0;
+  background: var(--bg-2);
+  border: 1px solid var(--fill-white-10);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--fill-white-6, rgba(255, 255, 255, 0.06));
+}
+
+.headerText {
+  min-width: 0;
+}
+
+.title {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  color: var(--text-tertiary);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  flex-shrink: 0;
+
+  &:hover {
+    color: var(--text-primary);
+    background: var(--fill-white-10);
+  }
+}
+
+.scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 14px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.blockLabel {
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-placeholder);
+}
+
+.text {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  word-break: break-word;
+}
+
+.mono {
+  margin: 2px 0 0;
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.metaGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.blocked {
+  padding: 8px 10px;
+  background: rgba(255, 63, 77, 0.08);
+  border-left: 2px solid var(--color-red);
+  border-radius: 0 6px 6px 0;
+}
+
+.refs,
+.riskSignals {
+  margin: 0;
+  padding-left: 16px;
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--text-tertiary);
+  word-break: break-all;
+}
+
+.riskSignals {
+  color: var(--color-yellow);
+}
+
+.footer {
+  display: flex;
+  gap: 6px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--fill-white-6, rgba(255, 255, 255, 0.06));
+}
+
+.accept,
+.snooze,
+.dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  flex: 1;
+  padding: 7px 8px;
+  font-size: 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid transparent;
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}
+
+.accept {
+  color: var(--text-btn-primary);
+  background: var(--color-yellow);
+}
+
+.snooze {
+  color: var(--text-secondary);
+  background: var(--fill-white-6, rgba(255, 255, 255, 0.06));
+  border-color: var(--fill-white-10);
+}
+
+.dismiss {
+  color: var(--color-red);
+  background: rgba(255, 63, 77, 0.1);
+  border-color: rgba(255, 63, 77, 0.3);
+}
+
+/* Compact: the inspector takes the whole surface rather than squeezing the list
+   into an unusable column. */
+.inspector[data-compact='true'] {
+  width: 100%;
+  max-height: none;
+}

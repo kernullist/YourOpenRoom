@@ -511,6 +511,49 @@ export function listAoiAutonomySessionPaths(
   return [...found];
 }
 
+export interface AoiAutonomySessionSummary {
+  sessionPath: string;
+  // policy.json mtime. This is the cheapest honest "when was this session last
+  // touched" signal: every tick that changes policy/level rewrites it, and it is
+  // the same file listAoiAutonomySessionPaths uses to decide a session exists at
+  // all, so there is never a summary for a session whose stat target is missing.
+  updatedAt: number;
+}
+
+// Session list for operator surfaces (Mission Control). Every /api/aoi-autonomy
+// route requires a sessionPath, and an app iframe has no way to learn one -- the
+// in-process sessionPath holder belongs to the host runtime, not the app. This
+// is the one route that must answer WITHOUT a sessionPath, so it takes none.
+//
+// Sorted newest-first so a caller can default to [0] and be right.
+export function listAoiAutonomySessionSummaries(
+  sessionsDir: string,
+  options: { maxDepth?: number } = {},
+): AoiAutonomySessionSummary[] {
+  const sessionsRoot = resolve(sessionsDir);
+  const summaries = listAoiAutonomySessionPaths(sessionsDir, options).map((sessionPath) => {
+    let updatedAt = 0;
+    // A stat failure must NOT drop the session: it still has a policy.json (that
+    // is how it was discovered), so hiding it here would tell the operator the
+    // session does not exist. Degrade the timestamp, never the row.
+    try {
+      updatedAt = Math.trunc(
+        fs.statSync(join(sessionsRoot, sessionPath, AUTONOMY_ROOT_DIR, 'policy.json')).mtimeMs,
+      );
+    } catch {
+      updatedAt = 0;
+    }
+    return { sessionPath, updatedAt };
+  });
+  summaries.sort((left, right) => {
+    if (right.updatedAt !== left.updatedAt) {
+      return right.updatedAt - left.updatedAt;
+    }
+    return left.sessionPath.localeCompare(right.sessionPath);
+  });
+  return summaries;
+}
+
 export function resolveAoiAutonomyPaths(
   sessionsDir: string,
   sessionPath: string,

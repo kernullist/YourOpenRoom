@@ -1,0 +1,64 @@
+app_id: 26
+app_name: missioncontrol
+app_display_name: Mission Control
+version: '1.0.0'
+description: >
+  Mission Control is the operator console for Aoi's autonomy runtime. It shows whether the daemon
+  and background loop are actually alive, the per-session autonomy policy, the pending proposal
+  queue, the operator timeline, flight-recorder decision records, and closed-loop metrics. When a
+  reading cannot be validated it is displayed as unknown rather than as healthy.
+displayDesc: >
+  Watch the Aoi daemon, loop cycles, proposal queue, timeline, flight recorder, and closed-loop
+  metrics in one console, and approve or reject pending proposals.
+
+# Only read and navigation actions are exposed.
+#
+# Approving a proposal, changing the autonomy policy, and running a manual tick are all available
+# in the UI but are reachable ONLY from operator clicks. Exposing them here would let Aoi drive its
+# own approvals through reportAction, bypassing the no-self-approval invariant that the autonomy
+# model enforces structurally. The omission is deliberate and is guarded by a source-scan test
+# (src/pages/MissionControl/__tests__/actionSafety.test.ts).
+actions:
+  - type: REFRESH_MISSION_CONTROL
+    name: Refresh Mission Control
+    description:
+      Re-read the session list, daemon health, autonomy status, and the panels of the current
+      section. Optionally switch to a section first.
+    params:
+      - name: view
+        type: string
+        description:
+          Optional section to refresh and switch to. One of runtime, queue, timeline, flight,
+          metrics.
+        required: false
+
+  - type: SELECT_MISSION_CONTROL_VIEW
+    name: Select Mission Control View
+    description: Switch the console to a section.
+    params:
+      - name: view
+        type: string
+        description: One of runtime, queue, timeline, flight, metrics.
+        required: true
+
+  - type: SELECT_MISSION_CONTROL_SESSION
+    name: Select Mission Control Session
+    description:
+      Change which session the console observes. Returns an error when the session path is not in
+      the discovered session list.
+    params:
+      - name: sessionPath
+        type: string
+        description: Session path such as aoi/space_adventure, taken from the session picker.
+        required: true
+
+  - type: SYNC_STATE
+    name: Sync State
+    description:
+      Re-read apps/missioncontrol/data/state.json and apply its fields defensively over the current
+      view state. Missing fields are left unchanged.
+    params: []
+
+storage:
+  - path: apps/missioncontrol/data/state.json
+    description: Operator console view state (active section, observed session, refresh settings).

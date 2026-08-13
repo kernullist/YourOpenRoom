@@ -1,0 +1,192 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-2);
+  border: 1px solid var(--fill-white-6, rgba(255, 255, 255, 0.06));
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--fill-white-6, rgba(255, 255, 255, 0.06));
+}
+
+.headerText {
+  min-width: 0;
+}
+
+.title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+}
+
+.subtitle {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.headerMeta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.fetchedAt {
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-placeholder);
+  white-space: nowrap;
+}
+
+.body {
+  padding: 12px 16px 16px;
+}
+
+.placeholder {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 20px 16px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+/* Empty and error are given different colour, weight, and iconography so they
+   can never be mistaken for one another at a glance. */
+.placeholder[data-variant='empty'] {
+  color: var(--text-placeholder);
+}
+
+.placeholder[data-variant='error'] {
+  align-items: flex-start;
+  color: var(--color-red);
+  background: rgba(255, 63, 77, 0.06);
+  border-left: 2px solid var(--color-red);
+}
+
+.errorBody {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.errorMessage {
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.errorMeta {
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 11px;
+  color: var(--color-red);
+}
+
+.retry {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--fill-white-6, rgba(255, 255, 255, 0.06));
+  border: 1px solid var(--fill-white-10);
+  border-radius: 6px;
+  cursor: pointer;
+  flex-shrink: 0;
+
+  &:hover {
+    background: var(--fill-white-10);
+    color: var(--text-primary);
+  }
+}
+
+.spinner {
+  animation: mc-spin 900ms linear infinite;
+}
+
+@keyframes mc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  border-radius: 999px;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+
+.badgeDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.badgeDot[data-pulse='true'] {
+  animation: mc-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes mc-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.badge[data-tone='ok'] {
+  color: #4cc3a5;
+  background: rgba(76, 195, 165, 0.12);
+  border-color: rgba(76, 195, 165, 0.3);
+}
+
+.badge[data-tone='warn'] {
+  color: var(--color-yellow);
+  background: var(--color-yellow-10);
+  border-color: rgba(250, 234, 95, 0.3);
+}
+
+.badge[data-tone='danger'] {
+  color: var(--color-red);
+  background: rgba(255, 63, 77, 0.12);
+  border-color: rgba(255, 63, 77, 0.32);
+}
+
+.badge[data-tone='info'] {
+  color: var(--color-cyan);
+  background: rgba(46, 167, 255, 0.12);
+  border-color: rgba(46, 167, 255, 0.3);
+}
+
+/* Unknown must never look healthy: it is deliberately grey and low-contrast so
+   an operator reads "we do not know" rather than "fine". */
+.badge[data-tone='unknown'] {
+  color: var(--text-placeholder);
+  background: var(--fill-white-4, rgba(255, 255, 255, 0.04));
+  border-color: var(--fill-white-10);
+}

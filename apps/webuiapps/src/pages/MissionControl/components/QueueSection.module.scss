@@ -1,0 +1,94 @@
+.layout {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  min-height: 0;
+}
+
+.listColumn {
+  flex: 1;
+  min-width: 0;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 8px 10px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+
+  &:hover {
+    background: var(--fill-white-4, rgba(255, 255, 255, 0.04));
+  }
+}
+
+.row[data-active='true'] {
+  background: var(--fill-white-6, rgba(255, 255, 255, 0.06));
+  border-color: var(--fill-white-10);
+}
+
+.rowMain {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.rowTitle {
+  font-size: 13px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowReason {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowMeta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.rowLevel,
+.rowTime {
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 10px;
+  color: var(--text-placeholder);
+  white-space: nowrap;
+}
+
+:global([data-width='compact']) {
+  .layout {
+    flex-direction: column;
+  }
+
+  .rowMeta {
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 2px;
+  }
+}

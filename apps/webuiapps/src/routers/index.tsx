@@ -25,6 +25,7 @@ const DewdropCanvas = lazy(() => import('@/pages/DewdropCanvas'));
 const WrittenByMe = lazy(() => import('@/pages/WrittenByMe'));
 const AoiResearch = lazy(() => import('@/pages/AoiResearch'));
 const AoiMemoryDashboard = lazy(() => import('@/pages/AoiMemoryDashboard'));
+const MissionControl = lazy(() => import('@/pages/MissionControl'));
 
 // All sub-pages should use lazy loading
 const routerList: RouteObject[] = [
@@ -201,6 +202,14 @@ const routerList: RouteObject[] = [
     element: (
       <React.Suspense>
         <AoiMemoryDashboard />
+      </React.Suspense>
+    ),
+  },
+  {
+    path: '/mission-control',
+    element: (
+      <React.Suspense>
+        <MissionControl />
       </React.Suspense>
     ),
   },

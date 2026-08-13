@@ -790,6 +790,21 @@ const APP_SCHEMAS: AppSchemaDocument[] = [
       query: primitive('string'),
     },
   },
+  {
+    id: 'missioncontrol-state',
+    appName: 'missioncontrol',
+    entityName: 'state',
+    pathPattern: /^apps\/missioncontrol\/data\/state\.json$/,
+    description: 'Mission Control operator console view state',
+    fields: {
+      activeView: primitive('string'),
+      sessionPath: primitive('nullable-string'),
+      autoRefresh: primitive('boolean'),
+      refreshIntervalMs: primitive('number'),
+      timelineKindFilter: primitive('nullable-string'),
+      selectedProposalId: primitive('nullable-string'),
+    },
+  },
 ];
 
 export function listAppSchemas(): AppSchemaDocument[] {

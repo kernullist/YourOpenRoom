@@ -71,6 +71,7 @@ import {
   loadAoiActiveOpportunities,
   loadAoiArchivedOpportunities,
   loadAoiFollowThroughLearningSummary,
+  listAoiAutonomySessionSummaries,
   loadAoiObservations,
   loadAoiAutonomyPolicy,
   loadAoiFieldShadowRecordReport,
@@ -699,6 +700,23 @@ export async function handleAoiAutonomyRequest(
   }
 
   try {
+    // The bootstrap route: deliberately takes NO sessionPath. Every other route
+    // here requires one, which leaves an operator surface running in an app
+    // iframe with no way in -- it cannot read the host's in-process sessionPath
+    // holder, and vibe-info carries no mod id. Asking for a sessionPath to learn
+    // the sessionPaths would be circular, so this one answers cold.
+    //
+    // Zero sessions is a legitimate answer (nothing has initialized an autonomy
+    // store yet), NOT an error: returning 4xx here would make a fresh install
+    // look broken to the very console meant to diagnose it.
+    if (req.method === 'GET' && route === '/sessions') {
+      writeJson(res, 200, {
+        ok: true,
+        sessions: listAoiAutonomySessionSummaries(sessionsDir),
+      });
+      return true;
+    }
+
     if (req.method === 'GET' && route === '/status') {
       const sessionPath = getSessionPathFromUrl(url);
       if (!sessionPath) {

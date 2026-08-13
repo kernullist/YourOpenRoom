@@ -1,0 +1,141 @@
+.deadBanner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 16px;
+  color: var(--color-red);
+  background: rgba(255, 63, 77, 0.08);
+  border: 1px solid rgba(255, 63, 77, 0.35);
+  border-radius: 10px;
+}
+
+.deadTitle {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.deadBody {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+
+  code {
+    padding: 1px 5px;
+    font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+    font-size: 11px;
+    background: var(--fill-white-10);
+    border-radius: 4px;
+  }
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px 16px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.fieldLabel {
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-placeholder);
+}
+
+.fieldValue {
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 12px;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.field[data-tone='ok'] .fieldValue {
+  color: #4cc3a5;
+}
+
+.field[data-tone='warn'] .fieldValue {
+  color: var(--color-yellow);
+}
+
+.field[data-tone='danger'] .fieldValue {
+  color: var(--color-red);
+}
+
+.field[data-tone='unknown'] .fieldValue {
+  color: var(--text-placeholder);
+}
+
+.tickButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--text-btn-primary);
+  background: var(--color-yellow);
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+
+  &:disabled {
+    color: var(--text-tertiary);
+    background: var(--fill-white-10);
+    cursor: not-allowed;
+  }
+}
+
+.snapshot {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.summary {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.cannotKnow {
+  padding: 10px 12px;
+  background: var(--fill-white-4, rgba(255, 255, 255, 0.04));
+  border-left: 2px solid var(--text-placeholder);
+  border-radius: 0 6px 6px 0;
+
+  ul {
+    margin: 6px 0 0;
+    padding-left: 18px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--text-tertiary);
+  }
+}
+
+.cannotKnowTitle {
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-placeholder);
+}
+
+.raw {
+  margin: 0;
+  max-height: 280px;
+  overflow: auto;
+  padding: 10px 12px;
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text-tertiary);
+  background: var(--bg-1);
+  border-radius: 6px;
+}

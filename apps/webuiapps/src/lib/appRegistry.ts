@@ -326,6 +326,27 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
     color: '#7dd3fc',
     defaultSize: { width: 1280, height: 760 },
   },
+  {
+    appId: 26,
+    appName: 'missioncontrol',
+    route: '/mission-control',
+    displayName: 'Mission Control',
+    aliases: [
+      'Aoi Mission Control',
+      'operator console',
+      'autonomy console',
+      'daemon status',
+      'proposal queue',
+      '미션 컨트롤',
+      '오퍼레이터 콘솔',
+      '자율 상태',
+      '제안 큐',
+    ],
+    sourceDir: 'MissionControl',
+    icon: 'Activity',
+    color: '#facc15',
+    defaultSize: { width: 1280, height: 800 },
+  },
 ];
 
 // OS actions are built-in system actions, not from meta.yaml

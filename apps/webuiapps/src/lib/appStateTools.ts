@@ -364,6 +364,17 @@ async function buildStateSummary(
         query: normalizedState?.query ?? '',
         memory_count: await countFiles('apps/aoimemory/data/memories'),
       };
+    case 'missioncontrol':
+      return {
+        active_view: normalizedState?.activeView ?? 'runtime',
+        // null means the console is following the newest session rather than a
+        // pinned one -- reporting a concrete path here would be a guess.
+        session_path: normalizedState?.sessionPath ?? null,
+        auto_refresh: normalizedState?.autoRefresh ?? true,
+        refresh_interval_ms: normalizedState?.refreshIntervalMs ?? 10000,
+        timeline_kind_filter: normalizedState?.timelineKindFilter ?? null,
+        selected_proposal_id: normalizedState?.selectedProposalId ?? null,
+      };
     case 'freecell':
       return {
         game_id: normalizedState?.gameId ?? null,
