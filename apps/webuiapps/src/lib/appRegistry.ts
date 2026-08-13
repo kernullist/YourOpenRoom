@@ -347,6 +347,27 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
     color: '#facc15',
     defaultSize: { width: 1280, height: 800 },
   },
+  {
+    appId: 27,
+    appName: 'habitgarden',
+    route: '/habit-garden',
+    displayName: 'Habit Garden',
+    aliases: [
+      'habits',
+      'habit tracker',
+      'streak',
+      'garden',
+      '습관',
+      '습관 정원',
+      '습관 트래커',
+      '정원',
+      '스트릭',
+    ],
+    sourceDir: 'HabitGarden',
+    icon: 'Sprout',
+    color: '#4cc3a5',
+    defaultSize: { width: 1040, height: 720 },
+  },
 ];
 
 // OS actions are built-in system actions, not from meta.yaml

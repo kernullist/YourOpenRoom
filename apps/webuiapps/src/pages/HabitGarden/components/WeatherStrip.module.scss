@@ -1,0 +1,112 @@
+.strip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--fill-white-6, rgba(255, 255, 255, 0.06));
+  flex-shrink: 0;
+}
+
+.weather {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.strip[data-weather='sunny'] .icon {
+  color: var(--color-yellow);
+}
+
+.strip[data-weather='cloudy'] .icon {
+  color: var(--text-tertiary);
+}
+
+.strip[data-weather='rain'] .icon {
+  color: var(--color-cyan);
+}
+
+/* Unknown is dim, not alarming: nothing has gone wrong. */
+.strip[data-weather='unknown'] .icon {
+  color: var(--text-placeholder);
+}
+
+.rate {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  font-size: 12px;
+  color: var(--text-btn-primary);
+  background: var(--color-yellow);
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  flex-shrink: 0;
+
+  &:hover {
+    filter: brightness(1.08);
+  }
+}
+
+.iconButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  color: var(--text-tertiary);
+  background: var(--fill-white-6, rgba(255, 255, 255, 0.06));
+  border: 1px solid var(--fill-white-10);
+  border-radius: 8px;
+  cursor: pointer;
+  flex-shrink: 0;
+
+  &:hover {
+    color: var(--text-primary);
+    background: var(--fill-white-10);
+  }
+}
+
+/* Compact keeps the weather word and the add button; the rate is the first
+   thing to go because it is the least actionable. */
+:global([data-width='compact']) {
+  .rate {
+    display: none;
+  }
+
+  .actionLabel {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .action {
+    padding: 6px;
+  }
+}

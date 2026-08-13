@@ -1,0 +1,126 @@
+app_id: 27
+app_name: habitgarden
+app_display_name: Habit Garden
+version: '1.0.0'
+description: >
+  Habit Garden tracks habits as plants. Each check-in grows its plant, a lapse makes it wilt
+  without killing it, and recent adherence across the whole garden becomes the weather. Aoi can
+  read the streak trend as a three-value direction when the user opts in, and the weather can
+  optionally be reflected onto the desktop room theme.
+displayDesc: >
+  Grow a plant for every habit, check in with one click, and watch the garden's weather follow
+  your week.
+
+# Check-ins and habit CRUD ARE exposed: a check-in is the user's own record, and asking Aoi to
+# note "I stretched this morning" is the most natural way to use this app.
+#
+# The two settings toggles (reflectWeatherInRoom, shareMomentumWithAoi) are deliberately NOT
+# exposed. One decides whether habit data reaches Aoi at all and the other repaints the user's
+# desktop; an opt-in the agent can switch on for itself is not an opt-in. Enforced by
+# src/pages/HabitGarden/__tests__/actionSafety.test.ts.
+actions:
+  - type: CHECK_IN_HABIT
+    name: Check In Habit
+    description:
+      Mark a habit complete for today, or for an explicit day. Repeating a check-in is treated as
+      success, not as a toggle.
+    params:
+      - name: habitId
+        type: string
+        description: Habit id from the garden.
+        required: true
+      - name: dayKey
+        type: string
+        description: Local day as YYYY-MM-DD. Omit for today.
+        required: false
+
+  - type: UNDO_HABIT_CHECK_IN
+    name: Undo Habit Check In
+    description: Remove a completion record for today or an explicit day.
+    params:
+      - name: habitId
+        type: string
+        description: Habit id from the garden.
+        required: true
+      - name: dayKey
+        type: string
+        description: Local day as YYYY-MM-DD. Omit for today.
+        required: false
+
+  - type: CREATE_HABIT
+    name: Create Habit
+    description: Plant a new habit.
+    params:
+      - name: name
+        type: string
+        description: Habit name, up to 40 characters.
+        required: true
+      - name: cadence
+        type: string
+        description: daily or weekly. Defaults to daily.
+        required: false
+      - name: timesPerWeek
+        type: string
+        description: Target count for a weekly cadence, 1-7. Defaults to 3.
+        required: false
+
+  - type: UPDATE_HABIT
+    name: Update Habit
+    description: Rename a habit or change its cadence.
+    params:
+      - name: habitId
+        type: string
+        description: Habit id from the garden.
+        required: true
+      - name: name
+        type: string
+        description: New name.
+        required: false
+      - name: cadence
+        type: string
+        description: daily or weekly.
+        required: false
+      - name: timesPerWeek
+        type: string
+        description: Target count for a weekly cadence, 1-7.
+        required: false
+
+  - type: DELETE_HABIT
+    name: Delete Habit
+    description: Remove a habit and its history. Not reversible.
+    params:
+      - name: habitId
+        type: string
+        description: Habit id from the garden.
+        required: true
+
+  - type: SELECT_HABIT
+    name: Select Habit
+    description: Open a habit's detail panel. Returns an error when the id is unknown.
+    params:
+      - name: habitId
+        type: string
+        description: Habit id from the garden.
+        required: true
+
+  - type: REFRESH_HABIT_GARDEN
+    name: Refresh Habit Garden
+    description: Re-read every habit file, optionally focusing one afterwards.
+    params:
+      - name: habitId
+        type: string
+        description: Habit to select after refreshing.
+        required: false
+
+  - type: SYNC_STATE
+    name: Sync State
+    description:
+      Re-read apps/habitgarden/data/state.json and apply its fields defensively. Missing fields
+      are left unchanged, so a partial write cannot reset a consent switch.
+    params: []
+
+storage:
+  - path: apps/habitgarden/data/habits/{id}.json
+    description: One habit with its completed local day keys (YYYY-MM-DD, most recent 400).
+  - path: apps/habitgarden/data/state.json
+    description: Active tab, selected habit, and the two opt-in switches.

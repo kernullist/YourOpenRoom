@@ -1,0 +1,82 @@
+.root {
+  --hg-garden-columns: 4;
+
+  /* Clears the shell's floating desktop dock.
+
+     The dock is position:fixed at bottom:16px with z-index 99999, so in a
+     maximized window it sits ON TOP of whatever the app draws at its bottom
+     edge and swallows the clicks. For most apps that is cosmetic; here it would
+     cover the check-in bar, which is the one control this app exists to offer.
+     Reserving the strip is worth the lost pixels. */
+  --hg-dock-safe-area: 72px;
+
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100vh;
+  padding-bottom: var(--hg-dock-safe-area);
+  background: var(--bg-1);
+  color: var(--text-primary);
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    sans-serif;
+  overflow: hidden;
+}
+
+.root[data-width='compact'] {
+  --hg-garden-columns: 2;
+}
+
+.root[data-width='expanded'] {
+  --hg-garden-columns: 6;
+}
+
+.body {
+  display: flex;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+  padding: 0 12px;
+  overflow-y: auto;
+}
+
+.gardenColumn {
+  flex: 1;
+  min-width: 0;
+}
+
+.editorWrap {
+  padding: 0 16px 16px;
+  max-width: 420px;
+}
+
+.toast {
+  position: fixed;
+  right: 20px;
+  bottom: 84px;
+  max-width: 340px;
+  padding: 10px 14px;
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--bg-3);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 50;
+}
+
+.toast[data-tone='ok'] {
+  border: 1px solid rgba(76, 195, 165, 0.4);
+}
+
+.toast[data-tone='error'] {
+  border: 1px solid rgba(255, 63, 77, 0.45);
+}
+
+/* Compact: the detail panel drops below the garden instead of squeezing it into
+   an unusable column. The check-in bar is untouched at every width. */
+.root[data-width='compact'] .body {
+  flex-direction: column;
+  padding: 0 8px;
+}

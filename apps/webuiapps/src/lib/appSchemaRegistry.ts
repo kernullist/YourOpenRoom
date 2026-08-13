@@ -805,6 +805,38 @@ const APP_SCHEMAS: AppSchemaDocument[] = [
       selectedProposalId: primitive('nullable-string'),
     },
   },
+  {
+    id: 'habitgarden-habit',
+    appName: 'habitgarden',
+    entityName: 'habit',
+    pathPattern: /^apps\/habitgarden\/data\/habits\/[^/]+\.json$/,
+    description: 'A tracked habit and its completed local day keys',
+    fields: {
+      id: primitive('string', { required: true }),
+      name: primitive('string', { required: true }),
+      color: primitive('string'),
+      createdAt: primitive('number'),
+      updatedAt: primitive('number'),
+      // YYYY-MM-DD local day keys; never timestamps.
+      checkIns: primitive('string-array'),
+      archived: primitive('boolean'),
+    },
+  },
+  {
+    id: 'habitgarden-state',
+    appName: 'habitgarden',
+    entityName: 'state',
+    pathPattern: /^apps\/habitgarden\/data\/state\.json$/,
+    description: 'Habit Garden view state and opt-in switches',
+    fields: {
+      activeTab: primitive('string'),
+      selectedHabitId: primitive('nullable-string'),
+      reflectWeatherInRoom: primitive('boolean'),
+      shareMomentumWithAoi: primitive('boolean'),
+      restoreRoomItemId: primitive('nullable-string'),
+      lastAppliedWeather: primitive('nullable-string'),
+    },
+  },
 ];
 
 export function listAppSchemas(): AppSchemaDocument[] {

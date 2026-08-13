@@ -22,7 +22,19 @@ export type AoiMoodReasonKind =
   | 'recent_wins'
   | 'milestone_crossed'
   | 'open_threads_waiting'
-  | 'approvals_waiting';
+  | 'approvals_waiting'
+  | 'habit_momentum_growing'
+  | 'habit_momentum_slipping';
+
+/**
+ * How the user's habit garden is trending, as a direction only.
+ *
+ * Supplied by the Habit Garden app (opt-in, off by default in its settings) and
+ * summarized to three values before it ever gets here: the mood layer must not
+ * learn a whole app's domain, and the autonomy store should not accumulate a
+ * personal habit log it has no use for.
+ */
+export type AoiHabitMomentum = 'growing' | 'steady' | 'slipping';
 
 // Which expression the mood leans toward. Only a hint for the model and the
 // avatar -- never a forced emotion, because the message being answered still
@@ -58,6 +70,9 @@ export interface DeriveAoiMoodInput {
   // Approvals sitting in the inbox. Waiting on the user is a mild unease, not a
   // reason to nag -- the mood says it, the governor still decides delivery.
   pendingApprovalCount?: number;
+  // Optional and absent unless the user opted in. Omitted entirely for anyone
+  // who does not use the habit app, so its absence is not read as 'steady'.
+  habitMomentum?: AoiHabitMomentum;
   windowMs?: number;
 }
 
@@ -105,10 +120,22 @@ export function deriveAoiMoodState(input: DeriveAoiMoodInput): AoiMoodState {
   if (approvals > 0) {
     reasons.push('approvals_waiting');
   }
+  if (input.habitMomentum === 'growing') {
+    reasons.push('habit_momentum_growing');
+  }
+  if (input.habitMomentum === 'slipping') {
+    reasons.push('habit_momentum_slipping');
+  }
 
   // Precedence: something going wrong outweighs something going right. A mood
   // that reported pride while work was failing would read as not paying
   // attention.
+  //
+  // Habit momentum sits at the BOTTOM of this ladder on purpose. It is context
+  // about the user's week, not about Aoi's own work, so it colours an otherwise
+  // neutral mood rather than overriding a real signal -- and a slipping week is
+  // never allowed to turn into worry while actual work is going well, which
+  // would read as nagging.
   let mood: AoiMoodKind = 'neutral';
   if (failures > wins) {
     mood = 'worried';
@@ -118,6 +145,8 @@ export function deriveAoiMoodState(input: DeriveAoiMoodInput): AoiMoodState {
     mood = 'content';
   } else if (openThreads > 0 || approvals > 0) {
     mood = 'curious';
+  } else if (input.habitMomentum === 'growing') {
+    mood = 'content';
   }
 
   return {

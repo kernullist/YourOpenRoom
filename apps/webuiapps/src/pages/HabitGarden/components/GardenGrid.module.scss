@@ -1,0 +1,48 @@
+.grid {
+  display: grid;
+  grid-template-columns: repeat(var(--hg-garden-columns, 4), minmax(0, 1fr));
+  gap: 12px;
+  padding: 16px;
+  transition: grid-template-columns 160ms ease-out;
+}
+
+.cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 8px 10px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 16px;
+  cursor: pointer;
+  min-width: 0;
+
+  &:hover {
+    background: var(--fill-white-4, rgba(255, 255, 255, 0.04));
+  }
+}
+
+.cell[data-active='true'] {
+  background: var(--fill-white-6, rgba(255, 255, 255, 0.06));
+  border-color: var(--fill-white-10);
+}
+
+.name {
+  max-width: 100%;
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.streak {
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-placeholder);
+}
+
+.cell[data-vitality='thriving'] .streak {
+  color: var(--text-tertiary);
+}

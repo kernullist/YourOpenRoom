@@ -1,0 +1,35 @@
+.plant {
+  display: block;
+  transition:
+    opacity 300ms ease,
+    transform 420ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* The growth bump fires on stage change only; a plant that pulses on every
+   render turns the garden into noise. */
+.plant[data-stage='bloom'] {
+  transform: scale(1.04);
+}
+
+.doneDot {
+  animation: hg-pop 180ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+@keyframes hg-pop {
+  from {
+    transform: scale(0.2);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .plant,
+  .doneDot {
+    transition: none;
+    animation: none;
+  }
+}

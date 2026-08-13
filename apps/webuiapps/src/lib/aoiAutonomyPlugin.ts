@@ -122,7 +122,8 @@ import {
   recordAoiRelationshipSessionOpen,
   recordAoiRelationshipSessionSummary,
 } from './aoiRelationshipState';
-import { deriveAoiMoodState } from './aoiMoodState';
+import { deriveAoiMoodState, type AoiHabitMomentum } from './aoiMoodState';
+import { isHabitDayKey, loadHabitMomentumForSession } from './habitGardenMomentum';
 import { deriveAoiRelationshipMilestones } from './aoiRelationshipMilestones';
 import {
   loadAoiWeeklyRetrospective,
@@ -2843,6 +2844,21 @@ export async function handleAoiAutonomyRequest(
       // line in the persona bridge (R7.2).
       let relationshipForResponse = milestoneResult.state ?? relationship;
       try {
+        // Habit momentum is optional context about the user's week. The day key
+        // comes from the CLIENT because only the browser knows the user's local
+        // calendar day -- this process may run in a different timezone, and
+        // guessing would put check-ins in the wrong day. An absent or malformed
+        // key means the input is skipped rather than estimated.
+        let habitMomentum: AoiHabitMomentum | undefined;
+        const todayKey = typeof body.todayKey === 'string' ? body.todayKey : '';
+        if (isHabitDayKey(todayKey)) {
+          try {
+            habitMomentum =
+              loadHabitMomentumForSession(sessionsDir, sessionPath, todayKey) ?? undefined;
+          } catch {
+            habitMomentum = undefined;
+          }
+        }
         const derived = deriveAoiMoodState({
           now,
           recentOutcomes: loadAoiOutcomeSignalRecords(sessionsDir, sessionPath, now).map(
@@ -2850,6 +2866,7 @@ export async function handleAoiAutonomyRequest(
           ),
           newMilestoneCount: milestoneResult.added.length,
           openThreadCount: relationshipForResponse.openThreads.length,
+          ...(habitMomentum ? { habitMomentum } : {}),
         });
         const stored = recordAoiRelationshipMood(sessionsDir, sessionPath, derived, now);
         if (stored) {

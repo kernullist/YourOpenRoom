@@ -375,6 +375,16 @@ async function buildStateSummary(
         timeline_kind_filter: normalizedState?.timelineKindFilter ?? null,
         selected_proposal_id: normalizedState?.selectedProposalId ?? null,
       };
+    case 'habitgarden':
+      return {
+        active_tab: normalizedState?.activeTab ?? 'garden',
+        selected_habit_id: normalizedState?.selectedHabitId ?? null,
+        // Consent switches, surfaced so the agent can SEE them without being
+        // able to change them (no action is exposed for either).
+        reflect_weather_in_room: normalizedState?.reflectWeatherInRoom ?? false,
+        share_momentum_with_aoi: normalizedState?.shareMomentumWithAoi ?? true,
+        habit_count: await countFiles('apps/habitgarden/data/habits'),
+      };
     case 'freecell':
       return {
         game_id: normalizedState?.gameId ?? null,

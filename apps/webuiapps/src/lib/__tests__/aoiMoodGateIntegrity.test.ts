@@ -37,6 +37,12 @@ const GATE_MODULES = [
 // relationship mood specifically plus any bare identifier use.
 const MOOD_PATTERNS = [/AoiMoodState/, /deriveAoiMoodState/, /aoiMoodState/, /\bmood\b/i];
 
+// Habit momentum feeds the mood the same way an outcome does, and it carries the
+// same rule. Blocking mood while leaving its inputs unguarded would just move the
+// hole sideways: a gate that read habitMomentum directly would be tightening
+// authority on how someone's week went, which is exactly what R6.2 forbids.
+const HABIT_PATTERNS = [/habitMomentum/i, /habitGarden/i, /AoiHabitMomentum/];
+
 function readGateSource(fileName: string): string {
   return fs.readFileSync(join(LIB_DIR, fileName), 'utf-8');
 }
@@ -64,6 +70,37 @@ describe('mood never reaches a gate (R6.2)', () => {
       });
     }
     expect(offenders).toEqual([]);
+  });
+
+  it('finds no habit-momentum reference in any gate module', () => {
+    const offenders: string[] = [];
+    for (const fileName of GATE_MODULES) {
+      const source = readGateSource(fileName);
+      source.split(/\r?\n/).forEach((line, index) => {
+        if (HABIT_PATTERNS.some((pattern) => pattern.test(line))) {
+          offenders.push(`${fileName}:${index + 1}: ${line.trim()}`);
+        }
+      });
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('keeps the habit momentum reader out of every gate module', () => {
+    // The server-side loader is the only way habit data enters the process, so
+    // its module name must not appear in a gate either.
+    for (const fileName of GATE_MODULES) {
+      expect(readGateSource(fileName)).not.toContain('habitGardenMomentum');
+    }
+  });
+
+  it('would actually catch a habit reference (the habit guard is not vacuous)', () => {
+    const wouldOffend = [
+      'const momentum = loadHabitMomentumForSession(dir, session, key);',
+      'if (input.habitMomentum === "slipping") { return false; }',
+    ];
+    for (const line of wouldOffend) {
+      expect(HABIT_PATTERNS.some((pattern) => pattern.test(line))).toBe(true);
+    }
   });
 
   it('keeps the mood module free of any gate import', () => {

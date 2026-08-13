@@ -1,0 +1,120 @@
+.editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  background: var(--bg-2);
+  border: 1px solid var(--fill-white-10);
+  border-radius: 16px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.label {
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-placeholder);
+}
+
+.input {
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--text-primary);
+  background: var(--bg-3);
+  border: 1px solid var(--fill-white-10);
+  border-radius: 8px;
+
+  &::placeholder {
+    color: var(--text-placeholder);
+  }
+
+  &:focus {
+    outline: none;
+    border-color: var(--color-yellow);
+  }
+}
+
+.cadence {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.cadenceOption {
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--fill-white-6, rgba(255, 255, 255, 0.06));
+  border: 1px solid var(--fill-white-10);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.cadenceOption[data-active='true'] {
+  color: var(--text-btn-primary);
+  background: var(--color-yellow);
+  border-color: var(--color-yellow);
+}
+
+.times {
+  padding: 5px 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--bg-3);
+  border: 1px solid var(--fill-white-10);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.colors {
+  display: flex;
+  gap: 6px;
+}
+
+.swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  cursor: pointer;
+}
+
+.swatch[data-active='true'] {
+  border-color: var(--text-primary);
+}
+
+.actions {
+  display: flex;
+  gap: 6px;
+}
+
+.submit,
+.cancel {
+  padding: 7px 16px;
+  font-size: 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 1px solid transparent;
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}
+
+.submit {
+  color: var(--text-btn-primary);
+  background: var(--color-yellow);
+}
+
+.cancel {
+  color: var(--text-secondary);
+  background: var(--fill-white-6, rgba(255, 255, 255, 0.06));
+  border-color: var(--fill-white-10);
+}
