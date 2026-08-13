@@ -1,0 +1,44 @@
+app_id: 28
+app_name: driveconsole
+app_display_name: Drive Console
+version: '1.0.0'
+description: >
+  Drive Console is the operator cockpit for browser driving. A plan is classified as it is typed
+  into read / needs-approval / blocked steps, then each acting step goes through propose ->
+  operator approval -> execute, with the audit trail of what actually happened.
+displayDesc: >
+  Inspect a browser-driving plan before it runs, then propose and execute one approved step at a
+  time.
+
+# Read and navigation only, on purpose.
+#
+# Everything that drives the user's real, logged-in browser stays behind an operator click. The
+# execute path is fail-closed on a human-approved, single-use approval; an agent action that could
+# reach propose -> approve -> execute would let Aoi authorize its own plan and act in that browser.
+# Aoi already drives through its own tool path, which passes the same gates. Enforced by
+# src/pages/DriveConsole/__tests__/actionSafety.test.ts.
+actions:
+  - type: SELECT_DRIVE_CONSOLE_VIEW
+    name: Select Drive Console View
+    description: Switch the console to a section.
+    params:
+      - name: view
+        type: string
+        description: One of plan, run, audit.
+        required: true
+
+  - type: REFRESH_DRIVE_CONSOLE
+    name: Refresh Drive Console
+    description: Re-read the browser-drive audit trail.
+    params: []
+
+  - type: SYNC_STATE
+    name: Sync State
+    description:
+      Re-read apps/driveconsole/data/state.json and apply its fields defensively. Missing fields are
+      left unchanged, so a partial write cannot wipe an in-progress plan.
+    params: []
+
+storage:
+  - path: apps/driveconsole/data/state.json
+    description: Active view, session path, target url, the plan draft, and the selected step.

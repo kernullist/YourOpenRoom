@@ -27,6 +27,7 @@ const AoiResearch = lazy(() => import('@/pages/AoiResearch'));
 const AoiMemoryDashboard = lazy(() => import('@/pages/AoiMemoryDashboard'));
 const MissionControl = lazy(() => import('@/pages/MissionControl'));
 const HabitGarden = lazy(() => import('@/pages/HabitGarden'));
+const DriveConsole = lazy(() => import('@/pages/DriveConsole'));
 
 // All sub-pages should use lazy loading
 const routerList: RouteObject[] = [
@@ -219,6 +220,14 @@ const routerList: RouteObject[] = [
     element: (
       <React.Suspense>
         <HabitGarden />
+      </React.Suspense>
+    ),
+  },
+  {
+    path: '/drive-console',
+    element: (
+      <React.Suspense>
+        <DriveConsole />
       </React.Suspense>
     ),
   },

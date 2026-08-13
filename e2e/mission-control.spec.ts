@@ -14,6 +14,21 @@ const MISSION_CONTROL_APP_ID = 26;
 // autonomy store is genuinely empty here -- which makes the empty/unknown paths
 // the DEFAULT case rather than something that has to be simulated.
 
+/**
+ * Select a section explicitly.
+ *
+ * The console persists activeView in state.json and the suite shares one
+ * isolated home, so a test that assumes the app opens on 'runtime' depends on
+ * whichever test ran last.
+ */
+async function openView(page: Page, view: string): Promise<void> {
+  await page.getByTestId(`mission-control-rail-${view}`).click();
+  await expect(page.getByTestId(`mission-control-rail-${view}`)).toHaveAttribute(
+    'data-active',
+    'true',
+  );
+}
+
 async function openMissionControl(page: Page): Promise<void> {
   await page.goto('/');
   await page.getByTestId(`app-icon-${MISSION_CONTROL_APP_ID}`).dblclick();
@@ -97,6 +112,7 @@ test.describe('Mission Control – operator console', () => {
     );
 
     await openMissionControl(page);
+    await openView(page, 'runtime');
 
     const banner = page.getByTestId('mission-control-daemon-dead');
     await expect(banner).toBeVisible({ timeout: 15_000 });
@@ -114,6 +130,7 @@ test.describe('Mission Control – operator console', () => {
     );
 
     await openMissionControl(page);
+    await openView(page, 'runtime');
 
     const app = page.getByTestId('mission-control');
     await expect(app).toContainText('UNREACHABLE', { timeout: 15_000 });

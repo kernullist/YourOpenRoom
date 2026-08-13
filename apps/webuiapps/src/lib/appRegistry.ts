@@ -368,6 +368,24 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
     color: '#4cc3a5',
     defaultSize: { width: 1040, height: 720 },
   },
+  {
+    appId: 28,
+    appName: 'driveconsole',
+    route: '/drive-console',
+    displayName: 'Drive Console',
+    aliases: [
+      'browser drive',
+      'drive cockpit',
+      'browser automation',
+      '브라우저 조종',
+      '드라이브 콘솔',
+      '조종 콕핏',
+    ],
+    sourceDir: 'DriveConsole',
+    icon: 'MousePointerClick',
+    color: '#38bdf8',
+    defaultSize: { width: 1180, height: 780 },
+  },
 ];
 
 // OS actions are built-in system actions, not from meta.yaml

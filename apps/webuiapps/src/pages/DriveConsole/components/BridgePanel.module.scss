@@ -1,0 +1,94 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-2);
+  border: 1px solid var(--fill-white-6, rgba(255, 255, 255, 0.06));
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--fill-white-6, rgba(255, 255, 255, 0.06));
+}
+
+.title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.subtitle {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.body {
+  padding: 12px 14px 14px;
+}
+
+.note {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 16px 14px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.noteTitle {
+  margin: 0 0 3px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.noteBody {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  word-break: break-word;
+}
+
+.note[data-variant='empty'] {
+  color: var(--text-placeholder);
+}
+
+/* Not configured is a setup state, not a failure -- neutral, never alarming. */
+.note[data-variant='unconfigured'] {
+  color: var(--text-tertiary);
+  background: var(--fill-white-4, rgba(255, 255, 255, 0.04));
+  border-left: 2px solid var(--text-placeholder);
+}
+
+/* Denied is the system working: the approval is simply missing. */
+.note[data-variant='denied'] {
+  color: var(--color-yellow);
+  background: var(--color-yellow-10);
+  border-left: 2px solid var(--color-yellow);
+}
+
+.note[data-variant='error'] {
+  color: var(--color-red);
+  background: rgba(255, 63, 77, 0.06);
+  border-left: 2px solid var(--color-red);
+}
+
+.spinner {
+  animation: dc-spin 900ms linear infinite;
+}
+
+@keyframes dc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
