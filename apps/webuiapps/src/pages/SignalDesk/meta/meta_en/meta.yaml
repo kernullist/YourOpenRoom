@@ -5,7 +5,8 @@ version: '1.0.0'
 description: >
   Signal Desk is a real-feed triage console. A dev-server plugin collects real security and
   research feeds (CISA KEV, MSRC, kernel/anti-cheat blogs, arXiv cs.CR, GitHub releases) plus AI
-  model/lab news (OpenAI, DeepMind, Hugging Face, Simon Willison) and agent-harness release feeds
+  model/lab news (OpenAI, DeepMind, Hugging Face, Simon Willison, Qwen blog, and new-model drops
+  by Qwen/DeepSeek/GLM via the Hugging Face models API) and agent-harness release feeds
   (Claude Code, Codex CLI, Gemini CLI) from a fixed source registry, deduplicates by URL and CVE
   id, ranks by recency, KEV listing, and Aoi's interest profile (computed server-side), and
   composes a daily brief. Deep-dive items hand off to Aoi Research on an operator click.

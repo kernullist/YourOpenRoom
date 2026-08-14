@@ -215,6 +215,46 @@ export function parseKevEntries(jsonText: string, options: ParseOptions): RawFee
     });
 }
 
+interface HfModelEntry {
+  id?: string;
+  createdAt?: string;
+  pipeline_tag?: string;
+  likes?: number;
+}
+
+/**
+ * Hugging Face models API (?author=org, key-free) — the one channel where
+ * Qwen/DeepSeek/GLM reliably announce model drops; none of the three labs
+ * serves a usable blog feed (probed live 2026-08-15). Throws on malformed
+ * payloads; the plugin converts that into a failed outcome.
+ */
+export function parseHfModelsJson(jsonText: string, options: ParseOptions): RawFeedEntry[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonText);
+  } catch {
+    throw new Error('HF models JSON parse failed');
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error('HF models JSON is not an array');
+  }
+  return (parsed as HfModelEntry[])
+    .filter((model) => typeof model?.id === 'string' && model.id.length > 0)
+    .sort((a, b) => Date.parse(b.createdAt || '') - Date.parse(a.createdAt || ''))
+    .slice(0, options.max)
+    .map((model) => {
+      const id = String(model.id);
+      const pipeline = model.pipeline_tag ? ` · ${model.pipeline_tag}` : '';
+      const likes = typeof model.likes === 'number' ? ` · likes ${model.likes}` : '';
+      return {
+        title: `새 모델: ${id}`,
+        url: `https://huggingface.co/${id}`,
+        summary: `Hugging Face 신규 공개${pipeline}${likes}`,
+        publishedAt: safeIsoDate(model.createdAt || '', options.fallbackNowMs),
+      };
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Normalization
 // ---------------------------------------------------------------------------
@@ -346,6 +386,13 @@ export interface BuildSignalsOptions {
   now: number;
   interestKeywords: InterestKeyword[];
   maxItems?: number;
+  /**
+   * Every source that returned items keeps at least this many of its best in
+   * the final list. Without the floor, low-recency lanes (e.g. HF model
+   * listings) collect fine but lose every slot to fresher lanes at the global
+   * cut — verified live: 12 collected, 0 visible.
+   */
+  perSourceFloor?: number;
 }
 
 interface WorkingSignal {
@@ -491,7 +538,31 @@ export function buildSignals(
     return a.id.localeCompare(b.id);
   });
 
-  return { items: items.slice(0, options.maxItems ?? 80), outcomes };
+  // Two passes over the score order: guarantee each source its floor, then
+  // fill the remaining slots globally. The result stays score-sorted because
+  // selection preserves relative order.
+  const limit = options.maxItems ?? 120;
+  const floor = options.perSourceFloor ?? 3;
+  const selected = new Set<string>();
+  const perSourceCount = new Map<string, number>();
+  for (const item of items) {
+    if (selected.size >= limit) {
+      break;
+    }
+    const count = perSourceCount.get(item.sourceId) ?? 0;
+    if (count < floor) {
+      selected.add(item.id);
+      perSourceCount.set(item.sourceId, count + 1);
+    }
+  }
+  for (const item of items) {
+    if (selected.size >= limit) {
+      break;
+    }
+    selected.add(item.id);
+  }
+
+  return { items: items.filter((item) => selected.has(item.id)), outcomes };
 }
 
 // ---------------------------------------------------------------------------

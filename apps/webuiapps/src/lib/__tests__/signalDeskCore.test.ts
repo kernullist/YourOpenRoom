@@ -9,6 +9,7 @@ import {
   normalizeSignalUrl,
   parseAtomEntries,
   parseFeedEntries,
+  parseHfModelsJson,
   parseKevEntries,
   parseRssItems,
   type SignalSourceDef,
@@ -125,6 +126,34 @@ describe('parsers', () => {
   it('throws on malformed KEV payloads instead of returning an empty list', () => {
     expect(() => parseKevEntries('not json', PARSE_OPTIONS)).toThrow('KEV JSON parse failed');
     expect(() => parseKevEntries('{"foo":1}', PARSE_OPTIONS)).toThrow('no vulnerabilities');
+  });
+
+  it('parses HF model listings newest first with hub urls', () => {
+    const fixture = JSON.stringify([
+      {
+        id: 'Qwen/Qwen3-Old',
+        createdAt: '2026-06-01T00:00:00.000Z',
+        pipeline_tag: 'text-generation',
+      },
+      { id: 'Qwen/Qwen3.8-27B-FP8', createdAt: '2026-08-13T08:01:58.000Z', likes: 421 },
+      { notAModel: true },
+    ]);
+    const entries = parseHfModelsJson(fixture, PARSE_OPTIONS);
+    expect(entries).toHaveLength(2);
+    expect(entries[0].title).toBe('새 모델: Qwen/Qwen3.8-27B-FP8');
+    expect(entries[0].url).toBe('https://huggingface.co/Qwen/Qwen3.8-27B-FP8');
+    expect(entries[0].summary).toContain('likes 421');
+    expect(entries[1].summary).toContain('text-generation');
+    expect(new Date(entries[0].publishedAt).toISOString()).toBe('2026-08-13T08:01:58.000Z');
+  });
+
+  it('throws on malformed HF payloads instead of returning an empty list', () => {
+    expect(() => parseHfModelsJson('not json', PARSE_OPTIONS)).toThrow(
+      'HF models JSON parse failed',
+    );
+    expect(() => parseHfModelsJson('{"error":"rate limited"}', PARSE_OPTIONS)).toThrow(
+      'not an array',
+    );
   });
 });
 
@@ -303,6 +332,45 @@ describe('buildSignals', () => {
     expect(items[0].sourceName).toBe('KEV');
     expect(items[0].otherSources).toEqual(['MSRC']);
     expect(items[0].cveIds).toEqual(['CVE-2026-1111']);
+  });
+
+  it('guarantees each source its floor slots at the global cap', () => {
+    const hotEntries = Array.from({ length: 6 }, (_, index) => ({
+      title: `hot ${index}`,
+      url: `https://hot.example/${index}`,
+      summary: '',
+      publishedAt: new Date(NOW - index * 60_000).toISOString(),
+    }));
+    const coldEntries = Array.from({ length: 3 }, (_, index) => ({
+      title: `cold ${index}`,
+      url: `https://cold.example/${index}`,
+      summary: '',
+      publishedAt: new Date(NOW - 90 * 86_400_000).toISOString(),
+    }));
+    const results: SourceFetchResult[] = [
+      {
+        source: source({ id: 'hot', name: 'Hot', weight: 18 }),
+        ok: true,
+        entries: hotEntries,
+        ms: 1,
+      },
+      {
+        source: source({ id: 'cold', name: 'Cold', weight: 8 }),
+        ok: true,
+        entries: coldEntries,
+        ms: 1,
+      },
+    ];
+    const { items } = buildSignals(results, {
+      now: NOW,
+      interestKeywords: [],
+      maxItems: 6,
+      perSourceFloor: 3,
+    });
+    expect(items).toHaveLength(6);
+    // Without the floor the cold lane would collect fine and render never.
+    expect(items.filter((item) => item.sourceId === 'cold')).toHaveLength(3);
+    expect(items[0].sourceId).toBe('hot');
   });
 
   it('sorts by score descending and respects maxItems', () => {

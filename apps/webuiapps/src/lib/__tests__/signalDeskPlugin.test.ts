@@ -364,7 +364,7 @@ describe('interest loader', () => {
 
 describe('source registry', () => {
   it('keeps every outbound url https and key-free (the allowlist is the registry)', () => {
-    expect(SIGNAL_DESK_SOURCES.length).toBeGreaterThanOrEqual(12);
+    expect(SIGNAL_DESK_SOURCES.length).toBeGreaterThanOrEqual(15);
     for (const entry of SIGNAL_DESK_SOURCES) {
       expect(entry.url.startsWith('https://')).toBe(true);
       expect(entry.url).not.toMatch(/api[_-]?key|token=/i);

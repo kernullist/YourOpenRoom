@@ -5,6 +5,7 @@ import {
   buildBrief,
   buildSignals,
   parseFeedEntries,
+  parseHfModelsJson,
   parseKevEntries,
   type InterestKeyword,
   type RawFeedEntry,
@@ -142,12 +143,49 @@ export const SIGNAL_DESK_SOURCES: SignalSourceDef[] = [
     category: 'harness',
     weight: 8,
   },
+  {
+    id: 'qwen-blog',
+    name: 'Qwen Blog',
+    url: 'https://qwenlm.github.io/blog/index.xml',
+    kind: 'rss',
+    category: 'ai',
+    weight: 10,
+  },
+  // The three labs below announce model drops on Hugging Face; none serves a
+  // usable blog feed (probed live 2026-08-15: deepseek news page has no RSS,
+  // z.ai has none, GLM github releases are empty).
+  {
+    id: 'hf-qwen',
+    name: 'Qwen models (HF)',
+    url: 'https://huggingface.co/api/models?author=Qwen&sort=createdAt&direction=-1&limit=12',
+    kind: 'hf-json',
+    category: 'ai',
+    weight: 10,
+  },
+  {
+    id: 'hf-deepseek',
+    name: 'DeepSeek models (HF)',
+    url: 'https://huggingface.co/api/models?author=deepseek-ai&sort=createdAt&direction=-1&limit=12',
+    kind: 'hf-json',
+    category: 'ai',
+    weight: 10,
+  },
+  {
+    id: 'hf-zai',
+    name: 'GLM models (HF, zai-org)',
+    url: 'https://huggingface.co/api/models?author=zai-org&sort=createdAt&direction=-1&limit=12',
+    kind: 'hf-json',
+    category: 'ai',
+    weight: 10,
+  },
 ];
 
 const FETCH_TIMEOUT_MS = 12_000;
 const CACHE_TTL_MS = 10 * 60_000;
 const MAX_ENTRIES_PER_SOURCE = 12;
-const DEFAULT_ITEM_LIMIT = 80;
+// Sized with the registry: 18 sources x floor 3 must fit with room for the
+// fresh lanes on top (see BuildSignalsOptions.perSourceFloor).
+const DEFAULT_ITEM_LIMIT = 120;
 
 function clamp01(value: number): number {
   if (!Number.isFinite(value)) {
@@ -217,11 +255,14 @@ export function createSignalDeskHandlers(deps: SignalDeskHandlerDeps): SignalDes
       }
       const text = await response.text();
       const parseOptions = { max: maxEntries, fallbackNowMs: deps.now() };
-      // The declared kind is display metadata; xml feeds are auto-detected
-      // because "feed.xml" is Atom on Jekyll blogs and RSS elsewhere.
+      // The declared kind is display metadata for xml feeds (auto-detected,
+      // because "feed.xml" is Atom on Jekyll blogs and RSS elsewhere); json
+      // kinds pick their parser explicitly.
       let entries: RawFeedEntry[];
       if (source.kind === 'kev-json') {
         entries = parseKevEntries(text, parseOptions);
+      } else if (source.kind === 'hf-json') {
+        entries = parseHfModelsJson(text, parseOptions);
       } else {
         entries = parseFeedEntries(text, parseOptions);
       }
@@ -278,7 +319,7 @@ export function createSignalDeskHandlers(deps: SignalDeskHandlerDeps): SignalDes
       const categoryParam = url.searchParams.get('category');
       const limitRaw = Number(url.searchParams.get('limit') || DEFAULT_ITEM_LIMIT);
       const limit = Math.min(
-        120,
+        160,
         Math.max(10, Number.isFinite(limitRaw) ? limitRaw : DEFAULT_ITEM_LIMIT),
       );
 

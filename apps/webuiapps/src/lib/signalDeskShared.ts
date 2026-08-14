@@ -23,7 +23,7 @@ export function isSignalCategory(value: unknown): value is SignalCategory {
   return typeof value === 'string' && (SIGNAL_CATEGORIES as readonly string[]).includes(value);
 }
 
-export type SignalSourceKind = 'rss' | 'atom' | 'kev-json';
+export type SignalSourceKind = 'rss' | 'atom' | 'kev-json' | 'hf-json';
 
 export interface SignalItem {
   id: string;

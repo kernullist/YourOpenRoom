@@ -39,9 +39,15 @@ Snapshot cache TTL is 10 minutes; `refresh=1` bypasses it. Non-GET returns 405.
 | gh-claude-code | atom     | harness  | Claude Code GitHub releases                      |
 | gh-codex       | atom     | harness  | OpenAI Codex CLI GitHub releases                 |
 | gh-gemini-cli  | atom     | harness  | Gemini CLI GitHub releases                       |
+| qwen-blog      | rss      | ai       | Qwen official blog                               |
+| hf-qwen        | hf-json  | ai       | Hugging Face new models by Qwen                  |
+| hf-deepseek    | hf-json  | ai       | Hugging Face new models by deepseek-ai           |
+| hf-zai         | hf-json  | ai       | Hugging Face new models by zai-org (GLM)         |
 
-The declared `kind` is display metadata; XML feeds are parse-auto-detected (RSS first, Atom
-fallback) because Jekyll-style blogs serve Atom from `feed.xml`.
+The declared `kind` is display metadata for XML feeds, which are parse-auto-detected (RSS first,
+Atom fallback) because Jekyll-style blogs serve Atom from `feed.xml`. `hf-json` sources read the
+official key-free Hugging Face models API (`?author=org`, newest first) — the one channel where
+Qwen/DeepSeek/GLM reliably announce model drops; none of the three serves a usable blog feed.
 
 ## Data Schemas
 
