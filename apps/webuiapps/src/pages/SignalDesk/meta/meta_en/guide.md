@@ -50,19 +50,19 @@ code may import).
 
 ### SignalItem
 
-| field                 | type                                           | notes                                                                    |
-| --------------------- | ---------------------------------------------- | ------------------------------------------------------------------------ |
-| id                    | string                                         | stable hash of sourceId + normalized url                                 |
-| title / url / summary | string                                         | summary may be empty (rendered as "not provided")                        |
-| sourceId / sourceName | string                                         | collecting source                                                        |
-| category              | 'vuln'\|'msrc'\|'research'\|'paper'\|'release'\|'ai'\|'harness' |                                                         |
-| publishedAt           | ISO string                                     |                                                                          |
-| score                 | number                                         | recency + source weight + KEV boost + interest matches + duplicate boost |
-| scoreReasons          | string[]                                       | human-readable contributions, rendered as chips                          |
-| cveIds                | string[]                                       | extracted `CVE-YYYY-NNNN...`, used for cross-source dedup                |
-| kev                   | boolean                                        | listed in CISA KEV                                                       |
-| duplicateCount        | number                                         | merged duplicates beyond this item                                       |
-| otherSources          | string[]                                       | names of merged sources                                                  |
+| field                 | type                                                            | notes                                                                    |
+| --------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| id                    | string                                                          | stable hash of sourceId + normalized url                                 |
+| title / url / summary | string                                                          | summary may be empty (rendered as "not provided")                        |
+| sourceId / sourceName | string                                                          | collecting source                                                        |
+| category              | 'vuln'\|'msrc'\|'research'\|'paper'\|'release'\|'ai'\|'harness' |                                                                          |
+| publishedAt           | ISO string                                                      |                                                                          |
+| score                 | number                                                          | recency + source weight + KEV boost + interest matches + duplicate boost |
+| scoreReasons          | string[]                                                        | human-readable contributions, rendered as chips                          |
+| cveIds                | string[]                                                        | extracted `CVE-YYYY-NNNN...`, used for cross-source dedup                |
+| kev                   | boolean                                                         | listed in CISA KEV                                                       |
+| duplicateCount        | number                                                          | merged duplicates beyond this item                                       |
+| otherSources          | string[]                                                        | names of merged sources                                                  |
 
 ### SignalSourceOutcome (honesty contract)
 
