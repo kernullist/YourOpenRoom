@@ -1,0 +1,574 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-1);
+  color: var(--text-primary);
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    sans-serif;
+  overflow: hidden;
+}
+
+.strip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--fill-white-10);
+  flex-shrink: 0;
+}
+
+.rail {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.railItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  background: transparent;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+
+  &:hover {
+    color: var(--text-primary);
+    background: var(--fill-white-6, rgba(255, 255, 255, 0.06));
+  }
+}
+
+.railItem[data-active='true'] {
+  color: var(--text-primary);
+  background: var(--fill-white-10);
+}
+
+.summary {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.iconButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  color: var(--text-secondary);
+  background: var(--bg-3);
+  border: 1px solid var(--fill-white-10);
+  border-radius: 6px;
+  cursor: pointer;
+  flex-shrink: 0;
+
+  &:hover {
+    color: var(--text-primary);
+  }
+
+  &:disabled {
+    color: var(--text-placeholder);
+    cursor: not-allowed;
+  }
+}
+
+.session {
+  width: 240px;
+  padding: 5px 9px;
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-primary);
+  background: var(--bg-3);
+  border: 1px solid var(--fill-white-10);
+  border-radius: 6px;
+  flex-shrink: 0;
+
+  &::placeholder {
+    color: var(--text-placeholder);
+  }
+}
+
+.content {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 14px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.chip {
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  background: transparent;
+  border: 1px solid var(--fill-white-10);
+  border-radius: 999px;
+  cursor: pointer;
+
+  &:hover {
+    color: var(--text-primary);
+  }
+}
+
+.chip[data-active='true'] {
+  color: var(--text-btn-primary);
+  background: var(--color-cyan);
+  border-color: var(--color-cyan);
+}
+
+.inboxBody {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Partial failure is a caveat over real rows; all-failed is error-grade. The
+   two must not look alike. */
+.partial {
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--color-yellow);
+  background: var(--color-yellow-10);
+  border-left: 2px solid var(--color-yellow);
+  border-radius: 0 8px 8px 0;
+}
+
+.allFailed {
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-red);
+  background: rgba(255, 63, 77, 0.08);
+  border-left: 2px solid var(--color-red);
+  border-radius: 0 8px 8px 0;
+}
+
+.emptyNote {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.row {
+  border-bottom: 1px solid var(--fill-white-4, rgba(255, 255, 255, 0.04));
+
+  &:last-child {
+    border-bottom: none;
+  }
+}
+
+.row[data-seen='true'] .rowTitle {
+  color: var(--text-quaternary);
+}
+
+.rowMain {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 4px;
+  font-size: 12px;
+  text-align: left;
+  color: inherit;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+
+  &:hover {
+    background: var(--fill-white-2, rgba(255, 255, 255, 0.02));
+  }
+}
+
+.score {
+  min-width: 34px;
+  padding: 1px 6px;
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 11px;
+  text-align: center;
+  color: var(--text-secondary);
+  background: var(--fill-white-6, rgba(255, 255, 255, 0.06));
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.score[data-kev='true'] {
+  color: var(--text-btn-primary);
+  background: var(--color-yellow);
+}
+
+.rowTitle {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowBadges {
+  display: inline-flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.kevBadge {
+  padding: 1px 7px;
+  font-size: 10px;
+  color: var(--text-btn-primary);
+  background: var(--color-yellow);
+  border-radius: 999px;
+}
+
+.dupBadge {
+  padding: 1px 7px;
+  font-size: 10px;
+  color: var(--color-cyan);
+  background: var(--fill-white-6, rgba(255, 255, 255, 0.06));
+  border-radius: 999px;
+}
+
+.catBadge {
+  padding: 1px 7px;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  background: var(--fill-white-6, rgba(255, 255, 255, 0.06));
+  border-radius: 999px;
+}
+
+.rowMeta {
+  font-size: 10px;
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  color: var(--text-placeholder);
+  flex-shrink: 0;
+}
+
+.expand {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 4px 12px 46px;
+}
+
+.summaryText {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.noSummary {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-placeholder);
+}
+
+.reasons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.reason {
+  padding: 1px 8px;
+  font-size: 10px;
+  color: var(--color-cyan);
+  background: var(--fill-white-6, rgba(255, 255, 255, 0.06));
+  border-radius: 999px;
+}
+
+.cves,
+.others {
+  margin: 0;
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  word-break: break-all;
+}
+
+.rowActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.primary {
+  padding: 5px 12px;
+  font-size: 12px;
+  color: var(--text-btn-primary);
+  background: var(--color-yellow);
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+
+  &:disabled {
+    color: var(--text-tertiary);
+    background: var(--fill-white-10);
+    cursor: not-allowed;
+  }
+}
+
+.secondary {
+  padding: 5px 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--bg-3);
+  border: 1px solid var(--fill-white-10);
+  border-radius: 6px;
+  cursor: pointer;
+
+  &:hover {
+    color: var(--text-primary);
+  }
+
+  &:disabled {
+    color: var(--text-placeholder);
+    cursor: not-allowed;
+  }
+}
+
+.hint {
+  font-size: 11px;
+  color: var(--text-placeholder);
+}
+
+.research {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.research[data-variant='denied'] {
+  color: var(--color-yellow);
+}
+
+.research[data-variant='error'] {
+  color: var(--color-red);
+}
+
+.briefView {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 860px;
+}
+
+.panelActions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.briefHeadline {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.briefInterest {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.caveats {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 8px 12px;
+  list-style: none;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--color-yellow);
+  background: var(--color-yellow-10);
+  border-left: 2px solid var(--color-yellow);
+  border-radius: 0 8px 8px 0;
+}
+
+.briefSection {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.briefSectionTitle {
+  margin: 8px 0 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.briefItem {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.briefItemScore {
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 10px;
+  color: var(--text-placeholder);
+  flex-shrink: 0;
+}
+
+.briefItemMeta {
+  font-size: 10px;
+  color: var(--text-placeholder);
+  flex-shrink: 0;
+}
+
+.savedNote {
+  margin: 0;
+  font-size: 11px;
+  color: var(--color-cyan);
+}
+
+.savedList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.savedItem {
+  display: flex;
+}
+
+.savedButton {
+  padding: 5px 8px;
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+
+  &:hover {
+    color: var(--text-primary);
+    background: var(--fill-white-6, rgba(255, 255, 255, 0.06));
+  }
+}
+
+.openedError {
+  margin: 0;
+  font-size: 11px;
+  color: var(--color-red);
+}
+
+.sourceList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sourceRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 4px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--fill-white-4, rgba(255, 255, 255, 0.04));
+
+  &:last-child {
+    border-bottom: none;
+  }
+}
+
+.sourceRow[data-ok='false'] {
+  background: rgba(255, 63, 77, 0.05);
+}
+
+.sourceName {
+  min-width: 140px;
+  color: var(--text-primary);
+  flex-shrink: 0;
+}
+
+.sourceKind {
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 10px;
+  color: var(--text-placeholder);
+  flex-shrink: 0;
+}
+
+.sourceOk {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--color-cyan);
+}
+
+.sourceFail {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--color-red);
+  word-break: break-all;
+}
+
+.root[data-compact='true'] {
+  .railLabel {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .session {
+    width: 130px;
+  }
+
+  .summary {
+    display: none;
+  }
+}

@@ -12,6 +12,7 @@ import * as os from 'os';
 import { createHash } from 'node:crypto';
 import { basename, dirname, join } from 'path';
 import { cyberNewsProxyPlugin } from './src/lib/cyberNewsProxyPlugin';
+import { signalDeskPlugin } from './src/lib/signalDeskPlugin';
 import { dewdropCanvasPlugin } from './src/lib/dewdropCanvasPlugin';
 import { writtenByMePlugin } from './src/lib/writtenByMePlugin';
 import { aoiAutonomyPlugin } from './src/lib/aoiAutonomyPlugin';
@@ -4243,6 +4244,7 @@ const config = ({ mode }: ConfigEnv): UserConfigExport => {
     }),
     browserReaderProxyPlugin(),
     cyberNewsProxyPlugin(),
+    signalDeskPlugin({ sessionsDir: SESSIONS_DIR }),
     dewdropCanvasPlugin({
       configFile: LLM_CONFIG_FILE,
     }),

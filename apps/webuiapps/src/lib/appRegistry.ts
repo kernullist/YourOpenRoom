@@ -406,6 +406,26 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
     color: '#ef4444',
     defaultSize: { width: 1180, height: 760 },
   },
+  {
+    appId: 30,
+    appName: 'signaldesk',
+    route: '/signal-desk',
+    displayName: 'Signal Desk',
+    aliases: [
+      'signals',
+      'signal desk',
+      'feed desk',
+      'security feeds',
+      '시그널 데스크',
+      '신호 데스크',
+      '보안 피드',
+      '실피드',
+    ],
+    sourceDir: 'SignalDesk',
+    icon: 'RadioTower',
+    color: '#2ea7ff',
+    defaultSize: { width: 1240, height: 800 },
+  },
 ];
 
 // OS actions are built-in system actions, not from meta.yaml

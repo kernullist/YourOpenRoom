@@ -1,0 +1,51 @@
+app_id: 30
+app_name: signaldesk
+app_display_name: Signal Desk
+version: '1.0.0'
+description: >
+  Signal Desk is a real-feed triage console. A dev-server plugin collects real security and
+  research feeds (CISA KEV, MSRC, kernel/anti-cheat blogs, arXiv cs.CR, GitHub releases) from a
+  fixed source registry, deduplicates by URL and CVE id, ranks by recency, KEV listing, and Aoi's
+  interest profile (computed server-side), and composes a daily brief. Deep-dive items hand off to
+  Aoi Research on an operator click. Per-source fetch outcomes are always shown: a dead feed is a
+  named failure, never an empty one.
+displayDesc: >
+  Triage real security feeds — ranked with visible reasons, deduplicated, briefed daily, and one
+  click away from a deep research run.
+
+# Safety boundary, on purpose.
+#
+# REFRESH_SIGNALS is agent-exposed: it is a read-only idempotent GET against a fixed in-plugin
+# source registry; no parameter can shape an outbound URL, and the app performs the same fetch on
+# open anyway. START_RESEARCH is deliberately NOT exposed: starting an AoiResearch run spends real
+# LLM budget and network, and Aoi already has its own gated research tool path. Enforced by
+# src/pages/SignalDesk/__tests__/actionSafety.test.ts.
+actions:
+  - type: SELECT_SIGNAL_DESK_VIEW
+    name: Select Signal Desk View
+    description: Switch the desk to a section.
+    params:
+      - name: view
+        type: string
+        description: One of inbox, brief, sources.
+        required: true
+
+  - type: REFRESH_SIGNALS
+    name: Refresh Signals
+    description: >
+      Force a re-collection from the fixed source registry (bypasses the 10-minute snapshot
+      cache). Read-only GETs to allowlisted feed URLs only.
+    params: []
+
+  - type: SYNC_STATE
+    name: Sync State
+    description: >
+      Re-read apps/signaldesk/data/state.json and apply its fields defensively. Missing or
+      malformed fields are left unchanged.
+    params: []
+
+storage:
+  - path: apps/signaldesk/data/state.json
+    description: Active view, category filter, session path, and seen signal ids (capped at 300).
+  - path: apps/signaldesk/data/briefs/{YYYY-MM-DD}.json
+    description: Operator-saved daily brief snapshots (SignalBriefDoc).
