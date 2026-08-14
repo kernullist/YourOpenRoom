@@ -11,7 +11,13 @@ async function openHostSentinel(page: Page): Promise<void> {
   await page.getByTestId(`app-icon-${HOST_SENTINEL_APP_ID}`).dblclick();
   await expect(page.getByTestId(`app-window-${HOST_SENTINEL_APP_ID}`)).toBeVisible();
   await page.getByTestId(`window-maximize-${HOST_SENTINEL_APP_ID}`).click();
-  await expect(page.getByTestId('host-sentinel')).toBeVisible({ timeout: 30_000 });
+  const app = page.getByTestId('host-sentinel');
+  await expect(app).toBeVisible({ timeout: 30_000 });
+  // State hydration overwrites the session/filter inputs with persisted
+  // values when it lands late — under parallel suite load it reliably lands
+  // after a fill(), which is exactly the flake this suite kept hitting.
+  // Never touch the inputs before the app says hydration is done.
+  await expect(app).toHaveAttribute('data-hydrated', 'true', { timeout: 30_000 });
 }
 
 const LISTING = {

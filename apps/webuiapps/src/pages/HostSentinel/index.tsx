@@ -68,6 +68,10 @@ function parseContent(content: unknown): unknown {
 
 function HostSentinel(): JSX.Element {
   const [state, setState] = useState<SentinelState>(DEFAULT_STATE);
+  // Rendered as data-hydrated on the root: loadState overwrites session/query
+  // with persisted values, so anything driving the inputs (e2e above all)
+  // must be able to wait until that write has landed before typing.
+  const [hydrated, setHydrated] = useState(false);
   const [listing, setListing] = useState<AoiHostProcessListingView | null>(null);
   const [status, setStatus] = useState<AoiHostBridgeStatus | null>(null);
   const [bridge, setBridge] = useState<{ kind: BridgeStateKind; message: string }>({
@@ -123,6 +127,7 @@ function HostSentinel(): JSX.Element {
       // A malformed state file must not stop the sentinel from opening.
     } finally {
       stateLoadedRef.current = true;
+      setHydrated(true);
     }
   }, [fileApi]);
 
@@ -303,7 +308,11 @@ function HostSentinel(): JSX.Element {
   const stale = overview ? isSampleStale(overview.sampledAt, now) : false;
 
   return (
-    <div className={styles.root} data-testid="host-sentinel">
+    <div
+      className={styles.root}
+      data-testid="host-sentinel"
+      data-hydrated={hydrated ? 'true' : undefined}
+    >
       <header className={styles.strip}>
         <input
           className={styles.session}
