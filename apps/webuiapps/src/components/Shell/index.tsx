@@ -35,6 +35,9 @@ import {
   FileArchive,
   Palette,
   Feather,
+  Activity,
+  MousePointerClick,
+  Sprout,
   type LucideIcon,
 } from 'lucide-react';
 import ChatPanel from '../ChatPanel';
@@ -106,6 +109,10 @@ const ICON_MAP: Record<string, LucideIcon> = {
   MessageCircle,
   Palette,
   Feather,
+  Activity,
+  MousePointerClick,
+  Sprout,
+  Video,
 };
 
 const DESKTOP_APPS = getDesktopApps().map((app) => ({
