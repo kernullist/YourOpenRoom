@@ -504,6 +504,8 @@ export const BRIEF_SECTION_TITLES: Record<SignalCategory, string> = {
   research: '커널·안티치트 리서치',
   paper: '논문 (arXiv cs.CR)',
   release: '도구 릴리스',
+  ai: 'AI 모델·랩 소식',
+  harness: '하네스/에이전트 도구',
 };
 
 const BRIEF_SECTION_LIMITS: Record<SignalCategory, number> = {
@@ -512,6 +514,8 @@ const BRIEF_SECTION_LIMITS: Record<SignalCategory, number> = {
   research: 3,
   paper: 3,
   release: 3,
+  ai: 3,
+  harness: 3,
 };
 
 export interface BuildBriefOptions {

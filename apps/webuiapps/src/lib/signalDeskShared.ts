@@ -8,7 +8,15 @@
  * src/pages/SignalDesk/__tests__/actionSafety.test.ts.
  */
 
-export const SIGNAL_CATEGORIES = ['vuln', 'msrc', 'research', 'paper', 'release'] as const;
+export const SIGNAL_CATEGORIES = [
+  'vuln',
+  'msrc',
+  'research',
+  'paper',
+  'release',
+  'ai',
+  'harness',
+] as const;
 export type SignalCategory = (typeof SIGNAL_CATEGORIES)[number];
 
 export function isSignalCategory(value: unknown): value is SignalCategory {

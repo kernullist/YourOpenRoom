@@ -364,10 +364,16 @@ describe('interest loader', () => {
 
 describe('source registry', () => {
   it('keeps every outbound url https and key-free (the allowlist is the registry)', () => {
-    expect(SIGNAL_DESK_SOURCES.length).toBeGreaterThanOrEqual(5);
+    expect(SIGNAL_DESK_SOURCES.length).toBeGreaterThanOrEqual(12);
     for (const entry of SIGNAL_DESK_SOURCES) {
       expect(entry.url.startsWith('https://')).toBe(true);
       expect(entry.url).not.toMatch(/api[_-]?key|token=/i);
     }
+  });
+
+  it('covers the ai and harness lanes with at least one source each', () => {
+    const categories = new Set(SIGNAL_DESK_SOURCES.map((entry) => entry.category));
+    expect(categories.has('ai')).toBe(true);
+    expect(categories.has('harness')).toBe(true);
   });
 });

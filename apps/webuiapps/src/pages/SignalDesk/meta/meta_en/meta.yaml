@@ -4,11 +4,12 @@ app_display_name: Signal Desk
 version: '1.0.0'
 description: >
   Signal Desk is a real-feed triage console. A dev-server plugin collects real security and
-  research feeds (CISA KEV, MSRC, kernel/anti-cheat blogs, arXiv cs.CR, GitHub releases) from a
-  fixed source registry, deduplicates by URL and CVE id, ranks by recency, KEV listing, and Aoi's
-  interest profile (computed server-side), and composes a daily brief. Deep-dive items hand off to
-  Aoi Research on an operator click. Per-source fetch outcomes are always shown: a dead feed is a
-  named failure, never an empty one.
+  research feeds (CISA KEV, MSRC, kernel/anti-cheat blogs, arXiv cs.CR, GitHub releases) plus AI
+  model/lab news (OpenAI, DeepMind, Hugging Face, Simon Willison) and agent-harness release feeds
+  (Claude Code, Codex CLI, Gemini CLI) from a fixed source registry, deduplicates by URL and CVE
+  id, ranks by recency, KEV listing, and Aoi's interest profile (computed server-side), and
+  composes a daily brief. Deep-dive items hand off to Aoi Research on an operator click.
+  Per-source fetch outcomes are always shown: a dead feed is a named failure, never an empty one.
 displayDesc: >
   Triage real security feeds — ranked with visible reasons, deduplicated, briefed daily, and one
   click away from a deep research run.

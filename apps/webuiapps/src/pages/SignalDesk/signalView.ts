@@ -18,6 +18,8 @@ export const CATEGORY_LABELS: Record<CategoryFilter, string> = {
   research: '리서치',
   paper: '논문',
   release: '릴리스',
+  ai: 'AI 모델',
+  harness: '하네스',
 };
 
 export function filterSignals(items: SignalItem[], category: CategoryFilter): SignalItem[] {

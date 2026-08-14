@@ -17,10 +17,12 @@ describe('guards', () => {
     expect(isSignalDeskViewId(3)).toBe(false);
   });
 
-  it('accepts all plus the five categories as filters', () => {
+  it('accepts all plus the seven categories as filters', () => {
     expect(isCategoryFilter('all')).toBe(true);
     expect(isCategoryFilter('vuln')).toBe(true);
     expect(isCategoryFilter('release')).toBe(true);
+    expect(isCategoryFilter('ai')).toBe(true);
+    expect(isCategoryFilter('harness')).toBe(true);
     expect(isCategoryFilter('news')).toBe(false);
     expect(isCategoryFilter(null)).toBe(false);
   });

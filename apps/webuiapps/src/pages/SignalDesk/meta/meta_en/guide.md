@@ -23,15 +23,25 @@ Snapshot cache TTL is 10 minutes; `refresh=1` bypasses it. Non-GET returns 405.
 
 ### Source registry (fixed)
 
-| id            | kind     | category | feed                                             |
-| ------------- | -------- | -------- | ------------------------------------------------ |
-| cisa-kev      | kev-json | vuln     | CISA Known Exploited Vulnerabilities JSON        |
-| msrc          | rss      | msrc     | MSRC Security Update Guide                       |
-| secret-club   | rss      | research | secret.club (game hacking / anti-cheat research) |
-| connor-mcgarr | rss      | research | connormcgarr.github.io (kernel exploitation)     |
-| arxiv-cscr    | atom     | paper    | arXiv cs.CR newest submissions                   |
-| gh-x64dbg     | atom     | release  | x64dbg GitHub releases                           |
-| gh-hyperdbg   | atom     | release  | HyperDbg GitHub releases                         |
+| id             | kind     | category | feed                                             |
+| -------------- | -------- | -------- | ------------------------------------------------ |
+| cisa-kev       | kev-json | vuln     | CISA Known Exploited Vulnerabilities JSON        |
+| msrc           | rss      | msrc     | MSRC Security Update Guide                       |
+| secret-club    | rss      | research | secret.club (game hacking / anti-cheat research) |
+| connor-mcgarr  | rss      | research | connormcgarr.github.io (kernel exploitation)     |
+| arxiv-cscr     | atom     | paper    | arXiv cs.CR newest submissions                   |
+| gh-x64dbg      | atom     | release  | x64dbg GitHub releases                           |
+| gh-hyperdbg    | atom     | release  | HyperDbg GitHub releases                         |
+| openai-news    | rss      | ai       | OpenAI news                                      |
+| deepmind       | rss      | ai       | Google DeepMind blog                             |
+| huggingface    | rss      | ai       | Hugging Face blog                                |
+| simonwillison  | atom     | ai       | Simon Willison (model + harness coverage)        |
+| gh-claude-code | atom     | harness  | Claude Code GitHub releases                      |
+| gh-codex       | atom     | harness  | OpenAI Codex CLI GitHub releases                 |
+| gh-gemini-cli  | atom     | harness  | Gemini CLI GitHub releases                       |
+
+The declared `kind` is display metadata; XML feeds are parse-auto-detected (RSS first, Atom
+fallback) because Jekyll-style blogs serve Atom from `feed.xml`.
 
 ## Data Schemas
 
@@ -45,7 +55,7 @@ code may import).
 | id                    | string                                         | stable hash of sourceId + normalized url                                 |
 | title / url / summary | string                                         | summary may be empty (rendered as "not provided")                        |
 | sourceId / sourceName | string                                         | collecting source                                                        |
-| category              | 'vuln'\|'msrc'\|'research'\|'paper'\|'release' |                                                                          |
+| category              | 'vuln'\|'msrc'\|'research'\|'paper'\|'release'\|'ai'\|'harness' |                                                         |
 | publishedAt           | ISO string                                     |                                                                          |
 | score                 | number                                         | recency + source weight + KEV boost + interest matches + duplicate boost |
 | scoreReasons          | string[]                                       | human-readable contributions, rendered as chips                          |
