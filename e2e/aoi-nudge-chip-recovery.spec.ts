@@ -267,6 +267,34 @@ test.describe('Aoi nudge chips after the pending offer is lost', () => {
     expect(llmCallCount).toBe(0);
   });
 
+  test('replays the pick Aoi just started when asked for it again', async ({ page }) => {
+    // Reported follow-up: after the play chip started something, "다시 틀어줘"
+    // was parsed as a search for the adverb ('"다시" 유튜브에서 틀어볼게.'), and
+    // the correction after it reached the LLM, which announced playback it
+    // never dispatched.
+    await stubSessionData(page, MUSIC_CARD);
+    await page.goto('/');
+    await tapChip(page, '재생');
+    await expect(page.getByTestId('yt-player-title')).toHaveText(RECOMMENDED_TITLE, {
+      timeout: 30_000,
+    });
+
+    // Close the window so a replay has to genuinely re-dispatch to reopen it.
+    await page.getByTestId(`window-close-${YOUTUBE_APP_ID}`).click();
+    await expect(page.getByTestId(`app-window-${YOUTUBE_APP_ID}`)).toHaveCount(0);
+
+    await page.getByTestId('chat-input').fill('다시 틀어줘');
+    await page.getByTestId('send-btn').click();
+
+    await expect(page.getByTestId(`app-window-${YOUTUBE_APP_ID}`)).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId('yt-player-title')).toHaveText(RECOMMENDED_TITLE, {
+      timeout: 30_000,
+    });
+    // Never a search for the adverb itself.
+    await expect(page.getByTestId('yt-search-input')).not.toHaveValue('다시');
+    expect(llmCallCount).toBe(0);
+  });
+
   test('the music dismiss chip answers as a dismissal instead of reaching the model', async ({
     page,
   }) => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   isAoiMusicPlayChip,
+  isDeferredMusicPlaybackIntent,
   isDirectPlaylistPlaybackIntent,
   isFailedAgentActionResult,
   parseDirectMusicIntent,
@@ -202,6 +203,90 @@ describe('isFailedAgentActionResult', () => {
     for (const result of ['success', 'done', 'success {"id":"abc"}', 'restored']) {
       expect(isFailedAgentActionResult(result), result).toBe(false);
     }
+  });
+});
+
+describe('isDeferredMusicPlaybackIntent', () => {
+  it('recognizes a request to replay what Aoi just named', () => {
+    const positives = [
+      '다시 틀어줘',
+      '다시 재생해',
+      '또 들려줘',
+      '한 번 더 틀어줘',
+      '한번 더 재생해줘',
+      '그거 틀어줘',
+      '아까 그거 다시 틀어줘',
+      '아니 아까 너가 말한거 틀어달란거야',
+      '아까 네가 말한 곡 틀어줘',
+      '방금 추천한 노래 다시 재생해줘',
+      'play it again',
+      'Play the one you said',
+      'again',
+    ];
+    for (const text of positives) {
+      expect(isDeferredMusicPlaybackIntent(text), text).toBe(true);
+    }
+  });
+
+  it('leaves a request that names its own title alone', () => {
+    // These carry a real query, so the normal extraction must handle them
+    // rather than collapsing them into "play that again".
+    const negatives = [
+      'aespa supernova 틀어줘',
+      'lofi chill playlist 재생해',
+      '다시 얘기해줘',
+      '아까 그 뉴스 다시 보여줘',
+      '내 플레이리스트 틀어줘',
+      '',
+    ];
+    for (const text of negatives) {
+      expect(isDeferredMusicPlaybackIntent(text), text).toBe(false);
+    }
+  });
+});
+
+describe('replaying the pick Aoi just started', () => {
+  const PLAY_ACK =
+    '틀어줄게. 유튜브에서 "2026년 8월 여돌 노래모음 | 🔥 KPOP PLAYLIST - 달플리 𝑷𝒍𝒂𝒆𝒍𝒊𝒌𝒕" 찾아서 재생 준비해뒀어.';
+  const TITLE = '2026년 8월 여돌 노래모음 | 🔥 KPOP PLAYLIST - 달플리 𝑷𝒍𝒂𝒆𝒍𝒊𝒌𝒕';
+
+  it('resolves "다시 틀어줘" against the playback ack instead of searching for "다시"', () => {
+    // The reported failure: the suffix patterns turned this into a YouTube
+    // search for the adverb, and Aoi answered '"다시" 유튜브에서 틀어볼게.'
+    expect(
+      parseDirectMusicIntent('다시 틀어줘', [{ role: 'assistant', content: PLAY_ACK }]),
+    ).toEqual({ query: TITLE });
+  });
+
+  it('resolves the follow-up correction that used to reach the model', () => {
+    expect(
+      parseDirectMusicIntent('아니 아까 너가 말한거 틀어달란거야', [
+        { role: 'assistant', content: PLAY_ACK },
+      ]),
+    ).toEqual({ query: TITLE });
+  });
+
+  it('takes the video actually playing from a substitution ack, not the query', () => {
+    const substituteAck =
+      '"검색한 제목"로 찾아서 "진짜 재생중인 제목" 틀었어. 원하던 게 아니면 말해줘.';
+    expect(
+      parseDirectMusicIntent('다시 틀어줘', [{ role: 'assistant', content: substituteAck }]),
+    ).toEqual({ query: '진짜 재생중인 제목' });
+  });
+
+  it('never recovers a pronoun Aoi quoted back from a mis-parse', () => {
+    // Aoi's own '"다시" 유튜브에서 틀어볼게.' must not become the next query.
+    expect(
+      parseDirectMusicIntent('다시 틀어줘', [
+        { role: 'assistant', content: '"다시" 유튜브에서 틀어볼게.' },
+      ]),
+    ).toBeNull();
+  });
+
+  it('returns null when there is nothing to replay', () => {
+    expect(
+      parseDirectMusicIntent('다시 틀어줘', [{ role: 'assistant', content: '오늘 뭐 할까?' }]),
+    ).toBeNull();
   });
 });
 

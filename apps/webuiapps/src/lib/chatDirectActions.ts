@@ -84,6 +84,44 @@ export function parseStartedVideo(result: string | null | undefined): StartedVid
   }
 }
 
+// Words that point BACK at something already said instead of naming a video.
+// Used two ways: to spot a "play that again" request, and to reject one of these
+// if it ever comes back out of the transcript as a recovered "title" -- Aoi's
+// own ack for a mis-parsed request quotes the pronoun ("다시" 유튜브에서
+// 틀어볼게), and recovering that would search for the pronoun a second time.
+const MUSIC_DEFERRAL_PRONOUN_PATTERN =
+  /^(?:다시|또|그거|그걸|그것|이거|이것|저거|저것|아까|방금|한\s*번\s*더|again|that|it|the\s+same)$/iu;
+
+// A request to replay what Aoi just named, with no title of its own. Every
+// pattern is anchored end to end and requires a playback verb, so a message that
+// also carries a real title ("aespa 다시 틀어줘") is left to the normal
+// extraction below rather than being collapsed into a pronoun.
+const MUSIC_DEFERRAL_PLAYBACK_PATTERNS: readonly RegExp[] = [
+  // "다시 틀어줘" / "한 번 더 재생해" / "또 들려줘"
+  /^(?:다시|또|한\s*번\s*더)\s*(?:틀어줘|틀어|재생해줘|재생해|재생|들려줘|들려줄래|플레이)\s*$/u,
+  // "그거 틀어줘" / "아까 그거 다시 재생해줘"
+  /^(?:아까|방금|좀\s*전에)?\s*(?:그거|그걸|그것|이거|이것|저거|저것)\s*(?:를|을)?\s*(?:다시|또)?\s*(?:틀어줘|틀어|재생해줘|재생해|들려줘|플레이)\s*$/u,
+  // "아니 아까 너가 말한거 틀어달란거야" and its many endings
+  /^(?:아니\s*)?(?:아까|방금|좀\s*전에)?\s*(?:네가|니가|너가|자기가)?\s*(?:말한|말했던|얘기한|얘기했던|추천한|추천했던|틀어준|들려준)\s*(?:거|것|곡|노래|음악|플레이리스트|플레이\s*리스트)?\s*(?:를|을)?\s*(?:다시|또)?\s*(?:틀어|재생|들려|플레이)\S*\s*$/u,
+  /^(?:play\s+(?:it|that|the\s+same(?:\s+one)?)\s+again|play\s+it|again|replay|one\s+more\s+time|play\s+the\s+one\s+you\s+(?:said|mentioned|recommended))[.!?]?$/i,
+];
+
+/**
+ * True when the user is asking for the pick Aoi already named, without naming
+ * it themselves ("다시 틀어줘", "아까 너가 말한거 틀어줘").
+ *
+ * These used to fall two different ways, both wrong: the suffix patterns below
+ * turned "다시 틀어줘" into a YouTube search for "다시", and anything they did
+ * not match reached the LLM, which announced playback it never dispatched.
+ */
+export function isDeferredMusicPlaybackIntent(text: string): boolean {
+  const trimmed = text.trim().replace(/\s+/g, ' ');
+  if (!trimmed) {
+    return false;
+  }
+  return MUSIC_DEFERRAL_PLAYBACK_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
+
 /**
  * Detect in-app YouTube "play my saved playlist" intents.
  *
@@ -168,6 +206,26 @@ function extractRecommendedMusicQuery(
     if (datedGirlGroup?.trim()) {
       return datedGirlGroup.trim();
     }
+
+    // Playback acks quote the pick but carry neither the note marker nor a
+    // search-query line ("틀어줄게. 유튜브에서 "<title>" 찾아서 재생 준비해뒀어."),
+    // so without this a "play that again" right after Aoi started something had
+    // nothing to resolve against. The LAST quote wins: the substitution ack
+    // names the query first and the video actually playing second, and the
+    // playing one is what "again" means.
+    // Gated on the message being about playback at all, so an unrelated
+    // assistant line that happens to quote something is not mistaken for a pick.
+    if (
+      /(?:유튜브|youtube|틀어|틀었|재생|플레이|かけ|流し|播放|\bplay(?:ing|ed|s)?\b)/i.test(content)
+    ) {
+      const quoted = [...content.matchAll(/["“]([^"”\n]{2,})["”]/gu)]
+        .map((match) => match[1].trim())
+        .filter((candidate) => candidate && !MUSIC_DEFERRAL_PRONOUN_PATTERN.test(candidate));
+      const lastQuoted = quoted[quoted.length - 1];
+      if (lastQuoted) {
+        return lastQuoted;
+      }
+    }
   }
 
   return null;
@@ -202,7 +260,8 @@ export function parseDirectMusicIntent(
   // so the conversation handles it instead of searching the pronoun.
   if (
     /^(?:네가|니가|너가)\s*골라[줘]?$/u.test(trimmed) ||
-    /^(?:그걸로|이걸로|추천대로)\s*(?:가자|해줘|하자)?$/u.test(trimmed)
+    /^(?:그걸로|이걸로|추천대로)\s*(?:가자|해줘|하자)?$/u.test(trimmed) ||
+    isDeferredMusicPlaybackIntent(trimmed)
   ) {
     const query = extractRecommendedMusicQuery(history);
     return query ? { query } : null;

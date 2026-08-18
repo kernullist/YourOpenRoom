@@ -44,6 +44,7 @@ import {
 } from '@/lib/llmClient';
 import {
   isAoiMusicPlayChip,
+  isDeferredMusicPlaybackIntent,
   isDirectPlaylistPlaybackIntent,
   isFailedAgentActionResult,
   parseDirectMusicIntent,
@@ -7146,12 +7147,16 @@ const ChatPanel: React.FC<{
         return;
       }
 
-      // A tapped play chip that got this far has no pending offer behind it
-      // (browser-local state lost) AND no recommendation left in the recent
-      // transcript for parseDirectMusicIntent to recover. Answer here rather
-      // than letting the LLM improvise: it has repeatedly reported "I lined it
-      // up in YouTube" for a search that never ran.
-      if (!hasImageAttachments && isAoiMusicPlayChip(text)) {
+      // Playback was clearly asked for -- a tapped play chip, or "play that
+      // again" -- but there is nothing left to resolve it against: no pending
+      // offer (browser-local state lost) and no pick recoverable from the recent
+      // transcript. Answer here rather than letting the LLM improvise: it has
+      // repeatedly reported "I lined it up in YouTube" for a search that never
+      // ran.
+      if (
+        !hasImageAttachments &&
+        (isAoiMusicPlayChip(text) || isDeferredMusicPlaybackIntent(text))
+      ) {
         const ack = buildIdleMusicUnresolvedAck(resolveNudgeLang());
         emitAssistantMessage({
           id: String(Date.now()),
