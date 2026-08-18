@@ -151,6 +151,27 @@ Studio with `vswhere` and builds inside `vcvars64`.
 ./build.ps1 -DebugBuild  # /Od /Zi
 ```
 
+## Install
+
+The daemon spawns this on demand, so there is no service and no scheduled task
+-- installing means putting the exe where the daemon looks.
+
+```powershell
+./Install-AoiDesktopInput.ps1              # build + copy + self-test
+./Install-AoiDesktopInput.ps1 -Uninstall
+```
+
+It lands at `~/.openroom/host-bridge/aoi_desktop_input.exe`;
+`AOI_DESKTOP_INPUT_HELPER` overrides that (how the daemon is pointed at a build
+tree). Installing **grants nothing**: the daemon refuses every request until
+`os_desktop_input` is turned on in Settings > Advanced > Host bridge, and the
+SendInput rung stays unavailable until `os_desktop_input_foreground` is turned
+on separately. Both default OFF; global panic kills both.
+
+The daemon must run in the **interactive** user session. UI Automation cannot
+see a desktop from session 0, so a helper spawned by a service-hosted daemon
+would find nothing to drive.
+
 ## Tests
 
 ```powershell
