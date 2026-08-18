@@ -409,6 +409,38 @@ describe('YouTubeApp – in-app viewer UX', () => {
     expect(fetchYoutubeSearchResultsMock).toHaveBeenCalledWith('jazz cafe');
   });
 
+  it('reports a failed search as an error instead of a successful open', async () => {
+    await renderApp();
+    fetchYoutubeSearchResultsMock.mockRejectedValueOnce(new Error('network down'));
+
+    let searchResult: string | undefined;
+    await act(async () => {
+      searchResult = await capturedAgentHandler!({
+        action_type: 'OPEN_SEARCH',
+        params: { query: 'lofi', autoplay: '1' },
+      });
+    });
+    // The window opened, but nothing is playing -- the caller must be able to
+    // tell those apart, or it announces playback that never started.
+    expect(searchResult).toContain('error');
+    expect(searchResult).toContain('network down');
+  });
+
+  it('reports an empty result set as an error rather than success', async () => {
+    await renderApp();
+    fetchYoutubeSearchResultsMock.mockResolvedValueOnce([]);
+
+    let searchResult: string | undefined;
+    await act(async () => {
+      searchResult = await capturedAgentHandler!({
+        action_type: 'OPEN_SEARCH',
+        params: { query: 'zzzz no such thing', autoplay: '1' },
+      });
+    });
+    expect(searchResult).toContain('error');
+    expect(searchResult).toContain('no results');
+  });
+
   it('rejects an unknown agent action', async () => {
     await renderApp();
     let result: string | undefined;

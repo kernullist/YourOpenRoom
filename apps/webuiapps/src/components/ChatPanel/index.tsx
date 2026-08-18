@@ -42,7 +42,22 @@ import {
   type ChatMessage,
   type CurrentModelUsageStatus,
 } from '@/lib/llmClient';
-import { isDirectPlaylistPlaybackIntent, parseDirectMusicIntent } from '@/lib/chatDirectActions';
+import {
+  isAoiMusicPlayChip,
+  isDirectPlaylistPlaybackIntent,
+  isFailedAgentActionResult,
+  parseDirectMusicIntent,
+} from '@/lib/chatDirectActions';
+import {
+  IDLE_MUSIC_MOOD_LINES,
+  identifyPendingNudgeCard,
+  isAoiNewsPlayChip,
+  recoverIdleMusicOffer,
+  recoverNewsOffer,
+  reconcileRecoveredIdleMusicOffer,
+  recoverPreferencePoll,
+  recoverTastePoll,
+} from '@/lib/aoiPendingOfferRecovery';
 import {
   loadPendingIdleMusicOffer,
   loadPendingNewsOffer,
@@ -1576,32 +1591,7 @@ function buildIdleMusicCardCopy(
           en: 'Pick (from your taste)',
         }[lang]
       : { ko: '추천', ja: 'おすすめ', zh: '推荐', en: 'Pick' }[lang];
-  const lines: Record<NudgeLang, Record<AoiMusicMood, string>> = {
-    ko: {
-      focus: '한참 집중하고 있었네. 작업하는 동안 집중용 음악 틀어줄까?',
-      chill: '잠깐 여유로운 시간이네. 잔잔한 곡 하나 배경으로 깔아줄까?',
-      upbeat: '이제 하루 시작하는 참이네. 기분 올릴 만한 곡 틀어줄까?',
-      ambient: '늦은 시간이라 조용하네. 은은한 사운드 하나 깔아줄까?',
-    },
-    ja: {
-      focus: 'ずっと集中してたね。作業の間、集中できる音楽をかけようか?',
-      chill: '少し落ち着いた時間だね。ゆったりした曲を流そうか?',
-      upbeat: '一日の始まりだね。気分が上がる曲をかけようか?',
-      ambient: '夜も遅くて静かだね。控えめなアンビエントを流そうか?',
-    },
-    zh: {
-      focus: '你已经专注很久了。要不要放点专注音乐陪你工作?',
-      chill: '看起来是个放松的时刻。要不要放个轻松的背景音乐?',
-      upbeat: '正是开始一天的时候。要来点带劲的音乐吗?',
-      ambient: '夜深人静。要不要放点氛围音乐垫在下面?',
-    },
-    en: {
-      focus: 'You have been heads-down for a while. Want some focus music while you work?',
-      chill: 'Looks like a quieter moment. Want a chill mix in the background?',
-      upbeat: 'Starting up for the day. Want something upbeat to get going?',
-      ambient: 'Late and quiet. Want some ambient sound to sit under the work?',
-    },
-  };
+  const lines = IDLE_MUSIC_MOOD_LINES;
   const recommendation = query.trim() ? `\n🎵 ${recLabel}: "${query.trim()}"` : '';
   return {
     text: `${lines[lang][mood]}${recommendation}`,
@@ -1620,6 +1610,23 @@ function buildIdleMusicPlayAck(query: string, lang: NudgeLang): string {
       return `好，我在 YouTube 上找了 "${query}" 准备播放。`;
     default:
       return `Playing it. I lined up "${query}" in YouTube for you.`;
+  }
+}
+
+// Honest ack for a tapped play chip whose recommendation is no longer anywhere
+// in the recent transcript. The chip proves intent, so the message must not fall
+// through to the LLM: with nothing dispatched it answers "I lined it up in
+// YouTube" and nothing opens. Say what is missing and ask for a query instead.
+function buildIdleMusicUnresolvedAck(lang: NudgeLang): string {
+  switch (lang) {
+    case 'ko':
+      return '미안, 아까 추천한 곡을 다시 못 찾겠어. 아직 아무것도 틀지 않았어. 검색어를 알려주면 바로 유튜브에서 찾아 틀어줄게.';
+    case 'ja':
+      return 'ごめん、さっきのおすすめが見つからなかった。まだ何も再生していないよ。検索語を教えてくれればすぐYouTubeで探して流すね。';
+    case 'zh':
+      return '抱歉，我找不回刚才推荐的那首了，现在还没有播放任何东西。告诉我搜索词，我马上在 YouTube 上找来播放。';
+    default:
+      return "Sorry, I can't find the pick I recommended, so nothing is playing yet. Give me a search query and I'll pull it up on YouTube.";
   }
 }
 
@@ -1739,6 +1746,23 @@ function buildNewsOpenAck(title: string, lang: NudgeLang): string {
       return `好，我在 CyberNews 里打开 "${title}"。`;
     default:
       return `Opening it. I pulled up "${title}" in CyberNews for you.`;
+  }
+}
+
+// Honest ack for a tapped news chip whose article could not be matched back to
+// anything on disk (it aged out of the local store). Same rule as the music
+// chip: the chip proves intent, so it must never reach the LLM, which would
+// report having opened an article it never opened.
+function buildNewsUnresolvedAck(lang: NudgeLang): string {
+  switch (lang) {
+    case 'ko':
+      return '미안, 아까 그 기사를 다시 찾지 못했어. 아직 아무것도 열지 않았어. CyberNews를 열어서 직접 골라줄까?';
+    case 'ja':
+      return 'ごめん、さっきの記事が見つからなかった。まだ何も開いていないよ。CyberNewsを開いて選んでもらおうか?';
+    case 'zh':
+      return '抱歉，我找不回刚才那条新闻了，现在还没有打开任何东西。要我打开 CyberNews 让你直接挑吗?';
+    default:
+      return "Sorry, I couldn't find that article again, so nothing is open yet. Want me to open CyberNews so you can pick?";
   }
 }
 
@@ -6057,6 +6081,10 @@ const ChatPanel: React.FC<{
   const idleMusicStateRef = useRef<AoiIdleMusicLearningState>(DEFAULT_AOI_IDLE_MUSIC_STATE);
   const lastUserActivityAtRef = useRef<number>(Date.now());
   const pendingIdleMusicOfferRef = useRef<PendingIdleMusicOffer | null>(null);
+  // Bumped once per user send. Async work started for a card can compare it to
+  // detect that the user answered in the meantime, which ref-emptiness alone
+  // cannot show once the consume path has already run and cleared the offer.
+  const userSendSeqRef = useRef(0);
 
   const newsStateRef = useRef<AoiNewsLearningState>(DEFAULT_AOI_NEWS_STATE);
   const pendingNewsOfferRef = useRef<PendingNewsOffer | null>(null);
@@ -6113,6 +6141,101 @@ const ChatPanel: React.FC<{
       pendingPreferencePollRef.current = loadPendingPreferencePoll();
     }
   }, []);
+
+  // Second line of defence for the same problem, for the case localStorage
+  // cannot cover: the offers above are per browser profile and per origin,
+  // while the cards and their chips come back from the server-side transcript.
+  // Open the room in another browser, from another dev-server origin, or after
+  // clearing site data and the user is looking at live-looking chips with
+  // nothing behind them -- a tap then does nothing, or reaches the LLM, which
+  // reports an action it never took. So whatever is still missing after
+  // hydration is rebuilt from the restored transcript itself.
+  //
+  // Runs once per restore, keyed on the transcript rather than on mount: chat
+  // history loads asynchronously, so at mount there is nothing to read yet.
+  // Which card, if any, is still waiting for an answer. Recomputed per render
+  // but cheap: the scan stops at the last message in the common case.
+  const pendingNudgeCard = useMemo(() => identifyPendingNudgeCard(messages), [messages]);
+  const pendingNudgeCardId = pendingNudgeCard?.id ?? null;
+  const pendingNudgeCardRef = useRef(pendingNudgeCard);
+  pendingNudgeCardRef.current = pendingNudgeCard;
+
+  // Keyed on the CARD, not on the message list and not on "has this component
+  // recovered once". Two things depend on that. A session switch or a cleared
+  // conversation replaces the transcript without remounting the panel, so a
+  // boolean latch would leave every later card unrecovered. And an unrelated
+  // assistant message arriving mid-recovery (a self-observation posted after
+  // the card) must not cancel the in-flight work for a card that is still
+  // pending -- with message-keyed deps it did, permanently, because the cleanup
+  // fired while the card stayed latched.
+  useEffect(() => {
+    const card = pendingNudgeCardRef.current;
+    if (!card || !pendingNudgeCardId) {
+      return;
+    }
+    // A tapped chip consumes the offer synchronously while an async recovery
+    // may still be in flight. Without this, the recovery could finish afterwards
+    // and re-arm an offer the user has already answered, which the next message
+    // would then consume as a phantom accept/skip.
+    const sendSeqAtStart = userSendSeqRef.current;
+    let cancelled = false;
+    const stillWanted = (): boolean => !cancelled && userSendSeqRef.current === sendSeqAtStart;
+    void (async () => {
+      // The stored offer is per browser profile while the card comes from the
+      // shared transcript, so when the two disagree the card the user is
+      // actually looking at wins (see reconcileRecoveredIdleMusicOffer).
+      if (card.kind === 'idle-music') {
+        const recovered = reconcileRecoveredIdleMusicOffer(
+          recoverIdleMusicOffer(card),
+          pendingIdleMusicOfferRef.current,
+        );
+        if (recovered && stillWanted()) {
+          pendingIdleMusicOfferRef.current = recovered;
+          savePendingIdleMusicOffer(recovered);
+        }
+        return;
+      }
+      if (card.kind === 'taste-poll') {
+        const recovered = recoverTastePoll(card) ?? pendingTastePollRef.current;
+        if (recovered && stillWanted()) {
+          pendingTastePollRef.current = recovered;
+          savePendingTastePoll(recovered);
+        }
+        return;
+      }
+      if (card.kind === 'preference-poll') {
+        const recovered =
+          recoverPreferencePoll(
+            card,
+            generatedQuestionsToSeedShape(loadAoiGeneratedQuestionsState()),
+          ) ?? pendingPreferencePollRef.current;
+        if (recovered && stillWanted()) {
+          pendingPreferencePollRef.current = recovered;
+          savePendingPreferencePoll(recovered);
+        }
+        return;
+      }
+      // News: the article id and category are not in the transcript, so the
+      // headline is matched against what is already on disk. Never goes to the
+      // network -- recovery must not fetch news the user did not ask for.
+      try {
+        const candidates = await loadCyberNewsCandidates({
+          fileApi: cyberNewsFileApi,
+          allowNetwork: false,
+        });
+        const recovered = recoverNewsOffer(card, candidates) ?? pendingNewsOfferRef.current;
+        if (recovered && stillWanted()) {
+          pendingNewsOfferRef.current = recovered;
+          savePendingNewsOffer(recovered);
+        }
+      } catch (error) {
+        console.warn('[ChatPanel] Pending news offer recovery failed', error);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [pendingNudgeCardId]);
 
   // Learn music taste from the user's own YouTube searches and plays. Subscribes
   // to the raw app-action stream: agent-triggered actions carry trigger_by=2 and
@@ -6246,6 +6369,7 @@ const ChatPanel: React.FC<{
       if (!messageText || loading) return;
       // Any send (typed or a tapped chip) counts as activity: reset the idle clock.
       lastUserActivityAtRef.current = Date.now();
+      userSendSeqRef.current += 1;
       // SA1.3: metadata-only chat-turn marker ("a turn happened", never the
       // content). Consent-gated client-side and re-enforced server-side.
       if (isAoiActivityCaptureConsented(aoiEnvironmentSourcesRef.current)) {
@@ -6652,6 +6776,24 @@ const ChatPanel: React.FC<{
         }
       }
 
+      // Fold one accept/skip signal into the mood-feedback model. A recovered
+      // offer may carry no mood (the taste re-roll card does not print one);
+      // there is nothing honest to learn from that, so only the chip's action
+      // runs.
+      const recordIdleMusicMoodOutcome = (
+        offer: PendingIdleMusicOffer,
+        accepted: boolean,
+      ): void => {
+        if (!offer.mood) {
+          return;
+        }
+        idleMusicStateRef.current = recordIdleMusicOutcome(idleMusicStateRef.current, {
+          mood: offer.mood,
+          accepted,
+        });
+        saveAoiIdleMusicLearningState(idleMusicStateRef.current);
+      };
+
       // Aoi idle music nudge: answer a pending "want some music?" offer here so a
       // tapped chip does not fall through to the LLM. Play dispatches the exact
       // recommended query (no parser round-trip); dismiss / anything-else folds an
@@ -6661,18 +6803,25 @@ const ChatPanel: React.FC<{
         pendingIdleMusicOfferRef.current = null;
         savePendingIdleMusicOffer(null);
         if (messageText === pendingIdleMusicOffer.playPrompt) {
-          idleMusicStateRef.current = recordIdleMusicOutcome(idleMusicStateRef.current, {
-            mood: pendingIdleMusicOffer.mood,
-            accepted: true,
-          });
-          saveAoiIdleMusicLearningState(idleMusicStateRef.current);
+          recordIdleMusicMoodOutcome(pendingIdleMusicOffer, true);
           const lang = resolveNudgeLang();
           try {
-            await dispatchAgentAction({
+            const result = await dispatchAgentAction({
               app_id: YOUTUBE_APP_ID,
               action_type: 'OPEN_SEARCH',
               params: { query: pendingIdleMusicOffer.query, autoplay: '1' },
             });
+            // dispatchAgentAction resolves (never rejects) with "error:"/"timeout:"
+            // when nothing opened, so the catch below cannot be the only guard.
+            if (isFailedAgentActionResult(result)) {
+              console.error('[ChatPanel] Idle music play dispatch failed', result);
+              emitAssistantMessage({
+                id: String(Date.now()),
+                role: 'assistant',
+                content: buildIdleMusicErrorAck(lang),
+              });
+              return;
+            }
             const ack = buildIdleMusicPlayAck(pendingIdleMusicOffer.query, lang);
             emitAssistantMessage({ id: String(Date.now()), role: 'assistant', content: ack });
             recordAoiMemoryTurn({
@@ -6693,11 +6842,7 @@ const ChatPanel: React.FC<{
           return;
         }
         if (messageText === pendingIdleMusicOffer.dismissPrompt) {
-          idleMusicStateRef.current = recordIdleMusicOutcome(idleMusicStateRef.current, {
-            mood: pendingIdleMusicOffer.mood,
-            accepted: false,
-          });
-          saveAoiIdleMusicLearningState(idleMusicStateRef.current);
+          recordIdleMusicMoodOutcome(pendingIdleMusicOffer, false);
           // "Another" style chips re-roll a taste-backed pick; soft "later" chips just stop.
           const wantsAnother = /다른|別|换一|Another/i.test(messageText);
           if (wantsAnother) {
@@ -6750,11 +6895,7 @@ const ChatPanel: React.FC<{
         }
         // Implicit skip: the user moved on to something else. Record the signal
         // and fall through so their actual message is handled normally.
-        idleMusicStateRef.current = recordIdleMusicOutcome(idleMusicStateRef.current, {
-          mood: pendingIdleMusicOffer.mood,
-          accepted: false,
-        });
-        saveAoiIdleMusicLearningState(idleMusicStateRef.current);
+        recordIdleMusicMoodOutcome(pendingIdleMusicOffer, false);
       }
 
       // Aoi cyber-news nudge: answer a pending "interesting news?" offer here.
@@ -6773,11 +6914,20 @@ const ChatPanel: React.FC<{
           saveAoiNewsState(newsStateRef.current);
           const lang = resolveNudgeLang();
           try {
-            await dispatchAgentAction({
+            const result = await dispatchAgentAction({
               app_id: CYBERNEWS_APP_ID,
               action_type: 'VIEW_ARTICLE',
               params: { articleId: pendingNewsOffer.articleId },
             });
+            if (isFailedAgentActionResult(result)) {
+              console.error('[ChatPanel] Idle news open dispatch failed', result);
+              emitAssistantMessage({
+                id: String(Date.now()),
+                role: 'assistant',
+                content: buildNewsErrorAck(lang),
+              });
+              return;
+            }
             const ack = buildNewsOpenAck(pendingNewsOffer.title, lang);
             emitAssistantMessage({ id: String(Date.now()), role: 'assistant', content: ack });
             recordAoiMemoryTurn({
@@ -6852,7 +7002,7 @@ const ChatPanel: React.FC<{
             app_id: YOUTUBE_APP_ID,
             action_type: 'PLAY_LAST_PLAYLIST',
           });
-          const ack = result.startsWith('error:')
+          const ack = isFailedAgentActionResult(result)
             ? buildPlaylistPlaybackErrorAck(
                 text,
                 normalizeResponseLanguageMode(
@@ -6886,11 +7036,20 @@ const ChatPanel: React.FC<{
       const directMusicIntent = parseDirectMusicIntent(text, chatHistory);
       if (!hasImageAttachments && directMusicIntent) {
         try {
-          await dispatchAgentAction({
+          const result = await dispatchAgentAction({
             app_id: YOUTUBE_APP_ID,
             action_type: 'OPEN_SEARCH',
             params: { query: directMusicIntent.query, autoplay: '1' },
           });
+          if (isFailedAgentActionResult(result)) {
+            console.error('[ChatPanel] Direct music intent dispatch failed', result);
+            emitAssistantMessage({
+              id: String(Date.now()),
+              role: 'assistant',
+              content: buildIdleMusicErrorAck(resolveNudgeLang()),
+            });
+            return;
+          }
           const ack = buildDirectMusicAck(
             directMusicIntent.query,
             text,
@@ -6912,6 +7071,49 @@ const ChatPanel: React.FC<{
         } catch (err) {
           console.error('[ChatPanel] Direct music intent dispatch failed', err);
         }
+      }
+
+      // Same rule for the news card's "interested" chip: no pending offer, and
+      // the headline could not be matched back to an article on disk. Answering
+      // here keeps a chip that promises an action from producing a claim that
+      // one happened.
+      if (!hasImageAttachments && isAoiNewsPlayChip(text)) {
+        const ack = buildNewsUnresolvedAck(resolveNudgeLang());
+        emitAssistantMessage({
+          id: String(Date.now()),
+          role: 'assistant',
+          content: ack,
+        });
+        recordAoiMemoryTurn({
+          userMessage: text,
+          assistantMessage: ack,
+          toolCalls: ['direct:news_open_unresolved'],
+          source: 'direct_action',
+          llmConfig: selectedConfig,
+        });
+        return;
+      }
+
+      // A tapped play chip that got this far has no pending offer behind it
+      // (browser-local state lost) AND no recommendation left in the recent
+      // transcript for parseDirectMusicIntent to recover. Answer here rather
+      // than letting the LLM improvise: it has repeatedly reported "I lined it
+      // up in YouTube" for a search that never ran.
+      if (!hasImageAttachments && isAoiMusicPlayChip(text)) {
+        const ack = buildIdleMusicUnresolvedAck(resolveNudgeLang());
+        emitAssistantMessage({
+          id: String(Date.now()),
+          role: 'assistant',
+          content: ack,
+        });
+        recordAoiMemoryTurn({
+          userMessage: text,
+          assistantMessage: ack,
+          toolCalls: ['direct:play_music_unresolved'],
+          source: 'direct_action',
+          llmConfig: selectedConfig,
+        });
+        return;
       }
 
       // Genre/lane chip after a preference ask (e.g. "케이팝") becomes a personal
@@ -11043,6 +11245,7 @@ const ChatPanel: React.FC<{
                 {suggestedReplies.map((reply, i) => (
                   <button
                     key={i}
+                    data-testid="suggested-reply"
                     className={styles.suggestedReply}
                     onClick={() => handleSuggestedReply(reply)}
                   >

@@ -6,10 +6,51 @@ export interface DirectMusicIntent {
 
 const MUSIC_QUERY_SUFFIX_PATTERN = /\s*(?:노래|음악|곡|track|song|music)\s*$/i;
 // A usable search title needs at least one letter or digit (any script).
-// Symbol-only fragments -- a tapped "▶ 재생" reply chip, stray emoji -- must not
-// become YouTube queries; rejecting them lets the message fall through to the
-// normal conversation instead.
+// Symbol-only fragments -- stray emoji, a bare marker -- must not become YouTube
+// queries. (The specific case of a tapped "▶ 재생" chip is resolved earlier, from
+// the transcript; this stays as the guard for everything else.)
 const MUSIC_QUERY_WORD_CHAR_PATTERN = /[\p{L}\p{N}]/u;
+
+// Play chips emitted by Aoi's music cards ("▶ 재생" / "▶ Play" / ...). The chip
+// carries no query of its own: its meaning is "play the recommendation in the
+// card above", which normally comes from the pending-offer ref. That ref is
+// browser-local (localStorage) while the card itself is restored from the
+// server-persisted transcript, so a tap from another browser profile, another
+// dev-server origin, or after cleared storage arrives with no offer behind it.
+// The marker prefix is required -- a bare "재생" typed by the user is not a chip
+// and keeps falling through to the normal patterns below.
+const MUSIC_PLAY_CHIP_PATTERN = /^[▶▷▸►⏵‣➤]\s*(?:재생|플레이|再生|播放|play)\s*$/iu;
+
+/**
+ * True when the message is a tapped music play chip rather than typed text.
+ *
+ * Callers use this twice: to recover the recommended query from history (see
+ * parseDirectMusicIntent), and to answer honestly when nothing is recoverable
+ * instead of letting the chip reach the LLM, which then reports playback that
+ * never happened.
+ */
+export function isAoiMusicPlayChip(text: string): boolean {
+  // Strip variation selectors so an emoji-presentation marker still matches.
+  const normalized = text.trim().replace(/[\uFE0E\uFE0F]/g, '');
+  return MUSIC_PLAY_CHIP_PATTERN.test(normalized);
+}
+
+/**
+ * True when a dispatched agent action did NOT actually happen.
+ *
+ * dispatchAgentAction never rejects: a closed target app, an unknown action, an
+ * app-side failure, or a listener that never answers all come back as a RESOLVED
+ * string ("error: ..." / "timeout: no response from app"). Wrapping the dispatch
+ * in try/catch alone therefore reports success for actions that did nothing --
+ * the exact failure the play chip was reported for. Every ack that claims an app
+ * did something has to gate on this.
+ */
+export function isFailedAgentActionResult(result: string | null | undefined): boolean {
+  const normalized = (result ?? '').trim().toLowerCase();
+  // Silence is not success: an empty result means the dispatch layer told us
+  // nothing, so there is no evidence the action ran.
+  return normalized === '' || normalized.startsWith('error:') || normalized.startsWith('timeout:');
+}
 
 /**
  * Detect in-app YouTube "play my saved playlist" intents.
@@ -78,8 +119,10 @@ function extractRecommendedMusicQuery(
       return youtubeQuery.trim();
     }
 
-    // Taste-backed cards: 🎵 추천: "query" / 🎵 Pick: "query"
-    const tasteCard = content.match(/🎵[^\n"]*["“]([^"”]+)["”]/u)?.[1];
+    // Taste-backed cards: the pick quoted after the note marker. Greedy up to
+    // the LAST quote on that line so a title containing quotes survives
+    // instead of being cut at the first inner one.
+    const tasteCard = content.match(/🎵[^\n"“]*["“](.+)["”]\s*$/mu)?.[1];
     if (tasteCard?.trim()) {
       return tasteCard.trim();
     }
@@ -109,6 +152,15 @@ export function parseDirectMusicIntent(
   // collapse those phrases into a YouTube search for "내 플레이 리스트".
   if (isDirectPlaylistPlaybackIntent(trimmed)) {
     return null;
+  }
+
+  // A tapped play chip resolves against the recommendation still visible in the
+  // transcript. Without this the symbol-only chip is rejected by cleanMusicQuery
+  // below and falls through to the LLM, which answers "I lined it up in YouTube"
+  // without any search ever running.
+  if (isAoiMusicPlayChip(trimmed)) {
+    const chipQuery = extractRecommendedMusicQuery(history);
+    return chipQuery ? { query: chipQuery } : null;
   }
 
   // Deferral phrases ("play that one / you pick") must resolve against the

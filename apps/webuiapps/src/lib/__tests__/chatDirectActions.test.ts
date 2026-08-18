@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { isDirectPlaylistPlaybackIntent, parseDirectMusicIntent } from '../chatDirectActions';
+import {
+  isAoiMusicPlayChip,
+  isDirectPlaylistPlaybackIntent,
+  isFailedAgentActionResult,
+  parseDirectMusicIntent,
+} from '../chatDirectActions';
 
 describe('isDirectPlaylistPlaybackIntent', () => {
   it('matches natural Korean "play my playlist" variants including spaces', () => {
@@ -130,5 +135,104 @@ describe('parseDirectMusicIntent', () => {
     expect(parseDirectMusicIntent('🎵 재생')).toBeNull();
     expect(parseDirectMusicIntent('play ▶')).toBeNull();
     expect(parseDirectMusicIntent('틀어줘 ★★★')).toBeNull();
+  });
+
+  it('recovers the idle-nudge pick when a restored play chip has no pending offer', () => {
+    // The card lives in the server-persisted transcript while the pending offer
+    // is browser-local, so a tap from another profile/origin arrives bare. The
+    // chip must still open the recommendation instead of reaching the LLM.
+    expect(
+      parseDirectMusicIntent('▶ 재생', [
+        {
+          role: 'assistant',
+          content:
+            '늦은 시간이라 조용하네. 은은한 사운드 하나 깔아줄까?\n' +
+            '🎵 추천 (네 취향 반영): "2026년 8월 여돌 노래모음 | 🔥 KPOP PLAYLIST"',
+        },
+        { role: 'user', content: '▶ 재생' },
+      ]),
+    ).toEqual({ query: '2026년 8월 여돌 노래모음 | 🔥 KPOP PLAYLIST' });
+  });
+
+  it('recovers the pick for localized play chips', () => {
+    const history = [{ role: 'assistant' as const, content: 'YouTube 검색어: `aespa supernova`' }];
+    expect(parseDirectMusicIntent('▶ Play', history)).toEqual({ query: 'aespa supernova' });
+    expect(parseDirectMusicIntent('▶ 再生', history)).toEqual({ query: 'aespa supernova' });
+    expect(parseDirectMusicIntent('▶ 播放', history)).toEqual({ query: 'aespa supernova' });
+    expect(parseDirectMusicIntent('▶ 플레이', history)).toEqual({ query: 'aespa supernova' });
+  });
+
+  it('keeps a recommended title that contains its own quotes intact', () => {
+    expect(
+      parseDirectMusicIntent('▶ 재생', [
+        { role: 'assistant', content: '🎵 추천: "KATSEYE "Gnarly" Official MV"' },
+      ]),
+    ).toEqual({ query: 'KATSEYE "Gnarly" Official MV' });
+  });
+
+  it('returns null for a play chip with no recoverable recommendation', () => {
+    // ChatPanel answers this case honestly; it must never become a search for the marker.
+    expect(parseDirectMusicIntent('▶ 재생', [{ role: 'assistant', content: '안녕!' }])).toBeNull();
+  });
+});
+
+describe('isFailedAgentActionResult', () => {
+  it('treats every non-success dispatch outcome as a failure', () => {
+    // dispatchAgentAction RESOLVES with these; a try/catch never sees them, so
+    // an ack gated only on exceptions claims success for actions that did
+    // nothing at all.
+    const failures = [
+      'error: cannot open target app window for app_id=3',
+      'error: track not found',
+      'timeout: no response from app',
+      'TIMEOUT: no response from app',
+      '  error: whatever  ',
+      '',
+      '   ',
+      null,
+      undefined,
+    ];
+    for (const result of failures) {
+      expect(isFailedAgentActionResult(result), JSON.stringify(result)).toBe(true);
+    }
+  });
+
+  it('accepts the shapes a real success comes back in', () => {
+    for (const result of ['success', 'done', 'success {"id":"abc"}', 'restored']) {
+      expect(isFailedAgentActionResult(result), result).toBe(false);
+    }
+  });
+});
+
+describe('isAoiMusicPlayChip', () => {
+  it('matches the play chips Aoi emits, including emoji presentation', () => {
+    const positives = [
+      '▶ 재생',
+      '▶재생',
+      '▶ Play',
+      '▶ play',
+      '▶ 再生',
+      '▶ 播放',
+      '▶️ 재생',
+      '► 재생',
+    ];
+    for (const text of positives) {
+      expect(isAoiMusicPlayChip(text), text).toBe(true);
+    }
+  });
+
+  it('does not claim typed text or other chips', () => {
+    const negatives = [
+      '재생',
+      '재생해줘',
+      '다음에',
+      '▶ 다음 곡',
+      'aespa supernova 재생',
+      '📰 관심 있어',
+      '',
+    ];
+    for (const text of negatives) {
+      expect(isAoiMusicPlayChip(text), text).toBe(false);
+    }
   });
 });

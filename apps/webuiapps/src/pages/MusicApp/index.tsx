@@ -456,14 +456,17 @@ const YouTubeApp: React.FC = () => {
     [],
   );
 
+  // Reports what actually happened so an agent caller can be honest about it:
+  // a failed fetch or an empty result set means nothing is playing, however
+  // successfully the window opened.
   const submitSearch = useCallback(
     async (
       rawQuery?: string,
       triggerBy: ActionTriggerBy = ActionTriggerBy.User,
       options?: { autoplay?: boolean },
-    ) => {
+    ): Promise<{ ok: boolean; error?: string }> => {
       const query = (rawQuery ?? searchQuery).trim();
-      if (!query) return;
+      if (!query) return { ok: false, error: 'missing query' };
 
       const createdAt = Date.now();
       const entry: SearchEntry = {
@@ -500,17 +503,29 @@ const YouTubeApp: React.FC = () => {
       setResultsError(null);
       try {
         const results = await fetchYoutubeSearchResults(query);
-        if (searchRequestSeqRef.current !== requestSeq) return;
+        // A newer search replaced this one, so what is on screen is not what
+        // this call asked for.
+        if (searchRequestSeqRef.current !== requestSeq) {
+          return { ok: false, error: 'search superseded by a newer one' };
+        }
         setSearchResults(results);
         if (options?.autoplay && results[0]) {
           setSelectedResult(results[0]);
           setCurrentPlayingVideoId(results[0].id);
           setAutoplayVideoId(results[0].id);
         }
+        if (results.length === 0) {
+          return { ok: false, error: `no results for "${query}"` };
+        }
+        return { ok: true };
       } catch (error) {
-        if (searchRequestSeqRef.current !== requestSeq) return;
+        const message = error instanceof Error ? error.message : String(error);
+        if (searchRequestSeqRef.current !== requestSeq) {
+          return { ok: false, error: message };
+        }
         setSearchResults([]);
-        setResultsError(error instanceof Error ? error.message : String(error));
+        setResultsError(message);
+        return { ok: false, error: message };
       } finally {
         if (searchRequestSeqRef.current === requestSeq) {
           setResultsLoading(false);
@@ -987,9 +1002,22 @@ const YouTubeApp: React.FC = () => {
           case 'OPEN_SEARCH': {
             const query = action.params?.query?.trim();
             if (!query) return 'error: missing query';
-            await submitSearch(query, ActionTriggerBy.Agent, {
+            // Same cold-open race as PLAY_LAST_PLAYLIST: dispatchAgentAction
+            // opens YouTube and fires OPEN_SEARCH as soon as the listener
+            // registers, which can beat the init effect's applyCloudState.
+            // Without the wait, submitSearch persists over DEFAULT_STATE and
+            // the arriving state.json then restores the PREVIOUS query into
+            // the search box while Aoi's pick is what actually plays.
+            await waitForInit();
+            const outcome = await submitSearch(query, ActionTriggerBy.Agent, {
               autoplay: action.params?.autoplay === '1',
             });
+            // The window opening is not the same as the search working. Report
+            // a failed fetch or an empty result set so the caller does not
+            // announce playback that never started.
+            if (!outcome.ok) {
+              return `error: ${outcome.error ?? 'search failed'}`;
+            }
             return 'success';
           }
           case 'PLAY_LAST_PLAYLIST': {
@@ -1033,6 +1061,7 @@ const YouTubeApp: React.FC = () => {
         playLastPlayedPlaylist,
         resultsAutoHide,
         submitSearch,
+        waitForInit,
       ],
     ),
   );

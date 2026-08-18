@@ -8,6 +8,12 @@
 // best-effort in localStorage: written when a card is emitted, cleared when any
 // user message consumes the offer (accept, dismiss, or implicit skip), and
 // hydrated once on mount.
+//
+// localStorage only covers a reload of the SAME browser profile and origin. The
+// cards come back from the server-side transcript, so a tap from a second
+// browser, a different dev-server origin, or after cleared site data still
+// arrives bare. aoiPendingOfferRecovery rebuilds the offer from the transcript
+// itself for exactly that case; this module is the fast path, not the only one.
 
 import type { AoiMusicMood } from './aoiMusicRecommendation';
 import { AOI_MUSIC_MOODS } from './aoiMusicRecommendation';
@@ -18,7 +24,11 @@ export interface PendingIdleMusicOffer {
   playPrompt: string;
   dismissPrompt: string;
   query: string;
-  mood: AoiMusicMood;
+  // Null when the offer was rebuilt from a card that does not print its mood
+  // (the taste re-roll card). The chip still works; only the per-mood
+  // accept/skip learning is skipped, because inventing a mood would teach the
+  // recommender a preference the user never expressed.
+  mood: AoiMusicMood | null;
 }
 
 export interface PendingNewsOffer {
@@ -68,14 +78,15 @@ export function loadPendingIdleMusicOffer(): PendingIdleMusicOffer | null {
     isNonEmptyString(parsed.playPrompt) &&
     isNonEmptyString(parsed.dismissPrompt) &&
     isNonEmptyString(parsed.query) &&
-    isNonEmptyString(parsed.mood) &&
-    (AOI_MUSIC_MOODS as readonly string[]).includes(parsed.mood)
+    (parsed.mood === null ||
+      (isNonEmptyString(parsed.mood) &&
+        (AOI_MUSIC_MOODS as readonly string[]).includes(parsed.mood)))
   ) {
     return {
       playPrompt: parsed.playPrompt,
       dismissPrompt: parsed.dismissPrompt,
       query: parsed.query,
-      mood: parsed.mood as AoiMusicMood,
+      mood: (parsed.mood as AoiMusicMood | null) ?? null,
     };
   }
   return null;
