@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   describeDesktopActVerdict,
+  splitDesktopToolImage,
   getDesktopInputToolDefinitions,
   isDesktopInputTool,
 } from './aoiDesktopInputTools';
@@ -120,6 +121,7 @@ describe('getDesktopInputToolDefinitions', () => {
       'desktop_focus',
       'desktop_select',
       'desktop_toggle',
+      'desktop_capture',
       'desktop_apps',
     ]);
     for (const name of names) {
@@ -181,6 +183,17 @@ describe('getDesktopInputToolDefinitions', () => {
     expect(toggle?.function.description).toContain('idempotent');
   });
 
+  it('tells the model the capture numbers ARE the refs', () => {
+    // A picture with numbers that mean nothing elsewhere would make the model
+    // guess at a second lookup.
+    const capture = getDesktopInputToolDefinitions().find(
+      (def) => def.function.name === 'desktop_capture',
+    );
+    expect(capture?.function.description).toContain('same refs');
+    // And that an unnumbered outline is deliberate, not a rendering glitch.
+    expect(capture?.function.description).toContain('WITHOUT a number');
+  });
+
   it('warns that raising a window is not free', () => {
     const focus = getDesktopInputToolDefinitions().find(
       (def) => def.function.name === 'desktop_focus',
@@ -194,5 +207,41 @@ describe('getDesktopInputToolDefinitions', () => {
       (def) => def.function.name === 'desktop_click',
     );
     expect(click?.function.description).toContain('refused');
+  });
+});
+
+describe('splitDesktopToolImage', () => {
+  it('moves the image out of the tool result', () => {
+    // A base64 PNG left in the tool message would be megabytes of text the
+    // model cannot look at.
+    const { payload, image } = splitDesktopToolImage({
+      ok: true,
+      snapshot_id: 'dis-00000000',
+      __image: { dataUrl: 'data:image/png;base64,AAAA', name: 'shot.png' },
+    });
+    expect(image).toEqual({ dataUrl: 'data:image/png;base64,AAAA', name: 'shot.png' });
+    expect(payload).toEqual({ ok: true, snapshot_id: 'dis-00000000' });
+    expect(payload).not.toHaveProperty('__image');
+  });
+
+  it('leaves a result with no image alone', () => {
+    const result = { ok: true, elements: [] };
+    expect(splitDesktopToolImage(result)).toEqual({ payload: result, image: null });
+  });
+
+  it('refuses anything that is not an image data URL', () => {
+    // The field ends up in a message attachment; a URL here would make the
+    // client fetch whatever it points at.
+    const { payload, image } = splitDesktopToolImage({
+      ok: true,
+      __image: { dataUrl: 'https://example.com/tracker.png', name: 'x.png' },
+    });
+    expect(image).toBeNull();
+    expect(payload).not.toHaveProperty('__image');
+  });
+
+  it('drops a capture whose image never arrived', () => {
+    const { image } = splitDesktopToolImage({ ok: true, __image: null });
+    expect(image).toBeNull();
   });
 });

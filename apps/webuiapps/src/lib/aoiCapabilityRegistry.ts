@@ -508,6 +508,21 @@ const AOI_CAPABILITY_REGISTRY = {
     policyNotes:
       'Requires os_desktop_input AND the synthetic-input toggle: a drag cannot be delivered without taking focus and moving the real cursor. Can move or reorder things irreversibly, and nothing can verify what the app did with it.',
   },
+  desktop_capture: {
+    name: 'desktop_capture',
+    label: 'Desktop: see a window',
+    kind: 'tool',
+    surface: 'automation',
+    risk: 'high',
+    description:
+      'Return a picture of one window with its controls outlined and numbered, addressable by the same refs.',
+    access: ['read'],
+    sandboxEligible: false,
+    approval: 'policy-gated',
+    promptVisible: true,
+    policyNotes:
+      'Requires its own os_desktop_capture capability, separate from os_desktop_input. Read-only, but graded high because a screenshot shows everything on the window -- documents, messages, account details -- and unlike the screen-vision path there is no redaction possible on pixels. The image goes to the configured chat model. Credential fields are outlined but never numbered. Nothing is written to disk.',
+  },
   desktop_click_point: {
     name: 'desktop_click_point',
     label: 'Desktop: click a raw point',

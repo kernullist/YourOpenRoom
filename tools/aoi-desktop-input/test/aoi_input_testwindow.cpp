@@ -56,6 +56,7 @@ const int kIdRenameMe = 106;
 const int kIdNotes = 107;
 const int kIdCheck = 108;
 const int kIdCombo = 109;
+const int kIdExtra = 110;
 
 WNDPROC g_buttonProc = NULL;
 HWND g_renameMe = NULL;
@@ -115,9 +116,19 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         else if (id == kIdRenameMe && notification == BN_CLICKED && g_renameMe != NULL)
         {
-            // Deliberately changes this window's element identities, so every
-            // ref from the previous snapshot must stop being honored.
+            // Adds a control rather than renaming one. A caption change no
+            // longer retires refs -- a Win32 control's accessible name is
+            // derived from a neighbouring label and flaps, so identity comes
+            // from the automation id. What DOES make ref N mean something else
+            // is the set of controls changing, which is what this simulates:
+            // a button appearing, the way a dialog or an expanding panel does.
             SetWindowTextW(g_renameMe, L"Renamed!");
+            CreateWindowExW(0, L"BUTTON", L"Extra", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 288,
+                            60, 80, 24, hwnd,
+                            reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kIdExtra)),
+                            reinterpret_cast<HINSTANCE>(
+                                GetWindowLongPtrW(hwnd, GWLP_HINSTANCE)),
+                            NULL);
         }
         break;
     }

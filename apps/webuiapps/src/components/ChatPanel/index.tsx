@@ -321,6 +321,7 @@ import {
   getDesktopInputToolDefinitions,
   getDesktopInputToolPendingSummary,
   isDesktopInputTool,
+  splitDesktopToolImage,
 } from '@/lib/aoiDesktopInputTools';
 import { executeUrlTool, getUrlToolDefinitions, isUrlTool } from '@/lib/urlTools';
 import {
@@ -9612,9 +9613,32 @@ const ChatPanel: React.FC<{
           pendingToolCallsRef.current.push(getDesktopInputToolPendingSummary(tc.function.name));
           try {
             const result = await executeDesktopInputTool(tc.function.name, params);
+            // A capture returns a picture. Images only attach to USER messages,
+            // so the description goes back as the tool result and the image
+            // follows on its own message -- the model then has both, and the
+            // transcript does not carry a megabyte of base64 as text.
+            const { payload, image } = splitDesktopToolImage(result);
             currentMessages = [
               ...currentMessages,
-              { role: 'tool', content: JSON.stringify(result), tool_call_id: tc.id },
+              { role: 'tool', content: JSON.stringify(payload), tool_call_id: tc.id },
+              ...(image
+                ? [
+                    {
+                      role: 'user' as const,
+                      content: 'Screenshot from desktop_capture:',
+                      attachments: [
+                        {
+                          id: `desktop-capture-${tc.id}`,
+                          type: 'image' as const,
+                          name: image.name,
+                          mimeType: 'image/png',
+                          dataUrl: image.dataUrl,
+                          size: image.dataUrl.length,
+                        },
+                      ],
+                    },
+                  ]
+                : []),
             ];
           } catch (err) {
             // A throw here means the call never reached the window (blocked,

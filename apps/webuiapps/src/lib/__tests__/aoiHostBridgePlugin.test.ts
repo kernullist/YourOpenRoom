@@ -1870,6 +1870,63 @@ describe('desktop-input', () => {
     });
   });
 
+  it('gates seeing a window separately from driving it', async () => {
+    // Driving a window reads control NAMES. Capturing it returns a picture of
+    // everything on it, which cannot be redacted, so turning on desktop input
+    // must not quietly grant that too.
+    const { home, sessionsDir, token } = makeDaemonHome();
+    await withHelperPath(__filename, async () => {
+      saveAoiHostBridgeKillSwitchState(
+        home,
+        setAoiHostBridgeCapability(null, 'os_desktop_input', true, 4000),
+      );
+      const reply = {
+        ok: true,
+        snapshotId: 'dis-0a1b2c3d',
+        mode: 'som',
+        width: 800,
+        height: 600,
+        scale: 1,
+        totalElements: 0,
+        elements: [],
+        pngBase64: 'AAAA',
+      };
+
+      const first = fakeHelper(reply);
+      const blocked = await callDesktopInput(
+        home,
+        sessionsDir,
+        token,
+        { op: 'capture', hwnd: '0x1a2b' },
+        first.spawn,
+      );
+      expect(blocked.status).toBe(403);
+      expect((blocked.payload as { detail: string[] }).detail).toContain(
+        'capability_disabled:os_desktop_capture',
+      );
+      // And the helper is never even reached.
+      expect(first.seen).toHaveLength(0);
+
+      const state = loadAoiHostBridgeKillSwitchState(home);
+      saveAoiHostBridgeKillSwitchState(
+        home,
+        setAoiHostBridgeCapability(state, 'os_desktop_capture', true, 4100),
+      );
+      const second = fakeHelper(reply);
+      const allowed = await callDesktopInput(
+        home,
+        sessionsDir,
+        token,
+        { op: 'capture', hwnd: '0x1a2b' },
+        second.spawn,
+      );
+      expect(allowed.status).toBe(200);
+      const capture = (allowed.payload as { capture: { pngBase64: string; mode: string } }).capture;
+      expect(capture.mode).toBe('som');
+      expect(capture.pngBase64).toBe('AAAA');
+    });
+  });
+
   it('says the helper is not installed rather than pretending it acted', async () => {
     const { home, sessionsDir, token } = makeDaemonHome();
     await withHelperPath(join(home, 'no-such-helper.exe'), async () => {

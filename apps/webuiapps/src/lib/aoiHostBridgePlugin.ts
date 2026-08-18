@@ -33,6 +33,7 @@ import {
 } from './aoiHostBridgeKillSwitch';
 import { evaluateAoiHostBridgeGate } from './aoiHostBridgeGate';
 import {
+  AOI_DESKTOP_CAPTURE_CAPABILITY,
   AOI_DESKTOP_INPUT_CAPABILITY,
   AOI_DESKTOP_INPUT_FOREGROUND_CAPABILITY,
   parseAoiDesktopInputRequest,
@@ -2081,6 +2082,23 @@ export async function resolveAoiHostBridgeRoute(
       };
     }
     const request = parseAoiDesktopInputRequest(params.body);
+    // Capture is gated separately: os_desktop_input lets Aoi read control names
+    // and act; this decides whether it may take a PICTURE of the window, which
+    // shows everything on it and cannot be redacted.
+    if (
+      request?.op === 'capture' &&
+      !isAoiHostBridgeCapabilityEnabled(killSwitch, AOI_DESKTOP_CAPTURE_CAPABILITY)
+    ) {
+      return {
+        status: 403,
+        payload: {
+          ok: false,
+          error: 'blocked',
+          denyReasons: ['capability_disabled'],
+          detail: [`capability_disabled:${AOI_DESKTOP_CAPTURE_CAPABILITY}`],
+        },
+      };
+    }
     if (!request) {
       return {
         status: 400,
@@ -2114,6 +2132,9 @@ export async function resolveAoiHostBridgeRoute(
     }
     if (result.kind === 'apps') {
       return { status: 200, payload: { ok: true, apps: result.apps } };
+    }
+    if (result.kind === 'capture') {
+      return { status: 200, payload: { ok: true, capture: result.capture } };
     }
     if (result.kind === 'snapshot') {
       return { status: 200, payload: { ok: true, snapshot: result.snapshot } };

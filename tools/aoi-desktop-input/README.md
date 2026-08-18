@@ -52,6 +52,7 @@ throw, which is precisely the failure this contract exists to remove.
 | `type` | Free text at the caret. |
 | `drag` | Drag between two controls. Foreground only. |
 | `focus` | Raise a window. Persistent, so it is its own call. |
+| `capture` | A picture of the window, controls outlined and numbered. |
 
 ## Delivery ladder
 
@@ -118,6 +119,26 @@ origin is negative when a monitor sits left of or above the primary one. That
 origin is included; dropping it puts the click on the wrong monitor while
 `SendInput` still reports success.
 
+### Capture is its own capability
+
+Every other op returns the *names* of controls. `capture` returns a picture of
+whatever is on the window — a document, a chat, an account page — and there is
+no redacting pixels. It is gated by `os_desktop_capture`, separate from
+`os_desktop_input`, so turning on desktop input does not quietly grant it. No
+image is written to disk: the PNG exists in memory and leaves over stdout.
+
+`PrintWindow` asks the window to draw itself rather than copying the screen, so
+a window behind others captures correctly and nothing the operator is looking at
+is disturbed. Some GPU-composited surfaces (games, hardware video) return a
+blank frame; that is reported as `capture_blank` rather than handed over as a
+black rectangle the model would describe as an empty window.
+
+The numbers drawn on the image are the **same refs** the snapshot hands out, and
+the reply carries the same snapshot id — so "click 6" needs no second lookup, and
+the ref still dies with the snapshot. Credential fields are outlined but
+deliberately **left unnumbered**: visible, so the model stops hunting for them,
+and not addressable.
+
 ### Refs are addressing, never a trust shortcut
 
 A ref is valid for exactly **one** snapshot. The snapshot id is a content hash
@@ -125,6 +146,15 @@ of the window's element identities, so a changed window mints a new id and every
 outstanding ref is **refused** rather than re-pointed at whatever now occupies
 that index. Acting re-resolves the ref against a fresh snapshot and compares
 ids; there is no path that acts on a remembered element.
+
+Identity comes from the **automation id**, and refs are ordered by it — not by
+the order UI Automation returns elements in, and not by their accessible name.
+Both of those move under ordinary use: writing into a field promotes it to the
+front of the list, and a Win32 control's name is derived from a neighbouring
+label and intermittently resolves to nothing. Hashing either meant typing into a
+box retired every ref in the window, so an edit-then-click sequence could not be
+completed. Insertions and removals still change the set, and still retire the
+refs — which is the case that actually makes a ref point at something else.
 
 ### `no_automation_tree` vs an empty list
 

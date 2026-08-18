@@ -128,6 +128,13 @@ Add-Type -Namespace AoiTest -Name Win -MemberDefinition @'
 [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
 '@
 
+function Find-Element
+{
+    param($Snapshot, [int]$AutomationId)
+
+    return ($Snapshot.elements | Where-Object { $_.automationId -eq "$AutomationId" } | Select-Object -First 1)
+}
+
 function Get-ControlText
 {
     param([IntPtr]$Window, [int]$Id)
@@ -175,12 +182,16 @@ try
     Assert-That 'the snapshot reports the true element count' ($snap.totalElements -ge $snap.elements.Count) "total=$($snap.totalElements) shown=$($snap.elements.Count)"
     Assert-That 'an untruncated snapshot says so' ($snap.truncated -eq $false) "truncated=$($snap.truncated)"
 
-    $clickMe = $snap.elements | Where-Object { $_.name -eq 'Click Me' } | Select-Object -First 1
-    $renameMe = $snap.elements | Where-Object { $_.name -eq 'Rename Me' } | Select-Object -First 1
-    $message = $snap.elements | Where-Object { $_.name -like 'Message*' } | Select-Object -First 1
-    $password = $snap.elements | Where-Object { $_.name -like 'Password*' } | Select-Object -First 1
-    $disabled = $snap.elements | Where-Object { $_.name -eq 'Disabled' } | Select-Object -First 1
-    $notes = $snap.elements | Where-Object { $_.name -like 'Notes*' } | Select-Object -First 1
+    # Look controls up by automation id, not by name. The id is the identity the
+    # helper guarantees; a Win32 accessible name is derived from a neighbouring
+    # label and intermittently resolves to nothing, which would make these
+    # lookups -- not the helper -- the flaky part.
+    $clickMe = Find-Element $snap 101
+    $renameMe = Find-Element $snap 106
+    $message = Find-Element $snap 102
+    $password = Find-Element $snap 103
+    $disabled = Find-Element $snap 104
+    $notes = Find-Element $snap 107
 
     Assert-That 'the button is listed' ($null -ne $clickMe)
     Assert-That 'the rename button is listed' ($null -ne $renameMe)
@@ -189,6 +200,43 @@ try
     Assert-That 'the password field is marked sensitive' ($password.sensitive -eq $true)
     Assert-That 'the message field is NOT marked sensitive' ($message.sensitive -eq $false)
     Assert-That 'the disabled button reports enabled=false' ($disabled.enabled -eq $false)
+
+    # --- capture -------------------------------------------------------------
+    Write-Host '[test] capture'
+    $shot = Invoke-Helper @{ op = 'capture'; hwnd = $handle; mode = 'som' }
+    Assert-That 'the capture succeeds' ($shot.ok -eq $true) "detail=$($shot.detail)"
+    Assert-That 'it reports the numbered mode' ($shot.mode -eq 'som') "mode=$($shot.mode)"
+    Assert-That 'it returns a real image' ($shot.pngBase64.Length -gt 2000) "base64 length=$($shot.pngBase64.Length)"
+
+    $bytes = [Convert]::FromBase64String($shot.pngBase64)
+    # PNG magic. Proves it is an image rather than an error string that happened
+    # to survive base64.
+    Assert-That 'the bytes really are a PNG' ($bytes[0] -eq 0x89 -and $bytes[1] -eq 0x50 -and $bytes[2] -eq 0x4E -and $bytes[3] -eq 0x47) "first bytes: $($bytes[0..3] -join ',')"
+    Assert-That 'the image has real dimensions' ($shot.width -gt 100 -and $shot.height -gt 100) "$($shot.width)x$($shot.height)"
+
+    # The numbers drawn on the image are worthless if they do not match the refs
+    # the acting ops expect. Same window, same ids.
+    Assert-That 'the capture and the snapshot agree on the snapshot id' ($shot.snapshotId -eq $snap.snapshotId) "capture=$($shot.snapshotId) snapshot=$($snap.snapshotId)"
+    $capturedRefs = ($shot.elements | ForEach-Object { $_.ref }) -join ','
+    $snapRefs = ($snap.elements | ForEach-Object { $_.ref }) -join ','
+    Assert-That 'the capture and the snapshot agree on the refs' ($capturedRefs -eq $snapRefs) "capture=$capturedRefs snapshot=$snapRefs"
+
+    # A password field must still be listed as sensitive in the capture reply --
+    # the model is shown it exists so it stops hunting, but never invited to it.
+    $capturedPassword = Find-Element $shot 103
+    Assert-That 'the capture marks the credential field sensitive' ($capturedPassword.sensitive -eq $true)
+
+    $plain = Invoke-Helper @{ op = 'capture'; hwnd = $handle; mode = 'plain' }
+    Assert-That 'plain mode skips the overlay' ($plain.mode -eq 'plain') "mode=$($plain.mode)"
+    # An overlay is drawn pixels, so the numbered image is not the plain one.
+    Assert-That 'the numbered image differs from the plain one' ($plain.pngBase64 -ne $shot.pngBase64)
+
+    $scaled = Invoke-Helper @{ op = 'capture'; hwnd = $handle; mode = 'plain'; maxLongSide = 240 }
+    Assert-That 'a long-side cap is honored' (([Math]::Max($scaled.width, $scaled.height)) -le 240) "$($scaled.width)x$($scaled.height)"
+    Assert-That 'and the scale factor is reported' ($scaled.scale -lt 1) "scale=$($scaled.scale)"
+
+    $goneShot = Invoke-Helper @{ op = 'capture'; hwnd = '0xdeadbeef'; mode = 'som' }
+    Assert-That 'capturing a dead window is refused' ($goneShot.code -eq 'window_not_found') "code=$($goneShot.code)"
 
     # --- refusals: these must not act at all --------------------------------
     Write-Host '[test] refusals'
@@ -268,8 +316,8 @@ try
     # unchecks it, so "check this" and "click this" are different requests, and
     # only one of them is idempotent.
     Write-Host '[test] select and toggle'
-    $check = $snap.elements | Where-Object { $_.name -eq 'Enabled' } | Select-Object -First 1
-    $combo = $snap.elements | Where-Object { $_.role -eq 'select' } | Select-Object -First 1
+    $check = Find-Element $snap 108
+    $combo = Find-Element $snap 109
     Assert-That 'the checkbox is listed' ($null -ne $check)
     Assert-That 'the combo box is listed' ($null -ne $combo)
 
@@ -384,7 +432,7 @@ try
 
     # --- the foreground rung -------------------------------------------------
     Write-Host '[test] foreground rung'
-    $freshMessage = $fresh.elements | Where-Object { $_.name -like 'Message*' } | Select-Object -First 1
+    $freshMessage = Find-Element $fresh 102
     $noPattern = Invoke-Helper @{ op = 'invoke'; hwnd = $handle; ref = $freshMessage.ref; snapshotId = $fresh.snapshotId }
     Assert-That 'synthetic input is not used unless asked for' ($noPattern.code -eq 'uia_unsupported') "code=$($noPattern.code)"
 

@@ -30,6 +30,12 @@ export const AOI_DESKTOP_INPUT_CAPABILITY = 'os_desktop_input';
 // Kill-switch capability for the SendInput rung ONLY. Default OFF, and never
 // implied by the one above -- taking over the mouse is its own decision.
 export const AOI_DESKTOP_INPUT_FOREGROUND_CAPABILITY = 'os_desktop_input_foreground';
+// Kill-switch capability for CAPTURE, which is its own decision. Everything else
+// here returns the names of controls; capture returns a picture of whatever is
+// on that window, and it goes to whichever model the operator has configured.
+// There is no redacting a screenshot, so this is not folded into desktop input
+// generally. Default OFF.
+export const AOI_DESKTOP_CAPTURE_CAPABILITY = 'os_desktop_capture';
 
 const HOST_BRIDGE_DIR = 'host-bridge';
 const HELPER_FILE = 'aoi_desktop_input.exe';
@@ -53,7 +59,8 @@ export type AoiDesktopInputOp =
   | 'drag'
   | 'focus'
   | 'select'
-  | 'toggle';
+  | 'toggle'
+  | 'capture';
 
 // Which rung to use. 'auto' walks them weakest-side-effect first; naming one
 // pins it, and a pinned rung that cannot run refuses instead of quietly falling
@@ -79,6 +86,8 @@ export interface AoiDesktopInputRequest {
   state?: string;
   x?: number;
   y?: number;
+  mode?: string;
+  maxLongSide?: number;
   // Opt in to the SendInput rung. Honored only when the separate foreground
   // capability is also enabled; the route enforces that, not this parser.
   allowForeground?: boolean;
@@ -88,6 +97,20 @@ export interface AoiDesktopInputWindow {
   hwnd: string;
   title: string;
   process: string;
+}
+
+export interface AoiDesktopInputCapture {
+  snapshotId: string;
+  // 'som' when controls are numbered on the image, 'plain' when it is just a
+  // picture (a window that describes no controls cannot be numbered).
+  mode: string;
+  width: number;
+  height: number;
+  // <1 when the image was shrunk to fit the long-side cap.
+  scale: number;
+  totalElements: number;
+  elements: AoiDesktopInputElement[];
+  pngBase64: string;
 }
 
 export interface AoiDesktopInputApp {
@@ -129,6 +152,7 @@ export interface AoiDesktopInputActResult {
 export type AoiDesktopInputResult =
   | { kind: 'windows'; windows: AoiDesktopInputWindow[] }
   | { kind: 'apps'; apps: AoiDesktopInputApp[] }
+  | { kind: 'capture'; capture: AoiDesktopInputCapture }
   | { kind: 'snapshot'; snapshot: AoiDesktopInputSnapshot }
   | { kind: 'act'; act: AoiDesktopInputActResult }
   | { kind: 'error'; code: string; detail: string };
@@ -188,6 +212,27 @@ export function parseAoiDesktopInputRequest(
 
   if (op === 'snapshot' || op === 'focus') {
     return { op, hwnd };
+  }
+
+  if (op === 'capture') {
+    const mode = readString(body, 'mode') || 'som';
+    if (mode !== 'som' && mode !== 'plain') {
+      return null;
+    }
+    const request: AoiDesktopInputRequest = { op, hwnd, mode };
+    const maxLongSide = body.maxLongSide;
+    if (maxLongSide !== undefined) {
+      if (
+        typeof maxLongSide !== 'number' ||
+        !Number.isInteger(maxLongSide) ||
+        maxLongSide < 200 ||
+        maxLongSide > 4096
+      ) {
+        return null;
+      }
+      request.maxLongSide = maxLongSide;
+    }
+    return request;
   }
 
   const deliveryRaw = readString(body, 'delivery');
@@ -584,13 +629,14 @@ export function runAoiDesktopInput(params: RunAoiDesktopInputParams): AoiDesktop
     'delivery',
     'option',
     'state',
+    'mode',
   ] as const) {
     const value = request[key];
     if (typeof value === 'string' && value) {
       command[key] = value;
     }
   }
-  for (const key of ['clicks', 'amount', 'toRef', 'x', 'y'] as const) {
+  for (const key of ['clicks', 'amount', 'toRef', 'x', 'y', 'maxLongSide'] as const) {
     const value = request[key];
     if (typeof value === 'number') {
       command[key] = value;
@@ -654,6 +700,30 @@ export function runAoiDesktopInput(params: RunAoiDesktopInputParams): AoiDesktop
       };
     }
     return { kind: 'windows', windows: mapWindows(raw) };
+  }
+
+  if (request.op === 'capture') {
+    if (raw.ok !== true || typeof raw.pngBase64 !== 'string' || !raw.pngBase64) {
+      return {
+        kind: 'error',
+        code: typeof raw.code === 'string' ? raw.code : 'capture_failed',
+        detail: typeof raw.detail === 'string' ? raw.detail : '',
+      };
+    }
+    const snapshot = mapSnapshot(raw);
+    return {
+      kind: 'capture',
+      capture: {
+        snapshotId: snapshot ? snapshot.snapshotId : '',
+        mode: typeof raw.mode === 'string' ? raw.mode : 'plain',
+        width: typeof raw.width === 'number' ? raw.width : 0,
+        height: typeof raw.height === 'number' ? raw.height : 0,
+        scale: typeof raw.scale === 'number' ? raw.scale : 1,
+        totalElements: snapshot ? snapshot.totalElements : 0,
+        elements: snapshot ? snapshot.elements : [],
+        pngBase64: raw.pngBase64,
+      },
+    };
   }
 
   if (request.op === 'snapshot') {

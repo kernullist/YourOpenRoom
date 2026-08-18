@@ -66,16 +66,30 @@
 #include <objbase.h>
 #include <uiautomation.h>
 #include <psapi.h>
+// GDI+ needs the COM interface types (IStream, PROPID, ...) that
+// WIN32_LEAN_AND_MEAN omits; pull them in before <gdiplus.h>.
+#include <unknwn.h>
+#include <objidl.h>
+#include <gdiplus.h>
+
+// PW_RENDERFULLCONTENT (Win8.1+) is not declared at _WIN32_WINNT 0x0601; define
+// it so PrintWindow can render GPU-composited window content where available.
+#ifndef PW_RENDERFULLCONTENT
+#define PW_RENDERFULLCONTENT 0x00000002
+#endif
 
 #include <string>
 #include <vector>
 #include <iostream>
 #include <sstream>
+#include <algorithm>
 
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "oleaut32.lib")
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "psapi.lib")
+#pragma comment(lib, "gdi32.lib")
+#pragma comment(lib, "gdiplus.lib")
 
 namespace
 {
@@ -754,6 +768,21 @@ void ReadElementInfo(IUIAutomationElement* node, bool cached, ElementInfo& info)
         node->get_CachedAutomationId(&automationRaw);
         node->get_CachedIsEnabled(&enabled);
         node->get_CachedIsPassword(&isPassword);
+
+        // A Win32 control's accessible name comes from a neighbouring label,
+        // and that association intermittently resolves to nothing -- the same
+        // edit box reports "Notes:" and then "" seconds apart. A nameless
+        // control is close to useless to describe, so pay for one live read to
+        // try to recover it rather than reporting a blank.
+        if (nameRaw == NULL || SysStringLen(nameRaw) == 0)
+        {
+            if (nameRaw != NULL)
+            {
+                SysFreeString(nameRaw);
+                nameRaw = NULL;
+            }
+            node->get_CurrentName(&nameRaw);
+        }
     }
     else
     {
@@ -805,14 +834,35 @@ void ReleaseElements(std::vector<ElementInfo>& elements)
     }
 }
 
+// Identity of one element for the purposes of "is this still the same control".
+//
+// An automation id, when the control has one, IS its identity -- it is the
+// control's own id and does not move. The NAME is not usable for this even
+// though it looks like the obvious choice: Windows derives a Win32 control's
+// accessible name from a neighbouring label, and that association intermittently
+// comes back EMPTY. Observed live, mid-scroll: the same edit box reported
+// name="Notes:" and then name="" with its automation id unchanged at 107.
+//
+// Because the snapshot id hashes every element, one such flap retired every ref
+// in the window and turned an ordinary sequence into a random stale-ref refusal.
+// Insertions, removals and reordering still change the id -- those are the
+// changes that actually make a ref point somewhere else.
+std::string IdentityOf(const ElementInfo& element)
+{
+    if (!element.automationId.empty())
+    {
+        return element.role + ":" + element.automationId;
+    }
+    return element.role + "::" + element.name;
+}
+
 std::string SnapshotIdFor(HWND hwnd, const std::vector<ElementInfo>& elements)
 {
     std::ostringstream material;
     material << reinterpret_cast<uintptr_t>(hwnd);
     for (size_t i = 0; i < elements.size(); ++i)
     {
-        material << "|" << elements[i].role << ":" << elements[i].automationId << ":"
-                 << elements[i].name;
+        material << "|" << IdentityOf(elements[i]);
     }
     return HashSnapshot(material.str());
 }
@@ -906,13 +956,35 @@ bool CollectElements(IUIAutomation* automation,
                 node->Release();
                 continue;
             }
-            info.ref = static_cast<int>(out.size()) + 1;
+            info.ref = 0; // assigned after the sort below
             info.element = node; // ownership moves into out; ReleaseElements frees it
             out.push_back(info);
         }
         if (totalFound != NULL)
         {
             *totalFound = eligible;
+        }
+
+        // Order refs by identity, not by the order UI Automation happened to
+        // return them in.
+        //
+        // Tree order is not stable across ordinary use: writing into a field
+        // moves that field to the FRONT of the list (observed -- textbox:102
+        // went from third to first the moment set_value ran). With positional
+        // refs and an id that hashes the order, typing into a box retired every
+        // ref in the window, so a plain edit-then-click sequence could not be
+        // completed. Sorting makes the same set of controls produce the same
+        // refs however the tree is walked, while insertions and removals still
+        // change the set, and so still retire the refs -- which is the case that
+        // actually makes a ref point at something else.
+        std::sort(out.begin(), out.end(),
+                  [](const ElementInfo& left, const ElementInfo& right)
+                  {
+                      return IdentityOf(left) < IdentityOf(right);
+                  });
+        for (size_t i = 0; i < out.size(); ++i)
+        {
+            out[i].ref = static_cast<int>(i) + 1;
         }
         ok = true;
     } while (false);
@@ -2564,6 +2636,7 @@ void RunSelect(IUIAutomation* automation, HWND hwnd, int ref, const std::string&
     int candidates = 0;
     int listIndex = -1;
     int matchIndex = -1;
+    int expandAttempts = 0;
     bool openedMenu = false;
 
     while (true)
@@ -2625,7 +2698,7 @@ void RunSelect(IUIAutomation* automation, HWND hwnd, int ref, const std::string&
             node->Release();
         }
 
-        if (match == NULL && expanded == NULL)
+        if (match == NULL && expandAttempts < 6)
         {
             // A closed Win32 dropdown has no list to search: its items do not
             // exist as elements until it opens. So open it, look again, and
@@ -2633,12 +2706,26 @@ void RunSelect(IUIAutomation* automation, HWND hwnd, int ref, const std::string&
             // -- an open menu is a popup that did not exist when the snapshot
             // was taken -- but refusing outright would make dropdowns
             // undrivable, which is worse.
-            if (SUCCEEDED(container->GetCurrentPatternAs(
-                    UIA_ExpandCollapsePatternId, __uuidof(IUIAutomationExpandCollapsePattern),
-                    reinterpret_cast<void**>(&expanded))) &&
-                expanded != NULL && SUCCEEDED(expanded->Expand()))
+            if (expanded == NULL)
             {
-                Sleep(120);
+                if (SUCCEEDED(container->GetCurrentPatternAs(
+                        UIA_ExpandCollapsePatternId,
+                        __uuidof(IUIAutomationExpandCollapsePattern),
+                        reinterpret_cast<void**>(&expanded))) &&
+                    expanded != NULL)
+                {
+                    expanded->Expand();
+                }
+            }
+            if (expanded != NULL)
+            {
+                // The list does not appear the instant Expand returns, and how
+                // long it takes is the app's business, not ours. A single fixed
+                // wait made the option intermittently "not found" on a dropdown
+                // that plainly contained it, so poll rather than guess one
+                // number -- and still give up after a bounded wait.
+                expandAttempts += 1;
+                Sleep(100);
                 found->Release();
                 found = NULL;
                 if (SUCCEEDED(container->FindAll(TreeScope_Subtree, anything, &found)) &&
@@ -2921,6 +3008,365 @@ void RunToggle(IUIAutomation* automation, HWND hwnd, int ref, const std::string&
     ReleaseElements(elements);
 }
 
+
+// ---------------------------------------------------------------------------
+// Capture: a picture of one window, optionally with its controls numbered.
+//
+// This is the only thing here that produces PIXELS, and pixels are different in
+// kind from everything else this helper returns. A snapshot lists control names;
+// a capture shows whatever is on that window -- a document, a chat, a bank page.
+// It goes to whichever model the operator has configured, so the daemon puts it
+// behind its own toggle rather than folding it into desktop input generally, and
+// nothing here writes an image to disk: the PNG exists in memory and leaves over
+// stdout.
+//
+// The numbers drawn on the image are the SAME refs the snapshot hands out, and
+// the reply carries the same snapshot id. So "click the button labelled 6" is
+// answerable without a second lookup, and the ref still dies with the snapshot
+// exactly as it does everywhere else -- seeing a control is not a licence to act
+// on a stale view of it.
+// ---------------------------------------------------------------------------
+
+int GetPngEncoderClsid(CLSID& clsid)
+{
+    UINT count = 0;
+    UINT size = 0;
+    Gdiplus::GetImageEncodersSize(&count, &size);
+    if (size == 0)
+    {
+        return -1;
+    }
+    std::vector<unsigned char> buffer(static_cast<size_t>(size));
+    Gdiplus::ImageCodecInfo* codecs =
+        reinterpret_cast<Gdiplus::ImageCodecInfo*>(&buffer[0]);
+    if (Gdiplus::GetImageEncoders(count, size, codecs) != Gdiplus::Ok)
+    {
+        return -1;
+    }
+    for (UINT i = 0; i < count; ++i)
+    {
+        if (codecs[i].MimeType != NULL && wcscmp(codecs[i].MimeType, L"image/png") == 0)
+        {
+            clsid = codecs[i].Clsid;
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+std::string Base64Encode(const std::string& raw)
+{
+    static const char* kAlphabet =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve(((raw.size() + 2) / 3) * 4);
+    size_t i = 0;
+    while (i + 2 < raw.size())
+    {
+        const unsigned int triple = (static_cast<unsigned char>(raw[i]) << 16) |
+                                    (static_cast<unsigned char>(raw[i + 1]) << 8) |
+                                    static_cast<unsigned char>(raw[i + 2]);
+        out.push_back(kAlphabet[(triple >> 18) & 0x3F]);
+        out.push_back(kAlphabet[(triple >> 12) & 0x3F]);
+        out.push_back(kAlphabet[(triple >> 6) & 0x3F]);
+        out.push_back(kAlphabet[triple & 0x3F]);
+        i += 3;
+    }
+    const size_t remaining = raw.size() - i;
+    if (remaining == 1)
+    {
+        const unsigned int triple = static_cast<unsigned char>(raw[i]) << 16;
+        out.push_back(kAlphabet[(triple >> 18) & 0x3F]);
+        out.push_back(kAlphabet[(triple >> 12) & 0x3F]);
+        out += "==";
+    }
+    else if (remaining == 2)
+    {
+        const unsigned int triple = (static_cast<unsigned char>(raw[i]) << 16) |
+                                    (static_cast<unsigned char>(raw[i + 1]) << 8);
+        out.push_back(kAlphabet[(triple >> 18) & 0x3F]);
+        out.push_back(kAlphabet[(triple >> 12) & 0x3F]);
+        out.push_back(kAlphabet[(triple >> 6) & 0x3F]);
+        out.push_back('=');
+    }
+    return out;
+}
+
+// Draw a numbered box over every addressable control, in window coordinates.
+// Sensitive controls get a different colour and no number: they are shown so the
+// model can see the field exists and stop looking for it, but it must not be
+// invited to aim at one.
+void DrawElementOverlay(HDC dc, const RECT& windowRect, const std::vector<ElementInfo>& elements)
+{
+    HPEN normalPen = CreatePen(PS_SOLID, 2, RGB(255, 45, 85));
+    HPEN blockedPen = CreatePen(PS_SOLID, 2, RGB(120, 120, 130));
+    HBRUSH badgeBrush = CreateSolidBrush(RGB(255, 45, 85));
+    HFONT font = CreateFontW(-13, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                             DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+    HGDIOBJ oldFont = SelectObject(dc, font);
+    HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    SetBkMode(dc, TRANSPARENT);
+
+    for (size_t i = 0; i < elements.size(); ++i)
+    {
+        RECT box;
+        if (FAILED(elements[i].element->get_CurrentBoundingRectangle(&box)))
+        {
+            continue;
+        }
+        if (box.right <= box.left || box.bottom <= box.top)
+        {
+            continue;
+        }
+        // UIA reports screen coordinates; PrintWindow renders from the window's
+        // top-left corner.
+        const int left = box.left - windowRect.left;
+        const int top = box.top - windowRect.top;
+        const int right = box.right - windowRect.left;
+        const int bottom = box.bottom - windowRect.top;
+
+        HGDIOBJ oldPen = SelectObject(dc, elements[i].sensitive ? blockedPen : normalPen);
+        Rectangle(dc, left, top, right, bottom);
+        SelectObject(dc, oldPen);
+
+        if (elements[i].sensitive)
+        {
+            continue;
+        }
+
+        wchar_t label[8];
+        swprintf_s(label, 8, L"%d", elements[i].ref);
+        SIZE textSize;
+        GetTextExtentPoint32W(dc, label, static_cast<int>(wcslen(label)), &textSize);
+
+        RECT badge;
+        badge.left = left;
+        badge.top = (top - textSize.cy - 2 >= 0) ? top - textSize.cy - 2 : top;
+        badge.right = badge.left + textSize.cx + 8;
+        badge.bottom = badge.top + textSize.cy + 2;
+        FillRect(dc, &badge, badgeBrush);
+        SetTextColor(dc, RGB(255, 255, 255));
+        TextOutW(dc, badge.left + 4, badge.top + 1, label, static_cast<int>(wcslen(label)));
+    }
+
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldFont);
+    DeleteObject(font);
+    DeleteObject(badgeBrush);
+    DeleteObject(blockedPen);
+    DeleteObject(normalPen);
+}
+
+// Render one window to an opaque PNG. Works on windows that are behind others;
+// PrintWindow asks the window to draw itself rather than copying the screen, so
+// what is on top does not matter. Some GPU-composited surfaces still come back
+// black, which is a limitation to report rather than hide.
+bool CaptureWindowPng(HWND hwnd, const std::vector<ElementInfo>* overlay, int maxLongSide,
+                      std::string& outPng, int& outWidth, int& outHeight, double& outScale)
+{
+    outPng.clear();
+    RECT rc;
+    if (GetWindowRect(hwnd, &rc) == FALSE)
+    {
+        return false;
+    }
+    int width = static_cast<int>(rc.right - rc.left);
+    int height = static_cast<int>(rc.bottom - rc.top);
+    if (width <= 0 || height <= 0 || width > 16384 || height > 16384)
+    {
+        return false;
+    }
+
+    bool ok = false;
+    HDC screenDc = GetDC(NULL);
+    HDC memDc = CreateCompatibleDC(screenDc);
+    BITMAPINFO bmi;
+    ZeroMemory(&bmi, sizeof(bmi));
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = width;
+    bmi.bmiHeader.biHeight = -height; // top-down
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    void* bits = NULL;
+    HBITMAP dib = CreateDIBSection(memDc, &bmi, DIB_RGB_COLORS, &bits, NULL, 0);
+
+    do
+    {
+        if (dib == NULL || bits == NULL)
+        {
+            break;
+        }
+        HGDIOBJ oldObj = SelectObject(memDc, dib);
+        if (PrintWindow(hwnd, memDc, PW_RENDERFULLCONTENT) == FALSE)
+        {
+            // Falls back to lifting the pixels off the screen, which DOES show
+            // whatever is covering the window. Only reached when the window
+            // refuses to draw itself.
+            BitBlt(memDc, 0, 0, width, height, screenDc, rc.left, rc.top, SRCCOPY);
+        }
+        if (overlay != NULL)
+        {
+            DrawElementOverlay(memDc, rc, *overlay);
+        }
+        // PrintWindow and BitBlt leave alpha undefined, and GDI+ would composite
+        // a zero-alpha frame to solid black.
+        unsigned char* pixels = static_cast<unsigned char*>(bits);
+        const long long pixelCount = static_cast<long long>(width) * height;
+        for (long long i = 0; i < pixelCount; ++i)
+        {
+            pixels[i * 4 + 3] = 0xFF;
+        }
+        SelectObject(memDc, oldObj);
+
+        Gdiplus::Bitmap captured(dib, static_cast<HPALETTE>(NULL));
+        if (captured.GetLastStatus() != Gdiplus::Ok)
+        {
+            break;
+        }
+        const int longSide = (width > height) ? width : height;
+        int targetWidth = width;
+        int targetHeight = height;
+        outScale = 1.0;
+        if (maxLongSide > 0 && longSide > maxLongSide)
+        {
+            outScale = static_cast<double>(maxLongSide) / longSide;
+            targetWidth = static_cast<int>(width * outScale);
+            targetHeight = static_cast<int>(height * outScale);
+            if (targetWidth < 1)
+            {
+                targetWidth = 1;
+            }
+            if (targetHeight < 1)
+            {
+                targetHeight = 1;
+            }
+        }
+
+        Gdiplus::Bitmap target(targetWidth, targetHeight, PixelFormat24bppRGB);
+        {
+            Gdiplus::Graphics graphics(&target);
+            graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+            graphics.DrawImage(&captured, 0, 0, targetWidth, targetHeight);
+        }
+
+        CLSID pngClsid;
+        if (GetPngEncoderClsid(pngClsid) < 0)
+        {
+            break;
+        }
+        IStream* stream = NULL;
+        if (CreateStreamOnHGlobal(NULL, TRUE, &stream) != S_OK || stream == NULL)
+        {
+            break;
+        }
+        if (target.Save(stream, &pngClsid, NULL) == Gdiplus::Ok)
+        {
+            HGLOBAL memory = NULL;
+            if (GetHGlobalFromStream(stream, &memory) == S_OK && memory != NULL)
+            {
+                const SIZE_T byteCount = GlobalSize(memory);
+                void* raw = GlobalLock(memory);
+                if (raw != NULL && byteCount > 0)
+                {
+                    outPng.assign(static_cast<const char*>(raw), static_cast<size_t>(byteCount));
+                    outWidth = targetWidth;
+                    outHeight = targetHeight;
+                    ok = true;
+                }
+                if (raw != NULL)
+                {
+                    GlobalUnlock(memory);
+                }
+            }
+        }
+        stream->Release();
+    } while (false);
+
+    if (dib != NULL)
+    {
+        DeleteObject(dib);
+    }
+    DeleteDC(memDc);
+    ReleaseDC(NULL, screenDc);
+    return ok;
+}
+
+// Is the rendered frame entirely one colour? Some GPU-composited windows return
+// a solid black frame from PrintWindow, and handing the model a black rectangle
+// it will describe as "an empty window" is worse than saying the capture did not
+// work.
+bool LooksBlank(const std::string& png)
+{
+    // A uniform image compresses to almost nothing. This is a cheap proxy: a
+    // real window screenshot of any size never lands this small.
+    return png.size() < 1024;
+}
+
+void RunCapture(IUIAutomation* automation, HWND hwnd, const std::string& mode, int maxLongSide)
+{
+    std::vector<ElementInfo> elements;
+    std::string error;
+    int totalFound = 0;
+    const bool wantOverlay = (mode != "plain");
+
+    // The overlay needs the same element list the snapshot would return, so the
+    // numbers on the image and the refs in the reply cannot drift apart.
+    if (!CollectElements(automation, hwnd, elements, error, &totalFound))
+    {
+        elements.clear();
+    }
+
+    std::string png;
+    int width = 0;
+    int height = 0;
+    double scale = 1.0;
+    const bool captured = CaptureWindowPng(
+        hwnd, (wantOverlay && !elements.empty()) ? &elements : NULL, maxLongSide, png, width,
+        height, scale);
+
+    if (!captured)
+    {
+        EmitFailure("capture_failed", "the window could not be rendered");
+        ReleaseElements(elements);
+        return;
+    }
+    if (LooksBlank(png))
+    {
+        EmitFailure("capture_blank",
+                    "the window rendered as a blank frame; GPU-composited surfaces (some games "
+                    "and video players) cannot be captured this way");
+        ReleaseElements(elements);
+        return;
+    }
+
+    const std::string id = SnapshotIdFor(hwnd, elements);
+    std::ostringstream out;
+    out << "{\"ok\":true,\"snapshotId\":\"" << id << "\",\"mode\":\""
+        << (wantOverlay && !elements.empty() ? "som" : "plain") << "\",\"width\":" << width
+        << ",\"height\":" << height << ",\"scale\":" << scale
+        << ",\"totalElements\":" << totalFound << ",\"elements\":[";
+    for (size_t i = 0; i < elements.size(); ++i)
+    {
+        if (i > 0)
+        {
+            out << ",";
+        }
+        // Same element fields the snapshot returns, so a capture reply can be
+        // used wherever a snapshot reply can -- including addressing controls by
+        // their automation id, which is the identity that stays put.
+        out << "{\"ref\":" << elements[i].ref << ",\"role\":\"" << JsonEscape(elements[i].role)
+            << "\",\"name\":\"" << JsonEscape(elements[i].name) << "\",\"automationId\":\""
+            << JsonEscape(elements[i].automationId) << "\""
+            << ",\"enabled\":" << (elements[i].enabled ? "true" : "false")
+            << ",\"sensitive\":" << (elements[i].sensitive ? "true" : "false") << "}";
+    }
+    out << "],\"pngBase64\":\"" << Base64Encode(png) << "\"}";
+    std::cout << out.str() << std::endl;
+    ReleaseElements(elements);
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -2998,10 +3444,21 @@ int main(int argc, char** argv)
     }
 
     int exitCode = 0;
+    // GDI+ is only needed by capture, but starting it here keeps one exit path
+    // for both it and COM.
+    Gdiplus::GdiplusStartupInput gdiplusInput;
+    ULONG_PTR gdiplusToken = 0;
+    const bool gdiplusReady = (Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusInput, NULL) ==
+                               Gdiplus::Ok);
+
     const HRESULT comInit = CoInitializeEx(NULL, COINIT_MULTITHREADED);
     if (FAILED(comInit))
     {
         EmitFailure("com_init_failed", "CoInitializeEx failed");
+        if (gdiplusReady)
+        {
+            Gdiplus::GdiplusShutdown(gdiplusToken);
+        }
         return 2;
     }
 
@@ -3013,6 +3470,10 @@ int main(int argc, char** argv)
     {
         EmitFailure("uia_unavailable", "UI Automation could not be created");
         CoUninitialize();
+        if (gdiplusReady)
+        {
+            Gdiplus::GdiplusShutdown(gdiplusToken);
+        }
         return 2;
     }
 
@@ -3023,6 +3484,12 @@ int main(int argc, char** argv)
     if (op == "snapshot")
     {
         RunSnapshot(automation, hwnd);
+    }
+    else if (op == "capture")
+    {
+        const int maxLongSide = static_cast<int>(JsonReadNumber(command, "maxLongSide", 1200));
+        RunCapture(automation, hwnd, JsonReadString(command, "mode"),
+                   (maxLongSide >= 200 && maxLongSide <= 4096) ? maxLongSide : 1200);
     }
     else if (op == "invoke")
     {
@@ -3095,5 +3562,9 @@ int main(int argc, char** argv)
 
     automation->Release();
     CoUninitialize();
+    if (gdiplusReady)
+    {
+        Gdiplus::GdiplusShutdown(gdiplusToken);
+    }
     return exitCode;
 }

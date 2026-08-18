@@ -1126,3 +1126,57 @@ export async function sendAoiHostDesktopWindowInput(params: {
   });
   return readDesktopActPayload(payload);
 }
+
+export interface AoiHostDesktopCaptureView {
+  snapshotId: string;
+  mode: string;
+  width: number;
+  height: number;
+  scale: number;
+  totalElements: number;
+  elements: AoiHostDesktopElementView[];
+  // A data: URL ready to attach to a message. Deliberately not written to disk
+  // anywhere along the way.
+  dataUrl: string;
+}
+
+/**
+ * Take a picture of one window, optionally with its controls numbered.
+ *
+ * Gated by its own capability, because this returns whatever is on the window
+ * rather than a list of control names, and no redaction is possible on pixels.
+ * The numbers drawn on the image are the same refs the reply carries, so the
+ * image can be acted on without a second lookup.
+ */
+export async function captureAoiHostDesktopWindow(params: {
+  hwnd: string;
+  mode?: 'som' | 'plain';
+  maxLongSide?: number;
+}): Promise<AoiHostDesktopCaptureView> {
+  const payload = await sendJson('/desktop-input', 'POST', {
+    op: 'capture',
+    hwnd: params.hwnd,
+    mode: params.mode ?? 'som',
+    ...(typeof params.maxLongSide === 'number' ? { maxLongSide: params.maxLongSide } : {}),
+  });
+  const capture = isRecord(payload.capture) ? payload.capture : {};
+  const elements = Array.isArray(capture.elements) ? capture.elements : [];
+  const base64 = asString(capture.pngBase64);
+  return {
+    snapshotId: asString(capture.snapshotId),
+    mode: asString(capture.mode) || 'plain',
+    width: typeof capture.width === 'number' ? capture.width : 0,
+    height: typeof capture.height === 'number' ? capture.height : 0,
+    scale: typeof capture.scale === 'number' ? capture.scale : 1,
+    totalElements: typeof capture.totalElements === 'number' ? capture.totalElements : 0,
+    elements: elements.filter(isRecord).map((record) => ({
+      ref: typeof record.ref === 'number' ? record.ref : 0,
+      role: asString(record.role),
+      name: asString(record.name),
+      automationId: asString(record.automationId),
+      enabled: record.enabled === true,
+      sensitive: record.sensitive !== false,
+    })),
+    dataUrl: base64 ? `data:image/png;base64,${base64}` : '',
+  };
+}

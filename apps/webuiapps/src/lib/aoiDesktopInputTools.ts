@@ -13,6 +13,7 @@
 import type { ToolDef } from './llmClient';
 import {
   actOnAoiHostDesktopElement,
+  captureAoiHostDesktopWindow,
   clickAoiHostDesktopPoint,
   listAoiHostDesktopApps,
   listAoiHostDesktopWindows,
@@ -45,6 +46,7 @@ export const DESKTOP_FOCUS_TOOL = 'desktop_focus';
 export const DESKTOP_SELECT_TOOL = 'desktop_select';
 export const DESKTOP_TOGGLE_TOOL = 'desktop_toggle';
 export const DESKTOP_CLICK_POINT_TOOL = 'desktop_click_point';
+export const DESKTOP_CAPTURE_TOOL = 'desktop_capture';
 
 const DESKTOP_INPUT_TOOLS: ReadonlySet<string> = new Set([
   DESKTOP_WINDOWS_TOOL,
@@ -60,6 +62,7 @@ const DESKTOP_INPUT_TOOLS: ReadonlySet<string> = new Set([
   DESKTOP_SELECT_TOOL,
   DESKTOP_TOGGLE_TOOL,
   DESKTOP_CLICK_POINT_TOOL,
+  DESKTOP_CAPTURE_TOOL,
 ]);
 
 export function isDesktopInputTool(toolName: string): boolean {
@@ -72,6 +75,9 @@ export function getDesktopInputToolPendingSummary(toolName: string): string {
   }
   if (toolName === DESKTOP_SNAPSHOT_TOOL) {
     return 'reading a window';
+  }
+  if (toolName === DESKTOP_CAPTURE_TOOL) {
+    return 'looking at a window';
   }
   if (toolName === DESKTOP_KEY_TOOL || toolName === DESKTOP_TYPE_TOOL) {
     return 'typing into a window';
@@ -402,6 +408,41 @@ export function getDesktopInputToolDefinitions(): ToolDef[] {
     {
       type: 'function',
       function: {
+        name: DESKTOP_CAPTURE_TOOL,
+        description:
+          'SEE a window: returns a picture of it with its controls outlined and NUMBERED, and the ' +
+          'numbers are the same refs you pass to desktop_act / desktop_click / desktop_select. ' +
+          'Use it when the layout matters (which of several similar buttons, what a chart or ' +
+          'document shows, why an action did not appear to work), or when desktop_snapshot ' +
+          'returned note="no_automation_tree" and a picture is the only way to see anything. ' +
+          'For simply finding a control by name, desktop_snapshot is cheaper and enough. ' +
+          'It works on windows that are behind others, so it does not disturb what the user is ' +
+          'looking at. Credential fields are outlined WITHOUT a number: you can see the field ' +
+          'exists, and it cannot be driven. This sends an image of that window to the model, so ' +
+          'do not call it on windows the user has not asked you to work with.',
+        parameters: {
+          type: 'object',
+          properties: {
+            hwnd: { type: 'string', description: 'Window handle from desktop_windows.' },
+            mode: {
+              type: 'string',
+              enum: ['som', 'plain'],
+              description:
+                '"som" (default) numbers the controls. "plain" is the picture alone -- use it ' +
+                'when the numbering would obscure what you need to read.',
+            },
+            max_long_side: {
+              type: 'number',
+              description: 'Cap the longest edge in pixels (200-4096). Defaults to 1200.',
+            },
+          },
+          required: ['hwnd'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
         name: DESKTOP_APPS_TOOL,
         description:
           'List the running desktop apps that have windows, grouped by program, with a window ' +
@@ -511,6 +552,36 @@ export async function executeDesktopInputTool(
   const hwnd = typeof params.hwnd === 'string' ? params.hwnd.trim() : '';
   if (!hwnd) {
     return { ok: false, error: 'hwnd is required', code: 'bad_request' };
+  }
+
+  if (toolName === DESKTOP_CAPTURE_TOOL) {
+    const capture = await captureAoiHostDesktopWindow({
+      hwnd,
+      ...(params.mode === 'plain' || params.mode === 'som' ? { mode: params.mode } : {}),
+      ...(typeof params.max_long_side === 'number' ? { maxLongSide: params.max_long_side } : {}),
+    });
+    // The image travels beside the tool result, not inside it: a base64 PNG in
+    // the transcript would be megabytes of text the model cannot look at.
+    // __image is stripped by the dispatcher and attached to a following message.
+    return {
+      ok: true,
+      __image: capture.dataUrl ? { dataUrl: capture.dataUrl, name: 'desktop-capture.png' } : null,
+      snapshot_id: capture.snapshotId,
+      mode: capture.mode,
+      size: `${capture.width}x${capture.height}`,
+      ...(capture.scale < 1 ? { scaled_to: capture.scale } : {}),
+      note:
+        capture.mode === 'som'
+          ? 'The numbers on the image are refs valid with this snapshot_id. Outlined but UNNUMBERED controls are credential fields and cannot be driven.'
+          : 'No controls could be numbered; this window does not describe its controls. Use desktop_click_point with coordinates measured from the top-left of the window.',
+      elements: capture.elements.map((element) => ({
+        ref: element.ref,
+        role: element.role,
+        name: element.name,
+        enabled: element.enabled,
+        ...(element.sensitive ? { drivable: false, reason: 'sensitive' } : {}),
+      })),
+    };
   }
 
   if (toolName === DESKTOP_SNAPSHOT_TOOL) {
@@ -674,4 +745,46 @@ export async function executeDesktopInputTool(
     ...(typeof params.value === 'string' ? { value: params.value } : {}),
   });
   return describeDesktopActVerdict(view);
+}
+
+export interface DesktopToolImage {
+  dataUrl: string;
+  name: string;
+}
+
+/**
+ * Split a capture result into the text the model reads and the image it looks at.
+ *
+ * They travel separately because a tool message is text: a base64 PNG inlined
+ * there would be megabytes of characters the model cannot actually see. The
+ * caller puts the text in the tool result and the image on a following message,
+ * which is the only role images attach to.
+ */
+export function splitDesktopToolImage(result: unknown): {
+  payload: unknown;
+  image: DesktopToolImage | null;
+} {
+  if (!result || typeof result !== 'object') {
+    return { payload: result, image: null };
+  }
+  const record = result as Record<string, unknown> & { __image?: unknown };
+  if (!('__image' in record)) {
+    return { payload: result, image: null };
+  }
+  const { __image: raw, ...payload } = record;
+  if (!raw || typeof raw !== 'object') {
+    return { payload, image: null };
+  }
+  const candidate = raw as Record<string, unknown>;
+  const dataUrl = typeof candidate.dataUrl === 'string' ? candidate.dataUrl : '';
+  if (!dataUrl.startsWith('data:image/')) {
+    return { payload, image: null };
+  }
+  return {
+    payload,
+    image: {
+      dataUrl,
+      name: typeof candidate.name === 'string' ? candidate.name : 'capture.png',
+    },
+  };
 }

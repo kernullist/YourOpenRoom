@@ -87,6 +87,11 @@ const CAPABILITIES: { key: string; label: string; hint: string }[] = [
     hint: 'Let Aoi read the controls in a window and drive them through Windows UI Automation. This toggle IS the approval: while ON, Aoi acts without asking each time. Credential fields are never touched, and an action that cannot be proven is reported as unproven rather than done.',
   },
   {
+    key: 'os_desktop_capture',
+    label: 'Desktop input: see the window',
+    hint: 'Lets Aoi take a picture of a window and send it to your configured model, with the controls numbered on it. Needed to work with windows that do not describe their controls, and to judge layout. A screenshot shows everything on that window and CANNOT be redacted, so this is separate from the toggle above. Nothing is written to disk.',
+  },
+  {
     key: 'os_desktop_input_foreground',
     label: 'Desktop input: synthetic mouse',
     hint: 'HIGH RISK. Allows the fallback that pulls a window to the front and moves your REAL mouse when a control cannot be driven directly. Nothing can verify where that click landed, so it is always reported as unproven. Leave OFF to keep Aoi on the path that can prove what it did.',
