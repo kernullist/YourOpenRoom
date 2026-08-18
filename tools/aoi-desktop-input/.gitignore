@@ -1,0 +1,6 @@
+# Build artifacts (produced by build.ps1)
+aoi_desktop_input.exe
+*.obj
+*.pdb
+*.ilk
+test/aoi_input_testwindow.exe

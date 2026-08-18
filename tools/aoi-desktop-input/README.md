@@ -1,0 +1,149 @@
+# Aoi Desktop-Input Helper
+
+Native (C++/Win32 + UI Automation) helper that lets Aoi **act on** the Windows
+desktop: enumerate windows, snapshot a window's interactable elements, and drive
+one of them.
+
+Aoi could already *see* the desktop (`aoi-desktop-capture` for activity,
+screen-vision for pixels) but had no way to touch it. This is the acting half.
+It is the desktop counterpart of the browser-drive executor and speaks the
+**same verdict vocabulary**, so both surfaces answer the one question that
+matters: *did the action actually happen?*
+
+Like the capture helper, it is deliberately a separate process (crash isolation
++ privilege separation), but where that one is a resident producer that pushes,
+this is a **one-shot command executor**: read one JSON command, write one JSON
+result, exit. There is no resident input capability sitting around waiting to be
+driven.
+
+## The verdict contract
+
+Every acting command answers with the same shape:
+
+```json
+{ "ok": true, "effect": "confirmed", "verified": true, "path": "uia_value", "detail": "..." }
+```
+
+| Field | Meaning |
+|---|---|
+| `ok` | **Transport**: the command ran without erroring. Says nothing about effect. |
+| `effect` | `confirmed` \| `unverifiable` \| `suspected_noop` — did it land? |
+| `verified` | `true` **only** when a value was read back off the live element. |
+| `path` | Which rung actually ran: `uia_invoke` / `uia_value` / `sendinput`. |
+| `code` | On refusal: why it refused (see below). |
+
+Transport success without semantic proof is not proof of effect. A helper that
+returned only `ok` would let Aoi say "I clicked it" whenever the call didn't
+throw, which is precisely the failure this contract exists to remove.
+
+## Delivery ladder
+
+1. **UIA pattern** (`InvokePattern` / `ValuePattern`). Does *not* move the cursor
+   or steal focus, and the API reports whether it worked — so this rung can
+   return `effect: confirmed`.
+2. **SendInput**, only with `--allow-foreground`. This is real mouse input: it
+   moves the operator's cursor and needs the window in front. Nothing here can
+   verify the outcome, so it reports `effect: unverifiable` and never more.
+
+A rung that cannot run says so with a code (`uia_unsupported`) instead of
+silently escalating to the more invasive one. Escalating to real input is a
+decision for the operator, not a fallback the helper takes on its own.
+
+Only `set_value` can reach `verified: true`, because only it has something to
+read back. An invoke is `confirmed` when UIA reports the pattern succeeded.
+
+## Refusal codes
+
+| Code | Meaning |
+|---|---|
+| `element_forbidden` | Password/credential field. Never invoked, never typed into. |
+| `element_disabled` | The control is disabled; acting on it would do nothing. |
+| `element_ref_stale` | The window changed since the snapshot — take a fresh one. |
+| `element_ref_unknown` | Ref out of range for that snapshot. |
+| `uia_unsupported` | No usable pattern; pass `--allow-foreground` for rung 2. |
+| `no_automation_tree` | (snapshot note) The window exposes nothing to UIA at all. |
+| `window_not_found` | The handle is not a live window. |
+
+A refusal always reports `effect: suspected_noop`, never a claimed effect.
+
+### Refs are addressing, never a trust shortcut
+
+A ref is valid for exactly **one** snapshot. The snapshot id is a content hash
+of the window's element identities, so a changed window mints a new id and every
+outstanding ref is **refused** rather than re-pointed at whatever now occupies
+that index. Acting re-resolves the ref against a fresh snapshot and compares
+ids; there is no path that acts on a remembered element.
+
+### `no_automation_tree` vs an empty list
+
+An empty element list is ambiguous, so the snapshot says which kind of empty it
+is. `no_interactable_elements` means the window described itself and has nothing
+to click; `no_automation_tree` means it refused to describe itself at all
+(XAML/UWP under `ApplicationFrameHost` commonly does this — observed on a live,
+non-minimized Settings window). The difference matters: the first invites the
+conclusion that the window is empty, the second says go look with vision
+instead.
+
+## Safety model (the daemon authorizes; this adds defense in depth)
+
+No consent or capability check lives in this binary. The daemon decides whether
+desktop input is allowed at all and only then spawns it — same posture as the
+capture helper, where running the binary by hand proves nothing about consent.
+
+On top of that, the helper enforces:
+
+- **Credential fields are never driven.** An element whose UIA control type is a
+  password box, or whose name/automation id reads like a credential (`password`,
+  `cvc`, `otp`, `pin`, …), is refused for both invoke and set_value. Windows
+  blocks `ValuePattern` writes into password fields too, so this is the first of
+  two layers, not the only one.
+- **Focus is never taken** unless `--allow-foreground` is passed explicitly.
+- **Refs fail closed** (above).
+- The process holds **no secrets** and reads no files.
+
+## Usage
+
+```powershell
+aoi_desktop_input.exe --command '{"op":"list_windows"}'
+aoi_desktop_input.exe --command '{"op":"snapshot","hwnd":"0x1234"}'
+aoi_desktop_input.exe --command '{"op":"invoke","hwnd":"0x1234","ref":7,"snapshotId":"dis-abc"}'
+aoi_desktop_input.exe --command '{"op":"set_value","hwnd":"0x1234","ref":7,"snapshotId":"dis-abc","value":"hi"}'
+```
+
+`--stdin` reads the command from stdin instead (avoids quoting pain and keeps
+values out of the process command line). `--self-test` proves the binary runs
+without touching COM or the desktop.
+
+Window titles and process names are returned **basename only** — the full image
+path is not the caller's business.
+
+## Build
+
+Requires MSVC (Visual Studio 2019/2022 or Build Tools, "Desktop development with
+C++"). `build.ps1` uses `cl.exe` if it is on PATH, otherwise it locates Visual
+Studio with `vswhere` and builds inside `vcvars64`.
+
+```powershell
+./build.ps1              # release
+./build.ps1 -DebugBuild  # /Od /Zi
+```
+
+## Tests
+
+```powershell
+./test/run-tests.ps1
+./test/run-tests.ps1 -IncludeForegroundTests   # also exercises the SendInput rung
+```
+
+The tests build their own fixture window (`test/aoi_input_testwindow.cpp`) with
+one control per branch of the contract — a button, a text field, a password
+field, and a disabled button — and drive it for real. They assert the parts that
+would otherwise rot silently: that a proven write really is in the control, that
+the password field is still empty after a refused write, that a click really
+reached the app, and that a ref from a changed window is refused.
+
+The fixture exists because the helper cannot be tested against the operator's
+real desktop: driving their live browser to prove a click landed is exactly the
+side effect this helper is built to keep under control. For the same reason the
+SendInput rung is opt-in — it takes over the real mouse — and the test restores
+the cursor position afterwards.
