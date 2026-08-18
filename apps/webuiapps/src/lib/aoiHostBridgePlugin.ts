@@ -32,6 +32,13 @@ import {
   type AoiHostBridgeKillSwitchState,
 } from './aoiHostBridgeKillSwitch';
 import { evaluateAoiHostBridgeGate } from './aoiHostBridgeGate';
+import {
+  AOI_DESKTOP_INPUT_CAPABILITY,
+  AOI_DESKTOP_INPUT_FOREGROUND_CAPABILITY,
+  parseAoiDesktopInputRequest,
+  runAoiDesktopInput,
+  type AoiDesktopInputSpawn,
+} from './aoiDesktopInput';
 import { listHostProcesses, type AoiHostProcessListing } from './aoiHostProcessInspect';
 import {
   AOI_HOST_BROWSER_READ_CAPABILITY,
@@ -214,6 +221,7 @@ export interface ResolveAoiHostBridgeRouteParams {
   readProcessImpl?: (pid: number) => AoiHostLiveProcess | null;
   killImpl?: (pid: number) => boolean;
   recycleImpl?: (path: string) => boolean;
+  desktopInputSpawnImpl?: AoiDesktopInputSpawn;
 }
 
 function summarizeKillSwitch(state: AoiHostBridgeKillSwitchState): {
@@ -2039,6 +2047,81 @@ export async function resolveAoiHostBridgeRoute(
     }
     const summary = loadAoiHostDesktopActivitySummary(params.openroomHome, params.now);
     return { status: 200, payload: { ok: true, summary } };
+  }
+
+  // --- POST /desktop-input (DI2): enumerate / snapshot / drive a real window.
+  //
+  // Authorization is the kill-switch toggle and nothing else: the operator asked
+  // to approve desktop input ONCE in settings rather than per action, so
+  // os_desktop_input being on IS the standing approval. There is no environment
+  // source here -- this is a mutate capability, and the gate's consent layer is a
+  // pass for those by construction.
+  //
+  // The SendInput rung has its OWN toggle. A request may ask for it, but only
+  // os_desktop_input_foreground grants it: that rung moves the operator's real
+  // mouse and cannot verify what it hit, so it is not something the main toggle
+  // should quietly include.
+  if (params.method === 'POST' && params.route === '/desktop-input') {
+    const killSwitch = loadAoiHostBridgeKillSwitchState(params.openroomHome);
+    const gate = evaluateAoiHostBridgeGate({
+      authenticated: true,
+      killSwitchState: killSwitch,
+      capabilityKey: AOI_DESKTOP_INPUT_CAPABILITY,
+      irreversible: false,
+    });
+    if (!gate.allowed) {
+      return {
+        status: 403,
+        payload: {
+          ok: false,
+          error: 'blocked',
+          denyReasons: gate.denyReasons,
+          detail: gate.detail,
+        },
+      };
+    }
+    const request = parseAoiDesktopInputRequest(params.body);
+    if (!request) {
+      return {
+        status: 400,
+        payload: {
+          ok: false,
+          error: 'op, hwnd, ref and snapshotId must form a valid command',
+          code: 'bad_request',
+        },
+      };
+    }
+    // Evaluated as its own capability so panic and the per-capability disable
+    // both apply; a denial here downgrades the rung, it does not fail the call.
+    const foregroundAllowed = isAoiHostBridgeCapabilityEnabled(
+      killSwitch,
+      AOI_DESKTOP_INPUT_FOREGROUND_CAPABILITY,
+    );
+    const result = runAoiDesktopInput({
+      request,
+      openroomHome: params.openroomHome,
+      foregroundAllowed,
+      ...(params.desktopInputSpawnImpl ? { spawnImpl: params.desktopInputSpawnImpl } : {}),
+    });
+    if (result.kind === 'error') {
+      return {
+        status: result.code === 'helper_not_installed' ? 501 : 422,
+        payload: { ok: false, error: result.code, code: result.code, detail: result.detail },
+      };
+    }
+    if (result.kind === 'windows') {
+      return { status: 200, payload: { ok: true, windows: result.windows } };
+    }
+    if (result.kind === 'snapshot') {
+      return { status: 200, payload: { ok: true, snapshot: result.snapshot } };
+    }
+    // An act ALWAYS answers 200 with its verdict, including a refusal. The
+    // verdict is the answer; an HTTP error would throw away the one field that
+    // says whether anything happened.
+    return {
+      status: 200,
+      payload: { ok: true, act: result.act, foregroundAllowed },
+    };
   }
 
   // --- POST /screen-vision (SV3.2 ingest): the capture helper posts one

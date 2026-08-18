@@ -1713,6 +1713,184 @@ describe('delete preview -> approve -> execute (injected recycle)', () => {
   });
 });
 
+describe('desktop-input', () => {
+  // A stand-in for the native helper. It records what it was asked and answers
+  // with whatever verdict the test wants, so the ROUTE's decisions are under
+  // test rather than UI Automation's.
+  function fakeHelper(reply: Record<string, unknown>) {
+    const seen: { args: string[]; command: Record<string, unknown> }[] = [];
+    const spawn = (_helper: string, args: string[], stdin: string) => {
+      seen.push({ args, command: JSON.parse(stdin) as Record<string, unknown> });
+      return { status: 0, stdout: JSON.stringify(reply), stderr: '' };
+    };
+    return { spawn, seen };
+  }
+
+  function callDesktopInput(
+    home: string,
+    sessionsDir: string,
+    token: string,
+    body: Record<string, unknown>,
+    spawnImpl: ReturnType<typeof fakeHelper>['spawn'],
+  ) {
+    return resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/desktop-input',
+      body,
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 5000,
+      desktopInputSpawnImpl: spawnImpl,
+    });
+  }
+
+  // The helper path is resolved by stat, so point the daemon at a file that
+  // really exists; the fake spawn means it is never executed.
+  const helperEnvKey = 'AOI_DESKTOP_INPUT_HELPER';
+
+  function withHelperPath(path: string, run: () => Promise<void>): Promise<void> {
+    const previous = process.env[helperEnvKey];
+    process.env[helperEnvKey] = path;
+    return run().finally(() => {
+      if (previous === undefined) {
+        delete process.env[helperEnvKey];
+      } else {
+        process.env[helperEnvKey] = previous;
+      }
+    });
+  }
+
+  it('is blocked until the operator turns the capability on', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    await withHelperPath(__filename, async () => {
+      const { spawn, seen } = fakeHelper({ ok: true, windows: [] });
+      const blocked = await callDesktopInput(
+        home,
+        sessionsDir,
+        token,
+        { op: 'list_windows' },
+        spawn,
+      );
+      expect(blocked.status).toBe(403);
+      // Nothing was spawned: the gate runs before the helper is ever reached.
+      expect(seen).toHaveLength(0);
+
+      saveAoiHostBridgeKillSwitchState(
+        home,
+        setAoiHostBridgeCapability(null, 'os_desktop_input', true, 4000),
+      );
+      const allowed = await callDesktopInput(
+        home,
+        sessionsDir,
+        token,
+        { op: 'list_windows' },
+        spawn,
+      );
+      expect(allowed.status).toBe(200);
+    });
+  });
+
+  it('withholds the SendInput rung until its own capability is on', async () => {
+    // The main toggle is the standing approval for acting. It must NOT quietly
+    // include the rung that takes over the operator's real mouse.
+    const { home, sessionsDir, token } = makeDaemonHome();
+    await withHelperPath(__filename, async () => {
+      saveAoiHostBridgeKillSwitchState(
+        home,
+        setAoiHostBridgeCapability(null, 'os_desktop_input', true, 4000),
+      );
+      const act = {
+        op: 'invoke',
+        hwnd: '0x1a2b',
+        ref: 2,
+        snapshotId: 'dis-0a1b2c3d',
+        allowForeground: true,
+      };
+
+      const first = fakeHelper({
+        ok: true,
+        effect: 'confirmed',
+        verified: false,
+        path: 'uia_invoke',
+      });
+      const withheld = await callDesktopInput(home, sessionsDir, token, act, first.spawn);
+      expect(withheld.status).toBe(200);
+      expect(first.seen[0].args).not.toContain('--allow-foreground');
+      expect((withheld.payload as { foregroundAllowed: boolean }).foregroundAllowed).toBe(false);
+
+      const state = loadAoiHostBridgeKillSwitchState(home);
+      saveAoiHostBridgeKillSwitchState(
+        home,
+        setAoiHostBridgeCapability(state, 'os_desktop_input_foreground', true, 4100),
+      );
+      const second = fakeHelper({
+        ok: true,
+        effect: 'unverifiable',
+        verified: false,
+        path: 'sendinput',
+      });
+      const granted = await callDesktopInput(home, sessionsDir, token, act, second.spawn);
+      expect(granted.status).toBe(200);
+      expect(second.seen[0].args).toContain('--allow-foreground');
+    });
+  });
+
+  it('answers a refusal with its verdict, not an HTTP error', async () => {
+    // The verdict is the answer. Collapsing a refusal into a 4xx would throw
+    // away the one field that says whether anything happened -- and "the call
+    // failed" reads very differently from "nothing was clicked".
+    const { home, sessionsDir, token } = makeDaemonHome();
+    await withHelperPath(__filename, async () => {
+      saveAoiHostBridgeKillSwitchState(
+        home,
+        setAoiHostBridgeCapability(null, 'os_desktop_input', true, 4000),
+      );
+      const { spawn } = fakeHelper({
+        ok: false,
+        effect: 'suspected_noop',
+        verified: false,
+        code: 'element_forbidden',
+        detail: 'credential fields are never driven by Aoi',
+      });
+      const result = await callDesktopInput(
+        home,
+        sessionsDir,
+        token,
+        { op: 'set_value', hwnd: '0x1a2b', ref: 2, snapshotId: 'dis-0a1b2c3d', value: 'x' },
+        spawn,
+      );
+      expect(result.status).toBe(200);
+      const act = (
+        result.payload as { act: { ok: boolean; verdict: { effect: string; code?: string } } }
+      ).act;
+      expect(act.ok).toBe(false);
+      expect(act.verdict.effect).toBe('suspected_noop');
+      expect(act.verdict.code).toBe('element_forbidden');
+    });
+  });
+
+  it('says the helper is not installed rather than pretending it acted', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    await withHelperPath(join(home, 'no-such-helper.exe'), async () => {
+      saveAoiHostBridgeKillSwitchState(
+        home,
+        setAoiHostBridgeCapability(null, 'os_desktop_input', true, 4000),
+      );
+      const { spawn } = fakeHelper({ ok: true, windows: [] });
+      const result = await callDesktopInput(
+        home,
+        sessionsDir,
+        token,
+        { op: 'list_windows' },
+        spawn,
+      );
+      expect(result.status).toBe(501);
+      expect((result.payload as { code: string }).code).toBe('helper_not_installed');
+    });
+  });
+});
+
 describe('desktop-activity ingest + summary', () => {
   function enableDesktopConsent(sessionsDir: string, home: string): void {
     const registry = getDefaultAoiEnvironmentSourceRegistry('aoi/default', 1000);

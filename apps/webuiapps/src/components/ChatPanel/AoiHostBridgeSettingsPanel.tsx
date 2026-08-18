@@ -81,6 +81,16 @@ const CAPABILITIES: { key: string; label: string; hint: string }[] = [
     label: 'Browser drive: bounded tasks',
     hint: 'HIGHEST RISK. While ON, Aoi may run a bounded multi-act task (<=10 acts / <=40 steps, fail-stop) you asked for. Each act still needs a standing grant or per-action approval; panic and this toggle disable it. Leave OFF unless you want autonomous multi-step browser tasks.',
   },
+  {
+    key: 'os_desktop_input',
+    label: 'Desktop input (drive real windows)',
+    hint: 'Let Aoi read the controls in a window and drive them through Windows UI Automation. This toggle IS the approval: while ON, Aoi acts without asking each time. Credential fields are never touched, and an action that cannot be proven is reported as unproven rather than done.',
+  },
+  {
+    key: 'os_desktop_input_foreground',
+    label: 'Desktop input: synthetic mouse',
+    hint: 'HIGH RISK. Allows the fallback that pulls a window to the front and moves your REAL mouse when a control cannot be driven directly. Nothing can verify where that click landed, so it is always reported as unproven. Leave OFF to keep Aoi on the path that can prove what it did.',
+  },
   { key: 'os_process_spawn', label: 'Start process', hint: 'Launch an allowlisted executable' },
   { key: 'os_file_read', label: 'Read files', hint: 'Read within registered read-roots' },
   { key: 'os_file_write', label: 'Write files', hint: 'Write within registered write-roots' },

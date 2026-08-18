@@ -885,3 +885,130 @@ export async function runAoiHostKillExecute(
     ...(typeof payload.detail === 'string' ? { detail: payload.detail } : {}),
   };
 }
+
+// --- Desktop input (DI3) -----------------------------------------------------
+//
+// Aoi acting on a real window. The daemon answers an act with a VERDICT rather
+// than an HTTP error, including refusals, so these views keep `ok` (transport)
+// and `effect` (what was proven) apart exactly as the browser-drive views do.
+
+export interface AoiHostDesktopWindowView {
+  hwnd: string;
+  title: string;
+  process: string;
+}
+
+export interface AoiHostDesktopElementView {
+  ref: number;
+  role: string;
+  name: string;
+  automationId: string;
+  enabled: boolean;
+  // True unless the daemon said otherwise: an element Aoi should not drive.
+  sensitive: boolean;
+}
+
+export interface AoiHostDesktopSnapshotView {
+  snapshotId: string;
+  // 'ok' | 'no_interactable_elements' | 'no_automation_tree'. The last one means
+  // the window told UI Automation nothing -- which is NOT the same as having
+  // nothing to click, and the caller must not read it that way.
+  note: string;
+  elements: AoiHostDesktopElementView[];
+}
+
+export interface AoiHostDesktopActView {
+  // Transport succeeded. Says nothing about whether the window changed.
+  ok: boolean;
+  effect: AoiBrowserDriveEffect;
+  verified: boolean;
+  // Which rung ran (uia_invoke / uia_value / sendinput). Absent on a refusal,
+  // because a refusal means no rung ran at all.
+  path?: string;
+  code?: string;
+  detail: string;
+  // Whether the synthetic-mouse rung was available for this call.
+  foregroundAllowed: boolean;
+}
+
+// List drivable top-level windows. Throws (403) when os_desktop_input is off.
+export async function listAoiHostDesktopWindows(): Promise<AoiHostDesktopWindowView[]> {
+  const payload = await sendJson('/desktop-input', 'POST', { op: 'list_windows' });
+  const windows = Array.isArray(payload.windows) ? payload.windows : [];
+  return windows.filter(isRecord).map((record) => ({
+    hwnd: asString(record.hwnd),
+    title: asString(record.title),
+    process: asString(record.process),
+  }));
+}
+
+// Snapshot one window's interactable elements. The returned snapshotId is what
+// makes a ref usable, and it is valid for THIS snapshot only.
+export async function snapshotAoiHostDesktopWindow(
+  hwnd: string,
+): Promise<AoiHostDesktopSnapshotView> {
+  const payload = await sendJson('/desktop-input', 'POST', { op: 'snapshot', hwnd });
+  const snapshot = isRecord(payload.snapshot) ? payload.snapshot : {};
+  const elements = Array.isArray(snapshot.elements) ? snapshot.elements : [];
+  return {
+    snapshotId: asString(snapshot.snapshotId),
+    note: asString(snapshot.note) || 'ok',
+    elements: elements.filter(isRecord).map((record) => ({
+      ref: typeof record.ref === 'number' ? record.ref : 0,
+      role: asString(record.role),
+      name: asString(record.name),
+      automationId: asString(record.automationId),
+      enabled: record.enabled === true,
+      // Fail-closed on a malformed entry: assume it must not be touched.
+      sensitive: record.sensitive !== false,
+    })),
+  };
+}
+
+/**
+ * Drive one element.
+ *
+ * `snapshotId` must be the one that produced `ref`; the helper re-resolves the
+ * ref against a fresh snapshot and refuses a mismatch rather than acting on
+ * whatever now sits at that index.
+ *
+ * A refusal comes back as a normal result with effect='suspected_noop' and a
+ * code -- not a thrown error. Callers must read `effect`, never `ok`, to decide
+ * whether anything happened.
+ */
+export async function actOnAoiHostDesktopElement(params: {
+  hwnd: string;
+  ref: number;
+  snapshotId: string;
+  value?: string;
+  allowForeground?: boolean;
+}): Promise<AoiHostDesktopActView> {
+  const payload = await sendJson('/desktop-input', 'POST', {
+    op: typeof params.value === 'string' ? 'set_value' : 'invoke',
+    hwnd: params.hwnd,
+    ref: params.ref,
+    snapshotId: params.snapshotId,
+    ...(typeof params.value === 'string' ? { value: params.value } : {}),
+    ...(params.allowForeground === true ? { allowForeground: true } : {}),
+  });
+  const act = isRecord(payload.act) ? payload.act : {};
+  const verdict = isRecord(act.verdict) ? act.verdict : {};
+  const effect = asString(verdict.effect);
+  const view: AoiHostDesktopActView = {
+    ok: act.ok === true,
+    // An unrecognized effect is not proof of anything; fall back to unverifiable
+    // rather than letting an unknown string reach a caller that tests for
+    // 'confirmed'.
+    effect: isAoiBrowserDriveEffect(effect) ? effect : 'unverifiable',
+    verified: verdict.verified === true,
+    detail: asString(act.detail),
+    foregroundAllowed: payload.foregroundAllowed === true,
+  };
+  if (typeof act.path === 'string' && act.path.trim()) {
+    view.path = act.path.trim();
+  }
+  if (typeof verdict.code === 'string' && verdict.code.trim()) {
+    view.code = verdict.code.trim();
+  }
+  return view;
+}
