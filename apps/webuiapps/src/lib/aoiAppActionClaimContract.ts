@@ -159,6 +159,18 @@ const NEGATED_CLAIM_PATTERN =
   /(?:[못안]\s*(?:틀|열|띄|재생|실행|켜|플레이)|(?:틀|열|띄|재생|실행|켜)[^\s]{0,3}지\s*(?:않|못)|\b(?:not|never|couldn'?t|can'?t|cannot|did\s*n[o']?t|won'?t|unable|failed)\b[^.!?]{0,24}\b(?:play|playing|played|start|started|open|opened|launch|launched)\b)/iu;
 
 /**
+ * True when the reply explicitly says the action did NOT happen.
+ *
+ * Distinct from "no claim detected": this is a positive signal that Aoi said so
+ * out loud, which is the outcome the contract wants. The offline sweep needs it
+ * to tell an honest refusal apart from a claim worded in a way the detector
+ * does not recognize -- both dispatch nothing and neither reads as a claim.
+ */
+export function detectAoiExplicitNonAction(assistantContent: string): boolean {
+  return NEGATED_CLAIM_PATTERN.test(assistantContent?.trim() ?? '');
+}
+
+/**
  * True when the reply asserts the app action happened (or is happening now),
  * rather than offering, asking, or declining.
  */

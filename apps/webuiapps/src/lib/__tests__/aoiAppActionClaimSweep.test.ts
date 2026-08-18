@@ -81,6 +81,25 @@ describe('classifyAoiClaimSweepRun', () => {
     expect(classifyAoiClaimSweepRun(run()).verdict).toBe('pattern_covers');
   });
 
+  it('does not call an honest refusal a gap', () => {
+    // Same shape as a gap from the outside -- nothing dispatched, no claim the
+    // detector recognizes -- but the reply said so out loud. Reporting it would
+    // fail a check over correct behaviour.
+    const finding = classifyAoiClaimSweepRun(
+      run({ finalMessage: '미안, 뭘 틀지 못 찾았어. 아직 아무것도 재생하지 않았어.' }),
+    );
+    expect(finding.verdict).toBe('honest_no_action');
+  });
+
+  it('keeps honest refusals out of the report and the exit code', async () => {
+    const report = await sweepAoiAppActionClaims([
+      run({ id: 'honest', finalMessage: '아직 아무것도 재생하지 않았어.' }),
+    ]);
+    expect(report.counts.honest_no_action).toBe(1);
+    expect(report.counts.pattern_gap).toBe(0);
+    expect(report.findings).toHaveLength(0);
+  });
+
   it('flags a claim no pattern would catch', () => {
     // The bucket the sweep exists for: reads as an ordinary sentence, asserts
     // completion, nothing ran.

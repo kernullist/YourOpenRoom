@@ -9,9 +9,10 @@
 //
 // This reads the run ledger after the fact and finds them. Ledger runs carry the
 // user's message, the final reply, and every tool event, so a turn can be sorted
-// into: it dispatched, the pattern already covers it, the app tools were not
-// even available, or nobody would have caught it. That last bucket is the one
-// worth reading -- each entry is a phrasing to add to the detector.
+// into: it dispatched, the app tools were not even available, the pattern
+// already covers it, the reply honestly said nothing happened, or nobody would
+// have caught it. That last bucket is the one worth reading -- each entry is a
+// phrasing to add to the detector.
 //
 // Judging is injectable and optional. The buckets alone are usually enough to
 // eyeball, and a judge (any model, run offline where latency and cost do not
@@ -19,6 +20,7 @@
 
 import {
   detectAoiAppActionClaim,
+  detectAoiExplicitNonAction,
   resolveAoiAppActionClaimContract,
   type AoiAppActionClaimKind,
 } from './aoiAppActionClaimContract';
@@ -53,7 +55,11 @@ export type AoiClaimSweepVerdict =
   // Nothing ran, and the prose detector recognizes the claim, so the runtime
   // guard would reject it today.
   | 'pattern_covers'
-  // Nothing ran and nothing would have caught it. The interesting bucket.
+  // Nothing ran and the reply says so out loud. The outcome the contract wants,
+  // and NOT a gap: it looks identical to one from the outside (no dispatch, no
+  // recognized claim) and would otherwise pad the report with correct turns.
+  | 'honest_no_action'
+  // Nothing ran, the reply neither claimed nor disclaimed it. Needs a read.
   | 'pattern_gap';
 
 export interface AoiClaimSweepFinding {
@@ -158,6 +164,9 @@ export function classifyAoiClaimSweepRun(run: AoiClaimSweepLedgerRun): AoiClaimS
   if (detectAoiAppActionClaim(assistantMessage, contract.kind)) {
     return { ...base, verdict: 'pattern_covers', kind: contract.kind };
   }
+  if (detectAoiExplicitNonAction(assistantMessage)) {
+    return { ...base, verdict: 'honest_no_action', kind: contract.kind };
+  }
   return { ...base, verdict: 'pattern_gap', kind: contract.kind };
 }
 
@@ -167,6 +176,7 @@ function emptyCounts(): Record<AoiClaimSweepVerdict, number> {
     dispatched: 0,
     app_tools_unavailable: 0,
     pattern_covers: 0,
+    honest_no_action: 0,
     pattern_gap: 0,
   };
 }
@@ -217,7 +227,12 @@ export async function sweepAoiAppActionClaims(
     scannedRuns: runs.length,
     counts,
     findings: findings
-      .filter((finding) => finding.verdict !== 'not_a_request' && finding.verdict !== 'dispatched')
+      .filter(
+        (finding) =>
+          finding.verdict !== 'not_a_request' &&
+          finding.verdict !== 'dispatched' &&
+          finding.verdict !== 'honest_no_action',
+      )
       .sort((a, b) => b.createdAt - a.createdAt),
   };
 }
@@ -233,6 +248,7 @@ export function formatAoiClaimSweepReport(report: AoiClaimSweepReport): string {
     `  dispatched            ${report.counts.dispatched}  (an app action really ran)`,
     `  app_tools_unavailable ${report.counts.app_tools_unavailable}  (app tools were not exposed for the turn)`,
     `  pattern_covers        ${report.counts.pattern_covers}  (the runtime guard would reject this today)`,
+    `  honest_no_action      ${report.counts.honest_no_action}  (nothing ran and Aoi said so)`,
     `  pattern_gap           ${report.counts.pattern_gap}  (nothing would have caught this)`,
     `  not_a_request         ${report.counts.not_a_request}`,
   ];
