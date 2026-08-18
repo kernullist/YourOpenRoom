@@ -389,6 +389,9 @@ function recordAuditStep(
       actionSummary: summarizeAuditAction(action),
       category: result.category,
       ok: result.ok,
+      // What was actually proven, not just that the call returned.
+      ...(result.verdict ? { effect: result.verdict.effect } : {}),
+      ...(result.verdict?.verified ? { verified: true } : {}),
       ...(result.stopReason ? { stopReason: result.stopReason } : {}),
       ...(result.approvalViaStanding ? { viaStanding: true } : {}),
       url: result.finalUrl ?? '',

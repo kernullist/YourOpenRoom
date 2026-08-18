@@ -140,3 +140,92 @@ describe('persistence round-trip', () => {
     expect(loadAoiBrowserDriveAuditEntries(home, 1)).toEqual([]);
   });
 });
+
+// An ok:true entry with effect:'unverifiable' is an act that ran with nothing
+// proving it landed. If the ledger keeps only `ok`, an after-the-fact audit
+// cannot tell a real change from a call that merely returned -- which is the
+// whole question an audit exists to answer.
+describe('audit records what was proven, not just that the call returned', () => {
+  it('keeps the effect and the read-back verification', () => {
+    const { entry } = appendAoiBrowserDriveAuditEntry(
+      null,
+      {
+        runId: 'r1',
+        stepIndex: 0,
+        actionKind: 'type',
+        actionSummary: 'type into #q',
+        category: 'act',
+        ok: true,
+        effect: 'confirmed',
+        verified: true,
+        url: 'https://example.com/',
+      },
+      1,
+      'a',
+    );
+    expect(entry.effect).toBe('confirmed');
+    expect(entry.verified).toBe(true);
+  });
+
+  it('separates a delivered-but-unproven act from a proven one', () => {
+    const { entry } = appendAoiBrowserDriveAuditEntry(
+      null,
+      {
+        runId: 'r1',
+        stepIndex: 0,
+        actionKind: 'click',
+        actionSummary: 'click #go',
+        category: 'act',
+        ok: true,
+        effect: 'unverifiable',
+        url: 'https://example.com/',
+      },
+      1,
+      'b',
+    );
+    expect(entry.ok).toBe(true);
+    expect(entry.effect).toBe('unverifiable');
+    expect(entry.verified).toBeUndefined();
+  });
+
+  it('drops an unrecognized effect rather than storing it as evidence', () => {
+    const { entry } = appendAoiBrowserDriveAuditEntry(
+      null,
+      {
+        runId: 'r1',
+        stepIndex: 0,
+        actionKind: 'click',
+        actionSummary: 'click #go',
+        category: 'act',
+        ok: true,
+        effect: 'totally-fine' as never,
+        verified: 'yes' as never,
+        url: 'https://example.com/',
+      },
+      1,
+      'c',
+    );
+    expect(entry.effect).toBeUndefined();
+    expect(entry.verified).toBeUndefined();
+  });
+
+  it('survives a round trip through the entry normalizer', () => {
+    const { entry } = appendAoiBrowserDriveAuditEntry(
+      null,
+      {
+        runId: 'r1',
+        stepIndex: 0,
+        actionKind: 'type',
+        actionSummary: 'type into #q',
+        category: 'act',
+        ok: true,
+        effect: 'suspected_noop',
+        url: 'https://example.com/',
+      },
+      1,
+      'd',
+    );
+    const reloaded = normalizeAoiBrowserDriveAuditEntry(JSON.parse(JSON.stringify(entry)));
+    expect(reloaded?.effect).toBe('suspected_noop');
+  });
+});

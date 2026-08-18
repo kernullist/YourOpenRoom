@@ -15,6 +15,8 @@ import * as fs from 'fs';
 import { dirname, resolve } from 'path';
 import { randomUUID } from 'crypto';
 
+import { isAoiBrowserDriveEffect, type AoiBrowserDriveEffect } from './aoiBrowserDriveVerdict';
+
 const HOST_BRIDGE_DIR = 'host-bridge';
 const AUDIT_FILE = 'browser-drive-audit.json';
 const MAX_ENTRIES = 500;
@@ -35,7 +37,13 @@ export interface AoiBrowserDriveAuditEntry {
   // Short human-facing summary, e.g. "click #buy on example.com".
   actionSummary: string;
   category: AoiBrowserDriveAuditCategory;
+  // Transport success only. An entry with ok:true and effect:'unverifiable' is
+  // an act that ran with nothing proving it landed -- the ledger has to keep
+  // those apart or an after-the-fact audit cannot tell a real change from a
+  // call that merely returned.
   ok: boolean;
+  effect?: AoiBrowserDriveEffect;
+  verified?: boolean;
   stopReason?: string;
   // True when an ACT was authorized by a standing grant (P3.1) rather than a fresh
   // per-action approval -- marks an autonomous act in the ledger.
@@ -102,6 +110,8 @@ export function normalizeAoiBrowserDriveAuditEntry(raw: unknown): AoiBrowserDriv
     actionSummary: clampText(value.actionSummary),
     category: normalizeCategory(value.category),
     ok: value.ok === true,
+    ...(isAoiBrowserDriveEffect(value.effect) ? { effect: value.effect } : {}),
+    ...(value.verified === true ? { verified: true } : {}),
     ...(typeof value.stopReason === 'string'
       ? { stopReason: clampText(value.stopReason, 60) }
       : {}),
@@ -168,6 +178,8 @@ export function appendAoiBrowserDriveAuditEntry(
     actionSummary: clampText(input.actionSummary),
     category: normalizeCategory(input.category),
     ok: input.ok === true,
+    ...(isAoiBrowserDriveEffect(input.effect) ? { effect: input.effect } : {}),
+    ...(input.verified === true ? { verified: true } : {}),
     ...(input.stopReason ? { stopReason: clampText(input.stopReason, 60) } : {}),
     ...(input.viaStanding === true ? { viaStanding: true } : {}),
     url: clampText(input.url, 300),

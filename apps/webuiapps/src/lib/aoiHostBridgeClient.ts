@@ -589,6 +589,8 @@ export interface AoiBrowserDriveAuditEntryView {
   actionSummary: string;
   category: string;
   ok: boolean;
+  effect?: AoiBrowserDriveEffect;
+  verified?: boolean;
   stopReason?: string;
   viaStanding: boolean;
   url: string;
@@ -607,6 +609,8 @@ export async function fetchAoiBrowserDriveAudit(): Promise<AoiBrowserDriveAuditE
     actionSummary: asString(record.actionSummary),
     category: asString(record.category) || 'read',
     ok: record.ok === true,
+    ...(isAoiBrowserDriveEffect(record.effect) ? { effect: record.effect } : {}),
+    ...(record.verified === true ? { verified: true } : {}),
     ...(typeof record.stopReason === 'string' ? { stopReason: record.stopReason } : {}),
     viaStanding: record.viaStanding === true,
     url: asString(record.url),
