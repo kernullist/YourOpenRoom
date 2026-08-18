@@ -128,6 +128,14 @@ function byNormalizedTitleLength(
   };
 }
 
+export interface AutoplaySelection {
+  result: YoutubeSearchResult;
+  // True when the query identified this specific video. False means nothing
+  // matched and the top hit was taken instead -- the caller must not then claim
+  // it is playing what the query asked for.
+  matchedQuery: boolean;
+}
+
 /**
  * Choose which search hit an autoplay request should start.
  *
@@ -138,18 +146,19 @@ function byNormalizedTitleLength(
 export function pickAutoplayResult(
   results: readonly YoutubeSearchResult[],
   query: string,
-): YoutubeSearchResult | null {
+): AutoplaySelection | null {
   if (results.length === 0) {
     return null;
   }
+  const fallback = { result: results[0], matchedQuery: false };
   const target = normalizeForTitleMatch(query);
   if (!target) {
-    return results[0];
+    return fallback;
   }
 
   const exactTitle = results.find((result) => normalizeForTitleMatch(result.title) === target);
   if (exactTitle) {
-    return exactTitle;
+    return { result: exactTitle, matchedQuery: true };
   }
 
   // The shape a taste-derived query takes when the channel is not already part
@@ -158,12 +167,12 @@ export function pickAutoplayResult(
     (result) => normalizeForTitleMatch(`${result.title} - ${result.channel}`) === target,
   );
   if (exactTitleAndChannel) {
-    return exactTitleAndChannel;
+    return { result: exactTitleAndChannel, matchedQuery: true };
   }
 
   // Below this a query is too generic for substring matching to mean anything.
   if (target.length < MIN_TITLE_LIKE_QUERY_CHARS) {
-    return results[0];
+    return fallback;
   }
 
   // The query spells this title out and adds something (usually the channel).
@@ -175,7 +184,7 @@ export function pickAutoplayResult(
     })
     .sort(byNormalizedTitleLength('longest'))[0];
   if (spelledOutByQuery) {
-    return spelledOutByQuery;
+    return { result: spelledOutByQuery, matchedQuery: true };
   }
 
   // The title spells the query out and adds a suffix ("... [4K]", "(Official)").
@@ -184,10 +193,10 @@ export function pickAutoplayResult(
     .filter((result) => normalizeForTitleMatch(result.title).includes(target))
     .sort(byNormalizedTitleLength('shortest'))[0];
   if (titleContainsQuery) {
-    return titleContainsQuery;
+    return { result: titleContainsQuery, matchedQuery: true };
   }
 
-  return results[0];
+  return fallback;
 }
 
 export function extractYoutubeVideoId(url: string): string | null {

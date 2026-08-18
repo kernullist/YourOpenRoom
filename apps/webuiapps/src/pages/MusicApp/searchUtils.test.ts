@@ -136,19 +136,20 @@ describe('pickAutoplayResult', () => {
     // July upload first (older, more views), and autoplay took the top hit.
     const results = [result('july', JULY), result('august', AUGUST)];
     const picked = pickAutoplayResult(results, `${AUGUST} - 달플리 𝑷𝒍𝒂𝒚𝒍𝒊𝒔𝒕`);
-    expect(picked?.id).toBe('august');
+    expect(picked?.result.id).toBe('august');
+    expect(picked?.matchedQuery).toBe(true);
   });
 
   it('matches an exact title anywhere in the list', () => {
     const results = [result('a', JULY), result('b', AUGUST)];
-    expect(pickAutoplayResult(results, AUGUST)?.id).toBe('b');
+    expect(pickAutoplayResult(results, AUGUST)?.result.id).toBe('b');
   });
 
   it('folds styled unicode so a stored query still matches the returned title', () => {
     // Titles in this genre use mathematical bold italic letters; NFKC maps them
     // onto plain ones on both sides of the comparison.
     const results = [result('a', 'Chill Mix'), result('b', 'Late Night 𝑷𝒍𝒂𝒚𝒍𝒊𝒔𝒕 vol 3')];
-    expect(pickAutoplayResult(results, 'late night playlist VOL 3')?.id).toBe('b');
+    expect(pickAutoplayResult(results, 'late night playlist VOL 3')?.result.id).toBe('b');
   });
 
   it('matches a title that carries an extra suffix', () => {
@@ -156,7 +157,7 @@ describe('pickAutoplayResult', () => {
       result('a', 'Some Other Long Mix Title'),
       result('b', 'Deep Focus Coding Session [4K]'),
     ];
-    expect(pickAutoplayResult(results, 'Deep Focus Coding Session')?.id).toBe('b');
+    expect(pickAutoplayResult(results, 'Deep Focus Coding Session')?.result.id).toBe('b');
   });
 
   it('prefers the least padded title when several carry the query', () => {
@@ -164,7 +165,7 @@ describe('pickAutoplayResult', () => {
       result('padded', 'Deep Focus Coding Session [4K 60fps Extended Edition]'),
       result('tight', 'Deep Focus Coding Session [4K]'),
     ];
-    expect(pickAutoplayResult(results, 'Deep Focus Coding Session')?.id).toBe('tight');
+    expect(pickAutoplayResult(results, 'Deep Focus Coding Session')?.result.id).toBe('tight');
   });
 
   it('prefers the most specific title the query accounts for', () => {
@@ -172,31 +173,45 @@ describe('pickAutoplayResult', () => {
       result('short', 'Summer Drive'),
       result('long', 'Summer Drive Night Mix 2026'),
     ];
-    expect(pickAutoplayResult(results, 'Summer Drive Night Mix 2026 - 달플리')?.id).toBe('long');
+    expect(pickAutoplayResult(results, 'Summer Drive Night Mix 2026 - 달플리')?.result.id).toBe(
+      'long',
+    );
   });
 
-  it('keeps the top hit for a generic mood query', () => {
+  it('keeps the top hit for a generic mood query, and says it did not match', () => {
     // Pool queries describe a vibe, not a video; relevance order is the right
-    // answer there and must not be second-guessed.
+    // answer there and must not be second-guessed. The flag is what lets the
+    // caller word the ack around the video it really started.
     const results = [result('a', 'lofi hip hop radio - beats to relax/study to'), result('b', 'x')];
-    expect(pickAutoplayResult(results, 'deep focus music for coding')?.id).toBe('a');
+    const picked = pickAutoplayResult(results, 'deep focus music for coding');
+    expect(picked?.result.id).toBe('a');
+    expect(picked?.matchedQuery).toBe(false);
+  });
+
+  it('flags a named video that is absent from the results as unmatched', () => {
+    // The video was taken down or never surfaced: something still plays, but
+    // the caller must not claim it is the one that was named.
+    const results = [result('other', 'A COMPLETELY UNRELATED LONG MIX TITLE')];
+    const picked = pickAutoplayResult(results, `${AUGUST} - 달플리 𝑷𝒍𝒂𝒚𝒍𝒊𝒔𝒕`);
+    expect(picked?.result.id).toBe('other');
+    expect(picked?.matchedQuery).toBe(false);
   });
 
   it('does not let a short query substring-match its way to a worse pick', () => {
     // "jazz" appearing inside a title says nothing about intent, so relevance
     // order stands.
     const results = [result('a', 'Jazz Cafe Long Session Mix'), result('b', 'Smooth Jazz Hours')];
-    expect(pickAutoplayResult(results, 'jazz')?.id).toBe('a');
+    expect(pickAutoplayResult(results, 'jazz')?.result.id).toBe('a');
   });
 
   it('still honours an exact title match on a short query', () => {
     // Exact equality is a precise signal at any length, unlike substrings.
     const results = [result('a', 'Jazz Cafe Long Session Mix'), result('b', 'Jazz')];
-    expect(pickAutoplayResult(results, 'jazz')?.id).toBe('b');
+    expect(pickAutoplayResult(results, 'jazz')?.result.id).toBe('b');
   });
 
   it('returns null only for an empty result set', () => {
     expect(pickAutoplayResult([], AUGUST)).toBeNull();
-    expect(pickAutoplayResult([result('a', JULY)], '')?.id).toBe('a');
+    expect(pickAutoplayResult([result('a', JULY)], '')?.result.id).toBe('a');
   });
 });

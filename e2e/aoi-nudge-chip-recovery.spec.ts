@@ -238,6 +238,35 @@ test.describe('Aoi nudge chips after the pending offer is lost', () => {
     expect(llmCallCount).toBe(0);
   });
 
+  test('names what it really started when the recommended video is not in the results', async ({
+    page,
+  }) => {
+    // The named video is gone (taken down, never surfaced). Something still
+    // plays -- but the ack must say WHICH something, instead of announcing the
+    // query as if that were what is on.
+    const substitute = 'E2E UNRELATED FALLBACK MIX';
+    await page.route('**/api/youtube-search**', (route) =>
+      route.fulfill({
+        json: {
+          results: [{ ...FIXTURE_RESULTS[0], id: 'vid-sub', title: substitute }],
+        },
+      }),
+    );
+    await stubSessionData(page, MUSIC_CARD);
+    await page.goto('/');
+    await tapChip(page, '재생');
+
+    await expect(page.getByTestId(`app-window-${YOUTUBE_APP_ID}`)).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId('yt-player-title')).toHaveText(substitute, { timeout: 30_000 });
+
+    const messages = page.getByTestId('chat-messages');
+    await expect(messages).toContainText(substitute);
+    // The exact-match wording claims the named pick is playing; it must not be
+    // used here.
+    await expect(messages).not.toContainText('재생 준비해뒀어');
+    expect(llmCallCount).toBe(0);
+  });
+
   test('the music dismiss chip answers as a dismissal instead of reaching the model', async ({
     page,
   }) => {

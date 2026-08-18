@@ -52,6 +52,38 @@ export function isFailedAgentActionResult(result: string | null | undefined): bo
   return normalized === '' || normalized.startsWith('error:') || normalized.startsWith('timeout:');
 }
 
+export interface StartedVideo {
+  title: string;
+  // False when the query did not name this video and the top hit was taken
+  // instead. The caller must then say what is really playing.
+  matchedQuery: boolean;
+}
+
+/**
+ * Read the video the YouTube app reports it started, from an OPEN_SEARCH result.
+ *
+ * The app answers "success {json}", following the same convention
+ * dispatchAgentAction uses when it appends extra info to a result. Anything
+ * unparseable yields null, and the caller falls back to naming the query -- the
+ * pre-existing wording, never a stronger claim than we can support.
+ */
+export function parseStartedVideo(result: string | null | undefined): StartedVideo | null {
+  const raw = (result ?? '').trim();
+  const start = raw.indexOf('{');
+  if (start === -1) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw.slice(start)) as Partial<StartedVideo>;
+    if (typeof parsed?.title !== 'string' || !parsed.title.trim()) {
+      return null;
+    }
+    return { title: parsed.title.trim(), matchedQuery: parsed.matchedQuery === true };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Detect in-app YouTube "play my saved playlist" intents.
  *

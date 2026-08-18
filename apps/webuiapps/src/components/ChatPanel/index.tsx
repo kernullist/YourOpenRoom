@@ -47,6 +47,8 @@ import {
   isDirectPlaylistPlaybackIntent,
   isFailedAgentActionResult,
   parseDirectMusicIntent,
+  parseStartedVideo,
+  type StartedVideo,
 } from '@/lib/chatDirectActions';
 import {
   IDLE_MUSIC_MOOD_LINES,
@@ -1628,6 +1630,38 @@ function buildIdleMusicUnresolvedAck(lang: NudgeLang): string {
     default:
       return "Sorry, I can't find the pick I recommended, so nothing is playing yet. Give me a search query and I'll pull it up on YouTube.";
   }
+}
+
+// Ack for playback that started something OTHER than what the query named --
+// the named video was not in the results at all, so the top hit was taken. Say
+// both: what was searched for, and what is actually playing. Announcing the
+// query alone is how "8월 노래모음 틀었어" ended up over a July video.
+function buildMusicSubstituteAck(query: string, playedTitle: string, lang: NudgeLang): string {
+  switch (lang) {
+    case 'ko':
+      return `"${query}"로 찾아서 "${playedTitle}" 틀었어. 원하던 게 아니면 말해줘.`;
+    case 'ja':
+      return `「${query}」で探して「${playedTitle}」をかけたよ。違ったら言ってね。`;
+    case 'zh':
+      return `我用 "${query}" 搜到了 "${playedTitle}"，正在播放。不对的话告诉我。`;
+    default:
+      return `I searched "${query}" and started "${playedTitle}". Tell me if that is not the one.`;
+  }
+}
+
+// One place that decides how playback is announced: the exact video when the
+// query named it, an explicit substitution otherwise.
+function buildMusicPlaybackAck(params: {
+  query: string;
+  started: StartedVideo | null;
+  lang: NudgeLang;
+  exactAck: (query: string, lang: NudgeLang) => string;
+}): string {
+  const { query, started, lang, exactAck } = params;
+  if (started && !started.matchedQuery) {
+    return buildMusicSubstituteAck(query, started.title, lang);
+  }
+  return exactAck(query, lang);
 }
 
 function buildIdleMusicDismissAck(lang: NudgeLang): string {
@@ -6822,7 +6856,12 @@ const ChatPanel: React.FC<{
               });
               return;
             }
-            const ack = buildIdleMusicPlayAck(pendingIdleMusicOffer.query, lang);
+            const ack = buildMusicPlaybackAck({
+              query: pendingIdleMusicOffer.query,
+              started: parseStartedVideo(result),
+              lang,
+              exactAck: buildIdleMusicPlayAck,
+            });
             emitAssistantMessage({ id: String(Date.now()), role: 'assistant', content: ack });
             recordAoiMemoryTurn({
               userMessage: messageText,
@@ -7050,11 +7089,24 @@ const ChatPanel: React.FC<{
             });
             return;
           }
-          const ack = buildDirectMusicAck(
-            directMusicIntent.query,
-            text,
-            normalizeResponseLanguageMode(conversationPreferencesRef.current?.responseLanguageMode),
-          );
+          const ack = buildMusicPlaybackAck({
+            query: directMusicIntent.query,
+            started: parseStartedVideo(result),
+            lang: detectPreferredLanguage(
+              text,
+              normalizeResponseLanguageMode(
+                conversationPreferencesRef.current?.responseLanguageMode,
+              ),
+            ) as NudgeLang,
+            exactAck: (query) =>
+              buildDirectMusicAck(
+                query,
+                text,
+                normalizeResponseLanguageMode(
+                  conversationPreferencesRef.current?.responseLanguageMode,
+                ),
+              ),
+          });
           emitAssistantMessage({
             id: String(Date.now()),
             role: 'assistant',

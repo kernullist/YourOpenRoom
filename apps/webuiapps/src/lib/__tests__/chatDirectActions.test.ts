@@ -4,6 +4,7 @@ import {
   isDirectPlaylistPlaybackIntent,
   isFailedAgentActionResult,
   parseDirectMusicIntent,
+  parseStartedVideo,
 } from '../chatDirectActions';
 
 describe('isDirectPlaylistPlaybackIntent', () => {
@@ -200,6 +201,41 @@ describe('isFailedAgentActionResult', () => {
   it('accepts the shapes a real success comes back in', () => {
     for (const result of ['success', 'done', 'success {"id":"abc"}', 'restored']) {
       expect(isFailedAgentActionResult(result), result).toBe(false);
+    }
+  });
+});
+
+describe('parseStartedVideo', () => {
+  it('reads the video the app reports it started', () => {
+    expect(
+      parseStartedVideo('success {"title":"2026 8월 여돌 노래모음","matchedQuery":true}'),
+    ).toEqual({ title: '2026 8월 여돌 노래모음', matchedQuery: true });
+  });
+
+  it('carries through that the started video is NOT the one that was named', () => {
+    // The whole point: the caller has to be able to tell these apart, or it
+    // announces the query over a video the query never matched.
+    expect(parseStartedVideo('success {"title":"7월 노래모음","matchedQuery":false}')).toEqual({
+      title: '7월 노래모음',
+      matchedQuery: false,
+    });
+  });
+
+  it('treats a missing flag as unmatched rather than assuming success', () => {
+    expect(parseStartedVideo('success {"title":"Something"}')?.matchedQuery).toBe(false);
+  });
+
+  it('returns null for results that carry no video, so the caller keeps its old wording', () => {
+    for (const result of [
+      'success',
+      'done',
+      '',
+      null,
+      undefined,
+      'success {broken',
+      'success {}',
+    ]) {
+      expect(parseStartedVideo(result), JSON.stringify(result)).toBeNull();
     }
   });
 });

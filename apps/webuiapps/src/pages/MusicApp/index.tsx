@@ -228,6 +228,14 @@ function normalizeState(raw: unknown): AppState {
   };
 }
 
+// What autoplay actually started. matchedQuery false means the query did not
+// name this video and it was taken as the top hit, which the agent has to say
+// out loud rather than claiming it is playing what was asked for.
+interface AutoplayOutcome {
+  title: string;
+  matchedQuery: boolean;
+}
+
 const YouTubeApp: React.FC = () => {
   const { t } = useTranslation('musicApp');
   const [searchQuery, setSearchQuery] = useState('');
@@ -465,7 +473,7 @@ const YouTubeApp: React.FC = () => {
       rawQuery?: string,
       triggerBy: ActionTriggerBy = ActionTriggerBy.User,
       options?: { autoplay?: boolean },
-    ): Promise<{ ok: boolean; error?: string }> => {
+    ): Promise<{ ok: boolean; error?: string; played?: AutoplayOutcome }> => {
       const query = (rawQuery ?? searchQuery).trim();
       if (!query) return { ok: false, error: 'missing query' };
 
@@ -510,21 +518,23 @@ const YouTubeApp: React.FC = () => {
           return { ok: false, error: 'search superseded by a newer one' };
         }
         setSearchResults(results);
+        let played: AutoplayOutcome | undefined;
         if (options?.autoplay) {
           // Start the video the query actually names, not whatever YouTube
           // ranked first -- relevance order regularly puts a sibling upload on
           // top of the exact one that was asked for.
-          const autoplayTarget = pickAutoplayResult(results, query);
-          if (autoplayTarget) {
-            setSelectedResult(autoplayTarget);
-            setCurrentPlayingVideoId(autoplayTarget.id);
-            setAutoplayVideoId(autoplayTarget.id);
+          const selection = pickAutoplayResult(results, query);
+          if (selection) {
+            setSelectedResult(selection.result);
+            setCurrentPlayingVideoId(selection.result.id);
+            setAutoplayVideoId(selection.result.id);
+            played = { title: selection.result.title, matchedQuery: selection.matchedQuery };
           }
         }
         if (results.length === 0) {
           return { ok: false, error: `no results for "${query}"` };
         }
-        return { ok: true };
+        return { ok: true, played };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (searchRequestSeqRef.current !== requestSeq) {
@@ -1024,6 +1034,12 @@ const YouTubeApp: React.FC = () => {
             // announce playback that never started.
             if (!outcome.ok) {
               return `error: ${outcome.error ?? 'search failed'}`;
+            }
+            // Hand back what actually started, so the caller can announce the
+            // video it is really playing rather than the query it asked for.
+            // Those differ whenever the named video is not in the results.
+            if (outcome.played) {
+              return `success ${JSON.stringify(outcome.played)}`;
             }
             return 'success';
           }
