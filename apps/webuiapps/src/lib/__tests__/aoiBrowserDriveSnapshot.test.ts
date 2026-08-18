@@ -16,7 +16,7 @@ function snap(html: string, url = URL) {
 describe('buildAoiBrowserDriveSnapshot', () => {
   it('indexes interactables in document order with their accessible names', () => {
     const snapshot = snap(`
-      <a href="/home">Home</a>
+      <a id="home" href="/home">Home</a>
       <button id="save">Save changes</button>
       <input name="q" placeholder="Search" />
       <select name="country"><option>KR</option></select>
@@ -34,14 +34,27 @@ describe('buildAoiBrowserDriveSnapshot', () => {
       <button id="save">A</button>
       <button data-testid="cancel">B</button>
       <input name="email" />
-      <button>C</button>
     `);
     expect(snapshot.elements.map((element) => element.selector)).toEqual([
       '#save',
       '[data-testid="cancel"]',
       'input[name="email"]',
-      'button:nth-of-type(3)',
     ]);
+  });
+
+  it('does not address an element it cannot address correctly', () => {
+    // The obvious fallback, tag:nth-of-type(n) counted over this scan, is WRONG:
+    // CSS counts nth-of-type among siblings inside one parent while the scan is
+    // document-wide, so on a page whose controls are not siblings it would point
+    // at a different element. A ref that clicks the wrong control is worse than
+    // no ref, so these are dropped and counted.
+    const snapshot = snap(`
+      <div><button id="ok">A</button></div>
+      <div><button>B</button><button>C</button></div>
+    `);
+    expect(snapshot.elements.map((element) => element.selector)).toEqual(['#ok']);
+    expect(snapshot.unaddressable).toBe(2);
+    expect(formatAoiBrowserDriveSnapshot(snapshot)).toContain('2 more not addressable by ref');
   });
 
   it('cannot be broken out of by a crafted attribute', () => {
@@ -88,16 +101,33 @@ describe('buildAoiBrowserDriveSnapshot', () => {
   });
 
   it('marks disabled controls', () => {
-    const snapshot = snap('<button disabled>Nope</button><button>Yes</button>');
+    const snapshot = snap('<button id="a" disabled>Nope</button><button id="b">Yes</button>');
     expect(snapshot.elements[0].disabled).toBe(true);
     expect(snapshot.elements[1].disabled).toBeUndefined();
   });
 
+  it('does not read a look-alike attribute as disabled', () => {
+    // A bare word-boundary match also hit data-disabled, aria-disabled="false"
+    // and class="not-disabled", so ordinary controls were refused as disabled.
+    const snapshot = snap(`
+      <button id="a" data-disabled="false">A</button>
+      <button id="b" aria-disabled="false">B</button>
+      <button id="c" class="not-disabled">C</button>
+      <button id="d" disabled>D</button>
+    `);
+    expect(snapshot.elements.map((element) => element.disabled === true)).toEqual([
+      false,
+      false,
+      false,
+      true,
+    ]);
+  });
+
   it('strips markup and bounds page-controlled names', () => {
     // Every name lands in the model's context and the page writes it.
-    const snapshot = snap(`<button><span>Hello</span> <b>world</b></button>`);
+    const snapshot = snap(`<button id="a"><span>Hello</span> <b>world</b></button>`);
     expect(snapshot.elements[0].name).toBe('Hello world');
-    const long = snap(`<button>${'x'.repeat(400)}</button>`);
+    const long = snap(`<button id="a">${'x'.repeat(400)}</button>`);
     expect(long.elements[0].name.length).toBeLessThanOrEqual(83);
     expect(long.elements[0].name.endsWith('...')).toBe(true);
   });
@@ -131,7 +161,7 @@ describe('buildAoiBrowserDriveSnapshot', () => {
   });
 
   it('bounds how many elements a hostile page can push into context', () => {
-    const snapshot = snap('<button>x</button>'.repeat(500));
+    const snapshot = snap('<button id="x">x</button>'.repeat(500));
     expect(snapshot.elements.length).toBeLessThanOrEqual(120);
   });
 });

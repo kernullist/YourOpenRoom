@@ -37,6 +37,8 @@ interface FakePageOptions {
   // Live-DOM values the executor reads to re-check the forbidden hard-block.
   domTextContent?: string;
   domAttributes?: Record<string, string>;
+  // What the field's VALUE PROPERTY reads back as after a write.
+  inputValue?: string;
 }
 
 function fakePage(options: FakePageOptions = {}) {
@@ -85,6 +87,15 @@ function fakePage(options: FakePageOptions = {}) {
     getAttribute: vi.fn(
       async (_selector: string, name: string) => options.domAttributes?.[name] ?? null,
     ),
+    // The DOM property, which is what a real page reports after fill(). Kept
+    // separate from domAttributes on purpose: conflating the two is what let a
+    // read-back bug pass its tests.
+    inputValue: vi.fn(async () => {
+      if (options.inputValue === undefined) {
+        throw new Error('cannot read value');
+      }
+      return options.inputValue;
+    }),
   };
   return { page: page as unknown as AoiBrowserDriveActablePage, raw: page, calls };
 }
@@ -596,7 +607,7 @@ describe('executeAoiBrowserDriveStep - semantic verdict', () => {
   it('confirms a type only when the field reads the value back', async () => {
     const result = await runAct(
       { kind: 'type', selector: '#q', text: 'hello' },
-      { domAttributes: { value: 'hello' } },
+      { inputValue: 'hello' },
     );
     expect(result.ok).toBe(true);
     expect(result.verdict).toEqual({ effect: 'confirmed', verified: true });
@@ -606,7 +617,7 @@ describe('executeAoiBrowserDriveStep - semantic verdict', () => {
     // The transport succeeded and the old code would have called this done.
     const result = await runAct(
       { kind: 'type', selector: '#q', text: 'hello' },
-      { domAttributes: { value: 'something else' } },
+      { inputValue: 'something else' },
     );
     expect(result.ok).toBe(true);
     expect(result.verdict?.effect).toBe('suspected_noop');

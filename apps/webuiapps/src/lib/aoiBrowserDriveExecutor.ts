@@ -84,6 +84,12 @@ export interface AoiBrowserDriveActablePage extends AoiBrowserDriveNavigablePage
     name: string,
     options?: { timeout?: number },
   ): Promise<string | null>;
+  // Current VALUE of an input, i.e. the DOM property. Distinct from the `value`
+  // ATTRIBUTE, which holds the initial markup value and does not change when a
+  // field is filled -- reading that instead reports an unchanged initial value
+  // and a correct type looks like it did nothing. Optional so older injected
+  // pages still satisfy the interface; without it a write is simply unverifiable.
+  inputValue?(selector: string, options?: { timeout?: number }): Promise<string>;
 }
 
 // Per-ACT approval. Returns whether THIS exact action (by content-addressed
@@ -709,8 +715,16 @@ async function readBackValue(
   selector: string,
   timeout: number,
 ): Promise<string | null> {
+  // Property, never the attribute. `getAttribute('value')` returns the markup's
+  // initial value, which fill() does not change: comparing against it reports a
+  // perfectly good type as a suspected no-op, and in a multi-act task that halts
+  // the run. With no inputValue available the honest answer is "unverifiable",
+  // not a comparison against the wrong thing.
+  if (typeof page.inputValue !== 'function') {
+    return null;
+  }
   try {
-    return await page.getAttribute(selector, 'value', { timeout });
+    return await page.inputValue(selector, { timeout });
   } catch {
     return null;
   }

@@ -54,6 +54,10 @@ export interface AoiBrowserDriveSnapshot {
   url: string;
   takenAt: number;
   elements: AoiBrowserDriveElement[];
+  // Interactables the page exposes that carry no id/name/testid and so cannot be
+  // addressed by ref. Surfaced so the model knows to author a selector for them
+  // rather than assume the page has nothing else.
+  unaddressable?: number;
 }
 
 const MAX_ELEMENTS = 120;
@@ -89,8 +93,11 @@ function readAttribute(tag: string, name: string): string {
   return (match?.[2] ?? match?.[3] ?? '').trim();
 }
 
+// A standalone boolean attribute. A bare  also matched data-disabled,
+// aria-disabled="false" and even class="not-disabled", so an ordinary control
+// was reported disabled and then refused.
 function hasBareAttribute(tag: string, name: string): boolean {
-  return new RegExp(`\\b${name}\\b`, 'i').test(tag);
+  return new RegExp(`(?:^|\\s)${name}(?=[\\s=>/]|$)`, 'i').test(tag);
 }
 
 // CSS-escape the subset that actually shows up in ids/names, so a crafted
@@ -144,9 +151,18 @@ function isSensitive(tag: string, name: string): boolean {
   return SENSITIVE_NAME_PATTERN.test(haystack);
 }
 
-// Prefer an identifier the page itself provides; fall back to a positional
-// selector only when nothing stable exists.
-function selectorFor(tagName: string, tag: string, positionalIndex: number): string {
+/**
+ * A selector that addresses exactly this element, or null when none exists.
+ *
+ * Null is deliberate. The obvious fallback -- `tag:nth-of-type(n)` counted over
+ * this scan -- is WRONG: CSS counts nth-of-type among siblings inside ONE
+ * parent, while the scan walks the whole document, so on any page whose
+ * controls are not all siblings it addresses a different element or nothing at
+ * all. A ref that clicks the wrong control is worse than no ref, so an element
+ * with no page-provided identifier is simply not addressable and the model
+ * authors a selector for it instead.
+ */
+function selectorFor(tagName: string, tag: string): string | null {
   const id = readAttribute(tag, 'id');
   if (id) {
     return `#${cssEscape(id)}`;
@@ -159,7 +175,7 @@ function selectorFor(tagName: string, tag: string, positionalIndex: number): str
   if (name) {
     return `${tagName.toLowerCase()}[name="${cssEscape(name)}"]`;
   }
-  return `${tagName.toLowerCase()}:nth-of-type(${positionalIndex})`;
+  return null;
 }
 
 // Cheap, stable content hash so two snapshots of the same page compare equal
@@ -195,7 +211,7 @@ export function buildAoiBrowserDriveSnapshot(params: {
     .replace(/<!--[\s\S]*?-->/g, ' ');
 
   const elements: AoiBrowserDriveElement[] = [];
-  const perTagCount = new Map<string, number>();
+  let unaddressable = 0;
   let match: RegExpExecArray | null;
   INTERACTABLE_PATTERN.lastIndex = 0;
   while ((match = INTERACTABLE_PATTERN.exec(cleaned)) !== null) {
@@ -208,8 +224,13 @@ export function buildAoiBrowserDriveSnapshot(params: {
     }
     const tag = match[2] ?? match[5] ?? '';
     const inner = match[3] ?? '';
-    const seen = (perTagCount.get(tagName) ?? 0) + 1;
-    perTagCount.set(tagName, seen);
+    const selector = selectorFor(tagName, tag);
+    if (!selector) {
+      // On the page but not reliably addressable by ref; counted so the listing
+      // can say so instead of pretending the page is smaller than it is.
+      unaddressable += 1;
+      continue;
+    }
 
     const name =
       clampName(inner) ||
@@ -221,7 +242,7 @@ export function buildAoiBrowserDriveSnapshot(params: {
       ref: elements.length + 1,
       role: roleOf(tagName, tag),
       name,
-      selector: selectorFor(tagName, tag, seen),
+      selector,
     };
     if (hasBareAttribute(tag, 'disabled')) {
       element.disabled = true;
@@ -237,6 +258,7 @@ export function buildAoiBrowserDriveSnapshot(params: {
     url: params.url,
     takenAt: params.now,
     elements,
+    ...(unaddressable > 0 ? { unaddressable } : {}),
   };
 }
 
@@ -341,7 +363,8 @@ export function formatAoiBrowserDriveSnapshot(snapshot: AoiBrowserDriveSnapshot)
     }`;
   });
   return [
-    `snapshot ${snapshot.id} (${snapshot.elements.length} elements)`,
+    `snapshot ${snapshot.id} (${snapshot.elements.length} elements` +
+      `${snapshot.unaddressable ? `, ${snapshot.unaddressable} more not addressable by ref` : ''})`,
     'Address elements by ref, and pass this snapshot id with the action.',
     'Refs are valid ONLY for this snapshot: any act invalidates them, so take a fresh one after acting.',
     ...lines,
