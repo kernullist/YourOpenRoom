@@ -225,3 +225,105 @@ describe('startAoiBrowserDriveSession', () => {
     expect(browser.closedBrowser).toBe(true);
   });
 });
+
+// Playwright gives a Page click/fill/hover/dragAndDrop/setInputFiles directly,
+// but dialogs arrive as an EVENT and tabs live on the context. Those two were
+// declared on the executor's page interface and gated and tested against a fake
+// -- while the real session handed over a plain Page that had neither, so every
+// dialog and tab step refused at runtime. These pin that the session actually
+// supplies them.
+describe('the session supplies the capabilities Playwright does not', () => {
+  function playwrightishPage(url: string) {
+    let dialogHandler: ((dialog: unknown) => void) | null = null;
+    const page = {
+      closed: false,
+      url: () => url,
+      on: (_event: string, handler: (dialog: unknown) => void) => {
+        dialogHandler = handler;
+      },
+      title: async () => `title ${url}`,
+      bringToFront: async () => {},
+      click: vi.fn(async () => `clicked ${url}`),
+      close: vi.fn(async () => {
+        page.closed = true;
+      }),
+      fire: (dialog: unknown) => dialogHandler?.(dialog),
+    };
+    return page;
+  }
+
+  it('exposes dialog and tab methods, and routes delivery to the selected tab', async () => {
+    const first = playwrightishPage('https://example.com/a');
+    const second = playwrightishPage('https://example.com/b');
+    const browser = {
+      closedBrowser: false,
+      contexts: () => [{ newPage: async () => first, pages: () => [first, second] }],
+      isConnected: () => true,
+      close: vi.fn(async () => {}),
+    } as unknown as AoiBrowserDriveBrowser;
+
+    const { deps } = happyDeps({ connect: async () => browser });
+    // The session REPLACES members on the page it returns in order to forward
+    // them, so the original spy has to be captured first or the assertion below
+    // would be checking the forwarder against itself.
+    const firstClick = first.click;
+    const session = await startAoiBrowserDriveSession({ engine: 'chrome' }, deps);
+    const driven = session.page as unknown as Record<string, unknown>;
+
+    expect(typeof driven.answerDialog).toBe('function');
+    expect(typeof driven.listTabs).toBe('function');
+    expect(typeof driven.selectTab).toBe('function');
+
+    const tabs = await (driven.listTabs as () => Promise<{ index: number; current: boolean }[]>)();
+    expect(tabs.map((tab) => tab.index)).toEqual([0, 1]);
+    expect(tabs.find((tab) => tab.current)?.index).toBe(0);
+
+    // The switch has to REDIRECT delivery: every later step goes through this
+    // same object, so recording a choice without moving the target would leave
+    // the caller acting on a tab nobody chose.
+    await (driven.selectTab as (index: number) => Promise<void>)(1);
+    await (driven.click as (selector: string) => Promise<void>)('#go');
+    expect(second.click).toHaveBeenCalledWith('#go');
+    expect(firstClick).not.toHaveBeenCalled();
+    expect((driven.url as () => string)()).toBe('https://example.com/b');
+
+    await session.close();
+  });
+
+  it('answers a dialog raised by the page', async () => {
+    const first = playwrightishPage('https://example.com/a');
+    const browser = {
+      contexts: () => [{ newPage: async () => first, pages: () => [first] }],
+      isConnected: () => true,
+      close: vi.fn(async () => {}),
+    } as unknown as AoiBrowserDriveBrowser;
+    const { deps } = happyDeps({ connect: async () => browser });
+    const session = await startAoiBrowserDriveSession({ engine: 'chrome' }, deps);
+    const driven = session.page as unknown as Record<string, unknown>;
+
+    let dismissed = 0;
+    first.fire({
+      message: () => 'Delete this draft?',
+      type: () => 'confirm',
+      accept: async () => {},
+      dismiss: async () => {
+        dismissed += 1;
+      },
+    });
+    const message = await (driven.answerDialog as (d: string) => Promise<string>)('dismiss');
+    expect(message).toBe('Delete this draft?');
+    expect(dismissed).toBe(1);
+    await session.close();
+  });
+
+  it('degrades honestly when the page provides neither', async () => {
+    // A session factory that satisfies the DECLARED contract (url + close) must
+    // not crash here; the executor then refuses those steps by name.
+    const { deps } = happyDeps();
+    const session = await startAoiBrowserDriveSession({ engine: 'chrome' }, deps);
+    const driven = session.page as unknown as Record<string, unknown>;
+    expect(driven.answerDialog).toBeUndefined();
+    expect(driven.listTabs).toBeUndefined();
+    await session.close();
+  });
+});

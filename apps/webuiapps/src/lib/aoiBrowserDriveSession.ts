@@ -45,6 +45,13 @@ export type AoiBrowserDriveStartDenyReason =
 // Minimal structural surface of the Playwright objects we use -- avoids a static
 // import of playwright-core (kept lazy + injectable) and keeps the client bundle
 // free of it.
+import {
+  attachAoiBrowserDriveDialogs,
+  attachAoiBrowserDriveTabs,
+  type AoiBrowserDriveRawContext,
+  type AoiBrowserDriveRawPage,
+} from './aoiBrowserDrivePageAdapter';
+
 export interface AoiBrowserDrivePage {
   url(): string;
   close(options?: { runBeforeUnload?: boolean }): Promise<void>;
@@ -289,12 +296,91 @@ export async function startAoiBrowserDriveSession(
     );
   }
 
+  // Playwright's Page covers click/fill/hover/dragAndDrop/setInputFiles
+  // directly, but dialogs arrive as an EVENT and tabs live on the context, so
+  // neither is reachable through the page alone. Attach both and expose them as
+  // ordinary methods, which is what the executor's capability checks look for.
+  //
+  // Tab selection has to REDIRECT the page, not merely record a choice: every
+  // later step goes through this same object, so a switch that did not redirect
+  // would leave the caller acting on a tab nobody chose. Delivery is forwarded
+  // to whichever page the tab handle says is current.
+  // Detect, do not assume. The page contract this module declares is url() +
+  // close(); everything else is a Playwright extra. A session factory that
+  // satisfies the declared contract must not crash here, so each capability is
+  // attached only if the underlying object really provides what it needs -- and
+  // when it does not, the executor reports "this session cannot ..." , which is
+  // the honest fail-closed answer rather than a TypeError mid-run.
+  const rawPage = page as unknown as AoiBrowserDriveRawPage;
+  const rawContext = browser.contexts()[0] as unknown as AoiBrowserDriveRawContext;
+  const dialogs = typeof rawPage?.on === 'function' ? attachAoiBrowserDriveDialogs(rawPage) : null;
+  const tabs =
+    typeof rawContext?.pages === 'function' ? attachAoiBrowserDriveTabs(rawContext, rawPage) : null;
+
+  const target = () => (tabs ? tabs.currentPage() : rawPage) as unknown as Record<string, unknown>;
+  const forward =
+    (method: string) =>
+    (...args: unknown[]): unknown => {
+      const current = target();
+      const fn = current[method];
+      if (typeof fn !== 'function') {
+        throw new Error(`the current tab cannot ${method}`);
+      }
+      return (fn as (...inner: unknown[]) => unknown).apply(current, args);
+    };
+
+  // Only the members the executor actually calls are forwarded; anything else
+  // keeps pointing at the page this session opened.
+  const FORWARDED = [
+    'click',
+    'fill',
+    'selectOption',
+    'press',
+    'hover',
+    'dragAndDrop',
+    'setInputFiles',
+    'goto',
+    'goBack',
+    'content',
+    'title',
+    'screenshot',
+    'textContent',
+    'getAttribute',
+    'inputValue',
+  ];
+  const drivable = page as unknown as Record<string, unknown>;
+  // Forwarding only matters when tabs can actually change which page is current.
+  // Without that, rewriting these members would be pure indirection over the
+  // same object -- and one more place for a mistake to hide.
+  if (tabs) {
+    for (const method of FORWARDED) {
+      if (typeof drivable[method] === 'function') {
+        drivable[method] = forward(method);
+      }
+    }
+    drivable.url = () => {
+      const current = target();
+      const fn = current.url;
+      return typeof fn === 'function' ? (fn as () => string).call(current) : '';
+    };
+    drivable.listTabs = tabs.listTabs;
+    drivable.selectTab = tabs.selectTab;
+  }
+  if (dialogs) {
+    drivable.answerDialog = dialogs.answerDialog;
+  }
+
   let closed = false;
   const close = async (): Promise<void> => {
     if (closed) {
       return;
     }
     closed = true;
+    // A queued dialog this session took responsibility for would otherwise keep
+    // the operator's tab blocked after Aoi has gone.
+    if (dialogs) {
+      await dialogs.releasePendingDialogs().catch(() => {});
+    }
     // Close ONLY Aoi's page; the shared browser stays up (the user is using it).
     // We deliberately never call browser.close(): over connectOverCDP that would
     // clear the user's existing contexts / disconnect their real logged-in
