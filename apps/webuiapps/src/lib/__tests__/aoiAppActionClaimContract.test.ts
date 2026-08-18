@@ -113,6 +113,37 @@ describe('detectAoiAppActionClaim', () => {
     }
   });
 
+  it('does not read a negated verb as a claim', () => {
+    // The claim patterns match verb stems, so every one of these CONTAINS one:
+    // "못 틀어줄게" carries "틀어줄게", "I have not started it" carries
+    // "started". Rejecting them would fail the exact honest answer the contract
+    // is trying to produce.
+    const refusals = [
+      '지금은 못 틀어줄게.',
+      '아직 안 틀었어.',
+      '틀지 않았어.',
+      '그건 못 열어줄게.',
+      '미안, 아직 안 열었어.',
+      '아직 못 열었어.',
+      '아직 아무것도 재생하지 않았어.',
+      'I have not started it.',
+      "I couldn't play it.",
+      'I was unable to open it.',
+    ];
+    for (const content of refusals) {
+      expect(detectAoiAppActionClaim(content, 'playback'), content).toBe(false);
+      expect(detectAoiAppActionClaim(content, 'app_open'), content).toBe(false);
+    }
+  });
+
+  it('still catches the real claims after the negation guard', () => {
+    // The guard must not be so broad that an actual claim slips past it.
+    expect(detectAoiAppActionClaim('틀어줄게. 재생 준비해뒀어.', 'playback')).toBe(true);
+    expect(detectAoiAppActionClaim('틀었어. 볼륨은 네가 정해.', 'playback')).toBe(true);
+    expect(detectAoiAppActionClaim('YouTube를 열어둘게.', 'app_open')).toBe(true);
+    expect(detectAoiAppActionClaim('Now playing that mix.', 'playback')).toBe(true);
+  });
+
   it('does not treat an offer or a refusal as a claim', () => {
     // The contract polices false claims, not unfinished work: Aoi is always free
     // to offer, ask, or say it could not.

@@ -147,6 +147,17 @@ const APP_OPEN_CLAIM_PATTERN =
 const OFFER_PATTERN =
   /(줄까\?|할까\?|들을래\?|볼래\?|어때\?|ましょうか|でいい\?|好吗\?|\bwant me to\b|\bshall i\b|\bshould i\b)/iu;
 
+// Neither is a refusal. The claim patterns match verb stems, so a negated verb
+// contains one: "지금은 못 틀어줄게" carries "틀어줄게", and "I have not started
+// it" carries "started". Rejecting those would fail the honest answer the
+// contract is trying to produce, so negation is checked first.
+//
+// Korean negation is anchored to the verb rather than searched for loosely --
+// "안" and "못" are common syllables ("안녕", "못지않게"), and only the ones
+// sitting directly in front of a playback/open verb mean what we need here.
+const NEGATED_CLAIM_PATTERN =
+  /(?:[못안]\s*(?:틀|열|띄|재생|실행|켜|플레이)|(?:틀|열|띄|재생|실행|켜)[^\s]{0,3}지\s*(?:않|못)|\b(?:not|never|couldn'?t|can'?t|cannot|did\s*n[o']?t|won'?t|unable|failed)\b[^.!?]{0,24}\b(?:play|playing|played|start|started|open|opened|launch|launched)\b)/iu;
+
 /**
  * True when the reply asserts the app action happened (or is happening now),
  * rather than offering, asking, or declining.
@@ -159,7 +170,7 @@ export function detectAoiAppActionClaim(
   if (!content) {
     return false;
   }
-  if (OFFER_PATTERN.test(content)) {
+  if (OFFER_PATTERN.test(content) || NEGATED_CLAIM_PATTERN.test(content)) {
     return false;
   }
   return kind === 'playback'

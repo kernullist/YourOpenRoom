@@ -324,6 +324,18 @@ describe('runAoiClaimSweepCli', () => {
     expect(d.log).toHaveBeenCalledWith(expect.stringContaining('aoi-claim-sweep'));
   });
 
+  it('does not advertise --judge as if this binary could judge', () => {
+    // The shipped entry supplies no judge, so listing it as an option would
+    // promise something every invocation then refuses to do.
+    const d = deps({ argv: ['--help'] });
+    void runAoiClaimSweepCli(d);
+    const usage = (d.log as unknown as { mock: { calls: string[][] } }).mock.calls
+      .map((call) => call[0])
+      .join('\n');
+    expect(usage).not.toMatch(/^\s*--judge\s/m);
+    expect(usage).toContain('This binary ships none');
+  });
+
   it('resolves the ledger from flag, inline form, or env', () => {
     expect(resolveAoiClaimSweepLedgerPath(['--ledger', '/a.json'], {})).toBe('/a.json');
     expect(resolveAoiClaimSweepLedgerPath(['--ledger=/b.json'], {})).toBe('/b.json');
