@@ -443,6 +443,93 @@ export interface AoiHostBrowserDriveActPreviewView {
   finalUrl: string;
   expiresAt: number;
   beforeScreenshotBase64?: string;
+  // What the read prefix saw while previewing. This is where a model can first
+  // obtain an element ref: propose replays the reads without acting, so the
+  // snapshot comes back before any approval is spent.
+  reads?: AoiHostBrowserDriveReadView[];
+}
+
+/**
+ * What a read step in the plan's prefix actually saw.
+ *
+ * These were being computed and then thrown away at this boundary, which quietly
+ * disabled the safest way to address an element: `element: N` + `snapshot_id`
+ * only works if the model can OBTAIN a ref, and the snapshot that mints them
+ * arrives here. Without it every act had to name a hand-written CSS selector --
+ * the weaker path the ref system exists to replace. Same for `tabs`: a listing
+ * the caller never receives cannot inform which tab to switch to.
+ *
+ * Bounded on purpose: a snapshot of a dense page is large, and this rides in
+ * every act result.
+ */
+export interface AoiHostBrowserDriveReadView {
+  index: number;
+  kind?: string;
+  finalUrl?: string;
+  snapshotId?: string;
+  elements?: { ref: number; role: string; name: string }[];
+  // Set when the element list was cut, so a caller never reads a partial list as
+  // the whole page.
+  elementsTruncated?: boolean;
+  tabs?: { index: number; url: string; title: string; current: boolean }[];
+  text?: string;
+}
+
+const MAX_READ_ELEMENTS = 60;
+const MAX_READ_TEXT = 4_000;
+
+function readViewsFrom(raw: unknown): AoiHostBrowserDriveReadView[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const views: AoiHostBrowserDriveReadView[] = [];
+  for (const entry of raw) {
+    if (!isRecord(entry)) {
+      continue;
+    }
+    const view: AoiHostBrowserDriveReadView = {
+      index: typeof entry.index === 'number' ? entry.index : views.length,
+    };
+    if (typeof entry.finalUrl === 'string' && entry.finalUrl) {
+      view.finalUrl = entry.finalUrl;
+    }
+    const snapshot = isRecord(entry.snapshot) ? entry.snapshot : null;
+    if (snapshot) {
+      view.kind = 'elements';
+      view.snapshotId = asString(snapshot.id ?? snapshot.snapshotId);
+      const elements = Array.isArray(snapshot.elements) ? snapshot.elements : [];
+      view.elements = elements
+        .filter(isRecord)
+        .slice(0, MAX_READ_ELEMENTS)
+        .map((element) => ({
+          ref: typeof element.ref === 'number' ? element.ref : 0,
+          role: asString(element.role),
+          name: asString(element.name).slice(0, 120),
+        }));
+      if (elements.length > MAX_READ_ELEMENTS) {
+        view.elementsTruncated = true;
+      }
+    }
+    if (Array.isArray(entry.tabs)) {
+      view.kind = 'tabs';
+      view.tabs = entry.tabs.filter(isRecord).map((tab) => ({
+        index: typeof tab.index === 'number' ? tab.index : 0,
+        url: asString(tab.url),
+        title: asString(tab.title).slice(0, 200),
+        current: tab.current === true,
+      }));
+    }
+    const extract = isRecord(entry.extract) ? entry.extract : null;
+    if (extract && typeof extract.text === 'string' && extract.text) {
+      view.kind = view.kind ?? 'extract';
+      view.text = extract.text.slice(0, MAX_READ_TEXT);
+    }
+    // Only carry a step that actually observed something.
+    if (view.snapshotId || view.tabs || view.text) {
+      views.push(view);
+    }
+  }
+  return views;
 }
 
 export interface AoiHostBrowserDriveActExecuteView {
@@ -456,6 +543,8 @@ export interface AoiHostBrowserDriveActExecuteView {
   // (older build) or it failed validation; callers must then use the honest
   // "delivered, unproven" wording rather than reporting success.
   verdict?: AoiBrowserDriveVerdict;
+  // What the read steps before the act observed: element refs, tabs, page text.
+  reads?: AoiHostBrowserDriveReadView[];
 }
 
 // Preview: replay the read prefix and record a PENDING per-action approval. The
@@ -486,6 +575,10 @@ export async function fetchAoiHostBrowserDriveActPreview(
     ...(typeof record.beforeScreenshotBase64 === 'string'
       ? { beforeScreenshotBase64: record.beforeScreenshotBase64 }
       : {}),
+    ...((): { reads?: AoiHostBrowserDriveReadView[] } => {
+      const reads = readViewsFrom(record.prefix);
+      return reads.length ? { reads } : {};
+    })(),
   };
 }
 
@@ -514,6 +607,12 @@ export async function runAoiHostBrowserDriveActExecute(
     ...(typeof target.stopReason === 'string' ? { stopReason: target.stopReason } : {}),
     ...(typeof target.finalUrl === 'string' ? { finalUrl: target.finalUrl } : {}),
     ...(verdict ? { verdict } : {}),
+    // Carry what the read prefix saw. Dropping it here is what left the model
+    // unable to obtain an element ref at all.
+    ...((): { reads?: AoiHostBrowserDriveReadView[] } => {
+      const reads = readViewsFrom(result.prefix);
+      return reads.length ? { reads } : {};
+    })(),
   };
 }
 

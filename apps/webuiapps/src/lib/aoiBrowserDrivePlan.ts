@@ -11,6 +11,7 @@
 
 import {
   classifyAoiBrowserDriveAction,
+  normalizeAoiBrowserDriveActionKeys,
   type AoiBrowserDriveActionDecision,
   type AoiBrowserDriveActionRequest,
 } from './aoiBrowserDriveAction';
@@ -64,7 +65,12 @@ export function classifyAoiBrowserDrivePlan(
   const rawSteps = Array.isArray(plan?.steps) ? plan.steps : [];
 
   const steps: AoiBrowserDrivePlanStepDecision[] = rawSteps.map((step, index) => {
-    const action = step?.action ?? ({ kind: 'wait' } as AoiBrowserDriveActionRequest);
+    // Normalize BEFORE classifying: the forbidden checks read fields like
+    // targetText and field, and a key the classifier cannot see is a check that
+    // silently does not run.
+    const action = normalizeAoiBrowserDriveActionKeys(
+      step?.action ?? ({ kind: 'wait' } as AoiBrowserDriveActionRequest),
+    );
     return {
       index,
       description:

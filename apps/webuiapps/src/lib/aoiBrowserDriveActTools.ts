@@ -78,9 +78,19 @@ const PLAN_PARAM_SCHEMA = {
             kind: {
               type: 'string',
               description:
-                'navigate | scroll | back | wait | extract | elements | click | type | select | press | submit. ' +
+                'READ: navigate | scroll | back | wait | extract | elements | tabs | tab. ' +
+                'ACT: click | type | select | press | submit | hover | drag | dialog | upload. ' +
                 '`elements` lists the interactable elements with refs so an act can target ' +
-                '`element` instead of a hand-written selector.',
+                '`element` instead of a hand-written selector. ' +
+                '`tabs` lists open tabs and `tab` switches to one -- needed whenever a link, ' +
+                'an OAuth flow or a payment step opens a new tab, because everything else acts ' +
+                'on the CURRENT tab only. ' +
+                '`dialog` answers a native alert/confirm/prompt; a page that raises one is ' +
+                'blocked until it is answered, and accepting a confirm is how a page asks ' +
+                '"really delete this?". ' +
+                '`hover` opens menus that only appear on hover. `drag` needs toSelector or ' +
+                'to_element. `upload` attaches a local file and works only for files inside the ' +
+                'roots the operator registered.',
             },
             selector: {
               type: 'string',
@@ -112,6 +122,36 @@ const PLAN_PARAM_SCHEMA = {
               description: 'Option value (select) / wait ms / scroll direction.',
             },
             key: { type: 'string', description: 'Key to press (press).' },
+            to_selector: {
+              type: 'string',
+              description: 'Drop target for `drag` (CSS selector).',
+            },
+            to_element: {
+              type: 'number',
+              description: 'Drop target for `drag`, as a ref from the same elements snapshot.',
+            },
+            tab_index: {
+              type: 'number',
+              description: 'Which tab to switch to (`tab`), from a `tabs` listing.',
+            },
+            disposition: {
+              type: 'string',
+              enum: ['accept', 'dismiss'],
+              description:
+                'How to answer a `dialog`. Dismiss backs out; accept confirms whatever the page ' +
+                'asked, so read the dialog message first rather than accepting by reflex.',
+            },
+            prompt_text: {
+              type: 'string',
+              description: 'Text to enter when accepting a prompt() dialog.',
+            },
+            file_path: {
+              type: 'string',
+              description:
+                'Absolute path of the file to attach (`upload`). Refused unless it sits inside a ' +
+                'read root the operator registered -- never guess a path, and never upload ' +
+                'anything the user did not ask you to.',
+            },
           },
           required: ['kind'],
         },
@@ -386,6 +426,10 @@ export async function executeBrowserDriveProposeTool(
       hostname: preview.hostname,
       step_index: preview.stepIndex,
       before_screenshot_captured: Boolean(preview.beforeScreenshotBase64),
+      // What the replayed read prefix saw. This is where element refs come
+      // from: propose replays the reads WITHOUT acting, so a ref can be
+      // obtained before any approval is spent.
+      ...(preview.reads?.length ? { reads: preview.reads } : {}),
       expires_at: preview.expiresAt,
       note:
         "This is a LIVE, irreversible action on the user's logged-in browser. It was NOT performed. " +
@@ -441,6 +485,10 @@ export async function executeBrowserDriveRunTool(
         : {}),
       ...(result.stopReason ? { stop_reason: result.stopReason } : {}),
       ...(result.finalUrl ? { final_url: result.finalUrl } : {}),
+      // What the read steps saw. An `elements` step is how a ref is obtained at
+      // all -- without this the model cannot use `element` + `snapshot_id` and
+      // has to fall back to authoring selectors, which is the weaker path.
+      ...(result.reads?.length ? { reads: result.reads } : {}),
       note: verdict
         ? describeAoiBrowserDriveVerdict(verdict)
         : result.ok

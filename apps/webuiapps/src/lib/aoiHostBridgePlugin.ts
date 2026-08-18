@@ -32,6 +32,7 @@ import {
   type AoiHostBridgeKillSwitchState,
 } from './aoiHostBridgeKillSwitch';
 import { evaluateAoiHostBridgeGate } from './aoiHostBridgeGate';
+import { buildAoiBrowserDriveUploadGate } from './aoiBrowserDriveUploadGate';
 import {
   AOI_DESKTOP_CAPTURE_CAPABILITY,
   AOI_DESKTOP_INPUT_CAPABILITY,
@@ -433,6 +434,9 @@ async function runAoiBrowserDriveExecuteDefault(options: {
     allowlist: options.allowlist,
     now: options.now,
     approvalGate: gate,
+    // Uploads are bounded by the operator's registered read roots: a file Aoi
+    // could not read is a file it cannot send to a web page.
+    uploadGate: buildAoiBrowserDriveUploadGate(options.openroomHome),
     sessionFactory: makeAoiBrowserDriveRunnerSession,
     // Cooperative panic abort during the read-prefix replay (the entry gate already
     // blocks a call that starts while panicked).
@@ -842,6 +846,11 @@ export async function resolveAoiHostBridgeRoute(
             hostname: approval.hostname,
             finalUrl: browserPreview.finalUrl,
             expiresAt: approval.expiresAt,
+            // The preview already replayed the read prefix. Sending what it saw
+            // is how a model can obtain an element ref BEFORE spending an
+            // approval -- otherwise `element` + `snapshot_id` has no way to be
+            // used for a first act at all.
+            ...(Array.isArray(browserPreview.prefix) ? { prefix: browserPreview.prefix } : {}),
             ...(approval.beforeScreenshotBase64
               ? { beforeScreenshotBase64: approval.beforeScreenshotBase64 }
               : {}),

@@ -31,6 +31,7 @@ import {
   type AoiBrowserDriveApprovalGate,
   type AoiBrowserDriveObserver,
   type AoiBrowserDriveStepResult,
+  type AoiBrowserDriveUploadGate,
 } from './aoiBrowserDriveExecutor';
 import {
   isAoiBrowserDriveUrlAllowed,
@@ -114,6 +115,9 @@ export interface AoiBrowserDriveActRunParams {
   observer?: AoiBrowserDriveObserver;
   maxPlanSteps?: number;
   sleep?: (ms: number) => Promise<void>;
+  // Bounds which local files may be attached to a page. Absent = no uploads,
+  // which is the safe default for the one action that moves data outward.
+  uploadGate?: AoiBrowserDriveUploadGate;
   // When present (execute path), each step is captured + recorded to the audit
   // ledger. Omitted for preview / tests.
   audit?: AoiBrowserDriveRunAudit;
@@ -367,6 +371,7 @@ export async function executeAoiBrowserDriveActStep(
       allowlist: params.allowlist,
       approvalGate: params.approvalGate,
       now: params.now,
+      ...(params.uploadGate ? { uploadGate: params.uploadGate } : {}),
       ...(params.timeoutMs ? { timeoutMs: params.timeoutMs } : {}),
       ...(observer ? { observer } : {}),
       ...(params.maxPlanSteps ? { maxPlanSteps: params.maxPlanSteps } : {}),

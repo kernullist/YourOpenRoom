@@ -90,7 +90,39 @@ export interface AoiBrowserDriveActablePage extends AoiBrowserDriveNavigablePage
   // and a correct type looks like it did nothing. Optional so older injected
   // pages still satisfy the interface; without it a write is simply unverifiable.
   inputValue?(selector: string, options?: { timeout?: number }): Promise<string>;
+
+  // All optional: a page that predates these still satisfies the interface, and
+  // the executor refuses the action with a named code rather than throwing an
+  // opaque TypeError at the model.
+  hover?(selector: string, options?: { timeout?: number }): Promise<void>;
+  dragAndDrop?(source: string, target: string, options?: { timeout?: number }): Promise<void>;
+  setInputFiles?(selector: string, files: string, options?: { timeout?: number }): Promise<void>;
+  // Answer the NEXT native dialog. Playwright surfaces dialogs through an event
+  // and auto-dismisses them when nothing is listening, so a drive that never
+  // answers one silently loses whatever the page was asking.
+  answerDialog?(disposition: 'accept' | 'dismiss', promptText?: string): Promise<string>;
+  // Tabs in the same browser context.
+  listTabs?(): Promise<{ index: number; url: string; title: string; current: boolean }[]>;
+  selectTab?(index: number): Promise<void>;
 }
+
+/**
+ * Decides whether a local file may be attached to a web page.
+ *
+ * Uploading is the one browser action that moves data OUT of the operator's
+ * machine, and the path is chosen inside a plan that a hostile page can
+ * influence -- "attach your SSH key to this form" is a single step away
+ * otherwise. So the path is not the model's to pick freely: production wires
+ * this to the operator's registered read roots, the same list that bounds file
+ * reads.
+ *
+ * Injected rather than resolved here so the executor stays pure, and DEFAULTED
+ * TO DENY at the call site: a caller that forgets to wire it uploads nothing.
+ */
+export type AoiBrowserDriveUploadGate = (filePath: string) => {
+  allowed: boolean;
+  reason: string;
+};
 
 // Per-ACT approval. Returns whether THIS exact action (by content-addressed
 // fingerprint) is approved. P2.2b tests inject a fake; P2.3 wraps the host-bridge
@@ -147,6 +179,11 @@ export interface AoiBrowserDriveStepResult {
   screenshotBase64?: string;
   // Present for a read 'elements' step: the refs an act may address.
   snapshot?: AoiBrowserDriveSnapshot;
+  // Present for a read 'tabs'/'tab' step.
+  tabs?: { index: number; url: string; title: string; current: boolean }[];
+  // Set by a 'tab' step that verifiably changed the current tab. Every selector
+  // and ref from before it describes a different document now.
+  tabSwitched?: boolean;
   // Present for an ACT step: the fingerprint the approval gate was asked about.
   approvalFingerprint?: string;
   // True when the ACT was authorized by a standing grant (P3.1) rather than a fresh
@@ -171,6 +208,9 @@ export interface AoiBrowserDriveExecuteStepParams {
   observer?: AoiBrowserDriveObserver;
   sleep?: (ms: number) => Promise<void>;
   maxPlanSteps?: number;
+  // Decides whether a local file may be attached to the page. Absent means no
+  // upload is possible, which is the safe default for a data-egress action.
+  uploadGate?: AoiBrowserDriveUploadGate;
 }
 
 const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -205,6 +245,14 @@ export function computeAoiBrowserDriveActionFingerprint(
   action: AoiBrowserDriveActionRequest,
   hostname = '',
 ): string {
+  // EVERY field that changes what the action does has to be in here.
+  //
+  // A fingerprint is what an approval is bound to, so anything left out is a
+  // field the operator can be shown one value of and the run can then use
+  // another. When the vocabulary grew these were initially missing, which meant
+  // an approval to DISMISS a dialog also authorized accepting it, and an
+  // approval to upload one file authorized uploading any other file through the
+  // same input.
   const canonical = [
     (typeof goal === 'string' ? goal : '').trim(),
     String(stepIndex),
@@ -215,6 +263,10 @@ export function computeAoiBrowserDriveActionFingerprint(
     action?.value ?? '',
     action?.key ?? '',
     action?.targetText ?? '',
+    action?.toSelector ?? '',
+    action?.disposition ?? '',
+    action?.promptText ?? '',
+    action?.filePath ?? '',
     (typeof hostname === 'string' ? hostname : '').trim().toLowerCase(),
   ].join('\n');
   return `${fnv1a(canonical, 0x811c9dc5)}${fnv1a(canonical, 0x9e3779b1)}`;
@@ -252,9 +304,15 @@ export async function resolveAoiBrowserDriveActionElementRef(
   action: AoiBrowserDriveActionRequest,
   now: number,
 ): Promise<{ ok: true; action: AoiBrowserDriveActionRequest } | { ok: false; detail: string }> {
-  if (typeof action.element !== 'number') {
+  const hasSource = typeof action.element === 'number';
+  const hasDestination = typeof action.toElement === 'number';
+  if (!hasSource && !hasDestination) {
     return { ok: true, action };
   }
+
+  // ONE snapshot for both ends of a drag. Capturing twice would let the source
+  // resolve against one state of the page and the destination against another,
+  // so the pair could describe a layout that never existed at any single moment.
   const snapshot = await captureAoiBrowserDriveSnapshot(page, now);
   // The action is model-authored JSON, and the tool schema spells this
   // snapshot_id while the internal type is snapshotId. Accept either KEY -- a
@@ -262,22 +320,42 @@ export async function resolveAoiBrowserDriveActionElementRef(
   // ref-addressed act mysteriously unusable. The VALUE is still matched
   // strictly.
   const suppliedSnapshotId = action.snapshotId ?? (action as { snapshot_id?: unknown }).snapshot_id;
-  const resolved = resolveAoiBrowserDriveElementRef({
-    snapshot,
-    ref: action.element,
-    // Undefined would silently skip the staleness check, so a ref carrying no
-    // snapshot id at all is refused outright.
-    snapshotId: typeof suppliedSnapshotId === 'string' ? suppliedSnapshotId : '',
-  });
-  if (!resolved.ok || !resolved.selector) {
-    return {
-      ok: false,
-      detail: `${resolved.code ?? 'element_ref_unknown'}: ${resolved.detail ?? 'ref did not resolve'}`,
-    };
+  // Undefined would silently skip the staleness check, so a ref carrying no
+  // snapshot id at all is refused outright.
+  const snapshotId = typeof suppliedSnapshotId === 'string' ? suppliedSnapshotId : '';
+
+  const resolveOne = (
+    ref: number,
+  ): { ok: true; selector: string } | { ok: false; detail: string } => {
+    const resolved = resolveAoiBrowserDriveElementRef({ snapshot, ref, snapshotId });
+    if (!resolved.ok || !resolved.selector) {
+      return {
+        ok: false,
+        detail: `${resolved.code ?? 'element_ref_unknown'}: ${resolved.detail ?? 'ref did not resolve'}`,
+      };
+    }
+    return { ok: true, selector: resolved.selector };
+  };
+
+  // The resolved selectors REPLACE any model-authored ones so nothing
+  // downstream can act on a different target than the one that was resolved and
+  // approved.
+  const next: AoiBrowserDriveActionRequest = { ...action };
+  if (hasSource) {
+    const resolved = resolveOne(action.element as number);
+    if (!resolved.ok) {
+      return resolved;
+    }
+    next.selector = resolved.selector;
   }
-  // The resolved selector REPLACES any model-authored one so nothing downstream
-  // can act on a different target than the one that was resolved and approved.
-  return { ok: true, action: { ...action, selector: resolved.selector } };
+  if (hasDestination) {
+    const resolved = resolveOne(action.toElement as number);
+    if (!resolved.ok) {
+      return resolved;
+    }
+    next.toSelector = resolved.selector;
+  }
+  return { ok: true, action: next };
 }
 
 async function blankPage(page: AoiBrowserDriveActablePage): Promise<void> {
@@ -498,7 +576,12 @@ export async function executeAoiBrowserDriveStep(
     // ACT (approved above). The URL is sampled first so a navigation caused by
     // the act is detectable evidence rather than a guess.
     const urlBefore = safeUrl(page);
-    const actOutcome = await executeActStep({ page, action, timeout });
+    const actOutcome = await executeActStep({
+      page,
+      action,
+      timeout,
+      ...(params.uploadGate ? { uploadGate: params.uploadGate } : {}),
+    });
 
     // Post-act drift: the effect may have navigated onto a denylisted host. If so,
     // blank the tab so blocked content does not persist in the Aoi page, and stop.
@@ -600,6 +683,11 @@ interface AoiBrowserDriveReadStepOutcome {
   extract?: AoiBrowserDriveReadResult;
   screenshotBase64?: string;
   snapshot?: AoiBrowserDriveSnapshot;
+  // Tabs in this browser context, from a `tabs` step.
+  tabs?: { index: number; url: string; title: string; current: boolean }[];
+  // Set when a `tab` step changed which page is current. Every ref and selector
+  // from the previous tab describes a different document now.
+  tabSwitched?: boolean;
 }
 
 async function executeReadStep(params: {
@@ -689,6 +777,43 @@ async function executeReadStep(params: {
       const bytes = await page.screenshot({ timeout: params.timeout });
       return { ok: true, finalUrl: safeUrl(page), screenshotBase64: toBase64(bytes) };
     }
+    case 'tabs': {
+      if (typeof page.listTabs !== 'function') {
+        throw new Error('this browser session cannot list tabs');
+      }
+      return { ok: true, finalUrl: safeUrl(page), tabs: await page.listTabs() };
+    }
+    case 'tab': {
+      if (typeof page.selectTab !== 'function' || typeof page.listTabs !== 'function') {
+        throw new Error('this browser session cannot switch tabs');
+      }
+      const index = typeof action.tabIndex === 'number' ? action.tabIndex : Number.NaN;
+      if (!Number.isInteger(index) || index < 0) {
+        throw new Error('tab requires a tabIndex from a tabs listing');
+      }
+      await page.selectTab(index);
+
+      // Confirm the switch actually took, by reading back which tab is current.
+      //
+      // This is the one failure here that would be silent AND wrong: every later
+      // step in the plan goes through this same `page`, so a selectTab that did
+      // not really redirect it leaves the model believing it is driving the new
+      // tab while every click lands on the old one. That is worse than an
+      // error -- it is an action on a page nobody chose. A verified switch or a
+      // refusal; nothing in between.
+      const tabs = await page.listTabs();
+      const current = tabs.find((tab) => tab.current);
+      if (!current || current.index !== index) {
+        throw new Error(
+          `tab switch did not take effect (asked for ${index}, still on ${
+            current ? current.index : 'unknown'
+          })`,
+        );
+      }
+      // Everything addressed on the old tab is meaningless on the new one, and
+      // the caller has to be told rather than left to discover it by acting.
+      return { ok: true, finalUrl: safeUrl(page), tabs, tabSwitched: true };
+    }
     case 'wait': {
       const requested = Number.parseInt(action.value ?? '', 10);
       const ms = Number.isFinite(requested)
@@ -737,13 +862,83 @@ async function executeActStep(params: {
   page: AoiBrowserDriveActablePage;
   action: AoiBrowserDriveActionRequest;
   timeout: number;
-}): Promise<{ readBack?: { expected: string; actual: string | null } }> {
+  uploadGate?: AoiBrowserDriveUploadGate;
+}): Promise<{
+  readBack?: { expected: string; actual: string | null };
+  dialogMessage?: string;
+}> {
   const { page, action, timeout } = params;
+
+  // A dialog is answered on the PAGE, not on an element -- there is no element
+  // to name while a native dialog is up.
+  if (action.kind === 'dialog') {
+    if (typeof page.answerDialog !== 'function') {
+      throw new Error('this browser session cannot answer dialogs');
+    }
+    const disposition = (action.disposition ?? '').trim().toLowerCase();
+    if (disposition !== 'accept' && disposition !== 'dismiss') {
+      throw new Error('dialog requires disposition "accept" or "dismiss"');
+    }
+    // Bound the wait. A dialog is answered through an event, so "no dialog is
+    // showing" looks identical to "one has not appeared yet" -- and an
+    // implementation that simply never resolves would hang the whole run with
+    // no step, no verdict and no way to tell what happened. A timeout turns that
+    // into an ordinary reportable failure.
+    const message = await Promise.race([
+      page.answerDialog(disposition, action.promptText),
+      new Promise<never>((_resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('no dialog appeared to answer')), timeout);
+        // Do not hold the process open on a timer that lost the race.
+        if (typeof timer === 'object' && timer !== null && 'unref' in timer) {
+          (timer as { unref: () => void }).unref();
+        }
+      }),
+    ]);
+    // The message is evidence of WHAT was answered, which matters more here
+    // than for other acts: the model chose a disposition before seeing it.
+    return { dialogMessage: typeof message === 'string' ? message : '' };
+  }
+
   const selector = typeof action.selector === 'string' ? action.selector : '';
   if (!selector) {
     throw new Error(`action ${action.kind} requires a selector`);
   }
   switch (action.kind) {
+    case 'hover':
+      if (typeof page.hover !== 'function') {
+        throw new Error('this browser session cannot hover');
+      }
+      await page.hover(selector, { timeout });
+      return {};
+    case 'drag': {
+      if (typeof page.dragAndDrop !== 'function') {
+        throw new Error('this browser session cannot drag');
+      }
+      const target = typeof action.toSelector === 'string' ? action.toSelector : '';
+      if (!target) {
+        throw new Error('drag requires a destination');
+      }
+      await page.dragAndDrop(selector, target, { timeout });
+      return {};
+    }
+    case 'upload': {
+      if (typeof page.setInputFiles !== 'function') {
+        throw new Error('this browser session cannot attach files');
+      }
+      const filePath = typeof action.filePath === 'string' ? action.filePath : '';
+      if (!filePath) {
+        throw new Error('upload requires filePath');
+      }
+      // Fail closed: no gate means no upload, not a free one.
+      const verdict = params.uploadGate
+        ? params.uploadGate(filePath)
+        : { allowed: false, reason: 'uploads are not enabled for this session' };
+      if (!verdict.allowed) {
+        throw new Error(`upload refused: ${verdict.reason}`);
+      }
+      await page.setInputFiles(selector, filePath, { timeout });
+      return {};
+    }
     case 'click':
       await page.click(selector, { timeout });
       return {};
@@ -801,13 +996,31 @@ async function classifyActFromLiveDom(
   }
   const opts = { timeout: DOM_READ_TIMEOUT_MS };
   let enriched: AoiBrowserDriveActionRequest = action;
-  if (action.kind === 'click' || action.kind === 'submit') {
+  if (
+    action.kind === 'click' ||
+    action.kind === 'submit' ||
+    action.kind === 'hover' ||
+    action.kind === 'drag'
+  ) {
     const [text, aria, value] = await Promise.all([
       safeDomRead(() => page.textContent(selector, opts)),
       safeDomRead(() => page.getAttribute(selector, 'aria-label', opts)),
       safeDomRead(() => page.getAttribute(selector, 'value', opts)),
     ]);
-    const domText = [action.targetText, text, aria, value]
+    // For a DRAG the destination is what actually gets activated -- "slide to
+    // pay" commits at the drop, not the grab -- so the drop target's text has to
+    // be part of what the hard-block sees. Reading only the source would leave
+    // exactly the control this is meant to catch unexamined.
+    let destinationText = '';
+    if (action.kind === 'drag' && typeof action.toSelector === 'string' && action.toSelector) {
+      const [dropText, dropAria, dropValue] = await Promise.all([
+        safeDomRead(() => page.textContent(action.toSelector as string, opts)),
+        safeDomRead(() => page.getAttribute(action.toSelector as string, 'aria-label', opts)),
+        safeDomRead(() => page.getAttribute(action.toSelector as string, 'value', opts)),
+      ]);
+      destinationText = [dropText, dropAria, dropValue].filter(Boolean).join(' ');
+    }
+    const domText = [action.targetText, text, aria, value, destinationText]
       .filter((part): part is string => Boolean(part))
       .join(' ')
       .trim();
@@ -815,7 +1028,7 @@ async function classifyActFromLiveDom(
       return undefined;
     }
     enriched = { ...action, targetText: domText };
-  } else if (action.kind === 'type') {
+  } else if (action.kind === 'type' || action.kind === 'upload') {
     const [type, name, autocomplete, ariaLabel, id] = await Promise.all([
       safeDomRead(() => page.getAttribute(selector, 'type', opts)),
       safeDomRead(() => page.getAttribute(selector, 'name', opts)),

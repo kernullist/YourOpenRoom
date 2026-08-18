@@ -26,12 +26,24 @@ export type AoiBrowserDriveActionKind =
   | 'screenshot'
   | 'wait'
   | 'back'
+  // Tabs. A link with target=_blank, an OAuth popup or a payment iframe opens a
+  // page that is simply unreachable without these -- the drive would keep acting
+  // on the original tab while the thing it was asked about sits in another one.
+  | 'tabs'
+  | 'tab'
   // side-effecting
   | 'click'
   | 'type'
   | 'select'
   | 'press'
-  | 'submit';
+  | 'submit'
+  | 'hover'
+  | 'drag'
+  // Answer a native alert/confirm/prompt. This is an ACT, not a convenience:
+  // accepting a confirm is how a page asks "really delete this?".
+  | 'dialog'
+  // Attach a local file to a file input.
+  | 'upload';
 
 export interface AoiBrowserDriveActionField {
   // The target input's `type` attribute (password/email/text/tel/number/...).
@@ -63,6 +75,54 @@ export interface AoiBrowserDriveActionRequest {
   // The accessible name / visible text of a click/submit target, used to block
   // financial-commit and captcha controls.
   targetText?: string;
+  // drag: where to drop. Same addressing rules as `selector` / `element`.
+  toSelector?: string;
+  toElement?: number;
+  // tab: which tab to make current, by index from a `tabs` listing.
+  tabIndex?: number;
+  // dialog: 'accept' or 'dismiss', plus the text for a prompt().
+  disposition?: string;
+  promptText?: string;
+  // upload: absolute path of the file to attach. Refused unless it sits inside
+  // an operator-registered read root -- see the executor.
+  filePath?: string;
+}
+
+/**
+ * Accept the snake_case key names the tool schema advertises.
+ *
+ * The schema says `snapshot_id`, `to_element`, `file_path`; the internal type is
+ * camelCase. Translating in ONE place matters more than it looks: a key that is
+ * silently dropped does not fail loudly, it produces an action missing the very
+ * field that would have constrained it -- a drag with no destination, or worse,
+ * an upload whose file_path never reaches the gate that was supposed to check
+ * it. Both key styles are accepted so a model that guesses either is understood.
+ */
+export function normalizeAoiBrowserDriveActionKeys(raw: unknown): AoiBrowserDriveActionRequest {
+  if (!raw || typeof raw !== 'object') {
+    return { kind: 'wait' };
+  }
+  const source = raw as Record<string, unknown>;
+  const pick = (camel: string, snake: string): unknown =>
+    source[camel] !== undefined ? source[camel] : source[snake];
+
+  const action = { ...source } as AoiBrowserDriveActionRequest & Record<string, unknown>;
+  const pairs: [keyof AoiBrowserDriveActionRequest, string][] = [
+    ['snapshotId', 'snapshot_id'],
+    ['toSelector', 'to_selector'],
+    ['toElement', 'to_element'],
+    ['tabIndex', 'tab_index'],
+    ['promptText', 'prompt_text'],
+    ['filePath', 'file_path'],
+    ['targetText', 'target_text'],
+  ];
+  for (const [camel, snake] of pairs) {
+    const value = pick(camel as string, snake);
+    if (value !== undefined) {
+      (action as Record<string, unknown>)[camel as string] = value;
+    }
+  }
+  return action;
 }
 
 export type AoiBrowserDriveActionCategory = 'read' | 'act' | 'forbidden';
@@ -88,6 +148,10 @@ const READ_KINDS: ReadonlySet<AoiBrowserDriveActionKind> = new Set([
   'screenshot',
   'wait',
   'back',
+  // Listing tabs observes; SELECTING one only changes which page the next step
+  // addresses, and every act is separately gated anyway.
+  'tabs',
+  'tab',
 ]);
 
 const ACT_KINDS: ReadonlySet<AoiBrowserDriveActionKind> = new Set([
@@ -96,6 +160,12 @@ const ACT_KINDS: ReadonlySet<AoiBrowserDriveActionKind> = new Set([
   'select',
   'press',
   'submit',
+  // Hover opens menus and fires the same handlers a click path does, so it is
+  // not filed with the read-only steps just because nothing is pressed.
+  'hover',
+  'drag',
+  'dialog',
+  'upload',
 ]);
 
 // Autocomplete tokens that name a credential / payment / one-time secret.
@@ -145,6 +215,20 @@ function isSensitiveField(field: AoiBrowserDriveActionField | undefined): boolea
     return true;
   }
   return SENSITIVE_FIELD_PATTERN.test(fieldHaystack(field));
+}
+
+// A confirm() that commits money is the same prohibited class as clicking the
+// button that raised it -- the dialog is just where the page asked. Its message
+// is the thing to read, since there is no element to inspect.
+function isFinancialDialog(request: AoiBrowserDriveActionRequest): boolean {
+  if (request.kind !== 'dialog') {
+    return false;
+  }
+  // Dismissing is always safe: it is how you back out.
+  if ((request.disposition ?? '').trim().toLowerCase() !== 'accept') {
+    return false;
+  }
+  return FINANCIAL_COMMIT_PATTERN.test(request.targetText ?? '');
 }
 
 function isCaptchaTarget(request: AoiBrowserDriveActionRequest): boolean {
@@ -206,6 +290,39 @@ export function classifyAoiBrowserDriveAction(
       requiresApproval: false,
       reason: 'Financial transactions (pay/buy/transfer/trade) are never permitted.',
       forbidReason: 'financial_commit',
+    };
+  }
+
+  // ...and neither is confirming one in a dialog. The page moved the commit
+  // into a confirm(); the answer is the same.
+  if (isFinancialDialog(request)) {
+    return {
+      category: 'forbidden',
+      requiresApproval: false,
+      reason: 'Confirming a financial transaction in a dialog is never permitted.',
+      forbidReason: 'financial_commit',
+    };
+  }
+
+  // Dropping a dragged element ONTO a commit control is a click by another
+  // route; some UIs really are drag-to-confirm.
+  if (kind === 'drag' && isFinancialCommitTarget(request)) {
+    return {
+      category: 'forbidden',
+      requiresApproval: false,
+      reason: 'Dragging onto a financial commit control is never permitted.',
+      forbidReason: 'financial_commit',
+    };
+  }
+
+  // An upload targeting a credential-ish field (an identity-document or
+  // signature slot) is the same refusal as typing into one.
+  if (kind === 'upload' && isSensitiveField(request.field)) {
+    return {
+      category: 'forbidden',
+      requiresApproval: false,
+      reason: 'Attaching a file to a credential field is never permitted.',
+      forbidReason: 'sensitive_field',
     };
   }
 
