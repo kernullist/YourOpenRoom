@@ -840,3 +840,62 @@ describe('truncateForTokenBudget()', () => {
     expect(truncateForTokenBudget('x'.repeat(100), 20)).toContain('truncated for token budget');
   });
 });
+
+// Regression for the routing half of the "Aoi said it played something and
+// nothing played" reports. Both failures in the real run ledger were turns that
+// reached the model with NO app tools: shouldEnableAppTools wanted a music noun
+// in the latest message, which a deferred replay never has, and the dialog route
+// (respond_to_user + finish_target only) had already been chosen anyway.
+describe('playback turns that only point back at the previous one', () => {
+  const IDLE_CARD = {
+    role: 'assistant' as const,
+    content:
+      '늦은 시간이라 조용하네. 은은한 사운드 하나 깔아줄까?\n' +
+      '🎵 추천 (네 취향 반영): "2026년 8월 여돌 노래모음 | 🔥 KPOP PLAYLIST"',
+  };
+  const PLAY_ACK = {
+    role: 'assistant' as const,
+    content: '"다시" 유튜브에서 틀어볼게.',
+  };
+
+  it('gives app tools to a replay request whose subject is in the previous turn', () => {
+    expect(shouldEnableAppTools('▶ 재생', [IDLE_CARD])).toBe(true);
+    expect(shouldEnableAppTools('아니 아까 너가 말한거 틀어달란거야', [PLAY_ACK])).toBe(true);
+    expect(shouldEnableAppTools('다시 틀어줘', [IDLE_CARD])).toBe(true);
+  });
+
+  it('keeps those turns off the dialog route, which has no app tools', () => {
+    expect(shouldUseDialogModel('▶ 재생', [IDLE_CARD])).toBe(false);
+    expect(shouldUseDialogModel('아니 아까 너가 말한거 틀어달란거야', [PLAY_ACK])).toBe(false);
+    expect(shouldUseDialogModel('다시 틀어줘', [IDLE_CARD])).toBe(false);
+  });
+
+  it('never lets the two decisions disagree', () => {
+    // The invariant the coupling buys: app tools judged necessary and then
+    // withheld because the route was already downgraded is what produced a
+    // playback turn with nothing to play it.
+    const cases: Array<[string, { role: 'assistant'; content: string }[]]> = [
+      ['▶ 재생', [IDLE_CARD]],
+      ['다시 틀어줘', [IDLE_CARD]],
+      ['아니 아까 너가 말한거 틀어달란거야', [PLAY_ACK]],
+      ['노래 틀어줘', []],
+      ['유튜브 열어줘', []],
+    ];
+    for (const [message, history] of cases) {
+      if (shouldEnableAppTools(message, history)) {
+        expect(shouldUseDialogModel(message, history), message).toBe(false);
+      }
+    }
+  });
+
+  it('still leaves ordinary chat on the cheap route', () => {
+    // The coupling must not drag unrelated small talk onto the main model.
+    expect(shouldEnableAppTools('오늘 좀 피곤하다', [IDLE_CARD])).toBe(false);
+    expect(shouldUseDialogModel('오늘 좀 피곤하다', [IDLE_CARD])).toBe(true);
+  });
+
+  it('does not arm on playback words with no music anywhere in sight', () => {
+    const unrelated = [{ role: 'assistant' as const, content: '어제 회의는 어땠어?' }];
+    expect(shouldEnableAppTools('다시 말해줘', unrelated)).toBe(false);
+  });
+});

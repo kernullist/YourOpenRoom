@@ -755,6 +755,11 @@ function hasCodebaseIntent(text: string): boolean {
   ].some((pattern) => pattern.test(text));
 }
 
+// What playback is ABOUT. Matched against the latest message or the turn
+// before it, so a request that only points back still counts.
+const MUSIC_SUBJECT_PATTERN =
+  /(youtube|song|music|track|artist|playlist|유튜브|노래|음악|곡|플레이리스트)/i;
+
 function hasPlaybackIntent(text: string): boolean {
   return [/\b(play|listen|put on|queue)\b/i, /(재생|틀어|들려|듣자|들어보자)/].some((pattern) =>
     pattern.test(text),
@@ -890,9 +895,13 @@ export function shouldEnableAppTools(
   if (hasAppStateIntent(latestUserMessage)) return true;
   if (hasCodebaseIntent(latestUserMessage)) return true;
   if (hasCommandIntent(latestUserMessage)) return true;
+  // A deferred replay ("아까 그거 틀어줘", "다시 틀어줘") names no music at all --
+  // the title lives in the turn before it. Requiring the subject in the latest
+  // message alone is why those turns ran with no app tools, so the model could
+  // not have played anything even when it said it had.
   if (
     hasPlaybackIntent(latestUserMessage) &&
-    /(youtube|song|music|track|artist|유튜브|노래|음악)/i.test(latestUserMessage)
+    (MUSIC_SUBJECT_PATTERN.test(latestUserMessage) || MUSIC_SUBJECT_PATTERN.test(recentContext))
   ) {
     return true;
   }
@@ -947,6 +956,12 @@ export function shouldUseDialogModel(
   // (and wrongly) reports that browser access is not available this session.
   if (hasBrowserIntent(latestUserMessage)) return false;
   if (hasActionableAppIntent(latestUserMessage)) return false;
+  // Same reason, generalized: the dialog array is respond_to_user +
+  // finish_target, so ANY turn that needs app tools is unservable here. Without
+  // this the two decisions could disagree -- app tools judged necessary, then
+  // withheld because the route had already been downgraded -- which is exactly
+  // how a playback request reached the model with nothing to play it.
+  if (shouldEnableAppTools(latestUserMessage, history)) return false;
 
   const recentContext = normalizeWhitespace(
     history
