@@ -22,7 +22,9 @@ const CONFIG_KEY = 'webuiapps-llm-config';
 
 const PLAY_CHIP = '▶ 재생';
 const MUSIC_DISMISS_CHIP = '다음에';
-const RECOMMENDED_QUERY = 'E2E 여름 노래모음 KPOP PLAYLIST';
+const RECOMMENDED_TITLE = 'E2E 8월 여름 노래모음 KPOP PLAYLIST';
+// Taste-derived picks carry the channel too (aoiMusicTaste.recordYouTubePlay).
+const RECOMMENDED_QUERY = `${RECOMMENDED_TITLE} - OpenRoom`;
 
 const NEWS_CHIP = '📰 관심 있어';
 const NEWS_ARTICLE_ID = 'live-e2e-chip-1';
@@ -34,14 +36,26 @@ const NEWS_ARTICLE_BODY = 'Full fixture body for the restored news chip test.';
 // build their fixtures from the bank itself.
 const PREFERENCE_PROMPT = '요즘 가장 깊게 파고들고 싶은 기술 주제가 뭐야?';
 
+// Deliberately ranked the way YouTube ranked the real case: the sibling upload
+// first, the video Aoi actually named second. Autoplay must start the named one.
 const FIXTURE_RESULTS = [
   {
-    id: 'vid-chip',
-    title: 'Chip Recovered Video',
+    id: 'vid-wrong',
+    title: 'E2E 7월 여름 노래모음 KPOP PLAYLIST',
     channel: 'OpenRoom',
-    duration: '3:21',
-    views: '1M views',
-    published: 'today',
+    duration: '1:08:57',
+    views: '245,323 views',
+    published: '1 month ago',
+    thumbnail: '',
+    url: 'https://www.youtube.com/watch?v=vid-wrong',
+  },
+  {
+    id: 'vid-chip',
+    title: RECOMMENDED_TITLE,
+    channel: 'OpenRoom',
+    duration: '1:02:53',
+    views: '112,033 views',
+    published: '2 weeks ago',
     thumbnail: '',
     url: 'https://www.youtube.com/watch?v=vid-chip',
   },
@@ -211,8 +225,9 @@ test.describe('Aoi nudge chips after the pending offer is lost', () => {
       timeout: 30_000,
     });
     await expect(page.getByTestId('yt-result-card-vid-chip')).toBeVisible({ timeout: 30_000 });
-    // autoplay: '1' -- the first hit is loaded into the player, not just listed.
-    await expect(page.getByTestId('yt-player-title')).toHaveText('Chip Recovered Video');
+    // autoplay: '1' loads a video into the player -- and it must be the one the
+    // card named, not the higher-ranked sibling sitting above it in the list.
+    await expect(page.getByTestId('yt-player-title')).toHaveText(RECOMMENDED_TITLE);
     // The search box must show what is actually playing. A cold open applies
     // state.json after the agent action lands, so this catches the stale query
     // being restored over the one Aoi just ran.

@@ -100,6 +100,96 @@ async function loadFallbackResults(
   }
 }
 
+// Agent-driven autoplay must start the video Aoi NAMED, not whatever YouTube
+// ranks first. Aoi's personal picks are title-derived ("<title> - <channel>",
+// see aoiMusicTaste.recordYouTubePlay), and relevance ranking routinely puts a
+// different upload of the same series on top: asking for the August mix and
+// getting July, with the August one sitting second in the very same list.
+//
+// Matching is deliberately conservative. Only a query that clearly names one
+// video overrides the top hit; a generic mood query ("lofi hip hop radio ...")
+// matches nothing here and keeps the previous behaviour.
+const MIN_TITLE_LIKE_QUERY_CHARS = 12;
+
+// NFKC folds the styled unicode these titles like to use (mathematical bold
+// italic "Playlist" and friends) onto plain letters, so a stored query and the
+// title YouTube returns compare equal.
+function normalizeForTitleMatch(value: string): string {
+  return value.normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function byNormalizedTitleLength(
+  direction: 'longest' | 'shortest',
+): (a: YoutubeSearchResult, b: YoutubeSearchResult) => number {
+  return (a, b) => {
+    const lengthA = normalizeForTitleMatch(a.title).length;
+    const lengthB = normalizeForTitleMatch(b.title).length;
+    return direction === 'longest' ? lengthB - lengthA : lengthA - lengthB;
+  };
+}
+
+/**
+ * Choose which search hit an autoplay request should start.
+ *
+ * Returns null only for an empty result set; otherwise it always yields
+ * something, falling back to the top hit when the query does not name a
+ * specific video.
+ */
+export function pickAutoplayResult(
+  results: readonly YoutubeSearchResult[],
+  query: string,
+): YoutubeSearchResult | null {
+  if (results.length === 0) {
+    return null;
+  }
+  const target = normalizeForTitleMatch(query);
+  if (!target) {
+    return results[0];
+  }
+
+  const exactTitle = results.find((result) => normalizeForTitleMatch(result.title) === target);
+  if (exactTitle) {
+    return exactTitle;
+  }
+
+  // The shape a taste-derived query takes when the channel is not already part
+  // of the title.
+  const exactTitleAndChannel = results.find(
+    (result) => normalizeForTitleMatch(`${result.title} - ${result.channel}`) === target,
+  );
+  if (exactTitleAndChannel) {
+    return exactTitleAndChannel;
+  }
+
+  // Below this a query is too generic for substring matching to mean anything.
+  if (target.length < MIN_TITLE_LIKE_QUERY_CHARS) {
+    return results[0];
+  }
+
+  // The query spells this title out and adds something (usually the channel).
+  // Longest wins: it is the most specific title the query can account for.
+  const spelledOutByQuery = [...results]
+    .filter((result) => {
+      const title = normalizeForTitleMatch(result.title);
+      return title.length >= MIN_TITLE_LIKE_QUERY_CHARS && target.includes(title);
+    })
+    .sort(byNormalizedTitleLength('longest'))[0];
+  if (spelledOutByQuery) {
+    return spelledOutByQuery;
+  }
+
+  // The title spells the query out and adds a suffix ("... [4K]", "(Official)").
+  // Shortest wins: least padding around what was asked for.
+  const titleContainsQuery = [...results]
+    .filter((result) => normalizeForTitleMatch(result.title).includes(target))
+    .sort(byNormalizedTitleLength('shortest'))[0];
+  if (titleContainsQuery) {
+    return titleContainsQuery;
+  }
+
+  return results[0];
+}
+
 export function extractYoutubeVideoId(url: string): string | null {
   try {
     const parsed = new URL(url);

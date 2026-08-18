@@ -35,6 +35,7 @@ import './i18n';
 import {
   buildDirectResult,
   fetchYoutubeSearchResults,
+  pickAutoplayResult,
   type YoutubeSearchResult,
 } from './searchUtils';
 import {
@@ -509,10 +510,16 @@ const YouTubeApp: React.FC = () => {
           return { ok: false, error: 'search superseded by a newer one' };
         }
         setSearchResults(results);
-        if (options?.autoplay && results[0]) {
-          setSelectedResult(results[0]);
-          setCurrentPlayingVideoId(results[0].id);
-          setAutoplayVideoId(results[0].id);
+        if (options?.autoplay) {
+          // Start the video the query actually names, not whatever YouTube
+          // ranked first -- relevance order regularly puts a sibling upload on
+          // top of the exact one that was asked for.
+          const autoplayTarget = pickAutoplayResult(results, query);
+          if (autoplayTarget) {
+            setSelectedResult(autoplayTarget);
+            setCurrentPlayingVideoId(autoplayTarget.id);
+            setAutoplayVideoId(autoplayTarget.id);
+          }
         }
         if (results.length === 0) {
           return { ok: false, error: `no results for "${query}"` };
