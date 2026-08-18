@@ -61,10 +61,33 @@ read back. An invoke is `confirmed` when UIA reports the pattern succeeded.
 | `element_ref_stale` | The window changed since the snapshot — take a fresh one. |
 | `element_ref_unknown` | Ref out of range for that snapshot. |
 | `uia_unsupported` | No usable pattern; pass `--allow-foreground` for rung 2. |
+| `foreground_denied` | Windows refused to bring the window forward — see below. |
+| `element_obscured` | Another window covers the click point. |
+| `element_not_on_screen` | The element has no usable on-screen rectangle. |
+| `input_blocked` | `SendInput` was blocked (UIPI / higher-privilege window). |
 | `no_automation_tree` | (snapshot note) The window exposes nothing to UIA at all. |
 | `window_not_found` | The handle is not a live window. |
 
-A refusal always reports `effect: suspected_noop`, never a claimed effect.
+A refusal always reports `effect: suspected_noop`, never a claimed effect, and
+in the SendInput rung a refusal means **no input was synthesized at all**.
+
+### Why `foreground_denied` exists
+
+Windows routinely refuses a foreground change requested by a background process
+— it flashes the taskbar instead. The daemon spawns this helper from the
+background, which is exactly that case, and it is not deterministic: the test
+suite has seen the same call granted on one run and refused on the next.
+
+Clicking anyway is the dangerous option. The coordinates belong to the target
+element, but if the target never came forward those coordinates now belong to
+whatever window IS in front — so Aoi would deliver a real click to something
+nobody asked about. The helper therefore confirms it actually got the foreground
+(and that the click point is not covered) and refuses otherwise.
+
+Absolute mouse coordinates are normalized across the **virtual** screen, whose
+origin is negative when a monitor sits left of or above the primary one. That
+origin is included; dropping it puts the click on the wrong monitor while
+`SendInput` still reports success.
 
 ### Refs are addressing, never a trust shortcut
 
@@ -147,3 +170,9 @@ real desktop: driving their live browser to prove a click landed is exactly the
 side effect this helper is built to keep under control. For the same reason the
 SendInput rung is opt-in — it takes over the real mouse — and the test restores
 the cursor position afterwards.
+
+That rung asserts whichever outcome occurred, because the test cannot decide
+whether Windows grants the foreground: if the click was delivered it must land
+inside the target control, and if it was refused the mouse must not have moved
+at all. Checking only that `SendInput` returned would repeat the exact mistake
+this contract exists to catch.

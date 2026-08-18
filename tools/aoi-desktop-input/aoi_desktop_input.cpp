@@ -126,37 +126,156 @@ std::string JsonEscape(const std::string& value)
     return out;
 }
 
-// Minimal scalar reader. The command is produced by the daemon, not by a model,
-// but it is still parsed defensively: anything missing yields an empty value and
-// the operation refuses rather than guessing.
+// Raw text of a TOP-LEVEL key's value.
+//
+// This replaced a substring search for "\"ref\"", which was shorter and, tested
+// head to head, not actually steerable: a JSON string cannot contain a raw
+// quote, so an escaped \"ref\" in typed text never matches the needle. What the
+// substring search DOES get wrong is structure -- it takes the first match
+// anywhere, so a nested object ({"target":{"ref":9},"ref":3}) silently wins over
+// the real key, and it reads a value by scanning forward rather than by bounds.
+//
+// One of these values is text the model chose, and it decides which element gets
+// driven. That is not a place to rely on "no one can currently construct the bad
+// input"; walking the object and matching only depth-1 keys costs little and
+// removes the question.
+bool ExtractTopLevelRaw(const std::string& json, const std::string& key, std::string& raw)
+{
+    size_t i = 0;
+    while (i < json.size() && json[i] != '{')
+    {
+        ++i;
+    }
+    if (i >= json.size())
+    {
+        return false;
+    }
+    ++i;
+
+    while (i < json.size())
+    {
+        while (i < json.size() &&
+               (json[i] == ' ' || json[i] == '\t' || json[i] == '\n' || json[i] == '\r' ||
+                json[i] == ','))
+        {
+            ++i;
+        }
+        if (i >= json.size() || json[i] == '}')
+        {
+            break;
+        }
+        if (json[i] != '"')
+        {
+            return false;
+        }
+
+        std::string name;
+        ++i;
+        while (i < json.size() && json[i] != '"')
+        {
+            if (json[i] == '\\' && i + 1 < json.size())
+            {
+                ++i;
+            }
+            name.push_back(json[i]);
+            ++i;
+        }
+        if (i >= json.size())
+        {
+            return false;
+        }
+        ++i;
+
+        while (i < json.size() && (json[i] == ' ' || json[i] == '\t'))
+        {
+            ++i;
+        }
+        if (i >= json.size() || json[i] != ':')
+        {
+            return false;
+        }
+        ++i;
+        while (i < json.size() && (json[i] == ' ' || json[i] == '\t'))
+        {
+            ++i;
+        }
+
+        const size_t valueStart = i;
+        int depth = 0;
+        bool inString = false;
+        while (i < json.size())
+        {
+            const char c = json[i];
+            if (inString)
+            {
+                if (c == '\\')
+                {
+                    i += 2;
+                    continue;
+                }
+                if (c == '"')
+                {
+                    inString = false;
+                }
+            }
+            else if (c == '"')
+            {
+                inString = true;
+            }
+            else if (c == '{' || c == '[')
+            {
+                ++depth;
+            }
+            else if (c == '}' || c == ']')
+            {
+                if (depth == 0)
+                {
+                    break;
+                }
+                --depth;
+            }
+            else if (c == ',' && depth == 0)
+            {
+                break;
+            }
+            ++i;
+        }
+
+        if (name == key)
+        {
+            raw = json.substr(valueStart, (i > valueStart ? i - valueStart : 0));
+            return true;
+        }
+    }
+    return false;
+}
+
+// Minimal scalar readers. Anything missing or malformed yields an empty/fallback
+// value, and the operation refuses rather than guessing.
 std::string JsonReadString(const std::string& json, const std::string& key)
 {
-    const std::string needle = "\"" + key + "\"";
-    size_t pos = json.find(needle);
+    std::string raw;
     std::string result;
     do
     {
-        if (pos == std::string::npos)
+        if (!ExtractTopLevelRaw(json, key, raw))
         {
             break;
         }
-        pos = json.find(':', pos + needle.size());
-        if (pos == std::string::npos)
+        while (!raw.empty() && (raw[raw.size() - 1] == ' ' || raw[raw.size() - 1] == '\t'))
+        {
+            raw.erase(raw.size() - 1);
+        }
+        if (raw.size() < 2 || raw[0] != '"' || raw[raw.size() - 1] != '"')
         {
             break;
         }
-        pos = json.find('"', pos);
-        if (pos == std::string::npos)
+        for (size_t i = 1; i + 1 < raw.size(); ++i)
         {
-            break;
-        }
-        ++pos;
-        while (pos < json.size() && json[pos] != '"')
-        {
-            if (json[pos] == '\\' && pos + 1 < json.size())
+            if (raw[i] == '\\' && i + 2 < raw.size())
             {
-                ++pos;
-                const char escaped = json[pos];
+                ++i;
+                const char escaped = raw[i];
                 if (escaped == 'n')
                 {
                     result.push_back('\n');
@@ -165,6 +284,10 @@ std::string JsonReadString(const std::string& json, const std::string& key)
                 {
                     result.push_back('\t');
                 }
+                else if (escaped == 'r')
+                {
+                    result.push_back('\r');
+                }
                 else
                 {
                     result.push_back(escaped);
@@ -172,9 +295,8 @@ std::string JsonReadString(const std::string& json, const std::string& key)
             }
             else
             {
-                result.push_back(json[pos]);
+                result.push_back(raw[i]);
             }
-            ++pos;
         }
     } while (false);
     return result;
@@ -182,32 +304,17 @@ std::string JsonReadString(const std::string& json, const std::string& key)
 
 long JsonReadNumber(const std::string& json, const std::string& key, long fallback)
 {
-    const std::string needle = "\"" + key + "\"";
-    size_t pos = json.find(needle);
+    std::string raw;
     long result = fallback;
     do
     {
-        if (pos == std::string::npos)
-        {
-            break;
-        }
-        pos = json.find(':', pos + needle.size());
-        if (pos == std::string::npos)
-        {
-            break;
-        }
-        ++pos;
-        while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t'))
-        {
-            ++pos;
-        }
-        if (pos >= json.size())
+        if (!ExtractTopLevelRaw(json, key, raw))
         {
             break;
         }
         char* end = NULL;
-        const long parsed = strtol(json.c_str() + pos, &end, 10);
-        if (end == json.c_str() + pos)
+        const long parsed = strtol(raw.c_str(), &end, 10);
+        if (end == raw.c_str())
         {
             break;
         }
@@ -840,28 +947,82 @@ bool ResolveRef(IUIAutomation* automation,
     return true;
 }
 
+// Ask for the foreground and CONFIRM we got it.
+//
+// Windows routinely refuses a foreground change requested by a background
+// process -- it flashes the taskbar instead and SetForegroundWindow reports
+// nothing useful. The daemon spawns this helper from the background, which is
+// exactly the case where the refusal happens. Clicking anyway would send a real
+// mouse click at screen coordinates now owned by whatever window IS in front:
+// Aoi would click something on the operator's desktop that nobody asked about.
+bool BringToForeground(HWND hwnd)
+{
+    const HWND wanted = GetAncestor(hwnd, GA_ROOT);
+    SetForegroundWindow(hwnd);
+    for (int attempt = 0; attempt < 20; ++attempt)
+    {
+        const HWND current = GetForegroundWindow();
+        if (current != NULL && GetAncestor(current, GA_ROOT) == wanted)
+        {
+            return true;
+        }
+        Sleep(50);
+    }
+    return false;
+}
+
 // Rung 2. Real mouse input: moves the operator's cursor and needs the window in
 // front, so it only runs with --allow-foreground and never claims verification.
-bool SendInputClick(IUIAutomationElement* element, std::string& detail)
+bool SendInputClick(HWND hwnd, IUIAutomationElement* element, std::string& code,
+                    std::string& detail)
 {
     RECT rect;
     if (FAILED(element->get_CurrentBoundingRectangle(&rect)))
     {
+        code = "element_not_on_screen";
         detail = "element has no on-screen rectangle";
         return false;
     }
     if (rect.right <= rect.left || rect.bottom <= rect.top)
     {
+        code = "element_not_on_screen";
         detail = "element is not on screen";
         return false;
     }
     const int x = rect.left + (rect.right - rect.left) / 2;
     const int y = rect.top + (rect.bottom - rect.top) / 2;
 
+    if (!BringToForeground(hwnd))
+    {
+        code = "foreground_denied";
+        detail = "Windows refused to bring the window forward; clicking now would hit whatever "
+                 "is actually in front";
+        return false;
+    }
+
+    // Even in front, the point can be covered (a dialog, an always-on-top
+    // window, another app's overlay). Aim only where the target really is.
+    POINT point;
+    point.x = x;
+    point.y = y;
+    const HWND atPoint = WindowFromPoint(point);
+    if (atPoint == NULL || GetAncestor(atPoint, GA_ROOT) != GetAncestor(hwnd, GA_ROOT))
+    {
+        code = "element_obscured";
+        detail = "another window covers the click point";
+        return false;
+    }
+
+    // Absolute coordinates are normalized across the VIRTUAL screen, whose
+    // origin is negative when a monitor sits left of or above the primary one.
+    // Dropping that origin puts the click on the wrong monitor entirely.
+    const int originX = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    const int originY = GetSystemMetrics(SM_YVIRTUALSCREEN);
     const int screenWidth = GetSystemMetrics(SM_CXVIRTUALSCREEN);
     const int screenHeight = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-    if (screenWidth <= 0 || screenHeight <= 0)
+    if (screenWidth <= 1 || screenHeight <= 1)
     {
+        code = "no_screen_metrics";
         detail = "no virtual screen metrics";
         return false;
     }
@@ -869,8 +1030,10 @@ bool SendInputClick(IUIAutomationElement* element, std::string& detail)
     INPUT inputs[3];
     ZeroMemory(inputs, sizeof(inputs));
     inputs[0].type = INPUT_MOUSE;
-    inputs[0].mi.dx = static_cast<LONG>((static_cast<double>(x) * 65535.0) / screenWidth);
-    inputs[0].mi.dy = static_cast<LONG>((static_cast<double>(y) * 65535.0) / screenHeight);
+    inputs[0].mi.dx =
+        static_cast<LONG>((static_cast<double>(x - originX) * 65535.0) / (screenWidth - 1));
+    inputs[0].mi.dy =
+        static_cast<LONG>((static_cast<double>(y - originY) * 65535.0) / (screenHeight - 1));
     inputs[0].mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
     inputs[1].type = INPUT_MOUSE;
     inputs[1].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
@@ -880,6 +1043,7 @@ bool SendInputClick(IUIAutomationElement* element, std::string& detail)
     const UINT sent = SendInput(3, inputs, sizeof(INPUT));
     if (sent != 3)
     {
+        code = "input_blocked";
         detail = "SendInput was blocked (UIPI or a higher-privilege window)";
         return false;
     }
@@ -933,16 +1097,18 @@ void RunInvoke(IUIAutomation* automation, HWND hwnd, int ref,
         return;
     }
 
-    SetForegroundWindow(hwnd);
+    std::string clickCode;
     std::string clickDetail;
-    if (SendInputClick(element, clickDetail))
+    if (SendInputClick(hwnd, element, clickCode, clickDetail))
     {
-        // Nothing here can prove the click landed where it was aimed.
+        // The click was aimed at the target and delivered, but nothing here can
+        // prove the app did anything with it.
         EmitVerdict(true, "unverifiable", false, "sendinput", clickDetail);
     }
     else
     {
-        EmitVerdict(false, "suspected_noop", false, "sendinput", clickDetail);
+        // Refused BEFORE any input was synthesized: no click happened at all.
+        EmitFailure(clickCode, clickDetail);
     }
     ReleaseElements(elements);
 }

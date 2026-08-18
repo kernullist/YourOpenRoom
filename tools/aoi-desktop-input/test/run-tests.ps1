@@ -116,6 +116,8 @@ Add-Type -Namespace AoiTest -Name Win -MemberDefinition @'
 [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr SendMessageW(IntPtr h, uint msg, IntPtr wp, System.Text.StringBuilder lp);
 [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr h, int id);
 [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h, uint msg, IntPtr wp, IntPtr lp);
+[DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, ref RECT r);
+[StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
 '@
 
 $fixture = Start-Process -FilePath $fixtureExe -ArgumentList "--title `"$title`"" -PassThru
@@ -214,12 +216,36 @@ try
     $fresh = Invoke-Helper @{ op = 'snapshot'; hwnd = $handle }
     Assert-That 'the changed window mints a new snapshot id' ($fresh.snapshotId -ne $snap.snapshotId)
 
+    # --- typed text must not steer the command ------------------------------
+    # The value is text the model chose, and the same command names the element
+    # to drive. This pins that text which LOOKS like command structure is stored
+    # as literal characters and changes nothing about the target. (The older
+    # substring parser passed this too -- escaping already prevented it. The
+    # assertion stays because the property is what matters, not the parser that
+    # happens to provide it.)
+    Write-Host '[test] parser is not steerable by typed text'
+    $freshForInjection = Invoke-Helper @{ op = 'snapshot'; hwnd = $handle }
+    $injMessage = $freshForInjection.elements | Where-Object { $_.name -like 'Message*' } | Select-Object -First 1
+    $injPassword = $freshForInjection.elements | Where-Object { $_.name -like 'Password*' } | Select-Object -First 1
+    $payload = 'x\", \"ref\": ' + $injPassword.ref + ', \"junk\": \"y'
+    $inj = Invoke-Helper @{ op = 'set_value'; hwnd = $handle; ref = $injMessage.ref; snapshotId = $freshForInjection.snapshotId; value = $payload }
+    Assert-That 'a value containing another key does not redirect the write' ($inj.code -ne 'element_forbidden') "code=$($inj.code) detail=$($inj.detail)"
+
+    $buffer = New-Object System.Text.StringBuilder 512
+    [void][AoiTest.Win]::SendMessageW([AoiTest.Win]::GetDlgItem($hwnd, 102), 0x000D, [IntPtr]511, $buffer)
+    Assert-That 'the payload is stored as literal text' ($buffer.ToString() -eq $payload) "got '$($buffer.ToString())'"
+
+    $buffer = New-Object System.Text.StringBuilder 512
+    [void][AoiTest.Win]::SendMessageW([AoiTest.Win]::GetDlgItem($hwnd, 103), 0x000D, [IntPtr]511, $buffer)
+    Assert-That 'the password field is still untouched' ($buffer.ToString() -eq '') "contains '$($buffer.ToString())'"
+
     # --- the SendInput rung -------------------------------------------------
     # A plain edit box exposes no InvokePattern, so invoking one is the case
     # where rung 1 cannot run. What happens next is a security decision, not a
     # convenience one: without the flag it must refuse rather than quietly
     # escalate to real mouse input.
     Write-Host '[test] sendinput rung'
+    $fresh = Invoke-Helper @{ op = 'snapshot'; hwnd = $handle }
     $freshMessage = $fresh.elements | Where-Object { $_.name -like 'Message*' } | Select-Object -First 1
     $noPattern = Invoke-Helper @{ op = 'invoke'; hwnd = $handle; ref = $freshMessage.ref; snapshotId = $fresh.snapshotId }
     Assert-That 'synthetic input is not used unless asked for' ($noPattern.code -eq 'uia_unsupported') "code=$($noPattern.code)"
@@ -230,12 +256,43 @@ try
         try
         {
             $clickedByInput = Invoke-Helper @{ op = 'invoke'; hwnd = $handle; ref = $freshMessage.ref; snapshotId = $fresh.snapshotId } -AllowForeground
-            Assert-That 'the synthetic click is delivered' ($clickedByInput.ok -eq $true) "detail=$($clickedByInput.detail)"
-            Assert-That 'the synthetic click reports its path' ($clickedByInput.path -eq 'sendinput') "path=$($clickedByInput.path)"
-            # The whole point: nothing in this rung can prove the click landed
-            # where it was aimed, so it must never say confirmed.
-            Assert-That 'the synthetic click is never called confirmed' ($clickedByInput.effect -eq 'unverifiable') "effect=$($clickedByInput.effect)"
-            Assert-That 'the synthetic click claims no verification' ($clickedByInput.verified -eq $false)
+            $landed = [System.Windows.Forms.Cursor]::Position
+            $box = New-Object AoiTest.Win+RECT
+            [void][AoiTest.Win]::GetWindowRect([AoiTest.Win]::GetDlgItem($hwnd, 102), [ref]$box)
+
+            # Both outcomes are correct, and which one happens is not the test's
+            # to decide: Windows grants or refuses a foreground change from a
+            # background process on its own terms. What must hold is that each
+            # outcome is reported honestly -- so assert the branch that occurred
+            # rather than requiring a precondition the test cannot control.
+            if ($clickedByInput.ok -eq $true)
+            {
+                Assert-That 'the synthetic click reports its path' ($clickedByInput.path -eq 'sendinput') "path=$($clickedByInput.path)"
+                # Nothing in this rung can prove the click did anything, so it
+                # must never say confirmed.
+                Assert-That 'the synthetic click is never called confirmed' ($clickedByInput.effect -eq 'unverifiable') "effect=$($clickedByInput.effect)"
+                Assert-That 'the synthetic click claims no verification' ($clickedByInput.verified -eq $false)
+
+                # Asserting only that SendInput returned would repeat the exact
+                # mistake this contract exists to catch: the call succeeding says
+                # nothing about WHERE the click went. On a multi-monitor desktop a
+                # coordinate bug puts it on another screen and the call still
+                # succeeds. So check the pointer is inside the target control.
+                $inside = ($landed.X -ge $box.Left) -and ($landed.X -le $box.Right) -and `
+                          ($landed.Y -ge $box.Top) -and ($landed.Y -le $box.Bottom)
+                Assert-That 'the click landed on the targeted control' $inside "cursor=($($landed.X),$($landed.Y)) control=($($box.Left),$($box.Top))-($($box.Right),$($box.Bottom))"
+            }
+            else
+            {
+                Assert-That 'a refused foreground change is named' ($clickedByInput.code -eq 'foreground_denied' -or $clickedByInput.code -eq 'element_obscured') "code=$($clickedByInput.code)"
+                Assert-That 'a refused click claims no effect' ($clickedByInput.effect -eq 'suspected_noop') "effect=$($clickedByInput.effect)"
+                # The refusal is only worth anything if no input was synthesized.
+                # If the cursor moved, something WAS clicked -- somewhere nobody
+                # asked for, since the target never came forward.
+                $moved = ($landed.X -ne $cursor.X) -or ($landed.Y -ne $cursor.Y)
+                Assert-That 'a refused click moves no mouse at all' (-not $moved) "cursor went ($($cursor.X),$($cursor.Y)) -> ($($landed.X),$($landed.Y))"
+                Write-Host "       (Windows refused the foreground change this run; that is the path under test)" -ForegroundColor DarkGray
+            }
         }
         finally
         {
