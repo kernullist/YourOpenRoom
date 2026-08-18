@@ -123,7 +123,9 @@ Add-Type -Namespace AoiTest -Name Win -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h, uint msg, IntPtr wp, IntPtr lp);
 [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, ref RECT r);
 [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+[DllImport("user32.dll")] public static extern bool ScreenToClient(IntPtr h, ref POINT p);
 [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+[StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
 '@
 
 function Get-ControlText
@@ -330,6 +332,41 @@ try
 
     $badButton = Invoke-Helper @{ op = 'click'; hwnd = $handle; ref = $clickMe.ref; snapshotId = $snap.snapshotId; button = 'thumb' }
     Assert-That 'an unknown mouse button is refused' ($badButton.code -eq 'bad_request') "code=$($badButton.code)"
+
+    # --- coordinate targeting ------------------------------------------------
+    # The escape hatch for windows that expose no automation tree. It must not
+    # become a way around the element guards.
+    Write-Host '[test] coordinate targeting'
+    $box = New-Object AoiTest.Win+RECT
+    [void][AoiTest.Win]::GetWindowRect([AoiTest.Win]::GetDlgItem($hwnd, 101), [ref]$box)
+    $frame = New-Object AoiTest.Win+RECT
+    [void][AoiTest.Win]::GetWindowRect($hwnd, [ref]$frame)
+    # Window-relative, but GetWindowRect is frame-relative, so convert through
+    # screen coordinates the same way the helper does.
+    $screenX = $box.Left + [int](($box.Right - $box.Left) / 2)
+    $screenY = $box.Top + [int](($box.Bottom - $box.Top) / 2)
+    $clientPoint = New-Object AoiTest.Win+POINT
+    $clientPoint.X = $screenX
+    $clientPoint.Y = $screenY
+    [void][AoiTest.Win]::ScreenToClient($hwnd, [ref]$clientPoint)
+
+    $tallyBefore = Get-ControlText $hwnd 105
+    $byPoint = Invoke-Helper @{ op = 'click'; hwnd = $handle; x = $clientPoint.X; y = $clientPoint.Y; delivery = 'background' }
+    Assert-That 'a coordinate click is delivered' ($byPoint.ok -eq $true) "detail=$($byPoint.detail)"
+    Start-Sleep -Milliseconds 250
+    Assert-That 'the coordinate click really reached the app' ((Get-ControlText $hwnd 105) -ne $tallyBefore) "tally stayed $tallyBefore"
+    # It landed on a real control, so the guards ran and it should say so.
+    Assert-That 'it reports that a control was behind the point' ($byPoint.detail -match 'known control') "detail=$($byPoint.detail)"
+
+    # The password field by POSITION must be refused exactly like by ref --
+    # otherwise coordinates are a way around the credential guard.
+    [void][AoiTest.Win]::GetWindowRect([AoiTest.Win]::GetDlgItem($hwnd, 103), [ref]$box)
+    $pwPoint = New-Object AoiTest.Win+POINT
+    $pwPoint.X = $box.Left + [int](($box.Right - $box.Left) / 2)
+    $pwPoint.Y = $box.Top + [int](($box.Bottom - $box.Top) / 2)
+    [void][AoiTest.Win]::ScreenToClient($hwnd, [ref]$pwPoint)
+    $atPassword = Invoke-Helper @{ op = 'click'; hwnd = $handle; x = $pwPoint.X; y = $pwPoint.Y; delivery = 'background' }
+    Assert-That 'a coordinate over a credential field is refused' ($atPassword.code -eq 'element_forbidden') "code=$($atPassword.code)"
 
     # --- stale refs ----------------------------------------------------------
     Write-Host '[test] stale refs'

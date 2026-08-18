@@ -986,6 +986,34 @@ export async function snapshotAoiHostDesktopWindow(
  * code -- not a thrown error. Callers must read `effect`, never `ok`, to decide
  * whether anything happened.
  */
+/**
+ * Click a raw point inside a window, for windows that describe no controls.
+ *
+ * There is no ref and so no snapshot check; the daemon resolves the point back
+ * to whatever element is there and applies the same credential and disabled
+ * guards, and says whether anything was behind it.
+ */
+export async function clickAoiHostDesktopPoint(params: {
+  hwnd: string;
+  x: number;
+  y: number;
+  button?: string;
+  clicks?: number;
+  delivery?: 'background' | 'foreground';
+}): Promise<AoiHostDesktopActView> {
+  const payload = await sendJson('/desktop-input', 'POST', {
+    op: 'click',
+    hwnd: params.hwnd,
+    x: params.x,
+    y: params.y,
+    ...(params.button ? { button: params.button } : {}),
+    ...(typeof params.clicks === 'number' ? { clicks: params.clicks } : {}),
+    ...(params.delivery ? { delivery: params.delivery } : {}),
+    ...(params.delivery === 'foreground' ? { allowForeground: true } : {}),
+  });
+  return readDesktopActPayload(payload);
+}
+
 export async function actOnAoiHostDesktopElement(params: {
   op?: 'invoke' | 'set_value' | 'click' | 'scroll' | 'drag' | 'select' | 'toggle';
   hwnd: string;

@@ -13,6 +13,7 @@
 import type { ToolDef } from './llmClient';
 import {
   actOnAoiHostDesktopElement,
+  clickAoiHostDesktopPoint,
   listAoiHostDesktopApps,
   listAoiHostDesktopWindows,
   sendAoiHostDesktopWindowInput,
@@ -43,6 +44,7 @@ export const DESKTOP_DRAG_TOOL = 'desktop_drag';
 export const DESKTOP_FOCUS_TOOL = 'desktop_focus';
 export const DESKTOP_SELECT_TOOL = 'desktop_select';
 export const DESKTOP_TOGGLE_TOOL = 'desktop_toggle';
+export const DESKTOP_CLICK_POINT_TOOL = 'desktop_click_point';
 
 const DESKTOP_INPUT_TOOLS: ReadonlySet<string> = new Set([
   DESKTOP_WINDOWS_TOOL,
@@ -57,6 +59,7 @@ const DESKTOP_INPUT_TOOLS: ReadonlySet<string> = new Set([
   DESKTOP_FOCUS_TOOL,
   DESKTOP_SELECT_TOOL,
   DESKTOP_TOGGLE_TOOL,
+  DESKTOP_CLICK_POINT_TOOL,
 ]);
 
 export function isDesktopInputTool(toolName: string): boolean {
@@ -256,6 +259,31 @@ export function getDesktopInputToolDefinitions(): ToolDef[] {
             },
           },
           required: ['hwnd', 'ref', 'snapshot_id'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: DESKTOP_CLICK_POINT_TOOL,
+        description:
+          'LAST RESORT: click a raw point in a window, measured from its top-left corner. ' +
+          'Use ONLY when desktop_snapshot returned note="no_automation_tree" -- that window tells ' +
+          'Windows nothing about its controls, so there is no ref to click and this is the only ' +
+          'way to reach it. If the snapshot listed elements, use desktop_act or desktop_click ' +
+          'instead: a ref is checked against the window, a raw point is aimed at a guess. ' +
+          'Credential fields are still refused by position, and nothing here can verify the click ' +
+          'did anything.',
+        parameters: {
+          type: 'object',
+          properties: {
+            hwnd: { type: 'string', description: 'Window handle.' },
+            x: { type: 'number', description: 'X from the window left edge, in pixels.' },
+            y: { type: 'number', description: 'Y from the window top edge, in pixels.' },
+            button: { type: 'string', enum: ['left', 'right', 'middle'] },
+            clicks: { type: 'number', description: '1 (default) or 2 for a double click.' },
+          },
+          required: ['hwnd', 'x', 'y'],
         },
       },
     },
@@ -549,6 +577,24 @@ export async function executeDesktopInputTool(
         : '';
   if (!Number.isInteger(ref) || !snapshotId) {
     return notPerformed('ref and snapshot_id are required together');
+  }
+
+  if (toolName === DESKTOP_CLICK_POINT_TOOL) {
+    if (typeof params.x !== 'number' || typeof params.y !== 'number') {
+      return notPerformed('x and y are required');
+    }
+    // No ref, so no snapshot to be stale against. The daemon still checks what
+    // is under the point.
+    return describeDesktopActVerdict(
+      await clickAoiHostDesktopPoint({
+        hwnd,
+        x: params.x,
+        y: params.y,
+        ...(typeof params.button === 'string' ? { button: params.button } : {}),
+        ...(typeof params.clicks === 'number' ? { clicks: params.clicks } : {}),
+        ...(delivery ? { delivery } : {}),
+      }),
+    );
   }
 
   if (toolName === DESKTOP_CLICK_TOOL) {

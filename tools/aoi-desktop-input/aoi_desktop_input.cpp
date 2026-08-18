@@ -1950,6 +1950,47 @@ void RunType(HWND hwnd, const std::string& text, DeliveryMode delivery, bool all
     EmitVerdict(true, "unverifiable", false, "foreground", "text sent as real keyboard input");
 }
 
+// Coordinate targeting is the escape hatch for windows that expose no
+// automation tree at all -- UWP shells, games, some Electron. Without it those
+// windows are simply unreachable.
+//
+// It must not become a way around the element guards. Everything addressed by
+// ref is checked for being a credential field or disabled; a raw point would
+// skip all of that and could land on a password box by position. So the point is
+// resolved back to whatever element sits there and the SAME checks run. A window
+// with no tree yields no element, and only then does the point go through
+// unchecked -- which is exactly the case this exists for, and it is reported.
+bool CoordinateTargetAllowed(IUIAutomation* automation, POINT screenPoint, bool& hadElement,
+                             std::string& code, std::string& detail)
+{
+    hadElement = false;
+    IUIAutomationElement* atPoint = NULL;
+    if (FAILED(automation->ElementFromPoint(screenPoint, &atPoint)) || atPoint == NULL)
+    {
+        return true;
+    }
+
+    hadElement = true;
+    ElementInfo info;
+    ReadElementInfo(atPoint, false, info);
+    atPoint->Release();
+
+    if (info.sensitive)
+    {
+        code = "element_forbidden";
+        detail = "a credential field sits at that point; Aoi does not drive those, by "
+                 "coordinate or otherwise";
+        return false;
+    }
+    if (!info.enabled)
+    {
+        code = "element_disabled";
+        detail = "the control at that point is disabled; acting on it would do nothing";
+        return false;
+    }
+    return true;
+}
+
 // --- Op: click --------------------------------------------------------------
 //
 // A single click on a plain button is better served by invoke (rung 1, provable).
@@ -1957,7 +1998,7 @@ void RunType(HWND hwnd, const std::string& text, DeliveryMode delivery, bool all
 // modifiers -- and for controls that expose no InvokePattern at all.
 void RunClick(IUIAutomation* automation, HWND hwnd, int ref, const std::string& snapshotId,
               const std::string& button, int clicks, const std::vector<WORD>& modifiers,
-              DeliveryMode delivery, bool allowForeground)
+              DeliveryMode delivery, bool allowForeground, bool byPoint, POINT clientPoint)
 {
     ClickSpec spec;
     if (!ResolveClickSpec(button, spec))
@@ -1975,20 +2016,48 @@ void RunClick(IUIAutomation* automation, HWND hwnd, int ref, const std::string& 
     size_t index = 0;
     std::string code;
     std::string detail;
-    if (!ResolveRef(automation, hwnd, ref, snapshotId, elements, index, code, detail))
+    POINT center;
+    bool pointHadElement = false;
+
+    if (byPoint)
     {
-        EmitFailure(code, detail);
-        ReleaseElements(elements);
-        return;
+        // Window-relative, so a moved window does not silently redirect the
+        // click to wherever those screen pixels now belong.
+        center = clientPoint;
+        if (ClientToScreen(hwnd, &center) == FALSE)
+        {
+            EmitFailure("bad_request", "the point could not be mapped onto that window");
+            return;
+        }
+        if (!CoordinateTargetAllowed(automation, center, pointHadElement, code, detail))
+        {
+            EmitFailure(code, detail);
+            return;
+        }
+    }
+    else
+    {
+        if (!ResolveRef(automation, hwnd, ref, snapshotId, elements, index, code, detail))
+        {
+            EmitFailure(code, detail);
+            ReleaseElements(elements);
+            return;
+        }
+        if (!ElementCenter(elements[index].element, center))
+        {
+            EmitFailure("element_not_on_screen", "the element has no usable on-screen rectangle");
+            ReleaseElements(elements);
+            return;
+        }
     }
 
-    POINT center;
-    if (!ElementCenter(elements[index].element, center))
-    {
-        EmitFailure("element_not_on_screen", "the element has no usable on-screen rectangle");
-        ReleaseElements(elements);
-        return;
-    }
+    // A point with no element behind it is the tree-less case: nothing checked
+    // it, and the caller should know that rather than assume the usual guards
+    // ran.
+    const std::string aim = byPoint ? (pointHadElement ? " at a coordinate over a known control"
+                                                       : " at a coordinate with no control behind"
+                                                         " it, so no element checks applied")
+                                    : "";
 
     if (delivery != kDeliveryForeground)
     {
@@ -2009,7 +2078,7 @@ void RunClick(IUIAutomation* automation, HWND hwnd, int ref, const std::string& 
         {
             EmitVerdict(true, "unverifiable", false, "background",
                         "click posted to the target window without taking focus or moving the "
-                        "cursor");
+                        "cursor" + aim);
             ReleaseElements(elements);
             return;
         }
@@ -2049,7 +2118,8 @@ void RunClick(IUIAutomation* automation, HWND hwnd, int ref, const std::string& 
         return;
     }
     SendForegroundClick(center, spec, clicks, modifiers);
-    EmitVerdict(true, "unverifiable", false, "foreground", "click sent as real mouse input");
+    EmitVerdict(true, "unverifiable", false, "foreground",
+                "click sent as real mouse input" + aim);
     ReleaseElements(elements);
 }
 
@@ -2969,8 +3039,17 @@ int main(int argc, char** argv)
         ExtractTopLevelRaw(command, "modifiers", modifierRaw);
         ParseModifierList(modifierRaw, modifiers);
         const int clicks = static_cast<int>(JsonReadNumber(command, "clicks", 1));
+        // A ref is preferred and checked; a raw point is the fallback for
+        // windows that describe nothing.
+        std::string xRaw;
+        std::string yRaw;
+        const bool byPoint = (ref <= 0) && ExtractTopLevelRaw(command, "x", xRaw) &&
+                             ExtractTopLevelRaw(command, "y", yRaw);
+        POINT clientPoint;
+        clientPoint.x = static_cast<LONG>(JsonReadNumber(command, "x", 0));
+        clientPoint.y = static_cast<LONG>(JsonReadNumber(command, "y", 0));
         RunClick(automation, hwnd, ref, snapshotId, JsonReadString(command, "button"), clicks,
-                 modifiers, delivery, allowForeground);
+                 modifiers, delivery, allowForeground, byPoint, clientPoint);
     }
     else if (op == "scroll")
     {

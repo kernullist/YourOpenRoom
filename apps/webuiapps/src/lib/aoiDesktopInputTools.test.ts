@@ -114,6 +114,7 @@ describe('getDesktopInputToolDefinitions', () => {
       'desktop_key',
       'desktop_type',
       'desktop_click',
+      'desktop_click_point',
       'desktop_scroll',
       'desktop_drag',
       'desktop_focus',
@@ -151,6 +152,17 @@ describe('getDesktopInputToolDefinitions', () => {
     expect(byName.get('desktop_type')?.description).toContain('desktop_act');
     // A single left click is provable through UIA; desktop_click is not.
     expect(byName.get('desktop_click')?.description).toContain('desktop_act');
+  });
+
+  it('marks the raw-point click as a last resort and says when it applies', () => {
+    // A point is aimed at a guess; a ref is checked against the window. The
+    // model needs to know which situation it is in.
+    const point = getDesktopInputToolDefinitions().find(
+      (def) => def.function.name === 'desktop_click_point',
+    );
+    expect(point?.function.description).toContain('LAST RESORT');
+    expect(point?.function.description).toContain('no_automation_tree');
+    expect(point?.function.parameters.required).toEqual(['hwnd', 'x', 'y']);
   });
 
   it('steers the model away from click-then-click on a dropdown', () => {

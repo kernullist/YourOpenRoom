@@ -76,6 +76,26 @@ describe('parseAoiDesktopInputRequest', () => {
     }
   });
 
+  it('accepts a coordinate click for windows that describe nothing', () => {
+    // Without this, a window whose snapshot returns no_automation_tree is
+    // simply unreachable -- there is no ref to give.
+    const request = parseAoiDesktopInputRequest({ op: 'click', hwnd: '0x1', x: 40, y: 12 });
+    expect(request).toMatchObject({ op: 'click', x: 40, y: 12 });
+    // And no snapshot id is demanded, because there is no snapshot involved.
+    expect(request?.snapshotId).toBeUndefined();
+  });
+
+  it('refuses a coordinate that is not a sane window position', () => {
+    expect(parseAoiDesktopInputRequest({ op: 'click', hwnd: '0x1', x: -5, y: 10 })).toBeNull();
+    expect(parseAoiDesktopInputRequest({ op: 'click', hwnd: '0x1', x: 1.5, y: 10 })).toBeNull();
+    expect(parseAoiDesktopInputRequest({ op: 'click', hwnd: '0x1', x: 999999, y: 10 })).toBeNull();
+  });
+
+  it('still demands a ref when no coordinate was given', () => {
+    // The fallback must not become the default path.
+    expect(parseAoiDesktopInputRequest({ op: 'click', hwnd: '0x1' })).toBeNull();
+  });
+
   it('refuses input that names no target', () => {
     expect(parseAoiDesktopInputRequest({ op: 'key', hwnd: '0x1' })).toBeNull();
     expect(parseAoiDesktopInputRequest({ op: 'type', hwnd: '0x1', text: '' })).toBeNull();

@@ -508,6 +508,21 @@ const AOI_CAPABILITY_REGISTRY = {
     policyNotes:
       'Requires os_desktop_input AND the synthetic-input toggle: a drag cannot be delivered without taking focus and moving the real cursor. Can move or reorder things irreversibly, and nothing can verify what the app did with it.',
   },
+  desktop_click_point: {
+    name: 'desktop_click_point',
+    label: 'Desktop: click a raw point',
+    kind: 'tool',
+    surface: 'automation',
+    risk: 'high',
+    description:
+      'Click a coordinate inside a window, for windows that expose no accessibility tree at all.',
+    access: ['read', 'write'],
+    sandboxEligible: false,
+    approval: 'policy-gated',
+    promptVisible: true,
+    policyNotes:
+      'Requires os_desktop_input. Weaker than every ref-addressed tool: a ref is checked against the window it came from, a coordinate is aimed at a guess. It exists because a window with no automation tree is otherwise unreachable. The daemon still resolves the point back to whatever element is there and refuses credential fields by position.',
+  },
   desktop_select: {
     name: 'desktop_select',
     label: 'Desktop: choose an option',

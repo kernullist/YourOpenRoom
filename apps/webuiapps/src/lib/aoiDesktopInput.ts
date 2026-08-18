@@ -77,6 +77,8 @@ export interface AoiDesktopInputRequest {
   toRef?: number;
   option?: string;
   state?: string;
+  x?: number;
+  y?: number;
   // Opt in to the SendInput rung. Honored only when the separate foreground
   // capability is also enabled; the route enforces that, not this parser.
   allowForeground?: boolean;
@@ -214,6 +216,46 @@ export function parseAoiDesktopInputRequest(
       return null;
     }
     return { op, hwnd, text, delivery, allowForeground };
+  }
+
+  // Coordinate click: the fallback for windows that expose no automation tree,
+  // where there is no ref to give. The helper still resolves the point back to
+  // whatever element sits there and applies the same credential/disabled
+  // checks, so this is a targeting fallback, not a way around the guards.
+  if (op === 'click' && typeof body.x === 'number' && typeof body.y === 'number') {
+    const x = body.x;
+    const y = body.y;
+    if (
+      !Number.isInteger(x) ||
+      !Number.isInteger(y) ||
+      x < 0 ||
+      y < 0 ||
+      x > 32_767 ||
+      y > 32_767
+    ) {
+      return null;
+    }
+    const request: AoiDesktopInputRequest = { op, hwnd, x, y, delivery, allowForeground };
+    const button = readString(body, 'button');
+    if (button && !BUTTONS.has(button)) {
+      return null;
+    }
+    if (button) {
+      request.button = button;
+    }
+    const clicks = body.clicks;
+    if (clicks !== undefined) {
+      if (
+        typeof clicks !== 'number' ||
+        !Number.isInteger(clicks) ||
+        clicks < 1 ||
+        clicks > MAX_CLICKS
+      ) {
+        return null;
+      }
+      request.clicks = clicks;
+    }
+    return request;
   }
 
   const ELEMENT_OPS: ReadonlySet<string> = new Set([
@@ -548,7 +590,7 @@ export function runAoiDesktopInput(params: RunAoiDesktopInputParams): AoiDesktop
       command[key] = value;
     }
   }
-  for (const key of ['clicks', 'amount', 'toRef'] as const) {
+  for (const key of ['clicks', 'amount', 'toRef', 'x', 'y'] as const) {
     const value = request[key];
     if (typeof value === 'number') {
       command[key] = value;
