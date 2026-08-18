@@ -43,6 +43,15 @@ import {
   type CurrentModelUsageStatus,
 } from '@/lib/llmClient';
 import {
+  buildAoiAppActionClaimCorrectionPrompt,
+  buildAoiAppActionClaimFailureMessage,
+  createAoiAppActionClaimEvidence,
+  observeAoiAppActionDispatch,
+  resolveAoiAppActionClaimContract,
+  verifyAoiAppActionClaimContract,
+  type AoiAppActionClaimEvidence,
+} from '@/lib/aoiAppActionClaimContract';
+import {
   isAoiMusicPlayChip,
   isDeferredMusicPlaybackIntent,
   isDirectPlaylistPlaybackIntent,
@@ -7487,6 +7496,15 @@ const ChatPanel: React.FC<{
       history,
       confirmedActionRequest,
     });
+    // Obligation for this turn: if the user asked an app to DO something, the
+    // reply may not claim it happened unless an app_action actually succeeded.
+    // Only meaningful when the model can dispatch at all -- a provider without
+    // structured tool calls physically cannot satisfy the contract, and the
+    // system prompt already tells it not to claim tool actions, so enforcing
+    // here would just burn the correction budget.
+    const appActionClaimContract = toolCallRuntimeAvailable
+      ? resolveAoiAppActionClaimContract({ latestUserMessage })
+      : null;
     const liveFieldTruthRequested = shouldLoadAoiLiveFieldTruth(
       [latestUserMessage, confirmedActionRequest ?? '', fileTaskContract?.sourceMessage ?? ''].join(
         '\n',
@@ -7904,6 +7922,7 @@ const ChatPanel: React.FC<{
     let deliveredToolCalls: string[] = [];
     let pendingResearchStartAck: string | null = null;
     let fileTaskEvidence = createAoiFileTaskEvidence();
+    let appActionClaimEvidence: AoiAppActionClaimEvidence = createAoiAppActionClaimEvidence();
     let outcomeFeedbackEvidence: AoiOutcomeFeedbackEvidence | null = null;
     const applyToolLoopGuard = (
       toolCalls: Array<{ function: { name: string; arguments?: string } }>,
@@ -8022,22 +8041,35 @@ const ChatPanel: React.FC<{
         evidence: outcomeFeedbackEvidence,
         assistantContent,
       });
-      const issues = [...fileTask.issues, ...outcomeFeedback.issues];
+      const appActionClaim = verifyAoiAppActionClaimContract({
+        contract: appActionClaimContract,
+        evidence: appActionClaimEvidence,
+        assistantContent,
+      });
+      const issues = [...fileTask.issues, ...outcomeFeedback.issues, ...appActionClaim.issues];
       const correctionPrompt = [
         !fileTask.passed ? buildAoiFileTaskCorrectionPrompt(fileTask, fileTaskEvidence) : '',
         !outcomeFeedback.passed
           ? buildAoiOutcomeFeedbackCorrectionPrompt(outcomeFeedback, outcomeFeedbackEvidence)
           : '',
+        !appActionClaim.passed
+          ? buildAoiAppActionClaimCorrectionPrompt(
+              appActionClaim,
+              appActionClaimContract,
+              appActionClaimEvidence,
+            )
+          : '',
       ]
         .filter(Boolean)
         .join('\n');
       return {
-        passed: fileTask.passed && outcomeFeedback.passed,
-        enforced: fileTask.enforced || outcomeFeedback.enforced,
+        passed: fileTask.passed && outcomeFeedback.passed && appActionClaim.passed,
+        enforced: fileTask.enforced || outcomeFeedback.enforced || appActionClaim.enforced,
         issues,
         correctionPrompt,
         fileTask,
         outcomeFeedback,
+        appActionClaim,
       };
     };
     const buildConversationFailureMessage = (
@@ -8047,6 +8079,9 @@ const ChatPanel: React.FC<{
         !verification.fileTask.passed ? buildAoiFileTaskFailureMessage(verification.fileTask) : '',
         !verification.outcomeFeedback.passed
           ? buildAoiOutcomeFeedbackFailureMessage(verification.outcomeFeedback)
+          : '',
+        !verification.appActionClaim.passed
+          ? buildAoiAppActionClaimFailureMessage(verification.appActionClaim)
           : '',
       ].filter(Boolean);
       return failures.join(' | ');
@@ -9764,6 +9799,11 @@ const ChatPanel: React.FC<{
               actionType: resolved.actionType,
               result,
             });
+            appActionClaimEvidence = observeAoiAppActionDispatch(appActionClaimEvidence, {
+              appId: resolved.appId,
+              actionType: resolved.actionType,
+              result,
+            });
             clearToolCache();
             const resultForModel = describeAppActionResultForModel({
               sourceAppId: resolved.appId,
@@ -9781,6 +9821,11 @@ const ChatPanel: React.FC<{
               appName: appAction.appName,
               actionType: resolved.actionType,
               err,
+            });
+            appActionClaimEvidence = observeAoiAppActionDispatch(appActionClaimEvidence, {
+              appId: resolved.appId,
+              actionType: resolved.actionType,
+              result: `error: ${err instanceof Error ? err.message : String(err)}`,
             });
             currentMessages = [
               ...currentMessages,
