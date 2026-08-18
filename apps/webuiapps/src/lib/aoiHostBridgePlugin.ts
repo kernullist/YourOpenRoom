@@ -784,8 +784,19 @@ export async function resolveAoiHostBridgeRoute(
           },
         };
       }
+      // The preview resolved any element ref against the live page. Build the
+      // approval from THAT action, so the fingerprint the operator authorizes is
+      // the one the executor recomputes from its own resolution at act time. A
+      // page change between the two makes the ids disagree and the act is
+      // refused -- the approval can never be spent on a different element.
+      const approvedPlan = {
+        ...parsed.plan,
+        steps: parsed.plan.steps.map((step, index) =>
+          index === parsed.targetStepIndex ? { ...step, action: browserPreview.action } : step,
+        ),
+      };
       const approval = buildAoiBrowserDriveActApprovalPreview({
-        plan: parsed.plan,
+        plan: approvedPlan,
         stepIndex: parsed.targetStepIndex,
         hostname: browserPreview.hostname,
         ...(browserPreview.beforeScreenshotBase64

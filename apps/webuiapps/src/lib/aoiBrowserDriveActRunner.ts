@@ -26,6 +26,7 @@ import {
 } from './aoiBrowserDriveAction';
 import {
   executeAoiBrowserDriveStep,
+  resolveAoiBrowserDriveActionElementRef,
   type AoiBrowserDriveActablePage,
   type AoiBrowserDriveApprovalGate,
   type AoiBrowserDriveObserver,
@@ -269,10 +270,30 @@ export async function previewAoiBrowserDriveActStep(
     } catch {
       // Screenshot is best-effort; the card can render without it.
     }
+    // Resolve an element ref HERE, against the same page the operator is about to
+    // see. The approval fingerprint is computed from this action, and the
+    // executor recomputes it from its own resolution at act time -- so the two
+    // agree only while the page is unchanged. If it changed, the execute-side
+    // snapshot id no longer matches and the act is refused; the fingerprint
+    // mismatch is a second, independent guard against spending an approval
+    // obtained for one element on another.
+    const resolved = await resolveAoiBrowserDriveActionElementRef(
+      session.page,
+      params.plan.steps[params.targetStepIndex].action,
+      params.now,
+    );
+    if (!resolved.ok) {
+      return {
+        ok: false,
+        reason: 'prefix_failed',
+        detail: resolved.detail,
+        prefix: prefix.results,
+      };
+    }
     return {
       ok: true,
       stepIndex: params.targetStepIndex,
-      action: params.plan.steps[params.targetStepIndex].action,
+      action: resolved.action,
       hostname: hostnameOf(finalUrl),
       finalUrl,
       ...(beforeScreenshotBase64 ? { beforeScreenshotBase64 } : {}),

@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+
+import { buildAoiBrowserDriveSnapshot } from '../aoiBrowserDriveSnapshot';
 import {
   computeAoiBrowserDriveActionFingerprint,
   executeAoiBrowserDriveStep,
@@ -651,5 +653,140 @@ describe('executeAoiBrowserDriveStep - semantic verdict', () => {
     const result = await runAct({ kind: 'scroll' });
     expect(result.category).toBe('read');
     expect(result.verdict).toBeUndefined();
+  });
+});
+
+// Element refs address a snapshot the runtime built instead of a selector the
+// model authored. The security property that matters: a ref resolves to a
+// concrete selector BEFORE the forbidden re-check, the approval fingerprint and
+// the allowlist run, so an approval can never be obtained for one element and
+// spent on another.
+describe('executeAoiBrowserDriveStep - element refs', () => {
+  const FORM_HTML = `
+    <button id="go">Go</button>
+    <input name="q" />
+    <input type="password" name="pw" />
+    <button id="off" disabled>Off</button>
+  `;
+
+  function snapshotIdFor(url = 'https://example.com/x') {
+    return buildAoiBrowserDriveSnapshot({ html: FORM_HTML, url, now: 1 }).id;
+  }
+
+  async function runRef(
+    action: AoiBrowserDriveActionRequest,
+    options: { gate?: AoiBrowserDriveApprovalGate } = {},
+  ) {
+    const { page, calls } = fakePage({ startUrl: 'https://example.com/x', content: FORM_HTML });
+    const result = await executeAoiBrowserDriveStep({
+      page,
+      plan: plan(action),
+      stepIndex: 0,
+      allowlist: ALLOWLIST,
+      approvalGate: options.gate ?? allowGate,
+      now: 1,
+    });
+    return { result, calls };
+  }
+
+  it('resolves a ref to the snapshot selector and acts on it', async () => {
+    const { result, calls } = await runRef({
+      kind: 'click',
+      element: 1,
+      snapshotId: snapshotIdFor(),
+    });
+    expect(result.ok).toBe(true);
+    expect(calls).toContain('click:#go');
+  });
+
+  it('binds the approval to the RESOLVED selector, not to the ref', async () => {
+    // If the fingerprint were computed from the ref, the same approval would
+    // cover whatever element that index happens to point at later.
+    let seenAction: AoiBrowserDriveActionRequest | undefined;
+    const gate: AoiBrowserDriveApprovalGate = async (input) => {
+      seenAction = input.action;
+      return { approved: true };
+    };
+    await runRef({ kind: 'click', element: 1, snapshotId: snapshotIdFor() }, { gate });
+    expect(seenAction?.selector).toBe('#go');
+  });
+
+  it('refuses a ref whose snapshot no longer matches the page', async () => {
+    const { result, calls } = await runRef({
+      kind: 'click',
+      element: 1,
+      snapshotId: 'bds-fromanotherpage',
+    });
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('element_ref_stale');
+    expect(calls.some((call) => call.startsWith('click:'))).toBe(false);
+  });
+
+  it('refuses a ref with no snapshot id at all', async () => {
+    // Omitting it would skip the staleness check entirely.
+    const { result } = await runRef({ kind: 'click', element: 1 });
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('element_ref_stale');
+  });
+
+  it('never resolves a credential field, even by a valid ref', async () => {
+    const { result, calls } = await runRef({
+      kind: 'type',
+      element: 3,
+      text: 'hunter2',
+      snapshotId: snapshotIdFor(),
+    });
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('element_forbidden');
+    expect(calls.some((call) => call.startsWith('fill:'))).toBe(false);
+  });
+
+  it('refuses a disabled element instead of acting into a no-op', async () => {
+    const { result } = await runRef({ kind: 'click', element: 4, snapshotId: snapshotIdFor() });
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('element_disabled');
+  });
+
+  it('gives a refused ref an act verdict so it is never reported as done', async () => {
+    const { result } = await runRef({ kind: 'click', element: 9, snapshotId: snapshotIdFor() });
+    expect(result.verdict?.effect).toBe('suspected_noop');
+  });
+
+  it('accepts the snake_case snapshot_id the tool schema advertises', async () => {
+    // The schema says snapshot_id; the internal type says snapshotId. A silent
+    // miss would look identical to a stale ref and make refs unusable.
+    const { result, calls } = await runRef({
+      kind: 'click',
+      element: 1,
+      snapshot_id: snapshotIdFor(),
+    } as unknown as AoiBrowserDriveActionRequest);
+    expect(result.ok).toBe(true);
+    expect(calls).toContain('click:#go');
+  });
+
+  it('leaves a plain selector action untouched', async () => {
+    const { result, calls } = await runRef({ kind: 'click', selector: '#go' });
+    expect(result.ok).toBe(true);
+    expect(calls).toContain('click:#go');
+  });
+
+  it('lists addressable elements on an `elements` read step', async () => {
+    const { page } = fakePage({ startUrl: 'https://example.com/x', content: FORM_HTML });
+    const result = await executeAoiBrowserDriveStep({
+      page,
+      plan: plan({ kind: 'elements' }),
+      stepIndex: 0,
+      allowlist: ALLOWLIST,
+      approvalGate: allowGate,
+      now: 1,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.category).toBe('read');
+    expect(result.snapshot?.elements.map((element) => element.selector)).toEqual([
+      '#go',
+      'input[name="q"]',
+      'input[name="pw"]',
+      '#off',
+    ]);
   });
 });

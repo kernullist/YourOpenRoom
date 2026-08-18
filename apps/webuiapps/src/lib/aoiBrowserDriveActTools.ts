@@ -78,11 +78,28 @@ const PLAN_PARAM_SCHEMA = {
             kind: {
               type: 'string',
               description:
-                'navigate | scroll | back | wait | extract | click | type | select | press | submit',
+                'navigate | scroll | back | wait | extract | elements | click | type | select | press | submit. ' +
+                '`elements` lists the interactable elements with refs so an act can target ' +
+                '`element` instead of a hand-written selector.',
             },
             selector: {
               type: 'string',
-              description: 'CSS selector for the target element (act steps).',
+              description:
+                'CSS selector for the target element (act steps). Prefer `element` + ' +
+                '`snapshot_id` from an `elements` step instead of authoring one of these.',
+            },
+            element: {
+              type: 'number',
+              description:
+                'Element ref from an `elements` step, e.g. 7. More reliable than authoring a ' +
+                'selector. Requires snapshot_id from the SAME elements result.',
+            },
+            snapshot_id: {
+              type: 'string',
+              description:
+                'The id of the elements snapshot the ref came from. Refs are valid only for ' +
+                'that snapshot: any act invalidates them, so take a fresh `elements` step after ' +
+                'acting. A ref from an older snapshot is refused, never re-pointed.',
             },
             url: {
               type: 'string',

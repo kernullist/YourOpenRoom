@@ -19,6 +19,9 @@ export type AoiBrowserDriveActionKind =
   // read-only / observational
   | 'navigate'
   | 'extract'
+  // Element-addressed snapshot: lists interactables with refs so an act can
+  // target `element: N` instead of a model-authored selector.
+  | 'elements'
   | 'scroll'
   | 'screenshot'
   | 'wait'
@@ -42,6 +45,15 @@ export interface AoiBrowserDriveActionField {
 export interface AoiBrowserDriveActionRequest {
   kind: AoiBrowserDriveActionKind;
   selector?: string;
+  // Element ref from an `elements` snapshot, used INSTEAD of authoring a
+  // selector. Resolved to a concrete selector before anything else runs, so the
+  // forbidden re-check, the approval fingerprint and the allowlist all see the
+  // real target -- a ref is addressing, never a trust shortcut.
+  element?: number;
+  // The snapshot the ref came from. Required with `element`: it is a content
+  // hash of the page, so a mismatch means the page changed and the ref is
+  // refused rather than rebound onto whatever is there now.
+  snapshotId?: string;
   url?: string;
   text?: string;
   value?: string;
@@ -71,6 +83,7 @@ export interface AoiBrowserDriveActionDecision {
 const READ_KINDS: ReadonlySet<AoiBrowserDriveActionKind> = new Set([
   'navigate',
   'extract',
+  'elements',
   'scroll',
   'screenshot',
   'wait',

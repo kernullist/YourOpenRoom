@@ -46,6 +46,11 @@ import {
   type AoiBrowserDriveReadResult,
 } from './aoiBrowserDriveRead';
 import {
+  buildAoiBrowserDriveSnapshot,
+  resolveAoiBrowserDriveElementRef,
+  type AoiBrowserDriveSnapshot,
+} from './aoiBrowserDriveSnapshot';
+import {
   classifyAoiBrowserDriveActVerdict,
   type AoiBrowserDriveVerdict,
 } from './aoiBrowserDriveVerdict';
@@ -134,6 +139,8 @@ export interface AoiBrowserDriveStepResult {
   extract?: AoiBrowserDriveReadResult;
   // Present for a read 'screenshot' step.
   screenshotBase64?: string;
+  // Present for a read 'elements' step: the refs an act may address.
+  snapshot?: AoiBrowserDriveSnapshot;
   // Present for an ACT step: the fingerprint the approval gate was asked about.
   approvalFingerprint?: string;
   // True when the ACT was authorized by a standing grant (P3.1) rather than a fresh
@@ -205,6 +212,66 @@ export function computeAoiBrowserDriveActionFingerprint(
     (typeof hostname === 'string' ? hostname : '').trim().toLowerCase(),
   ].join('\n');
   return `${fnv1a(canonical, 0x811c9dc5)}${fnv1a(canonical, 0x9e3779b1)}`;
+}
+
+// Build a snapshot from the live page. Best-effort: an unreadable page yields an
+// empty snapshot rather than throwing, and an empty snapshot simply has no refs
+// to address.
+async function captureAoiBrowserDriveSnapshot(
+  page: AoiBrowserDriveActablePage,
+  now: number,
+): Promise<AoiBrowserDriveSnapshot> {
+  let html = '';
+  try {
+    html = await page.content();
+  } catch {
+    html = '';
+  }
+  return buildAoiBrowserDriveSnapshot({ html, url: safeUrl(page), now });
+}
+
+/**
+ * Turn an `element` ref into a concrete selector before anything else runs.
+ *
+ * The snapshot is re-derived from the LIVE page and its id compared to the one
+ * the ref was minted against. The id is a content hash, so a mismatch means the
+ * page changed since the model looked -- and the ref is refused rather than
+ * rebound onto whatever occupies that index now. This is also what keeps an
+ * approval honest: the fingerprint downstream is computed from the RESOLVED
+ * selector, so an approval can never be obtained for one element and spent on
+ * another.
+ */
+export async function resolveAoiBrowserDriveActionElementRef(
+  page: AoiBrowserDriveActablePage,
+  action: AoiBrowserDriveActionRequest,
+  now: number,
+): Promise<{ ok: true; action: AoiBrowserDriveActionRequest } | { ok: false; detail: string }> {
+  if (typeof action.element !== 'number') {
+    return { ok: true, action };
+  }
+  const snapshot = await captureAoiBrowserDriveSnapshot(page, now);
+  // The action is model-authored JSON, and the tool schema spells this
+  // snapshot_id while the internal type is snapshotId. Accept either KEY -- a
+  // silent miss here would look exactly like a stale ref and make every
+  // ref-addressed act mysteriously unusable. The VALUE is still matched
+  // strictly.
+  const suppliedSnapshotId = action.snapshotId ?? (action as { snapshot_id?: unknown }).snapshot_id;
+  const resolved = resolveAoiBrowserDriveElementRef({
+    snapshot,
+    ref: action.element,
+    // Undefined would silently skip the staleness check, so a ref carrying no
+    // snapshot id at all is refused outright.
+    snapshotId: typeof suppliedSnapshotId === 'string' ? suppliedSnapshotId : '',
+  });
+  if (!resolved.ok || !resolved.selector) {
+    return {
+      ok: false,
+      detail: `${resolved.code ?? 'element_ref_unknown'}: ${resolved.detail ?? 'ref did not resolve'}`,
+    };
+  }
+  // The resolved selector REPLACES any model-authored one so nothing downstream
+  // can act on a different target than the one that was resolved and approved.
+  return { ok: true, action: { ...action, selector: resolved.selector } };
 }
 
 async function blankPage(page: AoiBrowserDriveActablePage): Promise<void> {
@@ -297,8 +364,32 @@ export async function executeAoiBrowserDriveStep(
     };
   }
 
-  const action = step.action;
+  // 3.5) Resolve an element ref FIRST, so everything below -- the live-DOM
+  //      forbidden re-check, the approval fingerprint, the allowlist -- sees the
+  //      concrete target. Resolving later would let an approval be obtained for
+  //      one element and spent on another.
   const beforeUrl = safeUrl(page);
+  const resolvedRef = await resolveAoiBrowserDriveActionElementRef(page, step.action, params.now);
+  if (!resolvedRef.ok) {
+    return finish(params.observer, stepIndex, step.action, undefined, {
+      index: stepIndex,
+      category: decision.category,
+      ok: false,
+      stopReason: 'action_failed',
+      detail: resolvedRef.detail,
+      finalUrl: beforeUrl,
+      ...(decision.category === 'act'
+        ? {
+            verdict: classifyAoiBrowserDriveActVerdict({
+              kind: step.action.kind,
+              ok: false,
+              stopReason: 'action_failed',
+            }),
+          }
+        : {}),
+    });
+  }
+  const action = resolvedRef.action;
   const before = await observe(params.observer, {
     stepIndex,
     phase: 'before',
@@ -502,6 +593,7 @@ interface AoiBrowserDriveReadStepOutcome {
   finalUrl?: string;
   extract?: AoiBrowserDriveReadResult;
   screenshotBase64?: string;
+  snapshot?: AoiBrowserDriveSnapshot;
 }
 
 async function executeReadStep(params: {
@@ -573,6 +665,14 @@ async function executeReadStep(params: {
         return { ok: false, stopReason: 'drift_to_denylist', detail: post.reason, finalUrl };
       }
       return { ok: true, finalUrl };
+    }
+    case 'elements': {
+      const snapshot = await captureAoiBrowserDriveSnapshot(page, params.now);
+      return {
+        ok: true,
+        finalUrl: safeUrl(page),
+        snapshot,
+      };
     }
     case 'scroll': {
       const delta = action.value === 'up' ? -DEFAULT_SCROLL_DELTA : DEFAULT_SCROLL_DELTA;
