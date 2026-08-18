@@ -6,7 +6,12 @@
 // wrapper targets the dev/same-origin mount. Mirrors aoiAutonomyClient's
 // fetch + parse shape (throw on !ok, surface denyReasons).
 
-import { parseAoiBrowserDriveVerdict, type AoiBrowserDriveVerdict } from './aoiBrowserDriveVerdict';
+import {
+  isAoiBrowserDriveEffect,
+  parseAoiBrowserDriveVerdict,
+  type AoiBrowserDriveEffect,
+  type AoiBrowserDriveVerdict,
+} from './aoiBrowserDriveVerdict';
 
 const API_PREFIX = '/api/aoi-host';
 
@@ -516,9 +521,12 @@ export async function runAoiHostBrowserDriveActExecute(
 
 export interface AoiHostBrowserDriveTaskStepView {
   index: number;
+  // Transport success; `effect` says what was proven.
   ok: boolean;
   reason?: string;
   finalUrl?: string;
+  effect?: AoiBrowserDriveEffect;
+  verified?: boolean;
 }
 
 export interface AoiHostBrowserDriveTaskResultView {
@@ -562,6 +570,10 @@ export async function runAoiHostBrowserDriveTask(
       ok: record.ok === true,
       ...(typeof record.reason === 'string' ? { reason: record.reason } : {}),
       ...(typeof record.finalUrl === 'string' ? { finalUrl: record.finalUrl } : {}),
+      // Validated the same way as the single-act verdict: an unrecognized
+      // effect is dropped rather than shown as proof of anything.
+      ...(isAoiBrowserDriveEffect(record.effect) ? { effect: record.effect } : {}),
+      ...(record.verified === true ? { verified: true } : {}),
     })),
     ...(typeof result.detail === 'string' ? { detail: result.detail } : {}),
   };

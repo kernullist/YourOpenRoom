@@ -267,6 +267,78 @@ describe('task tool (browser_drive_task)', () => {
     max_acts: 5,
   };
 
+  function taskResult(overrides: Record<string, unknown> = {}) {
+    return {
+      ok: true,
+      goal: 'refresh twice',
+      stopReason: 'completed',
+      actsRun: 2,
+      stepsRun: 4,
+      steps: [
+        { index: 0, ok: true, effect: 'confirmed' as const, verified: true },
+        { index: 1, ok: true, effect: 'confirmed' as const, verified: true },
+      ],
+      ...overrides,
+    };
+  }
+
+  it('reports a fully proven task as done', async () => {
+    const parsed = JSON.parse(
+      await executeBrowserDriveActTool(BROWSER_DRIVE_TASK_TOOL, taskParams, {
+        sessionPath: 'aoi/default',
+        taskFetcher: vi.fn(async () => taskResult()),
+      }),
+    );
+    expect(parsed.status).toBe('done');
+    expect(parsed.note).toContain('proven to have taken effect');
+  });
+
+  it('does not call a task done when an act could not be proven', async () => {
+    const parsed = JSON.parse(
+      await executeBrowserDriveActTool(BROWSER_DRIVE_TASK_TOOL, taskParams, {
+        sessionPath: 'aoi/default',
+        taskFetcher: vi.fn(async () =>
+          taskResult({
+            steps: [
+              { index: 0, ok: true, effect: 'confirmed', verified: true },
+              { index: 1, ok: true, effect: 'unverifiable' },
+            ],
+          }),
+        ),
+      }),
+    );
+    expect(parsed.status).toBe('done_unverified');
+    expect(parsed.note).toContain('could not be proven');
+    expect(parsed.steps[1].effect).toBe('unverifiable');
+  });
+
+  it('explains a task stopped because an act did nothing', async () => {
+    const parsed = JSON.parse(
+      await executeBrowserDriveActTool(BROWSER_DRIVE_TASK_TOOL, taskParams, {
+        sessionPath: 'aoi/default',
+        taskFetcher: vi.fn(async () =>
+          taskResult({ ok: false, stopReason: 'act_not_performed', actsRun: 1 }),
+        ),
+      }),
+    );
+    expect(parsed.status).toBe('stopped');
+    expect(parsed.note).toContain('evidence it did nothing');
+    expect(parsed.note).toContain('do not re-run the task unchanged');
+  });
+
+  it('explains a task stopped because a later act depended on an unproven one', async () => {
+    const parsed = JSON.parse(
+      await executeBrowserDriveActTool(BROWSER_DRIVE_TASK_TOOL, taskParams, {
+        sessionPath: 'aoi/default',
+        taskFetcher: vi.fn(async () =>
+          taskResult({ ok: false, stopReason: 'act_unverified', actsRun: 1 }),
+        ),
+      }),
+    );
+    expect(parsed.note).toContain('could not be proven to have landed');
+    expect(parsed.note).toContain('do NOT claim the remaining steps happened');
+  });
+
   it('is recognized and summarized by step count', () => {
     expect(isBrowserDriveActTool(BROWSER_DRIVE_TASK_TOOL)).toBe(true);
     expect(getBrowserDriveActToolPendingSummary(BROWSER_DRIVE_TASK_TOOL, taskParams)).toContain(

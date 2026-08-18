@@ -233,6 +233,36 @@ export function parseBrowserDriveActParams(
   return { plan: { goal, steps }, targetStepIndex };
 }
 
+// One sentence the model can act on. A task that stopped on an unproven act is
+// NOT a failure of the browser and must not be re-run blindly; a task that
+// finished with an unverifiable act is not proof that act landed.
+function buildTaskNote(ok: boolean, stopReason: string, unverifiedCount: number): string {
+  if (!ok) {
+    if (stopReason === 'act_not_performed') {
+      return (
+        'The task STOPPED because an act produced evidence it did nothing, and later acts would ' +
+        'have been built on a state that was never reached. Nothing ran past it. Tell the user ' +
+        'which step stopped and why; do not re-run the task unchanged.'
+      );
+    }
+    if (stopReason === 'act_unverified') {
+      return (
+        'The task STOPPED because an act could not be proven to have landed and the next act ' +
+        'depended on it. Nothing ran past it. Re-read the page to see the real state before ' +
+        'proposing anything, and do NOT claim the remaining steps happened.'
+      );
+    }
+    return 'The task stopped early; see stop_reason. Nothing ran past the stopping step.';
+  }
+  if (unverifiedCount > 0) {
+    return (
+      `Every act was delivered and gated, but ${unverifiedCount} of them could not be proven to ` +
+      'have landed. Re-read the page before telling the user the task succeeded.'
+    );
+  }
+  return 'The bounded task completed and every act was proven to have taken effect.';
+}
+
 function formatActGateError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   const lowered = message.toLowerCase();
@@ -463,16 +493,27 @@ export async function executeBrowserDriveTaskTool(
   const taskFetcher = context.taskFetcher ?? runAoiHostBrowserDriveTask;
   try {
     const result = await taskFetcher(sessionPath, parsed.task, parsed.budget);
+    // A task runs unattended, so it advances only on evidence: the runner stops
+    // on an act that did nothing (act_not_performed) and on an unproven act
+    // that a later act would have depended on (act_unverified). Even a
+    // completed task can end on an unverifiable LAST act -- nothing was stacked
+    // on it, but it must not be reported as proven either.
+    const unverifiedSteps = result.steps.filter((step) => step.effect === 'unverifiable');
     return JSON.stringify({
-      status: result.ok ? 'done' : 'stopped',
+      status: result.ok ? (unverifiedSteps.length > 0 ? 'done_unverified' : 'done') : 'stopped',
       ok: result.ok,
       stop_reason: result.stopReason,
       acts_run: result.actsRun,
       steps_run: result.stepsRun,
+      steps: result.steps.map((step) => ({
+        index: step.index,
+        ok: step.ok,
+        ...(step.effect ? { effect: step.effect } : {}),
+        ...(step.verified ? { verified: true } : {}),
+        ...(step.reason ? { reason: step.reason } : {}),
+      })),
       ...(result.detail ? { detail: result.detail } : {}),
-      note: result.ok
-        ? 'The bounded task completed; every act was gated (standing grant / approval) and audited.'
-        : 'The task stopped early; see stop_reason. Nothing ran past the stopping step.',
+      note: buildTaskNote(result.ok, result.stopReason, unverifiedSteps.length),
     });
   } catch (error) {
     return formatActGateError(error);

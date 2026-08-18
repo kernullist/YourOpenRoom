@@ -165,6 +165,10 @@ const RUNGS: ReadonlySet<string> = new Set([
   'stop',
 ] satisfies AoiBrowserDriveEscalationRung[]);
 
+export function isAoiBrowserDriveEffect(value: unknown): value is AoiBrowserDriveEffect {
+  return typeof value === 'string' && EFFECTS.has(value);
+}
+
 /**
  * Validate a verdict that arrived over the wire.
  *

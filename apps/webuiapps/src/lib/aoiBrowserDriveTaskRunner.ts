@@ -23,6 +23,7 @@ import type {
   AoiBrowserDriveRunFailure,
 } from './aoiBrowserDriveActRunner';
 import type { AoiBrowserDrivePlan } from './aoiBrowserDrivePlan';
+import type { AoiBrowserDriveEffect } from './aoiBrowserDriveVerdict';
 
 // The kill-switch capability toggle that must be ON for the autonomous multi-act
 // task route to run at all (a human-only control, distinct from single-act standing
@@ -53,14 +54,26 @@ export type AoiBrowserDriveTaskStopReason =
   | 'too_many_steps'
   | 'budget_exhausted'
   | 'step_failed'
+  // An act produced positive evidence that it did nothing (e.g. a write whose
+  // read-back did not match). Stacking the next act on top of that would build
+  // on a state that was never reached.
+  | 'act_not_performed'
+  // An act was delivered but nothing proved it landed, and another act was
+  // queued behind it. A multi-act task advances only on evidence.
+  | 'act_unverified'
   | 'completed';
 
 export interface AoiBrowserDriveTaskStepOutcome {
   index: number;
+  // Transport success only; see `effect` for what was actually proven.
   ok: boolean;
   // The runner reason (RunFailure) or the target step's stopReason, when not ok.
   reason?: string;
   finalUrl?: string;
+  // Semantic verdict of the act, carried through so a caller can report what
+  // each step really achieved instead of just that it ran.
+  effect?: AoiBrowserDriveEffect;
+  verified?: boolean;
 }
 
 export interface AoiBrowserDriveTaskResult {
@@ -185,11 +198,13 @@ export async function executeAoiBrowserDriveTask(params: {
     const innerRun = (outcome.prefix?.length ?? 0) + 1;
     stepsRun += innerRun;
     actsRun += 1;
+    const verdict = outcome.target?.verdict;
     results.push({
       index,
       ok: outcome.ok,
       ...(outcome.target?.stopReason ? { reason: outcome.target.stopReason } : {}),
       ...(outcome.target?.finalUrl ? { finalUrl: outcome.target.finalUrl } : {}),
+      ...(verdict ? { effect: verdict.effect, verified: verdict.verified } : {}),
     });
 
     if (!outcome.ok) {
@@ -201,6 +216,40 @@ export async function executeAoiBrowserDriveTask(params: {
         stepsRun,
         results,
         detail: `step ${index} did not complete: ${outcome.target?.stopReason ?? 'failed'}`,
+      };
+    }
+
+    // A multi-act task runs unattended, so every act after the first inherits
+    // the previous one's state as a premise: click to open the form, THEN type
+    // into it. Advancing on an act that was not proven builds the rest of the
+    // task on a state that may never have existed -- and the later acts land
+    // somewhere nobody chose. Single-act runs can hand an unverifiable result
+    // back to the model to re-read; here there is no one to re-read it.
+    if (verdict && verdict.effect === 'suspected_noop') {
+      return {
+        ok: false,
+        goal,
+        stopReason: 'act_not_performed',
+        actsRun,
+        stepsRun,
+        results,
+        detail:
+          `step ${index} did not take effect` +
+          `${verdict.escalation ? `: ${verdict.escalation.reason}` : ''}`,
+      };
+    }
+    const isLastStep = index === steps.length - 1;
+    if (verdict && verdict.effect === 'unverifiable' && !isLastStep) {
+      return {
+        ok: false,
+        goal,
+        stopReason: 'act_unverified',
+        actsRun,
+        stepsRun,
+        results,
+        detail:
+          `step ${index} was delivered but nothing proved it landed, and step ` +
+          `${index + 1} would have depended on it`,
       };
     }
   }

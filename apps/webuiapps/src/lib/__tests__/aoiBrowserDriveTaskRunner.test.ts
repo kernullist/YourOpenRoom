@@ -162,3 +162,94 @@ describe('budget', () => {
     expect(result.actsRun).toBe(AOI_BROWSER_DRIVE_TASK_MAX_ACTS);
   });
 });
+
+// A multi-act task runs unattended, so every act after the first inherits the
+// previous act's state as a premise: click to open the form, THEN type into it.
+// The loop used to advance on `ok` alone -- transport success -- so an act that
+// demonstrably did nothing still had the rest of the task stacked on top of it,
+// landing the later acts somewhere nobody chose. A single-act run can hand an
+// unproven result back to the model to re-read; here there is nobody to re-read.
+describe('advancing only on evidence', () => {
+  function outcomeWithVerdict(
+    index: number,
+    verdict: { effect: 'confirmed' | 'unverifiable' | 'suspected_noop'; verified: boolean },
+  ): AoiBrowserDriveActExecuteResult {
+    const base = okOutcome(index);
+    return { ...base, target: { ...base.target, verdict } };
+  }
+
+  it('advances through acts that were proven', async () => {
+    const seen: number[] = [];
+    const runStep = vi.fn(async (_s: AoiBrowserDriveTaskStep, index: number) => {
+      seen.push(index);
+      return outcomeWithVerdict(index, { effect: 'confirmed', verified: true });
+    });
+    const result = await executeAoiBrowserDriveTask({ task: task('user', 3), runStep });
+    expect(result.ok).toBe(true);
+    expect(result.stopReason).toBe('completed');
+    expect(seen).toEqual([0, 1, 2]);
+    expect(result.results.every((step) => step.effect === 'confirmed')).toBe(true);
+  });
+
+  it('stops on an act that produced evidence it did nothing', async () => {
+    const seen: number[] = [];
+    const runStep = vi.fn(async (_s: AoiBrowserDriveTaskStep, index: number) => {
+      seen.push(index);
+      return outcomeWithVerdict(
+        index,
+        index === 1
+          ? { effect: 'suspected_noop', verified: false }
+          : { effect: 'confirmed', verified: true },
+      );
+    });
+    const result = await executeAoiBrowserDriveTask({ task: task('user', 3), runStep });
+    expect(result.ok).toBe(false);
+    expect(result.stopReason).toBe('act_not_performed');
+    // Step 2 must never have run on top of a state that was never reached.
+    expect(seen).toEqual([0, 1]);
+  });
+
+  it('stops when a later act would depend on an unproven one', async () => {
+    const seen: number[] = [];
+    const runStep = vi.fn(async (_s: AoiBrowserDriveTaskStep, index: number) => {
+      seen.push(index);
+      return outcomeWithVerdict(
+        index,
+        index === 0
+          ? { effect: 'unverifiable', verified: false }
+          : { effect: 'confirmed', verified: true },
+      );
+    });
+    const result = await executeAoiBrowserDriveTask({ task: task('user', 3), runStep });
+    expect(result.ok).toBe(false);
+    expect(result.stopReason).toBe('act_unverified');
+    expect(seen).toEqual([0]);
+    expect(result.detail).toContain('step 1 would have depended on it');
+  });
+
+  it('allows the FINAL act to be unverifiable, since nothing is stacked on it', async () => {
+    // Stopping here would fail a task that actually did all its work; the honest
+    // move is to complete and let the caller report it as unproven.
+    const runStep = vi.fn(async (_s: AoiBrowserDriveTaskStep, index: number) =>
+      outcomeWithVerdict(
+        index,
+        index === 2
+          ? { effect: 'unverifiable', verified: false }
+          : { effect: 'confirmed', verified: true },
+      ),
+    );
+    const result = await executeAoiBrowserDriveTask({ task: task('user', 3), runStep });
+    expect(result.ok).toBe(true);
+    expect(result.stopReason).toBe('completed');
+    expect(result.results[2].effect).toBe('unverifiable');
+  });
+
+  it('still completes when the executor carries no verdict at all', async () => {
+    // Older daemon / read-only steps: absence of a verdict must not deadlock the
+    // task, it just leaves the caller with nothing proven to report.
+    const runStep = vi.fn(async (_s: AoiBrowserDriveTaskStep, index: number) => okOutcome(index));
+    const result = await executeAoiBrowserDriveTask({ task: task('user', 2), runStep });
+    expect(result.ok).toBe(true);
+    expect(result.results.every((step) => step.effect === undefined)).toBe(true);
+  });
+});
