@@ -117,6 +117,8 @@ describe('getDesktopInputToolDefinitions', () => {
       'desktop_scroll',
       'desktop_drag',
       'desktop_focus',
+      'desktop_select',
+      'desktop_toggle',
       'desktop_apps',
     ]);
     for (const name of names) {
@@ -149,6 +151,22 @@ describe('getDesktopInputToolDefinitions', () => {
     expect(byName.get('desktop_type')?.description).toContain('desktop_act');
     // A single left click is provable through UIA; desktop_click is not.
     expect(byName.get('desktop_click')?.description).toContain('desktop_act');
+  });
+
+  it('steers the model away from click-then-click on a dropdown', () => {
+    // The menu a click opens did not exist at snapshot time, so a follow-up
+    // click is aimed at something the model never saw.
+    const select = getDesktopInputToolDefinitions().find(
+      (def) => def.function.name === 'desktop_select',
+    );
+    expect(select?.function.description).toContain('did not exist when your snapshot was taken');
+  });
+
+  it('explains why setting a state beats clicking a checkbox', () => {
+    const toggle = getDesktopInputToolDefinitions().find(
+      (def) => def.function.name === 'desktop_toggle',
+    );
+    expect(toggle?.function.description).toContain('idempotent');
   });
 
   it('warns that raising a window is not free', () => {

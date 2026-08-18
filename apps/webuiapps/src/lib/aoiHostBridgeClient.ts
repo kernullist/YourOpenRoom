@@ -987,7 +987,7 @@ export async function snapshotAoiHostDesktopWindow(
  * whether anything happened.
  */
 export async function actOnAoiHostDesktopElement(params: {
-  op?: 'invoke' | 'set_value' | 'click' | 'scroll' | 'drag';
+  op?: 'invoke' | 'set_value' | 'click' | 'scroll' | 'drag' | 'select' | 'toggle';
   hwnd: string;
   ref: number;
   snapshotId: string;
@@ -998,6 +998,8 @@ export async function actOnAoiHostDesktopElement(params: {
   direction?: string;
   amount?: number;
   toRef?: number;
+  option?: string;
+  state?: string;
   delivery?: 'background' | 'foreground';
   allowForeground?: boolean;
 }): Promise<AoiHostDesktopActView> {
@@ -1019,6 +1021,8 @@ export async function actOnAoiHostDesktopElement(params: {
     ...(params.direction ? { direction: params.direction } : {}),
     ...(typeof params.amount === 'number' ? { amount: params.amount } : {}),
     ...(typeof params.toRef === 'number' ? { toRef: params.toRef } : {}),
+    ...(params.option ? { option: params.option } : {}),
+    ...(params.state ? { state: params.state } : {}),
     ...(params.delivery ? { delivery: params.delivery } : {}),
     ...(wantsForeground ? { allowForeground: true } : {}),
   });

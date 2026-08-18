@@ -51,7 +51,9 @@ export type AoiDesktopInputOp =
   | 'key'
   | 'type'
   | 'drag'
-  | 'focus';
+  | 'focus'
+  | 'select'
+  | 'toggle';
 
 // Which rung to use. 'auto' walks them weakest-side-effect first; naming one
 // pins it, and a pinned rung that cannot run refuses instead of quietly falling
@@ -73,6 +75,8 @@ export interface AoiDesktopInputRequest {
   keys?: string;
   text?: string;
   toRef?: number;
+  option?: string;
+  state?: string;
   // Opt in to the SendInput rung. Honored only when the separate foreground
   // capability is also enabled; the route enforces that, not this parser.
   allowForeground?: boolean;
@@ -218,6 +222,8 @@ export function parseAoiDesktopInputRequest(
     'click',
     'scroll',
     'drag',
+    'select',
+    'toggle',
   ]);
   if (!ELEMENT_OPS.has(op)) {
     return null;
@@ -297,6 +303,24 @@ export function parseAoiDesktopInputRequest(
       }
       request.amount = amount;
     }
+    return request;
+  }
+
+  if (op === 'select') {
+    const option = readString(body, 'option');
+    if (!option || option.length > 200) {
+      return null;
+    }
+    request.option = option;
+    return request;
+  }
+
+  if (op === 'toggle') {
+    const state = readString(body, 'state') || 'toggle';
+    if (state !== 'on' && state !== 'off' && state !== 'toggle') {
+      return null;
+    }
+    request.state = state;
     return request;
   }
 
@@ -509,7 +533,16 @@ export function runAoiDesktopInput(params: RunAoiDesktopInputParams): AoiDesktop
     command.value = request.value;
   }
 
-  for (const key of ['button', 'modifiers', 'direction', 'keys', 'text', 'delivery'] as const) {
+  for (const key of [
+    'button',
+    'modifiers',
+    'direction',
+    'keys',
+    'text',
+    'delivery',
+    'option',
+    'state',
+  ] as const) {
     const value = request[key];
     if (typeof value === 'string' && value) {
       command[key] = value;

@@ -36,21 +36,47 @@ Transport success without semantic proof is not proof of effect. A helper that
 returned only `ok` would let Aoi say "I clicked it" whenever the call didn't
 throw, which is precisely the failure this contract exists to remove.
 
+## Actions
+
+| Op | What it does |
+|---|---|
+| `list_windows` / `list_apps` | Discovery. Read-only. |
+| `snapshot` | Interactable controls, each with a ref valid for that snapshot only. |
+| `invoke` | Press a control through UI Automation. |
+| `set_value` | Replace a field's text, **verified by read-back**. |
+| `select` | Choose a dropdown option by label, **verified**. |
+| `toggle` | Set a checkbox to `on`/`off` (idempotent), **verified**. |
+| `scroll` | Scroll a control, **verified** by reading the position back. |
+| `click` | Right / middle / double click, or held modifiers. |
+| `key` | A keystroke or combo (`ctrl+s`, `tab`, `f5`). |
+| `type` | Free text at the caret. |
+| `drag` | Drag between two controls. Foreground only. |
+| `focus` | Raise a window. Persistent, so it is its own call. |
+
 ## Delivery ladder
 
-1. **UIA pattern** (`InvokePattern` / `ValuePattern`). Does *not* move the cursor
-   or steal focus, and the API reports whether it worked — so this rung can
-   return `effect: confirmed`.
-2. **SendInput**, only with `--allow-foreground`. This is real mouse input: it
-   moves the operator's cursor and needs the window in front. Nothing here can
-   verify the outcome, so it reports `effect: unverifiable` and never more.
+1. **UIA pattern** (`InvokePattern`, `ValuePattern`, `SelectionItemPattern`,
+   `TogglePattern`, `ScrollPattern`). Does *not* move the cursor or steal focus,
+   the API reports whether it worked, and for several of these the result can be
+   read back — so this rung can return `effect: confirmed`.
+2. **Background messages** posted straight to the target window. Still no focus
+   steal and no cursor movement, but nothing reports whether the app acted, so
+   it is `unverifiable`. Many Win32 apps accept these; Chromium/Electron and
+   DirectInput games often ignore them, and that is **not predictable from the
+   app** — it has to be attempted and then checked.
+3. **SendInput**, only with `--allow-foreground`. Real input: takes focus, moves
+   the cursor, equally unverifiable. Restores the window the operator was
+   actually on afterwards.
 
-A rung that cannot run says so with a code (`uia_unsupported`) instead of
-silently escalating to the more invasive one. Escalating to real input is a
-decision for the operator, not a fallback the helper takes on its own.
+A rung that cannot run says so with a code instead of silently escalating.
+Escalating to real input is a decision for the operator, not a fallback the
+helper takes on its own — and a modifier combo, which the background rung
+genuinely cannot deliver, is refused rather than sent without its modifiers.
 
-Only `set_value` can reach `verified: true`, because only it has something to
-read back. An invoke is `confirmed` when UIA reports the pattern succeeded.
+`verified: true` is earned only by reading state back off the live control:
+`set_value`, `select`, `toggle` and `scroll` can reach it. An `invoke` is
+`confirmed` when UIA reports the pattern succeeded. Everything on rungs 2 and 3
+tops out at `unverifiable`, by construction.
 
 ## Refusal codes
 
@@ -65,6 +91,9 @@ read back. An invoke is `confirmed` when UIA reports the pattern succeeded.
 | `element_obscured` | Another window covers the click point. |
 | `element_not_on_screen` | The element has no usable on-screen rectangle. |
 | `input_blocked` | `SendInput` was blocked (UIPI / higher-privilege window). |
+| `modifiers_need_foreground` | A held modifier cannot be posted; needs rung 3. |
+| `bad_key_combo` | The combo named no usable key. |
+| `option_not_found` / `option_ambiguous` | No option with that label, or more than one. |
 | `no_automation_tree` | (snapshot note) The window exposes nothing to UIA at all. |
 | `window_not_found` | The handle is not a live window. |
 
@@ -197,3 +226,10 @@ whether Windows grants the foreground: if the click was delivered it must land
 inside the target control, and if it was refused the mouse must not have moved
 at all. Checking only that `SendInput` returned would repeat the exact mistake
 this contract exists to catch.
+
+Making the fixture check what actually *arrived* — rather than only what the
+helper claimed — is what caught the real bugs: a posted key with no scan code in
+`lParam` (delivered, produced no character), `clicks: 2` arriving as two single
+clicks instead of a double, and a combo box reporting `verified: true` for a
+selection the app never committed, because the read-back was measuring the
+highlight in an open menu rather than the control's value.

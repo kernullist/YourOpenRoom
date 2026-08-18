@@ -261,6 +261,44 @@ try
     $badDirection = Invoke-Helper @{ op = 'scroll'; hwnd = $handle; ref = $notes.ref; snapshotId = $snap.snapshotId; direction = 'sideways' }
     Assert-That 'an unknown scroll direction is refused' ($badDirection.code -eq 'bad_request') "code=$($badDirection.code)"
 
+    # --- select / toggle: state that can be READ BACK ------------------------
+    # These are the ops worth having over a plain click: a click on a checked box
+    # unchecks it, so "check this" and "click this" are different requests, and
+    # only one of them is idempotent.
+    Write-Host '[test] select and toggle'
+    $check = $snap.elements | Where-Object { $_.name -eq 'Enabled' } | Select-Object -First 1
+    $combo = $snap.elements | Where-Object { $_.role -eq 'select' } | Select-Object -First 1
+    Assert-That 'the checkbox is listed' ($null -ne $check)
+    Assert-That 'the combo box is listed' ($null -ne $combo)
+
+    $on = Invoke-Helper @{ op = 'toggle'; hwnd = $handle; ref = $check.ref; snapshotId = $snap.snapshotId; state = 'on' }
+    Assert-That 'turning a checkbox on is confirmed' ($on.effect -eq 'confirmed') "effect=$($on.effect) detail=$($on.detail)"
+    Assert-That 'the toggle is verified by read-back' ($on.verified -eq $true)
+
+    # Asking for a state already held must be idempotent, not a flip.
+    $again = Invoke-Helper @{ op = 'toggle'; hwnd = $handle; ref = $check.ref; snapshotId = $snap.snapshotId; state = 'on' }
+    Assert-That 'asking for a state already held changes nothing' ($again.effect -eq 'confirmed') "effect=$($again.effect)"
+    Assert-That 'and says it changed nothing' ($again.detail -match 'already') "detail=$($again.detail)"
+
+    $off = Invoke-Helper @{ op = 'toggle'; hwnd = $handle; ref = $check.ref; snapshotId = $snap.snapshotId; state = 'off' }
+    Assert-That 'turning it back off is confirmed' ($off.effect -eq 'confirmed') "effect=$($off.effect) detail=$($off.detail)"
+
+    $picked = Invoke-Helper @{ op = 'select'; hwnd = $handle; ref = $combo.ref; snapshotId = $snap.snapshotId; option = 'Gamma' }
+    Assert-That 'selecting an option is confirmed' ($picked.effect -eq 'confirmed') "effect=$($picked.effect) detail=$($picked.detail)"
+    Assert-That 'the selection is verified by read-back' ($picked.verified -eq $true)
+    # Not "does not open the menu" -- a closed Win32 dropdown has no list to
+    # search, so it may have to. What must hold is that it went through UIA
+    # rather than synthetic clicks, and that it says which happened.
+    Assert-That 'selecting uses the UIA path, not synthetic clicks' ($picked.path -eq 'uia_select') "path=$($picked.path)"
+    # CB_GETCURSEL: index 2 is Gamma. Proves the app really changed, not just UIA.
+    Assert-That 'the app really changed selection' (([AoiTest.Win]::SendMessageW([AoiTest.Win]::GetDlgItem($hwnd, 109), 0x0147, [IntPtr]0, $null)).ToInt64() -eq 2) 'CB_GETCURSEL mismatch'
+
+    $missing = Invoke-Helper @{ op = 'select'; hwnd = $handle; ref = $combo.ref; snapshotId = $snap.snapshotId; option = 'Omega' }
+    Assert-That 'an option that does not exist is refused' ($missing.code -eq 'option_not_found') "code=$($missing.code)"
+
+    $notToggleable = Invoke-Helper @{ op = 'toggle'; hwnd = $handle; ref = $clickMe.ref; snapshotId = $snap.snapshotId; state = 'on' }
+    Assert-That 'a control that does not toggle is refused' ($notToggleable.code -eq 'uia_unsupported') "code=$($notToggleable.code)"
+
     # --- clicks --------------------------------------------------------------
     Write-Host '[test] clicks'
     $invoked = Invoke-Helper @{ op = 'invoke'; hwnd = $handle; ref = $clickMe.ref; snapshotId = $snap.snapshotId }

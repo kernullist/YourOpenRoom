@@ -41,6 +41,8 @@ export const DESKTOP_TYPE_TOOL = 'desktop_type';
 export const DESKTOP_SCROLL_TOOL = 'desktop_scroll';
 export const DESKTOP_DRAG_TOOL = 'desktop_drag';
 export const DESKTOP_FOCUS_TOOL = 'desktop_focus';
+export const DESKTOP_SELECT_TOOL = 'desktop_select';
+export const DESKTOP_TOGGLE_TOOL = 'desktop_toggle';
 
 const DESKTOP_INPUT_TOOLS: ReadonlySet<string> = new Set([
   DESKTOP_WINDOWS_TOOL,
@@ -53,6 +55,8 @@ const DESKTOP_INPUT_TOOLS: ReadonlySet<string> = new Set([
   DESKTOP_SCROLL_TOOL,
   DESKTOP_DRAG_TOOL,
   DESKTOP_FOCUS_TOOL,
+  DESKTOP_SELECT_TOOL,
+  DESKTOP_TOGGLE_TOOL,
 ]);
 
 export function isDesktopInputTool(toolName: string): boolean {
@@ -71,6 +75,9 @@ export function getDesktopInputToolPendingSummary(toolName: string): string {
   }
   if (toolName === DESKTOP_SCROLL_TOOL) {
     return 'scrolling a window';
+  }
+  if (toolName === DESKTOP_SELECT_TOOL || toolName === DESKTOP_TOGGLE_TOOL) {
+    return 'setting a control';
   }
   if (toolName === DESKTOP_FOCUS_TOOL) {
     return 'bringing a window to the front';
@@ -318,6 +325,55 @@ export function getDesktopInputToolDefinitions(): ToolDef[] {
     {
       type: 'function',
       function: {
+        name: DESKTOP_SELECT_TOOL,
+        description:
+          'Choose an option in a dropdown or list BY ITS LABEL. Use this instead of clicking a ' +
+          'dropdown and then clicking an option: the menu that opens did not exist when your ' +
+          'snapshot was taken, so a follow-up click would be aimed at something you never saw. ' +
+          'This reads the control back afterwards, so a status of "done" means the control really ' +
+          'holds that option. If the label does not exist you get option_not_found -- take a ' +
+          'fresh desktop_snapshot and read the options rather than guessing another spelling.',
+        parameters: {
+          type: 'object',
+          properties: {
+            hwnd: { type: 'string', description: 'Window handle.' },
+            ref: { type: 'number', description: 'Ref of the dropdown or list.' },
+            snapshot_id: { type: 'string', description: 'The snapshot that produced this ref.' },
+            option: { type: 'string', description: 'Exact label of the option to choose.' },
+          },
+          required: ['hwnd', 'ref', 'snapshot_id', 'option'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: DESKTOP_TOGGLE_TOOL,
+        description:
+          'Set a checkbox to a STATE rather than clicking it. "Check this" and "click this" are ' +
+          'different requests: clicking an already-checked box unchecks it. Pass state="on" or ' +
+          '"off" and it is idempotent -- asking twice leaves it where you asked. The state is read ' +
+          'back, so "done" here is proof. Use state="toggle" only when the user actually means ' +
+          '"flip it, whatever it is".',
+        parameters: {
+          type: 'object',
+          properties: {
+            hwnd: { type: 'string', description: 'Window handle.' },
+            ref: { type: 'number', description: 'Ref of the checkbox.' },
+            snapshot_id: { type: 'string', description: 'The snapshot that produced this ref.' },
+            state: {
+              type: 'string',
+              enum: ['on', 'off', 'toggle'],
+              description: 'Desired state. Prefer on/off over toggle.',
+            },
+          },
+          required: ['hwnd', 'ref', 'snapshot_id', 'state'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
         name: DESKTOP_APPS_TOOL,
         description:
           'List the running desktop apps that have windows, grouped by program, with a window ' +
@@ -530,6 +586,26 @@ export async function executeDesktopInputTool(
         ...(typeof params.amount === 'number' ? { amount: params.amount } : {}),
         ...(delivery ? { delivery } : {}),
       }),
+    );
+  }
+
+  if (toolName === DESKTOP_SELECT_TOOL) {
+    const option = typeof params.option === 'string' ? params.option.trim() : '';
+    if (!option) {
+      return notPerformed('option is required');
+    }
+    return describeDesktopActVerdict(
+      await actOnAoiHostDesktopElement({ op: 'select', hwnd, ref, snapshotId, option }),
+    );
+  }
+
+  if (toolName === DESKTOP_TOGGLE_TOOL) {
+    const state = typeof params.state === 'string' ? params.state.trim() : '';
+    if (state !== 'on' && state !== 'off' && state !== 'toggle') {
+      return notPerformed('state must be on, off or toggle');
+    }
+    return describeDesktopActVerdict(
+      await actOnAoiHostDesktopElement({ op: 'toggle', hwnd, ref, snapshotId, state }),
     );
   }
 

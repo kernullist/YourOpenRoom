@@ -508,6 +508,35 @@ const AOI_CAPABILITY_REGISTRY = {
     policyNotes:
       'Requires os_desktop_input AND the synthetic-input toggle: a drag cannot be delivered without taking focus and moving the real cursor. Can move or reorder things irreversibly, and nothing can verify what the app did with it.',
   },
+  desktop_select: {
+    name: 'desktop_select',
+    label: 'Desktop: choose an option',
+    kind: 'tool',
+    surface: 'automation',
+    risk: 'high',
+    description:
+      'Choose an option in a dropdown or list by label, verified by reading the control back.',
+    access: ['read', 'write'],
+    sandboxEligible: false,
+    approval: 'policy-gated',
+    promptVisible: true,
+    policyNotes:
+      'Requires os_desktop_input. Preferred over clicking a dropdown and then an option: the menu a click opens did not exist at snapshot time. Reads the committed value back, so a confirmed result means the control really changed, not just that a list item was highlighted.',
+  },
+  desktop_toggle: {
+    name: 'desktop_toggle',
+    label: 'Desktop: set a checkbox',
+    kind: 'tool',
+    surface: 'automation',
+    risk: 'high',
+    description: 'Set a checkbox to a requested state, verified by reading the state back.',
+    access: ['read', 'write'],
+    sandboxEligible: false,
+    approval: 'policy-gated',
+    promptVisible: true,
+    policyNotes:
+      'Requires os_desktop_input. Takes a desired state rather than flipping, so asking twice is idempotent -- clicking an already-checked box would silently undo it. State is read back, so a confirmed result is proof.',
+  },
   desktop_focus: {
     name: 'desktop_focus',
     label: 'Desktop: raise a window',

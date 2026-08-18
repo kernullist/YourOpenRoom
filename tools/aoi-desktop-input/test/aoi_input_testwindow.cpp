@@ -20,6 +20,10 @@
 //                            reading it never disturbs the snapshot id.
 //   "Notes"      edit     -> multiline + WS_VSCROLL, prefilled past the bottom,
 //                            so scrolling it has somewhere to go.
+//   "Enabled"    checkbox -> toggle, whose state can be read back.
+//   combo box             -> select by label, likewise readable back. Both exist
+//                            because a control that can only be clicked can
+//                            never be more than "unverifiable".
 //
 // The tally is what makes the background rung testable at all: the helper
 // reports a posted click as unverifiable BECAUSE it cannot see whether the app
@@ -50,6 +54,8 @@ const int kIdDisabled = 104;
 const int kIdTally = 105;
 const int kIdRenameMe = 106;
 const int kIdNotes = 107;
+const int kIdCheck = 108;
+const int kIdCombo = 109;
 
 WNDPROC g_buttonProc = NULL;
 HWND g_renameMe = NULL;
@@ -222,6 +228,25 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR commandLine, int)
     CreateWindowExW(0, L"BUTTON", L"Disabled", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_PUSHBUTTON,
                     16, 146, 120, 30, window,
                     reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kIdDisabled)), instance, NULL);
+
+    // A checkbox and a combo: the two controls whose state can be set AND read
+    // back, which is what makes toggle/select provable rather than hopeful.
+    CreateWindowExW(0, L"BUTTON", L"Enabled", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 152, 146,
+                    120, 30, window, reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kIdCheck)),
+                    instance, NULL);
+
+    // Its own label, so it does not inherit "Password:" from the static above by
+    // z-order association.
+    AddLabel(window, L"Choice:", 288, 128);
+    HWND combo = CreateWindowExW(0, L"COMBOBOX", L"",
+                                 WS_CHILD | WS_VISIBLE | WS_VSCROLL | CBS_DROPDOWNLIST, 288, 150,
+                                 130, 200, window,
+                                 reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kIdCombo)),
+                                 instance, NULL);
+    SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Alpha"));
+    SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Beta"));
+    SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Gamma"));
+    SendMessageW(combo, CB_SETCURSEL, 0, 0);
 
     AddLabel(window, L"Notes:", 16, 190);
     HWND notes = CreateWindowExW(

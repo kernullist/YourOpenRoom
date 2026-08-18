@@ -768,10 +768,20 @@ void ReadElementInfo(IUIAutomationElement* node, bool cached, ElementInfo& info)
     info.name = ClampName(Utf8FromWide(nameRaw));
     info.automationId = ClampName(Utf8FromWide(automationRaw));
     info.enabled = (enabled != FALSE);
-    // Two independent reasons to refuse: the control declares itself a password
-    // box, or its label reads like a credential.
-    info.sensitive = (isPassword != FALSE) || LooksLikeCredential(info.name) ||
-                     LooksLikeCredential(info.automationId);
+
+    // Two independent reasons to refuse. The control declaring itself a password
+    // box is decisive on its own, for any control type.
+    //
+    // The name heuristic is deliberately narrower: it applies only to controls
+    // that ACCEPT TEXT. Windows associates a label with a control by z-order, so
+    // an unrelated dropdown sitting under a "Password:" static inherits that as
+    // its accessible name -- observed in the test fixture, where it refused a
+    // combo box. A credential cannot be typed into a dropdown or a button, so
+    // matching on their labels only costs availability without buying safety.
+    const bool acceptsText = (type == UIA_EditControlTypeId || type == UIA_DocumentControlTypeId);
+    info.sensitive = (isPassword != FALSE) ||
+                     (acceptsText &&
+                      (LooksLikeCredential(info.name) || LooksLikeCredential(info.automationId)));
 
     if (nameRaw != NULL)
     {
@@ -2385,6 +2395,462 @@ void RunListApps()
     std::cout << out.str() << std::endl;
 }
 
+
+// What does the container ACTUALLY hold now? This is the committed state -- the
+// value the app will act on -- as opposed to whatever is highlighted in a list
+// that may never have been committed.
+bool ReadContainerSelection(IUIAutomationElement* container, std::wstring& current)
+{
+    bool readOk = false;
+
+    IUIAutomationSelectionPattern* selection = NULL;
+    if (SUCCEEDED(container->GetCurrentPatternAs(UIA_SelectionPatternId,
+                                                 __uuidof(IUIAutomationSelectionPattern),
+                                                 reinterpret_cast<void**>(&selection))) &&
+        selection != NULL)
+    {
+        IUIAutomationElementArray* chosen = NULL;
+        if (SUCCEEDED(selection->GetCurrentSelection(&chosen)) && chosen != NULL)
+        {
+            int count = 0;
+            chosen->get_Length(&count);
+            if (count > 0)
+            {
+                IUIAutomationElement* first = NULL;
+                if (SUCCEEDED(chosen->GetElement(0, &first)) && first != NULL)
+                {
+                    BSTR nameRaw = NULL;
+                    if (SUCCEEDED(first->get_CurrentName(&nameRaw)) && nameRaw != NULL)
+                    {
+                        current = nameRaw;
+                        readOk = true;
+                        SysFreeString(nameRaw);
+                    }
+                    first->Release();
+                }
+            }
+            chosen->Release();
+        }
+        selection->Release();
+    }
+
+    if (!readOk)
+    {
+        // Fall back to the control's value, which some providers expose instead
+        // of a selection.
+        IUIAutomationValuePattern* value = NULL;
+        if (SUCCEEDED(container->GetCurrentPatternAs(UIA_ValuePatternId,
+                                                     __uuidof(IUIAutomationValuePattern),
+                                                     reinterpret_cast<void**>(&value))) &&
+            value != NULL)
+        {
+            BSTR raw = NULL;
+            if (SUCCEEDED(value->get_CurrentValue(&raw)) && raw != NULL)
+            {
+                current = raw;
+                readOk = true;
+                SysFreeString(raw);
+            }
+            value->Release();
+        }
+    }
+
+    return readOk;
+}
+
+// --- Op: select -------------------------------------------------------------
+//
+// Choose an option in a combo box / list by its label, WITHOUT opening the menu.
+// Opening a dropdown means a popup window, a focus change, and a second click
+// aimed at something that did not exist when the snapshot was taken -- three
+// chances to act on the wrong thing. SelectionItemPattern skips all of it, and
+// unlike a click it can be read back: IsSelected afterwards is proof.
+void RunSelect(IUIAutomation* automation, HWND hwnd, int ref, const std::string& snapshotId,
+               const std::string& option)
+{
+    if (option.empty())
+    {
+        EmitFailure("bad_request", "option is required");
+        return;
+    }
+
+    std::vector<ElementInfo> elements;
+    size_t index = 0;
+    std::string code;
+    std::string detail;
+    if (!ResolveRef(automation, hwnd, ref, snapshotId, elements, index, code, detail))
+    {
+        EmitFailure(code, detail);
+        ReleaseElements(elements);
+        return;
+    }
+
+    IUIAutomationElement* container = elements[index].element;
+    IUIAutomationCondition* anything = NULL;
+    IUIAutomationElementArray* found = NULL;
+    IUIAutomationElement* match = NULL;
+    IUIAutomationExpandCollapsePattern* expanded = NULL;
+    const std::wstring wanted = WideFromUtf8(option);
+    int candidates = 0;
+    int listIndex = -1;
+    int matchIndex = -1;
+    bool openedMenu = false;
+
+    while (true)
+    {
+        if (FAILED(automation->CreateTrueCondition(&anything)) || anything == NULL)
+        {
+            EmitFailure("uia_unavailable", "could not build an element query");
+            break;
+        }
+        if (FAILED(container->FindAll(TreeScope_Subtree, anything, &found)) || found == NULL)
+        {
+            EmitFailure("uia_unsupported", "the control did not answer an option query");
+            break;
+        }
+        int count = 0;
+        found->get_Length(&count);
+        candidates = 0;
+        listIndex = -1;
+        for (int i = 0; i < count; ++i)
+        {
+            IUIAutomationElement* node = NULL;
+            if (FAILED(found->GetElement(i, &node)) || node == NULL)
+            {
+                continue;
+            }
+            BSTR nameRaw = NULL;
+            node->get_CurrentName(&nameRaw);
+            const std::wstring name(nameRaw == NULL ? L"" : nameRaw);
+            if (nameRaw != NULL)
+            {
+                SysFreeString(nameRaw);
+            }
+            CONTROLTYPEID nodeType = 0;
+            node->get_CurrentControlType(&nodeType);
+            if (nodeType == UIA_ListItemControlTypeId)
+            {
+                listIndex += 1;
+            }
+            if (name == wanted)
+            {
+                if (match == NULL)
+                {
+                    candidates = 1;
+                    matchIndex = (nodeType == UIA_ListItemControlTypeId) ? listIndex : -1;
+                    match = node;
+                    continue;
+                }
+                // A combo surfaces the same item through more than one path once
+                // it is open, so two hits by name is not two options. Ask UIA
+                // whether these are actually the same element before calling it
+                // ambiguous -- otherwise every dropdown looks ambiguous and none
+                // can be used.
+                BOOL same = FALSE;
+                if (FAILED(automation->CompareElements(match, node, &same)) || same == FALSE)
+                {
+                    candidates += 1;
+                }
+            }
+            node->Release();
+        }
+
+        if (match == NULL && expanded == NULL)
+        {
+            // A closed Win32 dropdown has no list to search: its items do not
+            // exist as elements until it opens. So open it, look again, and
+            // close it afterwards. Selecting without opening is still preferred
+            // -- an open menu is a popup that did not exist when the snapshot
+            // was taken -- but refusing outright would make dropdowns
+            // undrivable, which is worse.
+            if (SUCCEEDED(container->GetCurrentPatternAs(
+                    UIA_ExpandCollapsePatternId, __uuidof(IUIAutomationExpandCollapsePattern),
+                    reinterpret_cast<void**>(&expanded))) &&
+                expanded != NULL && SUCCEEDED(expanded->Expand()))
+            {
+                Sleep(120);
+                found->Release();
+                found = NULL;
+                if (SUCCEEDED(container->FindAll(TreeScope_Subtree, anything, &found)) &&
+                    found != NULL)
+                {
+                    openedMenu = true;
+                    continue;
+                }
+            }
+        }
+        if (match == NULL)
+        {
+            EmitFailure("option_not_found",
+                        "no option with that exact label; take a fresh snapshot and read the "
+                        "available options rather than guessing");
+            break;
+        }
+        if (candidates > 1)
+        {
+            // Two options share a label: picking one would be a coin flip
+            // dressed up as a decision.
+            EmitFailure("option_ambiguous", "more than one option carries that label");
+            break;
+        }
+
+        IUIAutomationSelectionItemPattern* pattern = NULL;
+        if (FAILED(match->GetCurrentPatternAs(UIA_SelectionItemPatternId,
+                                              __uuidof(IUIAutomationSelectionItemPattern),
+                                              reinterpret_cast<void**>(&pattern))) ||
+            pattern == NULL)
+        {
+            EmitFailure("uia_unsupported", "that option cannot be selected directly");
+            break;
+        }
+        const HRESULT hr = pattern->Select();
+        pattern->Release();
+        if (FAILED(hr))
+        {
+            EmitVerdict(false, "suspected_noop", false, "uia_select", "Select failed");
+            break;
+        }
+
+        // Close the menu BEFORE checking, then ask the CONTAINER what it holds.
+        //
+        // Reading IsSelected off the item was wrong in the worst possible
+        // direction: it reports the highlight in the open list, so it said
+        // "selected, verified" for a combo whose real value never changed --
+        // collapsing dismisses the list like Escape rather than committing it.
+        // The container's own selection is the state the app will act on, and
+        // it is the only thing worth calling proof.
+        std::wstring current;
+        if (expanded != NULL)
+        {
+            expanded->Collapse();
+            Sleep(80);
+        }
+        bool readOk = ReadContainerSelection(container, current);
+
+        // Select() only highlights in some providers -- a classic Win32 combo
+        // among them. The default action is what a click on the item would do,
+        // which is what actually commits. Trying it only after the check means
+        // a provider where Select() already worked is left alone.
+        if (readOk && current != wanted)
+        {
+            IUIAutomationLegacyIAccessiblePattern* legacy = NULL;
+            if (SUCCEEDED(match->GetCurrentPatternAs(
+                    UIA_LegacyIAccessiblePatternId,
+                    __uuidof(IUIAutomationLegacyIAccessiblePattern),
+                    reinterpret_cast<void**>(&legacy))) &&
+                legacy != NULL)
+            {
+                if (expanded != NULL)
+                {
+                    expanded->Expand();
+                    Sleep(80);
+                }
+                legacy->DoDefaultAction();
+                legacy->Release();
+                Sleep(80);
+                if (expanded != NULL)
+                {
+                    expanded->Collapse();
+                    Sleep(80);
+                }
+                readOk = ReadContainerSelection(container, current);
+            }
+        }
+
+        // Last rung for classic Win32 combos, which ignore both UIA routes above.
+        // CB_SETCURSEL takes an INDEX, so nothing crosses the process boundary as
+        // a pointer -- the string-taking messages are not marshalled and reaching
+        // for them would mean writing into another process's memory.
+        //
+        // CB_SETCURSEL deliberately does not notify the parent, so the app would
+        // never learn its own value changed. Posting the CBN_SELCHANGE the
+        // control itself would have sent is the difference between driving the
+        // control and leaving the app disagreeing with its own UI.
+        if (readOk && current != wanted && matchIndex >= 0)
+        {
+            UIA_HWND nativeRaw = NULL;
+            if (SUCCEEDED(container->get_CurrentNativeWindowHandle(&nativeRaw)) &&
+                nativeRaw != NULL)
+            {
+                const HWND comboWindow = static_cast<HWND>(nativeRaw);
+                wchar_t className[64];
+                if (GetClassNameW(comboWindow, className, 64) > 0 &&
+                    _wcsicmp(className, L"ComboBox") == 0)
+                {
+                    if (expanded != NULL)
+                    {
+                        expanded->Collapse();
+                    }
+                    SendMessageW(comboWindow, CB_SETCURSEL, static_cast<WPARAM>(matchIndex), 0);
+                    const HWND parent = GetParent(comboWindow);
+                    if (parent != NULL)
+                    {
+                        PostMessageW(parent, WM_COMMAND,
+                                     MAKEWPARAM(GetDlgCtrlID(comboWindow), CBN_SELCHANGE),
+                                     reinterpret_cast<LPARAM>(comboWindow));
+                    }
+                    Sleep(80);
+                    readOk = ReadContainerSelection(container, current);
+                }
+            }
+        }
+
+        if (expanded != NULL)
+        {
+            expanded->Release();
+            expanded = NULL;
+        }
+
+        if (!readOk)
+        {
+            EmitVerdict(true, "unverifiable", false, "uia_select",
+                        "the selection was made but the control would not say what it now holds");
+        }
+        else if (current == wanted)
+        {
+            EmitVerdict(true, "confirmed", true, "uia_select",
+                        openedMenu ? "the control now holds that option; the menu had to be "
+                                     "opened to reach it"
+                                   : "the control now holds that option");
+        }
+        else
+        {
+            EmitVerdict(false, "suspected_noop", false, "uia_select",
+                        "the control still holds a different option; the selection did not "
+                        "commit");
+        }
+        break;
+    }
+
+    if (expanded != NULL)
+    {
+        // Leave the menu as it was found. An open dropdown swallows the next
+        // click the operator makes.
+        expanded->Collapse();
+        expanded->Release();
+    }
+    if (match != NULL)
+    {
+        match->Release();
+    }
+    if (found != NULL)
+    {
+        found->Release();
+    }
+    if (anything != NULL)
+    {
+        anything->Release();
+    }
+    ReleaseElements(elements);
+}
+
+// --- Op: toggle -------------------------------------------------------------
+//
+// Checkboxes. A click would flip whatever state the box is in, which means
+// "check this" and "click this" are different requests -- a click on an already
+// checked box unchecks it. This takes the DESIRED state and reads the result
+// back, so asking for checked twice is idempotent instead of a toggle.
+void RunToggle(IUIAutomation* automation, HWND hwnd, int ref, const std::string& snapshotId,
+               const std::string& desired)
+{
+    if (desired != "on" && desired != "off" && desired != "toggle")
+    {
+        EmitFailure("bad_request", "state must be on, off or toggle");
+        return;
+    }
+
+    std::vector<ElementInfo> elements;
+    size_t index = 0;
+    std::string code;
+    std::string detail;
+    if (!ResolveRef(automation, hwnd, ref, snapshotId, elements, index, code, detail))
+    {
+        EmitFailure(code, detail);
+        ReleaseElements(elements);
+        return;
+    }
+
+    IUIAutomationTogglePattern* pattern = NULL;
+    if (FAILED(elements[index].element->GetCurrentPatternAs(
+            UIA_TogglePatternId, __uuidof(IUIAutomationTogglePattern),
+            reinterpret_cast<void**>(&pattern))) ||
+        pattern == NULL)
+    {
+        EmitFailure("uia_unsupported", "that control does not toggle");
+        ReleaseElements(elements);
+        return;
+    }
+
+    ToggleState state = ToggleState_Indeterminate;
+    if (FAILED(pattern->get_CurrentToggleState(&state)))
+    {
+        pattern->Release();
+        EmitFailure("uia_unsupported", "the control would not report its state");
+        ReleaseElements(elements);
+        return;
+    }
+
+    const ToggleState wanted = (desired == "on") ? ToggleState_On : ToggleState_Off;
+    if (desired != "toggle" && state == wanted)
+    {
+        // Already there. Saying "confirmed" would be a lie about having acted,
+        // and "noop" would read as a failure -- it is neither.
+        EmitVerdict(true, "confirmed", true, "uia_toggle",
+                    "the control was already in the requested state; nothing was changed");
+        pattern->Release();
+        ReleaseElements(elements);
+        return;
+    }
+
+    HRESULT hr = pattern->Toggle();
+    // Tri-state controls cycle, so one Toggle may land on indeterminate rather
+    // than the state that was asked for.
+    for (int attempt = 0; attempt < 2 && SUCCEEDED(hr) && desired != "toggle"; ++attempt)
+    {
+        ToggleState now = ToggleState_Indeterminate;
+        if (FAILED(pattern->get_CurrentToggleState(&now)) || now == wanted)
+        {
+            break;
+        }
+        hr = pattern->Toggle();
+    }
+
+    if (FAILED(hr))
+    {
+        pattern->Release();
+        EmitVerdict(false, "suspected_noop", false, "uia_toggle", "Toggle failed");
+        ReleaseElements(elements);
+        return;
+    }
+
+    ToggleState after = ToggleState_Indeterminate;
+    const bool readOk = SUCCEEDED(pattern->get_CurrentToggleState(&after));
+    pattern->Release();
+
+    if (!readOk)
+    {
+        EmitVerdict(true, "unverifiable", false, "uia_toggle",
+                    "Toggle reported success but the state could not be read back");
+    }
+    else if (desired == "toggle")
+    {
+        EmitVerdict(true, after != state ? "confirmed" : "suspected_noop", after != state,
+                    "uia_toggle",
+                    after != state ? "the state changed and was read back"
+                                   : "the state did not change");
+    }
+    else if (after == wanted)
+    {
+        EmitVerdict(true, "confirmed", true, "uia_toggle", "the requested state was read back");
+    }
+    else
+    {
+        EmitVerdict(false, "suspected_noop", false, "uia_toggle",
+                    "the control did not reach the requested state");
+    }
+    ReleaseElements(elements);
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -2528,6 +2994,19 @@ int main(int argc, char** argv)
     else if (op == "focus")
     {
         RunFocus(hwnd, allowForeground);
+    }
+    else if (op == "select")
+    {
+        RunSelect(automation, hwnd, ref, snapshotId, JsonReadString(command, "option"));
+    }
+    else if (op == "toggle")
+    {
+        std::string state = JsonReadString(command, "state");
+        if (state.empty())
+        {
+            state = "toggle";
+        }
+        RunToggle(automation, hwnd, ref, snapshotId, state);
     }
     else
     {
