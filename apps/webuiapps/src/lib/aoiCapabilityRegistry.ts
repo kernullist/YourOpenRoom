@@ -372,6 +372,55 @@ const AOI_CAPABILITY_REGISTRY = {
     policyNotes:
       'Fails unless the operator approved this exact plan. Acts on authenticated sites with no undo surface of its own, so the approval and the domain denylist are the remaining containment.',
   },
+  // The three tool names the desktop-input surface exposes. Listed for the same
+  // reason the browser_drive_* names are: os_desktop_input is the host-bridge
+  // CAPABILITY key, it never appears in a tools array, and without these the
+  // tool that actually clicks things in the operator's apps would be graded as
+  // an unknown tool carrying no risk at all.
+  desktop_windows: {
+    name: 'desktop_windows',
+    label: 'Desktop: list windows',
+    kind: 'tool',
+    surface: 'automation',
+    risk: 'medium',
+    description: 'List open desktop windows (title + process) so a window can be addressed.',
+    access: ['read'],
+    sandboxEligible: false,
+    approval: 'policy-gated',
+    promptVisible: true,
+    policyNotes:
+      'Requires the Host Bridge os_desktop_input capability. Read-only; returns window titles, which can themselves be revealing, and image basenames rather than full paths.',
+  },
+  desktop_snapshot: {
+    name: 'desktop_snapshot',
+    label: 'Desktop: read a window',
+    kind: 'tool',
+    surface: 'automation',
+    risk: 'medium',
+    description:
+      'List the interactable controls in one window, each with a ref valid only for that snapshot.',
+    access: ['read'],
+    sandboxEligible: false,
+    approval: 'policy-gated',
+    promptVisible: true,
+    policyNotes:
+      'Requires os_desktop_input. Read-only, but it reads the contents of whatever app is open, so it sees what is on screen in that window. Password fields are marked undrivable and never read back.',
+  },
+  desktop_act: {
+    name: 'desktop_act',
+    label: 'Desktop: drive a control',
+    kind: 'tool',
+    surface: 'automation',
+    risk: 'high',
+    description:
+      "Click a control or set its text in one of the operator's real application windows.",
+    access: ['read', 'write'],
+    sandboxEligible: false,
+    approval: 'policy-gated',
+    promptVisible: true,
+    policyNotes:
+      'Requires os_desktop_input, which the operator sets once in Settings and which stands in for a per-action click by their explicit choice. Credential fields are refused, refs die with their snapshot, and the synthetic-mouse fallback needs a second toggle. Acts on real apps with no undo of its own -- the toggles and the refusals are the containment.',
+  },
   browser_drive_task: {
     name: 'browser_drive_task',
     label: 'Browser drive: bounded multi-act task',

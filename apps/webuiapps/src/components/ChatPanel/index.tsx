@@ -316,6 +316,12 @@ import {
   getBrowserDriveActToolPendingSummary,
   isBrowserDriveActTool,
 } from '@/lib/aoiBrowserDriveActTools';
+import {
+  executeDesktopInputTool,
+  getDesktopInputToolDefinitions,
+  getDesktopInputToolPendingSummary,
+  isDesktopInputTool,
+} from '@/lib/aoiDesktopInputTools';
 import { executeUrlTool, getUrlToolDefinitions, isUrlTool } from '@/lib/urlTools';
 import {
   executeAppStateTool,
@@ -7577,6 +7583,7 @@ const ChatPanel: React.FC<{
             ...getHostBrowserToolDefinitions(),
             ...getBrowserDriveToolDefinitions(),
             ...getBrowserDriveActToolDefinitions(),
+            ...getDesktopInputToolDefinitions(),
             ...(includeAppTools
               ? [
                   getListAppsToolDefinition(),
@@ -9588,6 +9595,42 @@ const ChatPanel: React.FC<{
               {
                 role: 'tool',
                 content: `error: ${err instanceof Error ? err.message : String(err)}`,
+                tool_call_id: tc.id,
+              },
+            ];
+          }
+          continue;
+        }
+
+        // ---- Desktop input: look at / drive a real Windows window ----
+        // Gated server-side by the os_desktop_input toggle (the operator's
+        // stored approval) and, for the synthetic-mouse rung, a second one. The
+        // act result carries its own status + note; summarizeToolResultForModel
+        // must not be allowed to flatten those away, so it is passed through as
+        // JSON exactly as the daemon described it.
+        if (isDesktopInputTool(tc.function.name)) {
+          pendingToolCallsRef.current.push(getDesktopInputToolPendingSummary(tc.function.name));
+          try {
+            const result = await executeDesktopInputTool(tc.function.name, params);
+            currentMessages = [
+              ...currentMessages,
+              { role: 'tool', content: JSON.stringify(result), tool_call_id: tc.id },
+            ];
+          } catch (err) {
+            // A throw here means the call never reached the window (blocked,
+            // daemon down, helper missing). Say that plainly rather than letting
+            // a bare error read as an ambiguous half-success.
+            console.error('[ChatPanel] desktop input failed', err);
+            currentMessages = [
+              ...currentMessages,
+              {
+                role: 'tool',
+                content: JSON.stringify({
+                  ok: false,
+                  status: 'not_performed',
+                  error: err instanceof Error ? err.message : String(err),
+                  note: 'Nothing was done on the desktop. Do not describe this as done.',
+                }),
                 tool_call_id: tc.id,
               },
             ];
