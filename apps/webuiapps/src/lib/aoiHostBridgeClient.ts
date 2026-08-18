@@ -6,6 +6,8 @@
 // wrapper targets the dev/same-origin mount. Mirrors aoiAutonomyClient's
 // fetch + parse shape (throw on !ok, surface denyReasons).
 
+import { parseAoiBrowserDriveVerdict, type AoiBrowserDriveVerdict } from './aoiBrowserDriveVerdict';
+
 const API_PREFIX = '/api/aoi-host';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -439,10 +441,16 @@ export interface AoiHostBrowserDriveActPreviewView {
 }
 
 export interface AoiHostBrowserDriveActExecuteView {
+  // Transport success: the call ran and no gate stopped it. NOT proof the
+  // action landed -- that is what `verdict` is for.
   ok: boolean;
   stepIndex: number;
   stopReason?: string;
   finalUrl?: string;
+  // Semantic verdict from the executor. Absent when the daemon did not send one
+  // (older build) or it failed validation; callers must then use the honest
+  // "delivered, unproven" wording rather than reporting success.
+  verdict?: AoiBrowserDriveVerdict;
 }
 
 // Preview: replay the read prefix and record a PENDING per-action approval. The
@@ -494,11 +502,13 @@ export async function runAoiHostBrowserDriveActExecute(
   });
   const result = isRecord(payload.result) ? payload.result : {};
   const target = isRecord(result.target) ? result.target : {};
+  const verdict = parseAoiBrowserDriveVerdict(target.verdict);
   return {
     ok: payload.ok === true && result.ok === true,
     stepIndex: typeof result.stepIndex === 'number' ? result.stepIndex : targetStepIndex,
     ...(typeof target.stopReason === 'string' ? { stopReason: target.stopReason } : {}),
     ...(typeof target.finalUrl === 'string' ? { finalUrl: target.finalUrl } : {}),
+    ...(verdict ? { verdict } : {}),
   };
 }
 

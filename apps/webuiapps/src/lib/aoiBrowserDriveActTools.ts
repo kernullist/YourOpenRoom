@@ -20,6 +20,10 @@
 // allowlist); passwords/payments/CAPTCHAs are permanently hard-blocked and can
 // never run even if approved.
 
+import {
+  decideAoiBrowserDriveNextStep,
+  describeAoiBrowserDriveVerdict,
+} from './aoiBrowserDriveVerdict';
 import type { ToolDef } from './llmClient';
 import {
   fetchAoiHostBrowserDriveActPreview,
@@ -131,7 +135,13 @@ export function getBrowserDriveActToolDefinitions(): ToolDef[] {
         description:
           'Perform the ONE action previously proposed with browser_drive_act, AFTER the user approved it ' +
           'in the Approvals inbox. Pass the IDENTICAL plan (goal + steps + target_step_index) you proposed. ' +
-          'Fails if the user has not approved this exact action.',
+          'Fails if the user has not approved this exact action. ' +
+          'READ THE RESULT BEFORE REPORTING: `ok` only means the call ran, it is NOT proof the action ' +
+          'landed. Follow `status`/`effect`: "done" (confirmed -- say it happened, never repeat it); ' +
+          '"delivered_unverified" (unverifiable -- re-read the page with a read step before saying ' +
+          'anything, and do NOT repeat the action or claim success); "not_performed" (suspected no-op or ' +
+          'refusal -- say plainly it did not happen, and follow `escalation.recommended`: ' +
+          'alternate_selector = try a different selector from a fresh snapshot, stop = do not retry).',
         parameters: {
           type: 'object',
           properties: PLAN_PARAM_SCHEMA,
@@ -355,15 +365,40 @@ export async function executeBrowserDriveRunTool(
   const executeFetcher = context.executeFetcher ?? runAoiHostBrowserDriveActExecute;
   try {
     const result = await executeFetcher(sessionPath, parsed.plan, parsed.targetStepIndex);
+    // `ok` is transport success -- the call ran and no gate stopped it. It is NOT
+    // evidence the action landed, and reporting it as "performed" is how a
+    // delivered-but-unproven act became a completion claim. The verdict carries
+    // what can actually be proven; `status` follows the verdict, not the
+    // transport. (Contract ported from hermes-agent computer-use.)
+    const verdict = result.verdict;
+    const next = verdict ? decideAoiBrowserDriveNextStep(verdict) : null;
+    const status = !result.ok
+      ? 'failed'
+      : next?.decision === 'done'
+        ? 'done'
+        : next?.decision === 'escalate'
+          ? 'not_performed'
+          : 'delivered_unverified';
     return JSON.stringify({
-      status: result.ok ? 'done' : 'failed',
+      status,
       ok: result.ok,
       step_index: result.stepIndex,
+      ...(verdict
+        ? {
+            effect: verdict.effect,
+            verified: verdict.verified,
+            ...(verdict.code ? { code: verdict.code } : {}),
+            ...(verdict.escalation ? { escalation: verdict.escalation } : {}),
+            ...(next?.decision ? { next: next.decision } : {}),
+          }
+        : {}),
       ...(result.stopReason ? { stop_reason: result.stopReason } : {}),
       ...(result.finalUrl ? { final_url: result.finalUrl } : {}),
-      note: result.ok
-        ? 'The approved action was performed on the live browser (single-use approval consumed).'
-        : 'The action did not run; see stop_reason.',
+      note: verdict
+        ? describeAoiBrowserDriveVerdict(verdict)
+        : result.ok
+          ? 'The action was delivered to the live browser. Nothing here proves it landed -- re-read the page before telling the user it worked.'
+          : 'The action did not run; see stop_reason.',
     });
   } catch (error) {
     return formatActGateError(error);

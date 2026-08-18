@@ -122,7 +122,11 @@ describe('propose (browser_drive_act)', () => {
 });
 
 describe('run (browser_drive_run)', () => {
-  it('reports done when the approved act runs', async () => {
+  it('does NOT report done on transport success alone', async () => {
+    // This used to assert status:'done' for exactly this input. Transport
+    // success means the call ran and no gate stopped it; with no verdict there
+    // is nothing proving the action landed, and telling the model "done" is how
+    // a delivered-but-unproven act became a completion claim.
     const executeFetcher = vi.fn(async () => ({
       ok: true,
       stepIndex: 1,
@@ -133,13 +137,77 @@ describe('run (browser_drive_run)', () => {
       executeFetcher,
     });
     const parsed = JSON.parse(result);
-    expect(parsed.status).toBe('done');
+    expect(parsed.status).toBe('delivered_unverified');
     expect(parsed.ok).toBe(true);
+    expect(parsed.note).toContain('Nothing here proves it landed');
     expect(executeFetcher).toHaveBeenCalledWith(
       'aoi/default',
       { goal: 'refresh the dashboard', steps: PLAN_PARAMS.steps },
       1,
     );
+  });
+
+  it('reports done only on a confirmed verdict', async () => {
+    const executeFetcher = vi.fn(async () => ({
+      ok: true,
+      stepIndex: 1,
+      finalUrl: 'https://example.com/account',
+      verdict: { effect: 'confirmed' as const, verified: true },
+    }));
+    const parsed = JSON.parse(
+      await executeBrowserDriveActTool(BROWSER_DRIVE_RUN_TOOL, PLAN_PARAMS, {
+        sessionPath: 'aoi/default',
+        executeFetcher,
+      }),
+    );
+    expect(parsed.status).toBe('done');
+    expect(parsed.effect).toBe('confirmed');
+    expect(parsed.verified).toBe(true);
+    expect(parsed.next).toBe('done');
+    expect(parsed.note).toContain('Do not repeat');
+  });
+
+  it('tells the model to re-read rather than claim success on an unverifiable act', async () => {
+    const executeFetcher = vi.fn(async () => ({
+      ok: true,
+      stepIndex: 1,
+      verdict: {
+        effect: 'unverifiable' as const,
+        verified: false,
+        escalation: { recommended: 'fresh_state' as const, reason: 'nothing changed' },
+      },
+    }));
+    const parsed = JSON.parse(
+      await executeBrowserDriveActTool(BROWSER_DRIVE_RUN_TOOL, PLAN_PARAMS, {
+        sessionPath: 'aoi/default',
+        executeFetcher,
+      }),
+    );
+    expect(parsed.status).toBe('delivered_unverified');
+    expect(parsed.next).toBe('verify_fresh_state');
+    expect(parsed.note).toContain('do NOT repeat');
+  });
+
+  it('reports a suspected no-op as not performed, with the rung to try', async () => {
+    const executeFetcher = vi.fn(async () => ({
+      ok: true,
+      stepIndex: 1,
+      verdict: {
+        effect: 'suspected_noop' as const,
+        verified: false,
+        escalation: { recommended: 'alternate_selector' as const, reason: 'read-back mismatch' },
+      },
+    }));
+    const parsed = JSON.parse(
+      await executeBrowserDriveActTool(BROWSER_DRIVE_RUN_TOOL, PLAN_PARAMS, {
+        sessionPath: 'aoi/default',
+        executeFetcher,
+      }),
+    );
+    expect(parsed.status).toBe('not_performed');
+    expect(parsed.next).toBe('escalate');
+    expect(parsed.escalation.recommended).toBe('alternate_selector');
+    expect(parsed.note).toContain('Do NOT tell the user it happened');
   });
 
   it('maps an unapproved (403) execute to an approve-first hint', async () => {

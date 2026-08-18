@@ -45,6 +45,10 @@ import {
   type AoiBrowserDriveNavigablePage,
   type AoiBrowserDriveReadResult,
 } from './aoiBrowserDriveRead';
+import {
+  classifyAoiBrowserDriveActVerdict,
+  type AoiBrowserDriveVerdict,
+} from './aoiBrowserDriveVerdict';
 import { extractAoiHostBrowserReadable } from './aoiHostBrowserRead';
 
 const DEFAULT_ACT_TIMEOUT_MS = 15_000;
@@ -136,6 +140,11 @@ export interface AoiBrowserDriveStepResult {
   // per-action approval -- surfaced so the audit ledger can mark autonomous acts.
   approvalViaStanding?: boolean;
   observation?: { before?: AoiBrowserDriveObservation; after?: AoiBrowserDriveObservation };
+  // Semantic verdict for an ACT step. `ok` above is transport success only --
+  // the call ran and no gate stopped it. This says what we can actually prove
+  // about the effect, so a caller never reports a delivered-but-unproven action
+  // as done. See aoiBrowserDriveVerdict.
+  verdict?: AoiBrowserDriveVerdict;
 }
 
 export interface AoiBrowserDriveExecuteStepParams {
@@ -389,8 +398,10 @@ export async function executeAoiBrowserDriveStep(
       });
     }
 
-    // ACT (approved above).
-    await executeActStep({ page, action, timeout });
+    // ACT (approved above). The URL is sampled first so a navigation caused by
+    // the act is detectable evidence rather than a guess.
+    const urlBefore = safeUrl(page);
+    const actOutcome = await executeActStep({ page, action, timeout });
 
     // Post-act drift: the effect may have navigated onto a denylisted host. If so,
     // blank the tab so blocked content does not persist in the Aoi page, and stop.
@@ -406,15 +417,28 @@ export async function executeAoiBrowserDriveStep(
         detail: post.reason,
         finalUrl,
         approvalFingerprint,
+        verdict: classifyAoiBrowserDriveActVerdict({
+          kind: action.kind,
+          ok: false,
+          stopReason: 'drift_to_denylist',
+        }),
       });
     }
     return finish(params.observer, stepIndex, action, before, {
       index: stepIndex,
       category: 'act',
+      // Transport success only. What can actually be proven is in `verdict`.
       ok: true,
       finalUrl,
       approvalFingerprint,
       ...(approvalViaStanding ? { approvalViaStanding: true } : {}),
+      verdict: classifyAoiBrowserDriveActVerdict({
+        kind: action.kind,
+        ok: true,
+        urlBefore,
+        urlAfter: finalUrl,
+        ...(actOutcome.readBack ? { readBack: actOutcome.readBack } : {}),
+      }),
     });
   } catch (error) {
     return finish(params.observer, stepIndex, action, before, {
@@ -425,6 +449,15 @@ export async function executeAoiBrowserDriveStep(
       detail: error instanceof Error ? error.message : String(error),
       ...(approvalFingerprint ? { approvalFingerprint } : {}),
       finalUrl: safeUrl(page),
+      ...(decision.category === 'act'
+        ? {
+            verdict: classifyAoiBrowserDriveActVerdict({
+              kind: action.kind,
+              ok: false,
+              stopReason: 'action_failed',
+            }),
+          }
+        : {}),
     });
   }
 }
@@ -568,11 +601,29 @@ async function executeReadStep(params: {
   }
 }
 
+// Read one value straight back off the live element. Best-effort by design:
+// any throw/timeout/absent element yields null, which the verdict reads as
+// "could not verify" rather than as failure.
+async function readBackValue(
+  page: AoiBrowserDriveActablePage,
+  selector: string,
+  timeout: number,
+): Promise<string | null> {
+  try {
+    return await page.getAttribute(selector, 'value', { timeout });
+  } catch {
+    return null;
+  }
+}
+
+// Runs the act and returns whatever can be proven about it. The write kinds
+// read their value back off the page; the rest carry no read-back, and the
+// verdict falls to navigation evidence or to `unverifiable`.
 async function executeActStep(params: {
   page: AoiBrowserDriveActablePage;
   action: AoiBrowserDriveActionRequest;
   timeout: number;
-}): Promise<void> {
+}): Promise<{ readBack?: { expected: string; actual: string | null } }> {
   const { page, action, timeout } = params;
   const selector = typeof action.selector === 'string' ? action.selector : '';
   if (!selector) {
@@ -581,20 +632,24 @@ async function executeActStep(params: {
   switch (action.kind) {
     case 'click':
       await page.click(selector, { timeout });
-      return;
-    case 'type':
-      await page.fill(selector, action.text ?? action.value ?? '', { timeout });
-      return;
-    case 'select':
-      await page.selectOption(selector, action.value ?? '', { timeout });
-      return;
+      return {};
+    case 'type': {
+      const expected = action.text ?? action.value ?? '';
+      await page.fill(selector, expected, { timeout });
+      return { readBack: { expected, actual: await readBackValue(page, selector, timeout) } };
+    }
+    case 'select': {
+      const expected = action.value ?? '';
+      await page.selectOption(selector, expected, { timeout });
+      return { readBack: { expected, actual: await readBackValue(page, selector, timeout) } };
+    }
     case 'press':
       await page.press(selector, action.key ?? 'Enter', { timeout });
-      return;
+      return {};
     case 'submit':
       // A form submit is triggered by activating its submit control.
       await page.click(selector, { timeout });
-      return;
+      return {};
     default:
       throw new Error(`unhandled act kind: ${action.kind}`);
   }

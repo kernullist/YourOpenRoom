@@ -568,3 +568,88 @@ describe('runAoiBrowserDrivePlan', () => {
     expect(result.steps).toHaveLength(2);
   });
 });
+
+// The executor used to mark an ACT ok:true whenever the underlying call did not
+// throw, and the tool layer then told the model "the action was performed".
+// Neither is evidence: a Playwright-style click resolves when the click is
+// DISPATCHED, so a disabled control, an intercepted overlay and a real click all
+// look identical. These pin the split between transport success (`ok`) and what
+// can actually be proven (`verdict`). Contract ported from hermes-agent.
+describe('executeAoiBrowserDriveStep - semantic verdict', () => {
+  async function runAct(
+    action: AoiBrowserDriveActionRequest,
+    options: Parameters<typeof fakePage>[0] = {},
+  ) {
+    const { page } = fakePage({ startUrl: 'https://example.com/x', ...options });
+    return executeAoiBrowserDriveStep({
+      page,
+      plan: plan(action),
+      stepIndex: 0,
+      allowlist: ALLOWLIST,
+      approvalGate: allowGate,
+      now: 1,
+    });
+  }
+
+  it('confirms a type only when the field reads the value back', async () => {
+    const result = await runAct(
+      { kind: 'type', selector: '#q', text: 'hello' },
+      { domAttributes: { value: 'hello' } },
+    );
+    expect(result.ok).toBe(true);
+    expect(result.verdict).toEqual({ effect: 'confirmed', verified: true });
+  });
+
+  it('reports a type that did not stick as a suspected no-op', async () => {
+    // The transport succeeded and the old code would have called this done.
+    const result = await runAct(
+      { kind: 'type', selector: '#q', text: 'hello' },
+      { domAttributes: { value: 'something else' } },
+    );
+    expect(result.ok).toBe(true);
+    expect(result.verdict?.effect).toBe('suspected_noop');
+    expect(result.verdict?.escalation?.recommended).toBe('alternate_selector');
+  });
+
+  it('will not confirm a type whose value could not be read back', async () => {
+    const result = await runAct({ kind: 'type', selector: '#q', text: 'hello' });
+    expect(result.ok).toBe(true);
+    expect(result.verdict?.effect).toBe('unverifiable');
+    expect(result.verdict?.verified).toBe(false);
+  });
+
+  it('treats a click that navigated as confirmed but not verified', async () => {
+    const result = await runAct(
+      { kind: 'click', selector: '#go' },
+      {
+        actLandingUrl: 'https://example.test/next',
+      },
+    );
+    expect(result.verdict).toEqual({ effect: 'confirmed', verified: false });
+  });
+
+  it('leaves a click that changed nothing observable unverifiable', async () => {
+    const result = await runAct({ kind: 'click', selector: '#go' });
+    expect(result.ok).toBe(true);
+    expect(result.verdict?.effect).toBe('unverifiable');
+  });
+
+  it('gives a stopped act a verdict carrying the refusal code', async () => {
+    const result = await runAct(
+      { kind: 'click', selector: '#go' },
+      {
+        actLandingUrl: 'https://evil.test/x',
+      },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.verdict?.effect).toBe('suspected_noop');
+    expect(result.verdict?.code).toBe(result.stopReason);
+  });
+
+  it('does not attach a verdict to a read step', async () => {
+    // Reads return their content; there is no delivered-but-unproven question.
+    const result = await runAct({ kind: 'scroll' });
+    expect(result.category).toBe('read');
+    expect(result.verdict).toBeUndefined();
+  });
+});
