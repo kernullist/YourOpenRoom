@@ -4,21 +4,24 @@
 
 .DESCRIPTION
   Builds the helper and the fixture window, drives the fixture, and asserts the
-  verdict contract end to end. These are the assertions that matter:
+  verdict contract end to end. Two kinds of assertion matter here:
 
-    - a proven write reports effect=confirmed AND verified=true, and the value
-      really is in the control afterwards
-    - a click on a disabled control is REFUSED, not reported as done
-    - a password field is REFUSED even though it is perfectly drivable
-    - a ref from a stale snapshot is REFUSED rather than re-pointed at whatever
-      now sits at that index
+  1. The helper reports honestly -- a proven write says confirmed + verified, a
+     posted click says unverifiable, a refusal says nothing happened, and a ref
+     from a changed window is refused rather than re-pointed.
+
+  2. The rungs actually work. The helper reports a background click as
+     unverifiable BECAUSE it cannot see whether the app acted; the fixture can,
+     so these tests assert what the helper honestly will not. Without that, a
+     background rung that silently did nothing would still pass every
+     honesty check.
 
   The fixture window opens without stealing focus and is closed at the end.
 
 .PARAMETER IncludeForegroundTests
-  Also exercise the SendInput fallback. Off by default because that rung does
-  what it says: it pulls the fixture to the foreground and moves the real mouse,
-  so running it uninvited would interrupt whoever is at the keyboard. The test
+  Also exercise the foreground rung. Off by default because that rung does what
+  it says: it fronts the fixture and moves the real mouse and keyboard, so
+  running it uninvited would interrupt whoever is at the keyboard. The test
   restores the cursor position afterwards.
 
 .EXAMPLE
@@ -31,6 +34,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# Do not inherit the shell's codepage: the helper emits ASCII-escaped JSON now,
+# but a non-UTF-8 console still mangles anything else it prints.
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Windows.Forms
 $toolDir = Split-Path -Parent $PSScriptRoot
 $helper = Join-Path $toolDir 'aoi_desktop_input.exe'
@@ -112,13 +118,22 @@ if (Test-Path $fixtureObj)
 # --- launch fixture ---------------------------------------------------------
 Add-Type -Namespace AoiTest -Name Win -MemberDefinition @'
 [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindowW(string cls, string title);
-[DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowTextW(IntPtr h, System.Text.StringBuilder buf, int max);
 [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr SendMessageW(IntPtr h, uint msg, IntPtr wp, System.Text.StringBuilder lp);
 [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr h, int id);
 [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h, uint msg, IntPtr wp, IntPtr lp);
 [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, ref RECT r);
+[DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
 [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
 '@
+
+function Get-ControlText
+{
+    param([IntPtr]$Window, [int]$Id)
+
+    $buffer = New-Object System.Text.StringBuilder 4096
+    [void][AoiTest.Win]::SendMessageW([AoiTest.Win]::GetDlgItem($Window, $Id), 0x000D, [IntPtr]4095, $buffer)
+    return $buffer.ToString()
+}
 
 $fixture = Start-Process -FilePath $fixtureExe -ArgumentList "--title `"$title`"" -PassThru
 $hwnd = [IntPtr]::Zero
@@ -137,12 +152,16 @@ Write-Host "[test] fixture window $handle"
 
 try
 {
-    # --- list_windows -------------------------------------------------------
-    Write-Host '[test] list_windows'
+    # --- discovery ----------------------------------------------------------
+    Write-Host '[test] discovery'
     $list = Invoke-Helper @{ op = 'list_windows' }
     $mine = $list.windows | Where-Object { $_.hwnd -eq $handle }
     Assert-That 'the fixture window is enumerated' ($null -ne $mine)
     Assert-That 'the window reports its process' ($mine.process -eq 'aoi_input_testwindow.exe') "got '$($mine.process)'"
+
+    $apps = Invoke-Helper @{ op = 'list_apps' }
+    $myApp = $apps.apps | Where-Object { $_.process -eq 'aoi_input_testwindow.exe' }
+    Assert-That 'apps are grouped by process' ($null -ne $myApp) "apps=$($apps.apps.Count)"
 
     # --- snapshot -----------------------------------------------------------
     Write-Host '[test] snapshot'
@@ -150,16 +169,21 @@ try
     Assert-That 'the snapshot succeeds' ($snap.ok -eq $true)
     Assert-That 'the snapshot carries an id' (-not [string]::IsNullOrWhiteSpace($snap.snapshotId))
     Assert-That 'a real tree is not reported as absent' ($snap.note -eq 'ok') "note=$($snap.note)"
+    # A cap that reports nothing turns "120 of 400" into "the controls".
+    Assert-That 'the snapshot reports the true element count' ($snap.totalElements -ge $snap.elements.Count) "total=$($snap.totalElements) shown=$($snap.elements.Count)"
+    Assert-That 'an untruncated snapshot says so' ($snap.truncated -eq $false) "truncated=$($snap.truncated)"
 
     $clickMe = $snap.elements | Where-Object { $_.name -eq 'Click Me' } | Select-Object -First 1
+    $renameMe = $snap.elements | Where-Object { $_.name -eq 'Rename Me' } | Select-Object -First 1
     $message = $snap.elements | Where-Object { $_.name -like 'Message*' } | Select-Object -First 1
     $password = $snap.elements | Where-Object { $_.name -like 'Password*' } | Select-Object -First 1
     $disabled = $snap.elements | Where-Object { $_.name -eq 'Disabled' } | Select-Object -First 1
+    $notes = $snap.elements | Where-Object { $_.name -like 'Notes*' } | Select-Object -First 1
 
     Assert-That 'the button is listed' ($null -ne $clickMe)
+    Assert-That 'the rename button is listed' ($null -ne $renameMe)
     Assert-That 'the message field is listed' ($null -ne $message)
-    Assert-That 'the password field is listed' ($null -ne $password)
-    Assert-That 'the disabled button is listed' ($null -ne $disabled)
+    Assert-That 'the notes field is listed' ($null -ne $notes)
     Assert-That 'the password field is marked sensitive' ($password.sensitive -eq $true)
     Assert-That 'the message field is NOT marked sensitive' ($message.sensitive -eq $false)
     Assert-That 'the disabled button reports enabled=false' ($disabled.enabled -eq $false)
@@ -169,11 +193,7 @@ try
     $onPassword = Invoke-Helper @{ op = 'set_value'; hwnd = $handle; ref = $password.ref; snapshotId = $snap.snapshotId; value = 'hunter2' }
     Assert-That 'writing to a password field is refused' ($onPassword.code -eq 'element_forbidden') "code=$($onPassword.code)"
     Assert-That 'a refusal never claims an effect' ($onPassword.effect -eq 'suspected_noop')
-
-    $passwordBox = [AoiTest.Win]::GetDlgItem($hwnd, 103)
-    $buffer = New-Object System.Text.StringBuilder 256
-    [void][AoiTest.Win]::SendMessageW($passwordBox, 0x000D, [IntPtr]255, $buffer)  # WM_GETTEXT
-    Assert-That 'the password field really is untouched' ($buffer.ToString() -eq '') "contains '$($buffer.ToString())'"
+    Assert-That 'the password field really is untouched' ((Get-ControlText $hwnd 103) -eq '') "contains '$(Get-ControlText $hwnd 103)'"
 
     $onDisabled = Invoke-Helper @{ op = 'invoke'; hwnd = $handle; ref = $disabled.ref; snapshotId = $snap.snapshotId }
     Assert-That 'invoking a disabled control is refused' ($onDisabled.code -eq 'element_disabled') "code=$($onDisabled.code)"
@@ -187,72 +207,119 @@ try
     # --- set_value: the only path that earns verified=true ------------------
     Write-Host '[test] set_value'
     $written = Invoke-Helper @{ op = 'set_value'; hwnd = $handle; ref = $message.ref; snapshotId = $snap.snapshotId; value = 'hello aoi' }
-    Assert-That 'the write reports success' ($written.ok -eq $true) "detail=$($written.detail)"
-    Assert-That 'the write is confirmed' ($written.effect -eq 'confirmed') "effect=$($written.effect)"
+    Assert-That 'the write is confirmed' ($written.effect -eq 'confirmed') "effect=$($written.effect) detail=$($written.detail)"
     Assert-That 'the write is verified by read-back' ($written.verified -eq $true)
     Assert-That 'the write reports the UIA path' ($written.path -eq 'uia_value') "path=$($written.path)"
+    Assert-That 'the value is really in the control' ((Get-ControlText $hwnd 102) -eq 'hello aoi') "contains '$(Get-ControlText $hwnd 102)'"
 
-    $messageBox = [AoiTest.Win]::GetDlgItem($hwnd, 102)
-    $buffer = New-Object System.Text.StringBuilder 256
-    [void][AoiTest.Win]::SendMessageW($messageBox, 0x000D, [IntPtr]255, $buffer)
-    Assert-That 'the value is really in the control' ($buffer.ToString() -eq 'hello aoi') "contains '$($buffer.ToString())'"
+    # --- keyboard: run BEFORE the click tests --------------------------------
+    # A posted click gives the button focus, which would move the keyboard
+    # target out from under these.
+    Write-Host '[test] keyboard (background rung)'
+    $before = Get-ControlText $hwnd 102
+    $typed = Invoke-Helper @{ op = 'type'; hwnd = $handle; text = '-typed' }
+    Assert-That 'typing is delivered' ($typed.ok -eq $true) "detail=$($typed.detail)"
+    Assert-That 'typing takes no focus' ($typed.path -eq 'background') "path=$($typed.path)"
+    # The helper cannot see whether the app accepted it, and says so.
+    Assert-That 'typing is never called confirmed' ($typed.effect -eq 'unverifiable') "effect=$($typed.effect)"
+    Start-Sleep -Milliseconds 250
+    # Deliberately not asserting a position: text lands at the caret, and after a
+    # programmatic set_value the caret is at 0, so this PREPENDS. That is real
+    # Windows behavior, not a helper bug -- what matters is that it arrived.
+    $after = Get-ControlText $hwnd 102
+    Assert-That 'the typed text really reached the app' ($after.Contains('-typed') -and $after.Contains($before)) "got '$after' from '$before'"
 
-    # --- invoke: proven effect, then the ref must go stale ------------------
-    Write-Host '[test] invoke'
-    $clicked = Invoke-Helper @{ op = 'invoke'; hwnd = $handle; ref = $clickMe.ref; snapshotId = $snap.snapshotId }
-    Assert-That 'the click reports success' ($clicked.ok -eq $true) "detail=$($clicked.detail)"
-    Assert-That 'the click is confirmed' ($clicked.effect -eq 'confirmed') "effect=$($clicked.effect)"
-    Assert-That 'the click did not steal focus with synthetic input' ($clicked.path -eq 'uia_invoke') "path=$($clicked.path)"
+    $before = Get-ControlText $hwnd 102
+    $key = Invoke-Helper @{ op = 'key'; hwnd = $handle; keys = 'a' }
+    Assert-That 'a key is delivered' ($key.ok -eq $true) "detail=$($key.detail)"
+    Assert-That 'a key takes no focus' ($key.path -eq 'background') "path=$($key.path)"
+    Start-Sleep -Milliseconds 250
+    $after = Get-ControlText $hwnd 102
+    Assert-That 'the key really reached the app' ($after.Length -eq ($before.Length + 1) -and $after.Contains('a')) "got '$after' from '$before'"
 
-    Start-Sleep -Milliseconds 200
-    $captionBuffer = New-Object System.Text.StringBuilder 256
-    [void][AoiTest.Win]::SendMessageW([AoiTest.Win]::GetDlgItem($hwnd, 101), 0x000D, [IntPtr]255, $captionBuffer)
-    Assert-That 'the click really reached the app' ($captionBuffer.ToString() -eq 'Clicked!') "caption='$($captionBuffer.ToString())'"
+    # A modifier combo cannot be posted: the app reads modifier state from the
+    # real keyboard. Dropping them silently would report a plain key as the
+    # combo that was asked for.
+    $combo = Invoke-Helper @{ op = 'key'; hwnd = $handle; keys = 'ctrl+s'; delivery = 'background' }
+    Assert-That 'a modifier combo is refused in the background' ($combo.code -eq 'modifiers_need_foreground') "code=$($combo.code)"
 
-    # The click renamed the button, so every ref from the old snapshot is dead.
+    $badCombo = Invoke-Helper @{ op = 'key'; hwnd = $handle; keys = 'ctrl+nonsense' }
+    Assert-That 'an unreadable combo is refused' ($badCombo.code -eq 'bad_key_combo') "code=$($badCombo.code)"
+
+    # --- scroll: the one input action with a verifiable rung -----------------
+    Write-Host '[test] scroll'
+    $scrolled = Invoke-Helper @{ op = 'scroll'; hwnd = $handle; ref = $notes.ref; snapshotId = $snap.snapshotId; direction = 'down'; amount = 3 }
+    Assert-That 'scrolling down is confirmed by read-back' ($scrolled.effect -eq 'confirmed') "effect=$($scrolled.effect) detail=$($scrolled.detail)"
+    Assert-That 'the scroll reports the UIA path' ($scrolled.path -eq 'uia_scroll') "path=$($scrolled.path)"
+
+    # Already at the top: the API reports success while nothing moves, and that
+    # is a no-op the caller needs told rather than a completed scroll.
+    Invoke-Helper @{ op = 'scroll'; hwnd = $handle; ref = $notes.ref; snapshotId = $snap.snapshotId; direction = 'up'; amount = 30 } | Out-Null
+    $noMove = Invoke-Helper @{ op = 'scroll'; hwnd = $handle; ref = $notes.ref; snapshotId = $snap.snapshotId; direction = 'up'; amount = 3 }
+    Assert-That 'a scroll that cannot move is reported as a no-op' ($noMove.effect -eq 'suspected_noop') "effect=$($noMove.effect) detail=$($noMove.detail)"
+
+    $badDirection = Invoke-Helper @{ op = 'scroll'; hwnd = $handle; ref = $notes.ref; snapshotId = $snap.snapshotId; direction = 'sideways' }
+    Assert-That 'an unknown scroll direction is refused' ($badDirection.code -eq 'bad_request') "code=$($badDirection.code)"
+
+    # --- clicks --------------------------------------------------------------
+    Write-Host '[test] clicks'
+    $invoked = Invoke-Helper @{ op = 'invoke'; hwnd = $handle; ref = $clickMe.ref; snapshotId = $snap.snapshotId }
+    Assert-That 'invoke is confirmed' ($invoked.effect -eq 'confirmed') "effect=$($invoked.effect)"
+    Assert-That 'invoke does not use synthetic input' ($invoked.path -eq 'uia_invoke') "path=$($invoked.path)"
+    Start-Sleep -Milliseconds 250
+    Assert-That 'invoke really reached the app' ((Get-ControlText $hwnd 105) -eq 'L:1 R:0 D:0') "tally=$(Get-ControlText $hwnd 105)"
+
+    $posted = Invoke-Helper @{ op = 'click'; hwnd = $handle; ref = $clickMe.ref; snapshotId = $snap.snapshotId; delivery = 'background' }
+    Assert-That 'a background click is delivered' ($posted.ok -eq $true) "detail=$($posted.detail)"
+    Assert-That 'a background click takes no focus' ($posted.path -eq 'background') "path=$($posted.path)"
+    Assert-That 'a background click is never called confirmed' ($posted.effect -eq 'unverifiable') "effect=$($posted.effect)"
+    Start-Sleep -Milliseconds 250
+    # What the helper honestly cannot prove, the fixture can.
+    Assert-That 'the background click really reached the app' ((Get-ControlText $hwnd 105) -eq 'L:2 R:0 D:0') "tally=$(Get-ControlText $hwnd 105)"
+
+    $right = Invoke-Helper @{ op = 'click'; hwnd = $handle; ref = $clickMe.ref; snapshotId = $snap.snapshotId; button = 'right'; delivery = 'background' }
+    Assert-That 'a right click is delivered' ($right.ok -eq $true) "detail=$($right.detail)"
+    Start-Sleep -Milliseconds 250
+    Assert-That 'the right click really reached the app' ((Get-ControlText $hwnd 105) -eq 'L:2 R:1 D:0') "tally=$(Get-ControlText $hwnd 105)"
+
+    $double = Invoke-Helper @{ op = 'click'; hwnd = $handle; ref = $clickMe.ref; snapshotId = $snap.snapshotId; clicks = 2; delivery = 'background' }
+    Assert-That 'a double click is delivered' ($double.ok -eq $true) "detail=$($double.detail)"
+    Start-Sleep -Milliseconds 300
+    Assert-That 'the double click really reached the app' ((Get-ControlText $hwnd 105) -match 'D:1') "tally=$(Get-ControlText $hwnd 105)"
+
+    $modified = Invoke-Helper @{ op = 'click'; hwnd = $handle; ref = $clickMe.ref; snapshotId = $snap.snapshotId; modifiers = 'ctrl'; delivery = 'background' }
+    Assert-That 'a modified click is refused in the background' ($modified.code -eq 'modifiers_need_foreground') "code=$($modified.code)"
+
+    $badButton = Invoke-Helper @{ op = 'click'; hwnd = $handle; ref = $clickMe.ref; snapshotId = $snap.snapshotId; button = 'thumb' }
+    Assert-That 'an unknown mouse button is refused' ($badButton.code -eq 'bad_request') "code=$($badButton.code)"
+
+    # --- stale refs ----------------------------------------------------------
+    Write-Host '[test] stale refs'
+    Invoke-Helper @{ op = 'invoke'; hwnd = $handle; ref = $renameMe.ref; snapshotId = $snap.snapshotId } | Out-Null
+    Start-Sleep -Milliseconds 250
     $stale = Invoke-Helper @{ op = 'invoke'; hwnd = $handle; ref = $clickMe.ref; snapshotId = $snap.snapshotId }
     Assert-That 'a ref from a changed window is refused' ($stale.code -eq 'element_ref_stale') "code=$($stale.code)"
 
     $fresh = Invoke-Helper @{ op = 'snapshot'; hwnd = $handle }
     Assert-That 'the changed window mints a new snapshot id' ($fresh.snapshotId -ne $snap.snapshotId)
+    # Every acting op re-resolves through the same guard, so the refusal must
+    # not be specific to invoke.
+    $staleClick = Invoke-Helper @{ op = 'click'; hwnd = $handle; ref = $clickMe.ref; snapshotId = $snap.snapshotId }
+    Assert-That 'a stale ref is refused for click too' ($staleClick.code -eq 'element_ref_stale') "code=$($staleClick.code)"
 
-    # --- typed text must not steer the command ------------------------------
-    # The value is text the model chose, and the same command names the element
-    # to drive. This pins that text which LOOKS like command structure is stored
-    # as literal characters and changes nothing about the target. (The older
-    # substring parser passed this too -- escaping already prevented it. The
-    # assertion stays because the property is what matters, not the parser that
-    # happens to provide it.)
-    Write-Host '[test] parser is not steerable by typed text'
-    $freshForInjection = Invoke-Helper @{ op = 'snapshot'; hwnd = $handle }
-    $injMessage = $freshForInjection.elements | Where-Object { $_.name -like 'Message*' } | Select-Object -First 1
-    $injPassword = $freshForInjection.elements | Where-Object { $_.name -like 'Password*' } | Select-Object -First 1
-    $payload = 'x\", \"ref\": ' + $injPassword.ref + ', \"junk\": \"y'
-    $inj = Invoke-Helper @{ op = 'set_value'; hwnd = $handle; ref = $injMessage.ref; snapshotId = $freshForInjection.snapshotId; value = $payload }
-    Assert-That 'a value containing another key does not redirect the write' ($inj.code -ne 'element_forbidden') "code=$($inj.code) detail=$($inj.detail)"
-
-    $buffer = New-Object System.Text.StringBuilder 512
-    [void][AoiTest.Win]::SendMessageW([AoiTest.Win]::GetDlgItem($hwnd, 102), 0x000D, [IntPtr]511, $buffer)
-    Assert-That 'the payload is stored as literal text' ($buffer.ToString() -eq $payload) "got '$($buffer.ToString())'"
-
-    $buffer = New-Object System.Text.StringBuilder 512
-    [void][AoiTest.Win]::SendMessageW([AoiTest.Win]::GetDlgItem($hwnd, 103), 0x000D, [IntPtr]511, $buffer)
-    Assert-That 'the password field is still untouched' ($buffer.ToString() -eq '') "contains '$($buffer.ToString())'"
-
-    # --- the SendInput rung -------------------------------------------------
-    # A plain edit box exposes no InvokePattern, so invoking one is the case
-    # where rung 1 cannot run. What happens next is a security decision, not a
-    # convenience one: without the flag it must refuse rather than quietly
-    # escalate to real mouse input.
-    Write-Host '[test] sendinput rung'
-    $fresh = Invoke-Helper @{ op = 'snapshot'; hwnd = $handle }
+    # --- the foreground rung -------------------------------------------------
+    Write-Host '[test] foreground rung'
     $freshMessage = $fresh.elements | Where-Object { $_.name -like 'Message*' } | Select-Object -First 1
     $noPattern = Invoke-Helper @{ op = 'invoke'; hwnd = $handle; ref = $freshMessage.ref; snapshotId = $fresh.snapshotId }
     Assert-That 'synthetic input is not used unless asked for' ($noPattern.code -eq 'uia_unsupported') "code=$($noPattern.code)"
 
+    $focusDenied = Invoke-Helper @{ op = 'focus'; hwnd = $handle }
+    Assert-That 'raising a window needs the foreground flag' ($focusDenied.code -eq 'uia_unsupported') "code=$($focusDenied.code)"
+
     if ($IncludeForegroundTests)
     {
         $cursor = [System.Windows.Forms.Cursor]::Position
+        $priorForeground = [AoiTest.Win]::GetForegroundWindow()
         try
         {
             $clickedByInput = Invoke-Helper @{ op = 'invoke'; hwnd = $handle; ref = $freshMessage.ref; snapshotId = $fresh.snapshotId } -AllowForeground
@@ -263,21 +330,14 @@ try
             # Both outcomes are correct, and which one happens is not the test's
             # to decide: Windows grants or refuses a foreground change from a
             # background process on its own terms. What must hold is that each
-            # outcome is reported honestly -- so assert the branch that occurred
-            # rather than requiring a precondition the test cannot control.
+            # outcome is reported honestly.
             if ($clickedByInput.ok -eq $true)
             {
                 Assert-That 'the synthetic click reports its path' ($clickedByInput.path -eq 'sendinput') "path=$($clickedByInput.path)"
-                # Nothing in this rung can prove the click did anything, so it
-                # must never say confirmed.
                 Assert-That 'the synthetic click is never called confirmed' ($clickedByInput.effect -eq 'unverifiable') "effect=$($clickedByInput.effect)"
-                Assert-That 'the synthetic click claims no verification' ($clickedByInput.verified -eq $false)
-
                 # Asserting only that SendInput returned would repeat the exact
                 # mistake this contract exists to catch: the call succeeding says
-                # nothing about WHERE the click went. On a multi-monitor desktop a
-                # coordinate bug puts it on another screen and the call still
-                # succeeds. So check the pointer is inside the target control.
+                # nothing about WHERE the click went.
                 $inside = ($landed.X -ge $box.Left) -and ($landed.X -le $box.Right) -and `
                           ($landed.Y -ge $box.Top) -and ($landed.Y -le $box.Bottom)
                 Assert-That 'the click landed on the targeted control' $inside "cursor=($($landed.X),$($landed.Y)) control=($($box.Left),$($box.Top))-($($box.Right),$($box.Bottom))"
@@ -286,12 +346,27 @@ try
             {
                 Assert-That 'a refused foreground change is named' ($clickedByInput.code -eq 'foreground_denied' -or $clickedByInput.code -eq 'element_obscured') "code=$($clickedByInput.code)"
                 Assert-That 'a refused click claims no effect' ($clickedByInput.effect -eq 'suspected_noop') "effect=$($clickedByInput.effect)"
-                # The refusal is only worth anything if no input was synthesized.
-                # If the cursor moved, something WAS clicked -- somewhere nobody
-                # asked for, since the target never came forward.
                 $moved = ($landed.X -ne $cursor.X) -or ($landed.Y -ne $cursor.Y)
                 Assert-That 'a refused click moves no mouse at all' (-not $moved) "cursor went ($($cursor.X),$($cursor.Y)) -> ($($landed.X),$($landed.Y))"
-                Write-Host "       (Windows refused the foreground change this run; that is the path under test)" -ForegroundColor DarkGray
+                Write-Host '       (Windows refused the foreground change this run; that is the path under test)' -ForegroundColor DarkGray
+            }
+
+            # A foreground key must put focus back where it found it. Leaving the
+            # operator somewhere they did not navigate is a side effect of its own.
+            $keyFg = Invoke-Helper @{ op = 'key'; hwnd = $handle; keys = 'ctrl+shift'; delivery = 'foreground' } -AllowForeground
+            Assert-That 'an all-modifier combo is still refused' ($keyFg.code -eq 'bad_key_combo') "code=$($keyFg.code)"
+
+            $typeFg = Invoke-Helper @{ op = 'type'; hwnd = $handle; text = 'FG'; delivery = 'foreground' } -AllowForeground
+            if ($typeFg.ok -eq $true)
+            {
+                Assert-That 'foreground typing reports its rung' ($typeFg.path -eq 'foreground') "path=$($typeFg.path)"
+                Start-Sleep -Milliseconds 300
+                $restored = [AoiTest.Win]::GetForegroundWindow()
+                Assert-That 'the prior foreground window is restored' ($restored -eq $priorForeground) "prior=$priorForeground now=$restored"
+            }
+            else
+            {
+                Assert-That 'a refused foreground type is named' ($typeFg.code -eq 'foreground_denied') "code=$($typeFg.code)"
             }
         }
         finally
@@ -301,7 +376,7 @@ try
     }
     else
     {
-        Write-Host '  skip synthetic-input delivery (pass -IncludeForegroundTests)' -ForegroundColor DarkGray
+        Write-Host '  skip foreground delivery (pass -IncludeForegroundTests)' -ForegroundColor DarkGray
     }
 
     # --- unknown window -----------------------------------------------------

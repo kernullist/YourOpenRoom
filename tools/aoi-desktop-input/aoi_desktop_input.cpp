@@ -118,9 +118,71 @@ std::string JsonEscape(const std::string& value)
             sprintf_s(buf, sizeof(buf), "\\u%04x", c);
             out += buf;
         }
-        else
+        else if (c < 0x80)
         {
             out.push_back(static_cast<char>(c));
+        }
+        else
+        {
+            // Escape every non-ASCII character instead of passing UTF-8 through.
+            //
+            // This output crosses a process boundary to a reader whose decoding
+            // is not ours to choose. A shell on a non-UTF-8 codepage -- the
+            // default on this machine -- transcodes the bytes before any parser
+            // sees them, and window titles and control names on a Korean or
+            // Japanese desktop are routinely non-ASCII, so that corrupts real
+            // results rather than exotic ones. Pure ASCII cannot be mangled.
+            const size_t remaining = value.size() - i;
+            unsigned int codepoint = 0;
+            size_t length = 0;
+            if ((c & 0xE0) == 0xC0 && remaining >= 2)
+            {
+                codepoint = c & 0x1Fu;
+                length = 2;
+            }
+            else if ((c & 0xF0) == 0xE0 && remaining >= 3)
+            {
+                codepoint = c & 0x0Fu;
+                length = 3;
+            }
+            else if ((c & 0xF8) == 0xF0 && remaining >= 4)
+            {
+                codepoint = c & 0x07u;
+                length = 4;
+            }
+
+            bool valid = (length != 0);
+            for (size_t k = 1; k < length && valid; ++k)
+            {
+                const unsigned char follow = static_cast<unsigned char>(value[i + k]);
+                if ((follow & 0xC0) != 0x80)
+                {
+                    valid = false;
+                    break;
+                }
+                codepoint = (codepoint << 6) | (follow & 0x3Fu);
+            }
+
+            char buf[16];
+            if (!valid)
+            {
+                // A truncated or malformed sequence becomes the replacement
+                // character rather than broken JSON.
+                out += "\\ufffd";
+                continue;
+            }
+            i += length - 1;
+            if (codepoint >= 0x10000)
+            {
+                const unsigned int adjusted = codepoint - 0x10000;
+                sprintf_s(buf, sizeof(buf), "\\u%04x\\u%04x", 0xD800 + (adjusted >> 10),
+                          0xDC00 + (adjusted & 0x3FF));
+            }
+            else
+            {
+                sprintf_s(buf, sizeof(buf), "\\u%04x", codepoint);
+            }
+            out += buf;
         }
     }
     return out;
@@ -385,7 +447,16 @@ std::string ClampName(const std::string& value)
     }
     if (static_cast<int>(collapsed.size()) > kMaxNameChars)
     {
-        collapsed.resize(static_cast<size_t>(kMaxNameChars));
+        // Back off to a UTF-8 character boundary. Cutting at a fixed byte count
+        // splits a multi-byte character, and these names are Korean on this
+        // machine -- so the naive version mangles the common case, not an
+        // exotic one.
+        size_t cut = static_cast<size_t>(kMaxNameChars);
+        while (cut > 0 && (static_cast<unsigned char>(collapsed[cut]) & 0xC0) == 0x80)
+        {
+            --cut;
+        }
+        collapsed.resize(cut);
         collapsed += "...";
     }
     return collapsed;
@@ -584,6 +655,31 @@ std::string RoleOf(CONTROLTYPEID type)
     }
 }
 
+// Scrollbar parts are not things to click -- there is a `scroll` op for that,
+// and it can prove it worked, which clicking an arrow cannot.
+//
+// They also had to go for a sharper reason: these buttons APPEAR AND DISAPPEAR
+// with scroll position (the page-up button does not exist while a view is at the
+// top). Since the snapshot id hashes the element identities, scrolling anything
+// silently retired every ref in the window and turned "scroll, then click" into
+// a guaranteed stale-ref refusal. Excluding them removes the volatility without
+// loosening the guard: a real change to the controls still retires the snapshot.
+bool IsScrollBarPart(const std::string& automationId)
+{
+    static const char* kParts[] = {
+        "UpButton",     "DownButton",     "LeftButton",     "RightButton",
+        "UpPageButton", "DownPageButton", "LeftPageButton", "RightPageButton",
+    };
+    for (size_t i = 0; i < sizeof(kParts) / sizeof(kParts[0]); ++i)
+    {
+        if (automationId == kParts[i])
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool IsInteractableType(CONTROLTYPEID type)
 {
     return type == UIA_ButtonControlTypeId || type == UIA_HyperlinkControlTypeId ||
@@ -720,7 +816,8 @@ std::string SnapshotIdFor(HWND hwnd, const std::vector<ElementInfo>& elements)
 bool CollectElements(IUIAutomation* automation,
                      HWND hwnd,
                      std::vector<ElementInfo>& out,
-                     std::string& error)
+                     std::string& error,
+                     int* totalFound = NULL)
 {
     IUIAutomationElement* root = NULL;
     IUIAutomationCondition* condition = NULL;
@@ -772,7 +869,14 @@ bool CollectElements(IUIAutomation* automation,
 
         int count = 0;
         found->get_Length(&count);
-        for (int i = 0; i < count && static_cast<int>(out.size()) < kMaxElements; ++i)
+
+        // The whole array is walked even after the cap is reached, so the count
+        // reported back is the number of elements that WOULD be addressable.
+        // A cap that reports nothing turns "here are 120 of 400 controls" into
+        // "here are the controls", and the caller stops looking for the other
+        // 280. Properties are already cached, so the extra passes are cheap.
+        int eligible = 0;
+        for (int i = 0; i < count; ++i)
         {
             IUIAutomationElement* node = NULL;
             if (FAILED(found->GetElement(i, &node)) || node == NULL)
@@ -780,10 +884,25 @@ bool CollectElements(IUIAutomation* automation,
                 continue;
             }
             ElementInfo info;
+            ReadElementInfo(node, cache != NULL, info);
+            if (IsScrollBarPart(info.automationId))
+            {
+                node->Release();
+                continue;
+            }
+            eligible += 1;
+            if (static_cast<int>(out.size()) >= kMaxElements)
+            {
+                node->Release();
+                continue;
+            }
             info.ref = static_cast<int>(out.size()) + 1;
             info.element = node; // ownership moves into out; ReleaseElements frees it
-            ReadElementInfo(node, cache != NULL, info);
             out.push_back(info);
+        }
+        if (totalFound != NULL)
+        {
+            *totalFound = eligible;
         }
         ok = true;
     } while (false);
@@ -860,7 +979,8 @@ void RunSnapshot(IUIAutomation* automation, HWND hwnd)
 {
     std::vector<ElementInfo> elements;
     std::string error;
-    if (!CollectElements(automation, hwnd, elements, error))
+    int totalFound = 0;
+    if (!CollectElements(automation, hwnd, elements, error, &totalFound))
     {
         EmitFailure("snapshot_unavailable", error);
         return;
@@ -874,10 +994,12 @@ void RunSnapshot(IUIAutomation* automation, HWND hwnd)
                                                           : "no_automation_tree";
     }
 
+    const int shown = static_cast<int>(elements.size());
     const std::string id = SnapshotIdFor(hwnd, elements);
     std::ostringstream out;
     out << "{\"ok\":true,\"snapshotId\":\"" << id << "\",\"note\":\"" << note
-        << "\",\"elements\":[";
+        << "\",\"totalElements\":" << totalFound
+        << ",\"truncated\":" << ((totalFound > shown) ? "true" : "false") << ",\"elements\":[";
     for (size_t i = 0; i < elements.size(); ++i)
     {
         if (i > 0)
@@ -1209,6 +1331,1060 @@ HWND ParseHwnd(const std::string& text)
     return reinterpret_cast<HWND>(static_cast<uintptr_t>(parsed));
 }
 
+// ---------------------------------------------------------------------------
+// Input vocabulary: keys, text, clicks, scroll, drag.
+//
+// Three delivery rungs, weakest side effect first:
+//
+//   1. uia_*        a UI Automation pattern. No focus steal, no cursor move,
+//                   and the API reports success -- the only rung that can be
+//                   confirmed.
+//   2. background   messages posted straight to the target window. No focus
+//                   steal and no cursor move, but nothing reports whether the
+//                   app acted on them, so it is unverifiable. Many Win32 apps
+//                   accept these; Chromium/Electron and DirectInput games
+//                   often ignore them. That is NOT predictable from the app --
+//                   it has to be attempted and then checked.
+//   3. foreground   real SendInput. Takes focus, moves the cursor, and is
+//                   equally unverifiable. Restores the previously focused
+//                   window afterwards, because leaving the operator's focus
+//                   somewhere they did not put it is itself a side effect.
+//
+// A caller may pin a rung; "auto" walks them in order. Rung 3 always needs
+// --allow-foreground on top of whatever was asked for.
+// ---------------------------------------------------------------------------
+
+enum DeliveryMode
+{
+    kDeliveryAuto = 0,
+    kDeliveryBackground,
+    kDeliveryForeground,
+};
+
+DeliveryMode ParseDelivery(const std::string& value)
+{
+    if (value == "background")
+    {
+        return kDeliveryBackground;
+    }
+    if (value == "foreground")
+    {
+        return kDeliveryForeground;
+    }
+    return kDeliveryAuto;
+}
+
+struct KeyName
+{
+    const char* name;
+    WORD vk;
+};
+
+// Named keys a model actually reaches for. Single printable characters are
+// handled separately by layout-aware translation.
+const KeyName kKeyNames[] = {
+    {"enter", VK_RETURN},    {"return", VK_RETURN},   {"tab", VK_TAB},
+    {"escape", VK_ESCAPE},   {"esc", VK_ESCAPE},      {"space", VK_SPACE},
+    {"backspace", VK_BACK},  {"delete", VK_DELETE},   {"del", VK_DELETE},
+    {"insert", VK_INSERT},   {"home", VK_HOME},       {"end", VK_END},
+    {"pageup", VK_PRIOR},    {"pagedown", VK_NEXT},   {"up", VK_UP},
+    {"down", VK_DOWN},       {"left", VK_LEFT},       {"right", VK_RIGHT},
+    {"f1", VK_F1},           {"f2", VK_F2},           {"f3", VK_F3},
+    {"f4", VK_F4},           {"f5", VK_F5},           {"f6", VK_F6},
+    {"f7", VK_F7},           {"f8", VK_F8},           {"f9", VK_F9},
+    {"f10", VK_F10},         {"f11", VK_F11},         {"f12", VK_F12},
+};
+
+bool IsModifierName(const std::string& token, WORD& vk)
+{
+    if (token == "ctrl" || token == "control")
+    {
+        vk = VK_CONTROL;
+        return true;
+    }
+    if (token == "shift")
+    {
+        vk = VK_SHIFT;
+        return true;
+    }
+    if (token == "alt" || token == "option")
+    {
+        vk = VK_MENU;
+        return true;
+    }
+    if (token == "win" || token == "windows" || token == "super" || token == "meta" ||
+        token == "cmd")
+    {
+        vk = VK_LWIN;
+        return true;
+    }
+    return false;
+}
+
+// Split "ctrl+shift+s" into held modifiers plus one main key. Returns false when
+// the combo names no usable main key -- refusing beats pressing something else.
+bool ParseKeyCombo(const std::string& combo, std::vector<WORD>& modifiers, WORD& mainKey)
+{
+    modifiers.clear();
+    mainKey = 0;
+
+    std::vector<std::string> tokens;
+    std::string current;
+    for (size_t i = 0; i <= combo.size(); ++i)
+    {
+        const char c = (i < combo.size()) ? combo[i] : '+';
+        if (c == '+')
+        {
+            if (!current.empty())
+            {
+                tokens.push_back(current);
+                current.clear();
+            }
+        }
+        else
+        {
+            current.push_back(static_cast<char>(tolower(static_cast<unsigned char>(c))));
+        }
+    }
+
+    for (size_t i = 0; i < tokens.size(); ++i)
+    {
+        WORD modifier = 0;
+        if (IsModifierName(tokens[i], modifier))
+        {
+            modifiers.push_back(modifier);
+            continue;
+        }
+        if (mainKey != 0)
+        {
+            // Two main keys is not a combo this can deliver honestly.
+            return false;
+        }
+        bool matched = false;
+        for (size_t k = 0; k < sizeof(kKeyNames) / sizeof(kKeyNames[0]); ++k)
+        {
+            if (tokens[i] == kKeyNames[k].name)
+            {
+                mainKey = kKeyNames[k].vk;
+                matched = true;
+                break;
+            }
+        }
+        if (matched)
+        {
+            continue;
+        }
+        if (tokens[i].size() == 1)
+        {
+            // Layout-aware: 's' must be whatever key produces 's' here.
+            const SHORT scan = VkKeyScanA(tokens[i][0]);
+            if (scan == -1)
+            {
+                return false;
+            }
+            mainKey = static_cast<WORD>(scan & 0xFF);
+            const int scanModifiers = (scan >> 8) & 0xFF;
+            if (scanModifiers & 1)
+            {
+                modifiers.push_back(VK_SHIFT);
+            }
+            if (scanModifiers & 2)
+            {
+                modifiers.push_back(VK_CONTROL);
+            }
+            if (scanModifiers & 4)
+            {
+                modifiers.push_back(VK_MENU);
+            }
+            continue;
+        }
+        return false;
+    }
+    return mainKey != 0;
+}
+
+// Modifiers may arrive as "ctrl+shift", "ctrl,shift", or ["ctrl","shift"].
+// Rather than pick one and reject the rest on a technicality, this scans the raw
+// value for known modifier names -- there is nothing else in that field for a
+// name to be confused with, and a caller whose modifier was silently dropped
+// would get a plain click reported as the modified one they asked for.
+void ParseModifierList(const std::string& raw, std::vector<WORD>& modifiers)
+{
+    modifiers.clear();
+    std::string token;
+    for (size_t i = 0; i <= raw.size(); ++i)
+    {
+        const char c = (i < raw.size()) ? raw[i] : ',';
+        const bool isWord = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+        if (isWord)
+        {
+            token.push_back(static_cast<char>(tolower(static_cast<unsigned char>(c))));
+            continue;
+        }
+        if (!token.empty())
+        {
+            WORD vk = 0;
+            if (IsModifierName(token, vk))
+            {
+                bool already = false;
+                for (size_t k = 0; k < modifiers.size(); ++k)
+                {
+                    if (modifiers[k] == vk)
+                    {
+                        already = true;
+                        break;
+                    }
+                }
+                if (!already)
+                {
+                    modifiers.push_back(vk);
+                }
+            }
+            token.clear();
+        }
+    }
+}
+
+// The window inside the target that currently has keyboard focus. Background
+// key/text messages have to go THERE, not to the top-level frame, or they land
+// nowhere.
+HWND FocusedChildOf(HWND hwnd)
+{
+    const DWORD threadId = GetWindowThreadProcessId(hwnd, NULL);
+    if (threadId == 0)
+    {
+        return NULL;
+    }
+    GUITHREADINFO info;
+    ZeroMemory(&info, sizeof(info));
+    info.cbSize = sizeof(info);
+    if (GetGUIThreadInfo(threadId, &info) == FALSE)
+    {
+        return NULL;
+    }
+    if (info.hwndFocus != NULL)
+    {
+        return info.hwndFocus;
+    }
+    // No focused control in that thread: the frame itself is the best target.
+    return hwnd;
+}
+
+// Deepest child window at a screen point, without WindowFromPoint -- which only
+// answers for whatever is visibly on top and so cannot address a background or
+// partly covered window at all.
+HWND ChildAtScreenPoint(HWND top, POINT screenPoint, POINT& clientPoint)
+{
+    HWND current = top;
+    POINT point = screenPoint;
+    ScreenToClient(current, &point);
+    for (int depth = 0; depth < 16; ++depth)
+    {
+        const HWND child = RealChildWindowFromPoint(current, point);
+        if (child == NULL || child == current)
+        {
+            break;
+        }
+        MapWindowPoints(current, child, &point, 1);
+        current = child;
+    }
+    clientPoint = point;
+    return current;
+}
+
+void PressForegroundKeys(const std::vector<WORD>& modifiers, WORD mainKey)
+{
+    std::vector<INPUT> inputs;
+    for (size_t i = 0; i < modifiers.size(); ++i)
+    {
+        INPUT down;
+        ZeroMemory(&down, sizeof(down));
+        down.type = INPUT_KEYBOARD;
+        down.ki.wVk = modifiers[i];
+        inputs.push_back(down);
+    }
+    INPUT keyDown;
+    ZeroMemory(&keyDown, sizeof(keyDown));
+    keyDown.type = INPUT_KEYBOARD;
+    keyDown.ki.wVk = mainKey;
+    inputs.push_back(keyDown);
+
+    INPUT keyUp = keyDown;
+    keyUp.ki.dwFlags = KEYEVENTF_KEYUP;
+    inputs.push_back(keyUp);
+    for (size_t i = modifiers.size(); i > 0; --i)
+    {
+        INPUT up;
+        ZeroMemory(&up, sizeof(up));
+        up.type = INPUT_KEYBOARD;
+        up.ki.wVk = modifiers[i - 1];
+        up.ki.dwFlags = KEYEVENTF_KEYUP;
+        inputs.push_back(up);
+    }
+    SendInput(static_cast<UINT>(inputs.size()), &inputs[0], sizeof(INPUT));
+}
+
+void TypeForegroundText(const std::wstring& text)
+{
+    // KEYEVENTF_UNICODE sidesteps the keyboard layout entirely, so text that the
+    // current layout cannot type still arrives intact.
+    for (size_t i = 0; i < text.size(); ++i)
+    {
+        INPUT down;
+        ZeroMemory(&down, sizeof(down));
+        down.type = INPUT_KEYBOARD;
+        down.ki.wScan = static_cast<WORD>(text[i]);
+        down.ki.dwFlags = KEYEVENTF_UNICODE;
+        INPUT up = down;
+        up.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+        INPUT pair[2] = {down, up};
+        SendInput(2, pair, sizeof(INPUT));
+    }
+}
+
+// Front the window, run the action, then put focus back where it was. A helper
+// that leaves the operator's focus somewhere they did not put it has caused a
+// side effect of its own, on top of whatever it was asked to do.
+struct ForegroundScope
+{
+    HWND previous;
+    bool acquired;
+
+    explicit ForegroundScope(HWND target)
+    {
+        previous = GetForegroundWindow();
+        acquired = BringToForeground(target);
+    }
+
+    ~ForegroundScope()
+    {
+        if (acquired && previous != NULL && IsWindow(previous))
+        {
+            SetForegroundWindow(previous);
+        }
+    }
+};
+
+struct ClickSpec
+{
+    UINT downMessage;
+    UINT upMessage;
+    UINT doubleMessage;
+    WPARAM buttonFlag;
+    DWORD sendDown;
+    DWORD sendUp;
+};
+
+bool ResolveClickSpec(const std::string& button, ClickSpec& spec)
+{
+    if (button.empty() || button == "left")
+    {
+        spec.downMessage = WM_LBUTTONDOWN;
+        spec.upMessage = WM_LBUTTONUP;
+        spec.doubleMessage = WM_LBUTTONDBLCLK;
+        spec.buttonFlag = MK_LBUTTON;
+        spec.sendDown = MOUSEEVENTF_LEFTDOWN;
+        spec.sendUp = MOUSEEVENTF_LEFTUP;
+        return true;
+    }
+    if (button == "right")
+    {
+        spec.downMessage = WM_RBUTTONDOWN;
+        spec.upMessage = WM_RBUTTONUP;
+        spec.doubleMessage = WM_RBUTTONDBLCLK;
+        spec.buttonFlag = MK_RBUTTON;
+        spec.sendDown = MOUSEEVENTF_RIGHTDOWN;
+        spec.sendUp = MOUSEEVENTF_RIGHTUP;
+        return true;
+    }
+    if (button == "middle")
+    {
+        spec.downMessage = WM_MBUTTONDOWN;
+        spec.upMessage = WM_MBUTTONUP;
+        spec.doubleMessage = WM_MBUTTONDBLCLK;
+        spec.buttonFlag = MK_MBUTTON;
+        spec.sendDown = MOUSEEVENTF_MIDDLEDOWN;
+        spec.sendUp = MOUSEEVENTF_MIDDLEUP;
+        return true;
+    }
+    return false;
+}
+
+// Center of the element to act on, in screen coordinates.
+bool ElementCenter(IUIAutomationElement* element, POINT& center)
+{
+    RECT rect;
+    if (FAILED(element->get_CurrentBoundingRectangle(&rect)))
+    {
+        return false;
+    }
+    if (rect.right <= rect.left || rect.bottom <= rect.top)
+    {
+        return false;
+    }
+    center.x = rect.left + (rect.right - rect.left) / 2;
+    center.y = rect.top + (rect.bottom - rect.top) / 2;
+    return true;
+}
+
+bool PostBackgroundClick(HWND hwnd, POINT screenPoint, const ClickSpec& spec, int clicks)
+{
+    POINT clientPoint;
+    const HWND target = ChildAtScreenPoint(hwnd, screenPoint, clientPoint);
+    if (target == NULL)
+    {
+        return false;
+    }
+    const LPARAM position = MAKELPARAM(clientPoint.x, clientPoint.y);
+    // Move first: apps that track hover state before a press need to see it.
+    PostMessageW(target, WM_MOUSEMOVE, 0, position);
+    PostMessageW(target, spec.downMessage, spec.buttonFlag, position);
+    PostMessageW(target, spec.upMessage, 0, position);
+
+    // A double click is NOT two clicks. Windows synthesizes WM_*BUTTONDBLCLK
+    // from the timing of real input, which posted messages do not have, so
+    // posting down/up twice delivers two separate single clicks -- and an app
+    // that distinguishes them (most do) acts twice instead of once. The second
+    // press has to be the explicit double-click message.
+    for (int extra = 1; extra < clicks; ++extra)
+    {
+        PostMessageW(target, spec.doubleMessage, spec.buttonFlag, position);
+        PostMessageW(target, spec.upMessage, 0, position);
+    }
+    return true;
+}
+
+void SendForegroundClick(POINT screenPoint, const ClickSpec& spec, int clicks,
+                         const std::vector<WORD>& modifiers)
+{
+    const int originX = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    const int originY = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    const int width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    const int height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    if (width <= 1 || height <= 1)
+    {
+        return;
+    }
+
+    for (size_t i = 0; i < modifiers.size(); ++i)
+    {
+        INPUT down;
+        ZeroMemory(&down, sizeof(down));
+        down.type = INPUT_KEYBOARD;
+        down.ki.wVk = modifiers[i];
+        SendInput(1, &down, sizeof(INPUT));
+    }
+
+    INPUT move;
+    ZeroMemory(&move, sizeof(move));
+    move.type = INPUT_MOUSE;
+    move.mi.dx = static_cast<LONG>((static_cast<double>(screenPoint.x - originX) * 65535.0) /
+                                   (width - 1));
+    move.mi.dy = static_cast<LONG>((static_cast<double>(screenPoint.y - originY) * 65535.0) /
+                                   (height - 1));
+    move.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+    SendInput(1, &move, sizeof(INPUT));
+
+    for (int i = 0; i < clicks; ++i)
+    {
+        INPUT press[2];
+        ZeroMemory(press, sizeof(press));
+        press[0].type = INPUT_MOUSE;
+        press[0].mi.dwFlags = spec.sendDown;
+        press[1].type = INPUT_MOUSE;
+        press[1].mi.dwFlags = spec.sendUp;
+        SendInput(2, press, sizeof(INPUT));
+    }
+
+    for (size_t i = modifiers.size(); i > 0; --i)
+    {
+        INPUT up;
+        ZeroMemory(&up, sizeof(up));
+        up.type = INPUT_KEYBOARD;
+        up.ki.wVk = modifiers[i - 1];
+        up.ki.dwFlags = KEYEVENTF_KEYUP;
+        SendInput(1, &up, sizeof(INPUT));
+    }
+}
+
+// --- Op: key ----------------------------------------------------------------
+//
+// Keyboard is where most real desktop work happens (ctrl+s, tab, escape), and
+// UI Automation has no pattern for "press a key" -- so this starts at the
+// background rung. Neither rung can prove the app acted, so neither claims to.
+void RunKey(HWND hwnd, const std::string& combo, DeliveryMode delivery, bool allowForeground)
+{
+    std::vector<WORD> modifiers;
+    WORD mainKey = 0;
+    if (!ParseKeyCombo(combo, modifiers, mainKey))
+    {
+        EmitFailure("bad_key_combo",
+                    "could not read that as a key combo; use forms like 'ctrl+s', 'tab', 'f5'");
+        return;
+    }
+
+    if (delivery != kDeliveryForeground)
+    {
+        const HWND focused = FocusedChildOf(hwnd);
+        if (focused != NULL)
+        {
+            // A posted key cannot carry held modifiers -- the receiving app reads
+            // modifier state from the real keyboard, which is untouched here. So
+            // a combo is only honest on the foreground rung.
+            if (modifiers.empty())
+            {
+                // lParam has to carry the scan code. The receiving app turns a
+                // key message into a character through TranslateMessage, which
+                // reads the scan code out of lParam -- posting 0 there delivers
+                // a keystroke that arrives and produces nothing, which looks
+                // exactly like the rung not working.
+                const UINT scan = MapVirtualKeyW(mainKey, MAPVK_VK_TO_VSC);
+                const LPARAM downParam = static_cast<LPARAM>(1 | (scan << 16));
+                const LPARAM upParam =
+                    static_cast<LPARAM>(1 | (scan << 16) | (1u << 30) | (1u << 31));
+                PostMessageW(focused, WM_KEYDOWN, mainKey, downParam);
+                PostMessageW(focused, WM_KEYUP, mainKey, upParam);
+                EmitVerdict(true, "unverifiable", false, "background",
+                            "key posted to the focused control without taking focus");
+                return;
+            }
+            if (delivery == kDeliveryBackground)
+            {
+                EmitFailure("modifiers_need_foreground",
+                            "a modifier combo cannot be delivered in the background; the app "
+                            "reads modifier state from the real keyboard");
+                return;
+            }
+        }
+        else if (delivery == kDeliveryBackground)
+        {
+            EmitFailure("background_unavailable", "the window exposes no focused control");
+            return;
+        }
+    }
+
+    if (!allowForeground)
+    {
+        EmitFailure("uia_unsupported",
+                    "this key needs the foreground rung; re-run with --allow-foreground");
+        return;
+    }
+
+    ForegroundScope scope(hwnd);
+    if (!scope.acquired)
+    {
+        EmitFailure("foreground_denied",
+                    "Windows refused to bring the window forward; the keys would have gone to "
+                    "whatever is actually in front");
+        return;
+    }
+    PressForegroundKeys(modifiers, mainKey);
+    EmitVerdict(true, "unverifiable", false, "foreground", "key sent as real keyboard input");
+}
+
+// --- Op: type ---------------------------------------------------------------
+//
+// Free text into whatever holds focus.
+//
+// Two things make this the weaker choice whenever a specific field is the
+// target. There is no element to read back, so it is unverifiable by
+// construction. And the text lands AT THE CARET, wherever that happens to be --
+// after a programmatic set_value the caret sits at position 0, so typing then
+// PREPENDS rather than appends. Nothing here can see the caret to warn about it.
+// set_value replaces the whole field and can prove it did.
+void RunType(HWND hwnd, const std::string& text, DeliveryMode delivery, bool allowForeground)
+{
+    if (text.empty())
+    {
+        EmitFailure("bad_request", "text is required");
+        return;
+    }
+    const std::wstring wide = WideFromUtf8(text);
+
+    if (delivery != kDeliveryForeground)
+    {
+        const HWND focused = FocusedChildOf(hwnd);
+        if (focused != NULL)
+        {
+            for (size_t i = 0; i < wide.size(); ++i)
+            {
+                PostMessageW(focused, WM_CHAR, static_cast<WPARAM>(wide[i]), 0);
+            }
+            EmitVerdict(true, "unverifiable", false, "background",
+                        "text posted to the focused control without taking focus");
+            return;
+        }
+        if (delivery == kDeliveryBackground)
+        {
+            EmitFailure("background_unavailable", "the window exposes no focused control");
+            return;
+        }
+    }
+
+    if (!allowForeground)
+    {
+        EmitFailure("uia_unsupported",
+                    "typing here needs the foreground rung; re-run with --allow-foreground");
+        return;
+    }
+
+    ForegroundScope scope(hwnd);
+    if (!scope.acquired)
+    {
+        EmitFailure("foreground_denied",
+                    "Windows refused to bring the window forward; the text would have gone to "
+                    "whatever is actually in front");
+        return;
+    }
+    TypeForegroundText(wide);
+    EmitVerdict(true, "unverifiable", false, "foreground", "text sent as real keyboard input");
+}
+
+// --- Op: click --------------------------------------------------------------
+//
+// A single click on a plain button is better served by invoke (rung 1, provable).
+// This exists for what invoke cannot express: right-click, double-click, held
+// modifiers -- and for controls that expose no InvokePattern at all.
+void RunClick(IUIAutomation* automation, HWND hwnd, int ref, const std::string& snapshotId,
+              const std::string& button, int clicks, const std::vector<WORD>& modifiers,
+              DeliveryMode delivery, bool allowForeground)
+{
+    ClickSpec spec;
+    if (!ResolveClickSpec(button, spec))
+    {
+        EmitFailure("bad_request", "button must be left, right or middle");
+        return;
+    }
+    if (clicks < 1 || clicks > 3)
+    {
+        EmitFailure("bad_request", "clicks must be 1, 2 or 3");
+        return;
+    }
+
+    std::vector<ElementInfo> elements;
+    size_t index = 0;
+    std::string code;
+    std::string detail;
+    if (!ResolveRef(automation, hwnd, ref, snapshotId, elements, index, code, detail))
+    {
+        EmitFailure(code, detail);
+        ReleaseElements(elements);
+        return;
+    }
+
+    POINT center;
+    if (!ElementCenter(elements[index].element, center))
+    {
+        EmitFailure("element_not_on_screen", "the element has no usable on-screen rectangle");
+        ReleaseElements(elements);
+        return;
+    }
+
+    if (delivery != kDeliveryForeground)
+    {
+        // Modifiers are read from the real keyboard, so a posted click cannot
+        // carry them; say so rather than dropping them silently and reporting a
+        // plain click as if it were the modified one that was asked for.
+        if (!modifiers.empty())
+        {
+            if (delivery == kDeliveryBackground)
+            {
+                EmitFailure("modifiers_need_foreground",
+                            "a modified click cannot be delivered in the background");
+                ReleaseElements(elements);
+                return;
+            }
+        }
+        else if (PostBackgroundClick(hwnd, center, spec, clicks))
+        {
+            EmitVerdict(true, "unverifiable", false, "background",
+                        "click posted to the target window without taking focus or moving the "
+                        "cursor");
+            ReleaseElements(elements);
+            return;
+        }
+        else if (delivery == kDeliveryBackground)
+        {
+            EmitFailure("background_unavailable", "no child window at the element position");
+            ReleaseElements(elements);
+            return;
+        }
+    }
+
+    if (!allowForeground)
+    {
+        EmitFailure("uia_unsupported",
+                    "this click needs the foreground rung; re-run with --allow-foreground");
+        ReleaseElements(elements);
+        return;
+    }
+
+    ForegroundScope scope(hwnd);
+    if (!scope.acquired)
+    {
+        EmitFailure("foreground_denied",
+                    "Windows refused to bring the window forward; the click would have landed on "
+                    "whatever is actually in front");
+        ReleaseElements(elements);
+        return;
+    }
+    POINT covered;
+    covered.x = center.x;
+    covered.y = center.y;
+    const HWND atPoint = WindowFromPoint(covered);
+    if (atPoint == NULL || GetAncestor(atPoint, GA_ROOT) != GetAncestor(hwnd, GA_ROOT))
+    {
+        EmitFailure("element_obscured", "another window covers the click point");
+        ReleaseElements(elements);
+        return;
+    }
+    SendForegroundClick(center, spec, clicks, modifiers);
+    EmitVerdict(true, "unverifiable", false, "foreground", "click sent as real mouse input");
+    ReleaseElements(elements);
+}
+
+// --- Op: scroll -------------------------------------------------------------
+//
+// The one input action with a real UI Automation pattern behind it, so unlike
+// the rest of this file it can start on a rung that reports success.
+void RunScroll(IUIAutomation* automation, HWND hwnd, int ref, const std::string& snapshotId,
+               const std::string& direction, int amount, DeliveryMode delivery,
+               bool allowForeground)
+{
+    if (direction != "up" && direction != "down" && direction != "left" && direction != "right")
+    {
+        EmitFailure("bad_request", "direction must be up, down, left or right");
+        return;
+    }
+    if (amount < 1 || amount > 30)
+    {
+        EmitFailure("bad_request", "amount must be between 1 and 30");
+        return;
+    }
+
+    std::vector<ElementInfo> elements;
+    size_t index = 0;
+    std::string code;
+    std::string detail;
+    if (!ResolveRef(automation, hwnd, ref, snapshotId, elements, index, code, detail))
+    {
+        EmitFailure(code, detail);
+        ReleaseElements(elements);
+        return;
+    }
+    IUIAutomationElement* element = elements[index].element;
+
+    if (delivery == kDeliveryAuto)
+    {
+        IUIAutomationScrollPattern* pattern = NULL;
+        if (SUCCEEDED(element->GetCurrentPatternAs(UIA_ScrollPatternId,
+                                                   __uuidof(IUIAutomationScrollPattern),
+                                                   reinterpret_cast<void**>(&pattern))) &&
+            pattern != NULL)
+        {
+            ScrollAmount horizontal = ScrollAmount_NoAmount;
+            ScrollAmount vertical = ScrollAmount_NoAmount;
+            if (direction == "up")
+            {
+                vertical = ScrollAmount_SmallDecrement;
+            }
+            else if (direction == "down")
+            {
+                vertical = ScrollAmount_SmallIncrement;
+            }
+            else if (direction == "left")
+            {
+                horizontal = ScrollAmount_SmallDecrement;
+            }
+            else
+            {
+                horizontal = ScrollAmount_SmallIncrement;
+            }
+
+            // Read the position back: a scroll that was already at the end
+            // reports success while changing nothing, and that is a no-op the
+            // caller needs to know about rather than a completed scroll.
+            double before = 0.0;
+            const bool readBefore =
+                SUCCEEDED((direction == "up" || direction == "down")
+                              ? pattern->get_CurrentVerticalScrollPercent(&before)
+                              : pattern->get_CurrentHorizontalScrollPercent(&before));
+
+            HRESULT hr = S_OK;
+            for (int i = 0; i < amount && SUCCEEDED(hr); ++i)
+            {
+                hr = pattern->Scroll(horizontal, vertical);
+            }
+            if (SUCCEEDED(hr))
+            {
+                double after = 0.0;
+                const bool readAfter =
+                    SUCCEEDED((direction == "up" || direction == "down")
+                                  ? pattern->get_CurrentVerticalScrollPercent(&after)
+                                  : pattern->get_CurrentHorizontalScrollPercent(&after));
+                pattern->Release();
+                if (readBefore && readAfter)
+                {
+                    if (after != before)
+                    {
+                        EmitVerdict(true, "confirmed", true, "uia_scroll",
+                                    "scroll position changed and was read back");
+                    }
+                    else
+                    {
+                        EmitVerdict(false, "suspected_noop", false, "uia_scroll",
+                                    "the scroll position did not move; it is already at that end");
+                    }
+                }
+                else
+                {
+                    EmitVerdict(true, "unverifiable", false, "uia_scroll",
+                                "ScrollPattern reported success but the position could not be read");
+                }
+                ReleaseElements(elements);
+                return;
+            }
+            pattern->Release();
+        }
+    }
+
+    POINT center;
+    if (!ElementCenter(element, center))
+    {
+        EmitFailure("element_not_on_screen", "the element has no usable on-screen rectangle");
+        ReleaseElements(elements);
+        return;
+    }
+    const int ticks = ((direction == "up" || direction == "left") ? 1 : -1) * amount * WHEEL_DELTA;
+    const bool horizontalWheel = (direction == "left" || direction == "right");
+
+    if (delivery != kDeliveryForeground)
+    {
+        POINT clientPoint;
+        const HWND target = ChildAtScreenPoint(hwnd, center, clientPoint);
+        if (target != NULL)
+        {
+            // Wheel messages carry SCREEN coordinates, unlike the button ones.
+            PostMessageW(target, horizontalWheel ? WM_MOUSEHWHEEL : WM_MOUSEWHEEL,
+                         MAKEWPARAM(0, static_cast<short>(ticks)),
+                         MAKELPARAM(center.x, center.y));
+            EmitVerdict(true, "unverifiable", false, "background",
+                        "wheel posted to the target window without taking focus");
+            ReleaseElements(elements);
+            return;
+        }
+        if (delivery == kDeliveryBackground)
+        {
+            EmitFailure("background_unavailable", "no child window at the element position");
+            ReleaseElements(elements);
+            return;
+        }
+    }
+
+    if (!allowForeground)
+    {
+        EmitFailure("uia_unsupported",
+                    "this scroll needs the foreground rung; re-run with --allow-foreground");
+        ReleaseElements(elements);
+        return;
+    }
+
+    ForegroundScope scope(hwnd);
+    if (!scope.acquired)
+    {
+        EmitFailure("foreground_denied", "Windows refused to bring the window forward");
+        ReleaseElements(elements);
+        return;
+    }
+    INPUT wheel;
+    ZeroMemory(&wheel, sizeof(wheel));
+    wheel.type = INPUT_MOUSE;
+    wheel.mi.mouseData = static_cast<DWORD>(ticks);
+    wheel.mi.dwFlags = horizontalWheel ? MOUSEEVENTF_HWHEEL : MOUSEEVENTF_WHEEL;
+    SendInput(1, &wheel, sizeof(INPUT));
+    EmitVerdict(true, "unverifiable", false, "foreground", "wheel sent as real mouse input");
+    ReleaseElements(elements);
+}
+
+// --- Op: drag ---------------------------------------------------------------
+//
+// Foreground only, and deliberately so: a drag is a timed sequence of real
+// pointer state that posted messages do not reproduce in most apps. Offering a
+// background rung here would mostly produce silent no-ops.
+void RunDrag(IUIAutomation* automation, HWND hwnd, int fromRef, int toRef,
+             const std::string& snapshotId, bool allowForeground)
+{
+    if (!allowForeground)
+    {
+        EmitFailure("uia_unsupported",
+                    "a drag is real pointer input; re-run with --allow-foreground");
+        return;
+    }
+
+    std::vector<ElementInfo> elements;
+    size_t fromIndex = 0;
+    std::string code;
+    std::string detail;
+    if (!ResolveRef(automation, hwnd, fromRef, snapshotId, elements, fromIndex, code, detail))
+    {
+        EmitFailure(code, detail);
+        ReleaseElements(elements);
+        return;
+    }
+    if (toRef < 1 || toRef > static_cast<int>(elements.size()))
+    {
+        EmitFailure("element_ref_unknown", "the destination ref is not in this snapshot");
+        ReleaseElements(elements);
+        return;
+    }
+    const size_t toIndex = static_cast<size_t>(toRef - 1);
+
+    POINT from;
+    POINT to;
+    if (!ElementCenter(elements[fromIndex].element, from) ||
+        !ElementCenter(elements[toIndex].element, to))
+    {
+        EmitFailure("element_not_on_screen", "both ends of a drag must be on screen");
+        ReleaseElements(elements);
+        return;
+    }
+
+    ForegroundScope scope(hwnd);
+    if (!scope.acquired)
+    {
+        EmitFailure("foreground_denied", "Windows refused to bring the window forward");
+        ReleaseElements(elements);
+        return;
+    }
+
+    ClickSpec spec;
+    ResolveClickSpec("left", spec);
+    const std::vector<WORD> none;
+    const int originX = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    const int originY = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    const int width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    const int height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    if (width <= 1 || height <= 1)
+    {
+        EmitFailure("no_screen_metrics", "no virtual screen metrics");
+        ReleaseElements(elements);
+        return;
+    }
+
+    // Move, press, glide, release. The intermediate moves matter: apps that
+    // start a drag on the first move after a press see nothing from a single
+    // jump straight to the destination.
+    const int kSteps = 12;
+    for (int step = 0; step <= kSteps; ++step)
+    {
+        const long x = from.x + ((to.x - from.x) * step) / kSteps;
+        const long y = from.y + ((to.y - from.y) * step) / kSteps;
+        INPUT move;
+        ZeroMemory(&move, sizeof(move));
+        move.type = INPUT_MOUSE;
+        move.mi.dx = static_cast<LONG>((static_cast<double>(x - originX) * 65535.0) / (width - 1));
+        move.mi.dy = static_cast<LONG>((static_cast<double>(y - originY) * 65535.0) / (height - 1));
+        move.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+        SendInput(1, &move, sizeof(INPUT));
+        if (step == 0)
+        {
+            INPUT press;
+            ZeroMemory(&press, sizeof(press));
+            press.type = INPUT_MOUSE;
+            press.mi.dwFlags = spec.sendDown;
+            SendInput(1, &press, sizeof(INPUT));
+        }
+        Sleep(12);
+    }
+    INPUT release;
+    ZeroMemory(&release, sizeof(release));
+    release.type = INPUT_MOUSE;
+    release.mi.dwFlags = spec.sendUp;
+    SendInput(1, &release, sizeof(INPUT));
+
+    EmitVerdict(true, "unverifiable", false, "foreground",
+                "drag delivered as real pointer input; nothing here proves the app accepted it");
+    ReleaseElements(elements);
+}
+
+// --- Op: focus --------------------------------------------------------------
+//
+// Kept separate from the input actions because it is a persistent, visible
+// change to the operator's desktop rather than a momentary one -- worth its own
+// call and its own approval instead of riding along inside a click.
+void RunFocus(HWND hwnd, bool allowForeground)
+{
+    if (!allowForeground)
+    {
+        EmitFailure("uia_unsupported",
+                    "raising a window changes what the operator is looking at; re-run with "
+                    "--allow-foreground");
+        return;
+    }
+    const HWND previous = GetForegroundWindow();
+    if (!BringToForeground(hwnd))
+    {
+        EmitFailure("foreground_denied", "Windows refused to bring the window forward");
+        return;
+    }
+    // Deliberately NOT restored: raising is the whole point of this op.
+    const bool changed = (previous != GetForegroundWindow());
+    EmitVerdict(true, changed ? "confirmed" : "unverifiable", false, "foreground",
+                changed ? "the window is now in front" : "the window was already in front");
+}
+
+// --- Op: list_apps ----------------------------------------------------------
+//
+// Windows grouped by owning program. A model that wants "the browser" should not
+// have to infer it from a list of window titles.
+void RunListApps()
+{
+    std::vector<WindowInfo> windows;
+    EnumWindows(CollectWindow, reinterpret_cast<LPARAM>(&windows));
+
+    std::vector<std::string> names;
+    std::vector<int> counts;
+    std::vector<std::string> samples;
+    for (size_t i = 0; i < windows.size(); ++i)
+    {
+        const std::string& process = windows[i].process;
+        if (process.empty())
+        {
+            continue;
+        }
+        bool found = false;
+        for (size_t k = 0; k < names.size(); ++k)
+        {
+            if (names[k] == process)
+            {
+                counts[k] += 1;
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+        {
+            names.push_back(process);
+            counts.push_back(1);
+            samples.push_back(windows[i].title);
+        }
+    }
+
+    std::ostringstream out;
+    out << "{\"ok\":true,\"apps\":[";
+    for (size_t i = 0; i < names.size(); ++i)
+    {
+        if (i > 0)
+        {
+            out << ",";
+        }
+        out << "{\"process\":\"" << JsonEscape(names[i]) << "\",\"windowCount\":" << counts[i]
+            << ",\"sampleTitle\":\"" << JsonEscape(samples[i]) << "\"}";
+    }
+    out << "]}";
+    std::cout << out.str() << std::endl;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -1272,6 +2448,12 @@ int main(int argc, char** argv)
         return 0;
     }
 
+    if (op == "list_apps")
+    {
+        RunListApps();
+        return 0;
+    }
+
     const HWND hwnd = ParseHwnd(JsonReadString(command, "hwnd"));
     if (hwnd == NULL || IsWindow(hwnd) == FALSE)
     {
@@ -1300,6 +2482,7 @@ int main(int argc, char** argv)
 
     const int ref = static_cast<int>(JsonReadNumber(command, "ref", 0));
     const std::string snapshotId = JsonReadString(command, "snapshotId");
+    const DeliveryMode delivery = ParseDelivery(JsonReadString(command, "delivery"));
 
     if (op == "snapshot")
     {
@@ -1312,6 +2495,39 @@ int main(int argc, char** argv)
     else if (op == "set_value")
     {
         RunSetValue(automation, hwnd, ref, snapshotId, JsonReadString(command, "value"));
+    }
+    else if (op == "click")
+    {
+        std::vector<WORD> modifiers;
+        std::string modifierRaw;
+        ExtractTopLevelRaw(command, "modifiers", modifierRaw);
+        ParseModifierList(modifierRaw, modifiers);
+        const int clicks = static_cast<int>(JsonReadNumber(command, "clicks", 1));
+        RunClick(automation, hwnd, ref, snapshotId, JsonReadString(command, "button"), clicks,
+                 modifiers, delivery, allowForeground);
+    }
+    else if (op == "scroll")
+    {
+        const int amount = static_cast<int>(JsonReadNumber(command, "amount", 3));
+        RunScroll(automation, hwnd, ref, snapshotId, JsonReadString(command, "direction"), amount,
+                  delivery, allowForeground);
+    }
+    else if (op == "key")
+    {
+        RunKey(hwnd, JsonReadString(command, "keys"), delivery, allowForeground);
+    }
+    else if (op == "type")
+    {
+        RunType(hwnd, JsonReadString(command, "text"), delivery, allowForeground);
+    }
+    else if (op == "drag")
+    {
+        const int toRef = static_cast<int>(JsonReadNumber(command, "toRef", 0));
+        RunDrag(automation, hwnd, ref, toRef, snapshotId, allowForeground);
+    }
+    else if (op == "focus")
+    {
+        RunFocus(hwnd, allowForeground);
     }
     else
     {
