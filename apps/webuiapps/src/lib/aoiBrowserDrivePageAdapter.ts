@@ -147,6 +147,16 @@ export interface AoiBrowserDriveTabHandle {
   selectTab(index: number): Promise<void>;
   // Which page subsequent actions should be delivered to.
   currentPage(): AoiBrowserDriveRawPage;
+  // Go back to the tab Aoi itself opened.
+  //
+  // Containment blanks the page when an act drifts onto a denied domain. That
+  // was written when the drive only ever had its own tab; once it can switch to
+  // one of the OPERATOR'S tabs, blanking the current page would navigate their
+  // real tab -- a half-written message, a filled-in form -- to about:blank.
+  // Returning to Aoi's own tab achieves the same containment (the drive is no
+  // longer parked on the denied page) and destroys nothing.
+  returnToOwnTab(): void;
+  isOnOwnTab(): boolean;
 }
 
 /**
@@ -217,6 +227,12 @@ export function attachAoiBrowserDriveTabs(
     },
     currentPage() {
       return current;
+    },
+    returnToOwnTab() {
+      current = initialPage;
+    },
+    isOnOwnTab() {
+      return current === initialPage;
     },
   };
 }

@@ -367,6 +367,9 @@ export async function startAoiBrowserDriveSession(
     };
     drivable.listTabs = tabs.listTabs;
     drivable.selectTab = tabs.selectTab;
+    drivable.returnToOwnTab = () => {
+      tabs.returnToOwnTab();
+    };
   }
   if (dialogs) {
     drivable.answerDialog = dialogs.answerDialog;

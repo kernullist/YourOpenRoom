@@ -569,7 +569,12 @@ function defaultSpawn(
     encoding: 'utf-8',
     windowsHide: true,
     timeout: HELPER_TIMEOUT_MS,
-    maxBuffer: 4 * 1024 * 1024,
+    // A capture reply carries a base64 PNG. At the top of the allowed size range
+    // that can run to several megabytes, and overflowing this does not fail
+    // loudly -- it truncates, the JSON no longer parses, and the caller is told
+    // the helper "produced no parseable reply", which points at entirely the
+    // wrong thing.
+    maxBuffer: 64 * 1024 * 1024,
   });
   return {
     status: typeof outcome.status === 'number' ? outcome.status : null,

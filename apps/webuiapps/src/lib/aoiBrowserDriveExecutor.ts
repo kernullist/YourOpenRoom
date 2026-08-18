@@ -74,6 +74,9 @@ export interface AoiBrowserDriveActablePage extends AoiBrowserDriveNavigablePage
   press(selector: string, key: string, options?: { timeout?: number }): Promise<void>;
   goBack(options?: { waitUntil?: string; timeout?: number }): Promise<unknown>;
   screenshot(options?: { timeout?: number }): Promise<Uint8Array>;
+  // Return delivery to the tab Aoi opened. Optional: a session without tab
+  // support has only ever had its own tab, so there is nothing to return from.
+  returnToOwnTab?(): void;
   mouse: { wheel(deltaX: number, deltaY: number): Promise<void> };
   // Read-only DOM introspection used to derive the target's REAL accessible text +
   // field metadata from the live page, so the forbidden hard-block does not rely on
@@ -369,6 +372,18 @@ export async function resolveAoiBrowserDriveActionElementRef(
 }
 
 async function blankPage(page: AoiBrowserDriveActablePage): Promise<void> {
+  // Come back to Aoi's own tab FIRST. This is containment for a drive that
+  // drifted onto a denied domain, and the drive may be sitting on one of the
+  // operator's own tabs -- blanking that would navigate their real page away
+  // and lose whatever was on it. Returning to Aoi's tab already achieves what
+  // this is for: the drive is no longer on the denied page.
+  if (typeof page.returnToOwnTab === 'function') {
+    try {
+      page.returnToOwnTab();
+    } catch {
+      // Falling through still blanks something Aoi controls in the common case.
+    }
+  }
   try {
     await page.goto(BLANK_URL, { waitUntil: 'domcontentloaded', timeout: 5_000 });
   } catch {

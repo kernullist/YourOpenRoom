@@ -185,6 +185,21 @@ describe('tab handling', () => {
     expect(handle.currentPage()).toBe(second);
   });
 
+  it('can return to the tab Aoi opened', async () => {
+    // Containment blanks the page when a drive drifts onto a denied domain. If
+    // the drive had switched to one of the OPERATOR's tabs, blanking the current
+    // page would navigate their real tab to about:blank and lose what was on it.
+    const own = fakePage('https://example.com/aoi');
+    const theirs = fakePage('https://mail.example.com/compose');
+    const handle = attachAoiBrowserDriveTabs(fakeContext([own, theirs]), own);
+    await handle.selectTab(1);
+    expect(handle.isOnOwnTab()).toBe(false);
+
+    handle.returnToOwnTab();
+    expect(handle.currentPage()).toBe(own);
+    expect(handle.isOnOwnTab()).toBe(true);
+  });
+
   it('lists a tab that cannot report its title', async () => {
     const first = fakePage('https://example.com/a');
     const second = fakePage('https://example.com/b');

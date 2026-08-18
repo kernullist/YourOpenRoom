@@ -245,3 +245,32 @@ describe('splitDesktopToolImage', () => {
     expect(image).toBeNull();
   });
 });
+
+// Attaching an image to a request for a model that cannot take one does not
+// degrade -- it THROWS at the request boundary and kills the turn. So a
+// text-only model must never be offered a tool whose whole output is a picture.
+describe('the capture tool is only offered to a model that can see', () => {
+  it('is absent for a model that cannot receive images', () => {
+    const names = getDesktopInputToolDefinitions({ canSeeImages: false }).map(
+      (def) => def.function.name,
+    );
+    expect(names).not.toContain('desktop_capture');
+    // And the rest of the desktop surface is untouched.
+    expect(names).toContain('desktop_snapshot');
+    expect(names).toContain('desktop_act');
+  });
+
+  it('is present for a vision-capable model', () => {
+    const names = getDesktopInputToolDefinitions({ canSeeImages: true }).map(
+      (def) => def.function.name,
+    );
+    expect(names).toContain('desktop_capture');
+  });
+
+  it('keeps the full set when nothing is said either way', () => {
+    // An unknown caller should not silently lose a capability.
+    expect(getDesktopInputToolDefinitions().map((def) => def.function.name)).toContain(
+      'desktop_capture',
+    );
+  });
+});

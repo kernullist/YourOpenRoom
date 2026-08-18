@@ -94,8 +94,23 @@ export function getDesktopInputToolPendingSummary(toolName: string): string {
   return 'acting on a window';
 }
 
-export function getDesktopInputToolDefinitions(): ToolDef[] {
-  return [
+/**
+ * The desktop tools.
+ *
+ * `canSeeImages` decides whether the capture tool is offered at all. Attaching an
+ * image to a request for a model that cannot take one does not degrade -- the
+ * call THROWS, killing the whole turn. So a text-only model must never be handed
+ * a tool whose entire output is a picture: it would call it, reasonably, and the
+ * conversation would die instead of falling back to desktop_snapshot.
+ *
+ * Defaults to true so an unknown caller keeps the full set; the executor refuses
+ * honestly if the image cannot actually be delivered.
+ */
+export function getDesktopInputToolDefinitions(
+  options: { canSeeImages?: boolean } = {},
+): ToolDef[] {
+  const canSeeImages = options.canSeeImages !== false;
+  const definitions: ToolDef[] = [
     {
       type: 'function',
       function: {
@@ -452,6 +467,9 @@ export function getDesktopInputToolDefinitions(): ToolDef[] {
       },
     },
   ];
+  return definitions.filter(
+    (definition) => canSeeImages || definition.function.name !== DESKTOP_CAPTURE_TOOL,
+  );
 }
 
 export interface DesktopActToolResult {
@@ -538,7 +556,7 @@ export function describeDesktopActVerdict(view: {
  */
 export async function executeDesktopInputTool(
   toolName: string,
-  params: Record<string, unknown>,
+  params: Record<string, unknown> & { canSeeImages?: boolean },
 ): Promise<unknown> {
   if (toolName === DESKTOP_WINDOWS_TOOL) {
     const windows = await listAoiHostDesktopWindows();
@@ -563,9 +581,23 @@ export async function executeDesktopInputTool(
     // The image travels beside the tool result, not inside it: a base64 PNG in
     // the transcript would be megabytes of text the model cannot look at.
     // __image is stripped by the dispatcher and attached to a following message.
+    // An image the caller cannot deliver is worse than none: it would be
+    // attached and then throw at the model boundary. Report the window in words
+    // and say plainly that the picture is unavailable.
+    const deliverable = params.canSeeImages !== false;
     return {
       ok: true,
-      __image: capture.dataUrl ? { dataUrl: capture.dataUrl, name: 'desktop-capture.png' } : null,
+      __image:
+        deliverable && capture.dataUrl
+          ? { dataUrl: capture.dataUrl, name: 'desktop-capture.png' }
+          : null,
+      ...(deliverable
+        ? {}
+        : {
+            image_unavailable:
+              'this model cannot receive images, so only the control list below is available; ' +
+              'desktop_snapshot gives the same list more cheaply',
+          }),
       snapshot_id: capture.snapshotId,
       mode: capture.mode,
       size: `${capture.width}x${capture.height}`,

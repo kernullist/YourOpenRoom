@@ -97,6 +97,10 @@ function vocabPage(options: VocabPageOptions = {}) {
       calls.push(`selectTab:${index}`);
       selectedTab = index;
     }),
+    returnToOwnTab: vi.fn(() => {
+      calls.push('returnToOwnTab');
+      selectedTab = -1;
+    }),
   };
   for (const key of options.omit ?? []) {
     delete page[key];
@@ -421,5 +425,29 @@ describe('downloads are gated like uploads, in the other direction', () => {
     );
     expect(result.ok).toBe(false);
     expect(result.detail ?? '').toContain('cannot save downloads');
+  });
+});
+
+// Containment blanks the page when an act drifts onto a denied domain. That was
+// written when the drive only ever had its own tab.
+describe('containment does not navigate a tab Aoi does not own', () => {
+  it('returns to its own tab before blanking on drift', async () => {
+    // Drift is the case that blanks: the act starts somewhere allowed and lands
+    // on a denied domain. Containment then navigates the page to about:blank --
+    // which, if the drive had switched to one of the operator's tabs, would be
+    // THEIR page.
+    const { page, calls } = vocabPage();
+    let here = 'https://example.com/app';
+    (page as unknown as { url: () => string }).url = () => here;
+    (page as unknown as { click: (s: string) => Promise<void> }).click = async (selector) => {
+      calls.push(`click:${selector}`);
+      here = 'https://evil.test/landed';
+    };
+
+    const result = await runStep(page, { kind: 'click', selector: '#a' });
+    expect(result.ok).toBe(false);
+    expect(result.stopReason).toBe('drift_to_denylist');
+    // Come back to Aoi's own tab BEFORE blanking anything.
+    expect(calls).toContain('returnToOwnTab');
   });
 });

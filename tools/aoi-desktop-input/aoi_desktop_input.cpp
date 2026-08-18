@@ -3158,12 +3158,43 @@ void DrawElementOverlay(HDC dc, const RECT& windowRect, const std::vector<Elemen
     DeleteObject(normalPen);
 }
 
+// Is the rendered frame entirely one colour?
+//
+// Some GPU-composited windows (games, hardware video) return a solid black frame
+// from PrintWindow, and handing the model a black rectangle it will confidently
+// describe as "an empty window" is worse than saying the capture did not work.
+//
+// This looks at the PIXELS. The first version guessed from the encoded size --
+// "under a kilobyte must be blank" -- which was wrong in both directions: a
+// small tooltip window compresses below that while being perfectly good, and a
+// large black frame compresses above it while being exactly the case this
+// exists to catch.
+bool IsUniformFrame(const void* bits, int width, int height)
+{
+    if (bits == NULL || width <= 0 || height <= 0)
+    {
+        return false;
+    }
+    const unsigned int* pixels = static_cast<const unsigned int*>(bits);
+    const long long count = static_cast<long long>(width) * height;
+    const unsigned int first = pixels[0] & 0x00FFFFFFu;
+    for (long long i = 1; i < count; ++i)
+    {
+        if ((pixels[i] & 0x00FFFFFFu) != first)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 // Render one window to an opaque PNG. Works on windows that are behind others;
 // PrintWindow asks the window to draw itself rather than copying the screen, so
 // what is on top does not matter. Some GPU-composited surfaces still come back
 // black, which is a limitation to report rather than hide.
 bool CaptureWindowPng(HWND hwnd, const std::vector<ElementInfo>* overlay, int maxLongSide,
-                      std::string& outPng, int& outWidth, int& outHeight, double& outScale)
+                      std::string& outPng, int& outWidth, int& outHeight, double& outScale,
+                      bool* uniform)
 {
     outPng.clear();
     RECT rc;
@@ -3205,6 +3236,12 @@ bool CaptureWindowPng(HWND hwnd, const std::vector<ElementInfo>* overlay, int ma
             // whatever is covering the window. Only reached when the window
             // refuses to draw itself.
             BitBlt(memDc, 0, 0, width, height, screenDc, rc.left, rc.top, SRCCOPY);
+        }
+        // Check BEFORE the overlay is drawn: the numbered boxes are our own
+        // pixels, and they would make a blank frame look like content.
+        if (uniform != NULL)
+        {
+            *uniform = IsUniformFrame(bits, width, height);
         }
         if (overlay != NULL)
         {
@@ -3293,17 +3330,6 @@ bool CaptureWindowPng(HWND hwnd, const std::vector<ElementInfo>* overlay, int ma
     return ok;
 }
 
-// Is the rendered frame entirely one colour? Some GPU-composited windows return
-// a solid black frame from PrintWindow, and handing the model a black rectangle
-// it will describe as "an empty window" is worse than saying the capture did not
-// work.
-bool LooksBlank(const std::string& png)
-{
-    // A uniform image compresses to almost nothing. This is a cheap proxy: a
-    // real window screenshot of any size never lands this small.
-    return png.size() < 1024;
-}
-
 void RunCapture(IUIAutomation* automation, HWND hwnd, const std::string& mode, int maxLongSide)
 {
     std::vector<ElementInfo> elements;
@@ -3322,9 +3348,10 @@ void RunCapture(IUIAutomation* automation, HWND hwnd, const std::string& mode, i
     int width = 0;
     int height = 0;
     double scale = 1.0;
+    bool uniform = false;
     const bool captured = CaptureWindowPng(
         hwnd, (wantOverlay && !elements.empty()) ? &elements : NULL, maxLongSide, png, width,
-        height, scale);
+        height, scale, &uniform);
 
     if (!captured)
     {
@@ -3332,7 +3359,7 @@ void RunCapture(IUIAutomation* automation, HWND hwnd, const std::string& mode, i
         ReleaseElements(elements);
         return;
     }
-    if (LooksBlank(png))
+    if (uniform)
     {
         EmitFailure("capture_blank",
                     "the window rendered as a blank frame; GPU-composited surfaces (some games "

@@ -471,6 +471,11 @@ export interface AoiHostBrowserDriveReadView {
   // Set when the element list was cut, so a caller never reads a partial list as
   // the whole page.
   elementsTruncated?: boolean;
+  // Interactables the page exposes that carry no id/name/testid and so cannot be
+  // addressed by ref. Carried through because dropping it turns "here are the
+  // controls you can address" into "here are the controls", and the caller stops
+  // looking for the ones that need a hand-written selector.
+  unaddressable?: number;
   tabs?: { index: number; url: string; title: string; current: boolean }[];
   text?: string;
 }
@@ -508,6 +513,10 @@ function readViewsFrom(raw: unknown): AoiHostBrowserDriveReadView[] {
         }));
       if (elements.length > MAX_READ_ELEMENTS) {
         view.elementsTruncated = true;
+      }
+      const unaddressable = snapshot.unaddressable;
+      if (typeof unaddressable === 'number' && unaddressable > 0) {
+        view.unaddressable = unaddressable;
       }
     }
     if (Array.isArray(entry.tabs)) {

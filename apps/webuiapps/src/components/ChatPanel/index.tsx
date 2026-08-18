@@ -7519,6 +7519,10 @@ const ChatPanel: React.FC<{
       throw new Error('No usable LLM config was found for this conversation turn.');
     }
     const toolCallRuntimeAvailable = supportsStructuredConversationTools(activeCfg);
+    // Whether this turn's model can receive an image at all. Attaching one to a
+    // model that cannot THROWS at the request boundary rather than degrading,
+    // so anything that produces a picture has to know this up front.
+    const canSeeImages = supportsChatImageAttachments(activeCfg);
     const activeModelRoute: PromptBudgetEntry['modelRoute'] = useDialogModel ? 'dialog' : 'main';
     const confirmedActionRequest = resolveAoiActionConfirmationRequest(latestUserMessage, history);
     const fileTaskContract = resolveAoiFileTaskContract({
@@ -7584,7 +7588,10 @@ const ChatPanel: React.FC<{
             ...getHostBrowserToolDefinitions(),
             ...getBrowserDriveToolDefinitions(),
             ...getBrowserDriveActToolDefinitions(),
-            ...getDesktopInputToolDefinitions(),
+            // desktop_capture returns an image, and attaching one for a model
+            // that cannot take images THROWS rather than degrading -- so a
+            // text-only model must not be offered it at all.
+            ...getDesktopInputToolDefinitions({ canSeeImages }),
             ...(includeAppTools
               ? [
                   getListAppsToolDefinition(),
@@ -9612,7 +9619,10 @@ const ChatPanel: React.FC<{
         if (isDesktopInputTool(tc.function.name)) {
           pendingToolCallsRef.current.push(getDesktopInputToolPendingSummary(tc.function.name));
           try {
-            const result = await executeDesktopInputTool(tc.function.name, params);
+            const result = await executeDesktopInputTool(tc.function.name, {
+              ...params,
+              canSeeImages,
+            });
             // A capture returns a picture. Images only attach to USER messages,
             // so the description goes back as the tool result and the image
             // follows on its own message -- the model then has both, and the

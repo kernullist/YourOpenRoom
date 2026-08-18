@@ -51,7 +51,7 @@ import {
   runAoiHostBrowserRead,
   type AoiHostBrowserReadOutcome,
 } from './aoiHostBrowserRead';
-import { AOI_BROWSER_DRIVE_CAPABILITY, AOI_BROWSER_DRIVE_SOURCE_ID } from './aoiBrowserDrive';
+import { AOI_BROWSER_DRIVE_SOURCE_ID } from './aoiBrowserDrive';
 import { AoiBrowserDriveStartError, startAoiBrowserDriveSession } from './aoiBrowserDriveSession';
 import {
   addAoiBrowserDriveAllowlistEntry,
@@ -716,12 +716,16 @@ export async function resolveAoiHostBridgeRoute(
       sourceId: AOI_BROWSER_DRIVE_SOURCE_ID,
       operation: 'read_metadata',
     });
+    // Same switch as the act routes. Leaving this on the old per-feature key
+    // would let Aoi DRIVE the logged-in browser while being unable to READ it,
+    // which is both incoherent and the opposite of the safer half being easier.
+    const computerUse = isAoiHostBridgeCapabilityEnabled(killSwitch, AOI_COMPUTER_USE_CAPABILITY);
     const gate = evaluateAoiHostBridgeGate({
       authenticated: true,
       killSwitchState: killSwitch,
-      capabilityKey: AOI_BROWSER_DRIVE_CAPABILITY,
+      capabilityKey: AOI_COMPUTER_USE_CAPABILITY,
       irreversible: false,
-      consent: { allowed: consent.allowed, reasons: consent.reasons },
+      consent: { allowed: consent.allowed || computerUse, reasons: consent.reasons },
     });
     if (!gate.allowed) {
       return {
