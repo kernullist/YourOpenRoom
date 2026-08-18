@@ -118,6 +118,8 @@ export interface AoiBrowserDriveActRunParams {
   // Bounds which local files may be attached to a page. Absent = no uploads,
   // which is the safe default for the one action that moves data outward.
   uploadGate?: AoiBrowserDriveUploadGate;
+  // Where downloads may land. Absent means none, like uploads.
+  downloadGate?: AoiBrowserDriveUploadGate;
   // When present (execute path), each step is captured + recorded to the audit
   // ledger. Omitted for preview / tests.
   audit?: AoiBrowserDriveRunAudit;
@@ -372,6 +374,7 @@ export async function executeAoiBrowserDriveActStep(
       approvalGate: params.approvalGate,
       now: params.now,
       ...(params.uploadGate ? { uploadGate: params.uploadGate } : {}),
+      ...(params.downloadGate ? { downloadGate: params.downloadGate } : {}),
       ...(params.timeoutMs ? { timeoutMs: params.timeoutMs } : {}),
       ...(observer ? { observer } : {}),
       ...(params.maxPlanSteps ? { maxPlanSteps: params.maxPlanSteps } : {}),

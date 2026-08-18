@@ -23,6 +23,8 @@ import {
   verifyAoiHostBridgeToken,
 } from './aoiHostBridgeAuth';
 import {
+  AOI_COMPUTER_USE_CAPABILITY,
+  AOI_HOST_BRIDGE_DEFAULT_ENABLED_CAPABILITIES,
   clearAoiHostBridgePanic,
   engageAoiHostBridgePanic,
   isAoiHostBridgeCapabilityEnabled,
@@ -32,10 +34,11 @@ import {
   type AoiHostBridgeKillSwitchState,
 } from './aoiHostBridgeKillSwitch';
 import { evaluateAoiHostBridgeGate } from './aoiHostBridgeGate';
-import { buildAoiBrowserDriveUploadGate } from './aoiBrowserDriveUploadGate';
 import {
-  AOI_DESKTOP_CAPTURE_CAPABILITY,
-  AOI_DESKTOP_INPUT_CAPABILITY,
+  buildAoiBrowserDriveDownloadGate,
+  buildAoiBrowserDriveUploadGate,
+} from './aoiBrowserDriveUploadGate';
+import {
   AOI_DESKTOP_INPUT_FOREGROUND_CAPABILITY,
   parseAoiDesktopInputRequest,
   runAoiDesktopInput,
@@ -231,9 +234,26 @@ function summarizeKillSwitch(state: AoiHostBridgeKillSwitchState): {
   enabledCapabilities: string[];
   updatedAt: number;
 } {
+  // What is actually in force, not merely what is written down. The store can
+  // now hold an explicit false (that is how switching a default-on capability
+  // off is remembered), and it omits default-on keys nobody has touched -- so
+  // listing raw keys would show a disabled feature as enabled, and an enabled
+  // one as disabled. Either way the settings UI would be describing something
+  // other than the machine's behaviour.
+  const effective = new Set<string>();
+  for (const [key, value] of Object.entries(state.entries)) {
+    if (value === true) {
+      effective.add(key);
+    }
+  }
+  for (const key of AOI_HOST_BRIDGE_DEFAULT_ENABLED_CAPABILITIES) {
+    if (state.entries[key] !== false) {
+      effective.add(key);
+    }
+  }
   return {
     globalPanic: state.globalPanic,
-    enabledCapabilities: Object.keys(state.entries).sort(),
+    enabledCapabilities: [...effective].sort(),
     updatedAt: state.updatedAt,
   };
 }
@@ -298,13 +318,25 @@ function requireAoiBrowserDriveActGate(
     sourceId: AOI_BROWSER_DRIVE_SOURCE_ID,
     operation: 'read_metadata',
   });
+  // The Computer-Use switch IS the consent decision for browser drive.
+  //
+  // Consent normally lives per environment source so the operator opts in to
+  // each one. Here they opted in to the feature as a whole, in settings, once.
+  // Leaving the source gate as a second hidden condition would mean a switch
+  // that reads ON while nothing works -- the failure mode the single switch was
+  // asked for in order to avoid. The source is still consulted, so an operator
+  // who explicitly enables it there is honored either way.
+  const computerUse = isAoiHostBridgeCapabilityEnabled(killSwitch, AOI_COMPUTER_USE_CAPABILITY);
   const gate = evaluateAoiHostBridgeGate({
     authenticated: true,
     killSwitchState: killSwitch,
-    capabilityKey: AOI_BROWSER_DRIVE_CAPABILITY,
+    capabilityKey: AOI_COMPUTER_USE_CAPABILITY,
     irreversible: opts.irreversible,
     ...(opts.approvalSatisfied ? { approvalSatisfied: true } : {}),
-    consent: { allowed: consent.allowed, reasons: consent.reasons },
+    consent: {
+      allowed: consent.allowed || computerUse,
+      reasons: consent.reasons,
+    },
   });
   if (!gate.allowed) {
     return {
@@ -437,6 +469,9 @@ async function runAoiBrowserDriveExecuteDefault(options: {
     // Uploads are bounded by the operator's registered read roots: a file Aoi
     // could not read is a file it cannot send to a web page.
     uploadGate: buildAoiBrowserDriveUploadGate(options.openroomHome),
+    // Downloads land on disk, so they are bounded by the WRITE roots -- the
+    // mirror of uploads being bounded by the read roots.
+    downloadGate: buildAoiBrowserDriveDownloadGate(options.openroomHome),
     sessionFactory: makeAoiBrowserDriveRunnerSession,
     // Cooperative panic abort during the read-prefix replay (the entry gate already
     // blocks a call that starts while panicked).
@@ -2076,7 +2111,10 @@ export async function resolveAoiHostBridgeRoute(
     const gate = evaluateAoiHostBridgeGate({
       authenticated: true,
       killSwitchState: killSwitch,
-      capabilityKey: AOI_DESKTOP_INPUT_CAPABILITY,
+      // One switch for the whole Computer-Use feature. The old per-feature key
+      // still works as an override for anyone who set it, but the master is
+      // what the settings UI presents and what decides by default.
+      capabilityKey: AOI_COMPUTER_USE_CAPABILITY,
       irreversible: false,
     });
     if (!gate.allowed) {
@@ -2094,9 +2132,12 @@ export async function resolveAoiHostBridgeRoute(
     // Capture is gated separately: os_desktop_input lets Aoi read control names
     // and act; this decides whether it may take a PICTURE of the window, which
     // shows everything on it and cannot be redacted.
+    // Capture is part of Computer-Use, so the master covers it. An operator who
+    // wants the rest without screenshots can still turn os_desktop_capture off
+    // explicitly, and that explicit false wins.
     if (
       request?.op === 'capture' &&
-      !isAoiHostBridgeCapabilityEnabled(killSwitch, AOI_DESKTOP_CAPTURE_CAPABILITY)
+      !isAoiHostBridgeCapabilityEnabled(killSwitch, AOI_COMPUTER_USE_CAPABILITY)
     ) {
       return {
         status: 403,
@@ -2104,7 +2145,7 @@ export async function resolveAoiHostBridgeRoute(
           ok: false,
           error: 'blocked',
           denyReasons: ['capability_disabled'],
-          detail: [`capability_disabled:${AOI_DESKTOP_CAPTURE_CAPABILITY}`],
+          detail: [`capability_disabled:${AOI_COMPUTER_USE_CAPABILITY}`],
         },
       };
     }

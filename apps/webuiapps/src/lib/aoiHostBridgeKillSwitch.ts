@@ -23,6 +23,40 @@ import { randomUUID } from 'crypto';
 
 export const AOI_HOST_BRIDGE_KILL_SWITCH_VERSION = 1 as const;
 
+/**
+ * The single Computer-Use switch: driving windows, seeing them, and driving the
+ * operator's own browser.
+ *
+ * Unlike every other capability here this one DEFAULTS ON. That is a deliberate
+ * exception, not a loosening of the rule: the operator asked for one switch for
+ * the whole feature, and a feature that must be discovered and enabled before it
+ * does anything is a feature that appears broken. Everything underneath it is
+ * unchanged -- credential fields are still refused, acts still need per-action
+ * approval, refs still fail closed, and global panic still overrides it.
+ *
+ * What it deliberately does NOT include is anything that takes the machine away
+ * from the person at it: the synthetic-mouse rung, standing grants and
+ * autonomous multi-act tasks stay separate and stay off. Those are not "use the
+ * computer", they are "act unattended", and folding them into a default-on
+ * switch would grant them to someone who only wanted the feature to work.
+ */
+export const AOI_COMPUTER_USE_CAPABILITY = 'os_computer_use';
+
+// Capabilities that are ON until the operator says otherwise. An explicit false
+// in the store still wins -- turning something off must stick.
+export const AOI_HOST_BRIDGE_DEFAULT_ENABLED_CAPABILITIES: readonly string[] = [
+  AOI_COMPUTER_USE_CAPABILITY,
+];
+
+const DEFAULT_ENABLED_CAPABILITIES: ReadonlySet<string> = new Set(
+  AOI_HOST_BRIDGE_DEFAULT_ENABLED_CAPABILITIES,
+);
+
+/** Is this capability on when the store says nothing about it? */
+export function isAoiHostBridgeCapabilityDefaultEnabled(key: string): boolean {
+  return DEFAULT_ENABLED_CAPABILITIES.has(key);
+}
+
 const HOST_BRIDGE_DIR = 'host-bridge';
 const KILL_SWITCH_FILE = 'killswitch.json';
 // Bound the enable map so a corrupt/hostile file can never balloon the store.
@@ -47,16 +81,27 @@ export const DEFAULT_AOI_HOST_BRIDGE_KILL_SWITCH_STATE: AoiHostBridgeKillSwitchS
 
 // --- Pure state helpers ------------------------------------------------------
 
-// A capability is allowed ONLY when panic is off AND its key is explicitly
-// enabled. Missing key / unknown key => false. This is the load-bearing gate.
+// A capability is allowed ONLY when panic is off AND it is enabled: explicitly
+// in the store, or by default for the few keys that ship on. An unknown key is
+// still false, and an explicit false still wins over a default -- so turning
+// something off sticks, and panic overrides everything.
 export function isAoiHostBridgeCapabilityEnabled(
   state: AoiHostBridgeKillSwitchState | null | undefined,
   key: string,
 ): boolean {
-  if (!state || state.globalPanic) {
+  if (!state) {
+    // No store at all: only the default-on set is available, and only because
+    // "not configured yet" is not the same as "switched off".
+    return isAoiHostBridgeCapabilityDefaultEnabled(key);
+  }
+  if (state.globalPanic) {
     return false;
   }
-  return state.entries[key] === true;
+  const entry = state.entries[key];
+  if (entry === undefined) {
+    return isAoiHostBridgeCapabilityDefaultEnabled(key);
+  }
+  return entry === true;
 }
 
 export function setAoiHostBridgeCapability(
@@ -77,7 +122,14 @@ export function setAoiHostBridgeCapability(
       return base;
     }
     entries[key] = true;
+  } else if (isAoiHostBridgeCapabilityDefaultEnabled(key)) {
+    // Record the OFF decision rather than forgetting the key. For a default-on
+    // capability, absent means on -- so deleting it here would quietly turn the
+    // feature back on the moment the operator switched it off.
+    entries[key] = false;
   } else {
+    // Everything else is off when absent, so dropping the key keeps the store
+    // small and means the same thing.
     delete entries[key];
   }
   return { ...base, entries, updatedAt: now };
@@ -110,8 +162,13 @@ export function normalizeAoiHostBridgeKillSwitchState(raw: unknown): AoiHostBrid
   const entries: Record<string, boolean> = {};
   if (value.entries && typeof value.entries === 'object' && !Array.isArray(value.entries)) {
     for (const [key, enabled] of Object.entries(value.entries)) {
-      if (enabled === true && KEY_PATTERN.test(key)) {
-        entries[key] = true;
+      // Keep an explicit false, not just true. For a default-on capability
+      // "absent" means ON, so dropping the false here would silently turn the
+      // feature back on the next time the file was read -- the operator's OFF
+      // would survive exactly one process lifetime. Anything that is not a
+      // boolean is still discarded.
+      if (typeof enabled === 'boolean' && KEY_PATTERN.test(key)) {
+        entries[key] = enabled;
       }
       if (Object.keys(entries).length >= MAX_KILL_SWITCH_ENTRIES) {
         break;

@@ -265,11 +265,14 @@ describe('runAoiDesktopInput', () => {
       },
       env: { AOI_DESKTOP_INPUT_HELPER: 'C:/nope/aoi_desktop_input.exe' },
     });
-    expect(result).toEqual({
-      kind: 'error',
-      code: 'helper_not_installed',
-      detail: 'the desktop-input helper is not installed on this machine',
-    });
+    expect(result.kind).toBe('error');
+    if (result.kind !== 'error') {
+      return;
+    }
+    expect(result.code).toBe('helper_not_installed');
+    // Computer use is on by default, so installing the helper is the one setup
+    // step left -- and this message is the only place anyone learns that.
+    expect(result.detail).toContain('Install-AoiDesktopInput.ps1');
   });
 
   it('passes the command on stdin, never on the command line', () => {

@@ -601,7 +601,13 @@ export function runAoiDesktopInput(params: RunAoiDesktopInputParams): AoiDesktop
     return {
       kind: 'error',
       code: 'helper_not_installed',
-      detail: 'the desktop-input helper is not installed on this machine',
+      // Computer use is on by default, so this is the one setup step left --
+      // and the message is the only place anyone will find out about it. A bare
+      // "not installed" leaves the model guessing and the operator searching.
+      detail:
+        'the desktop-input helper is not installed on this machine. Install it by running ' +
+        'tools/aoi-desktop-input/Install-AoiDesktopInput.ps1 (needs Visual Studio C++ build ' +
+        'tools). Nothing else about desktop input needs enabling.',
     };
   }
 

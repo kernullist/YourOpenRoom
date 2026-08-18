@@ -39,6 +39,19 @@ export interface AoiBrowserDriveRawContext {
   pages(): AoiBrowserDriveRawPage[];
 }
 
+// The slice of Playwright's Download this needs.
+export interface AoiBrowserDriveDownload {
+  suggestedFilename(): string;
+  saveAs(target: string): Promise<void>;
+  failure?(): Promise<string | null>;
+}
+
+// A page that can start a download and be told to wait for one.
+export interface AoiBrowserDriveDownloadablePage extends AoiBrowserDriveRawPage {
+  waitForEvent(event: 'download', options?: { timeout?: number }): Promise<AoiBrowserDriveDownload>;
+  click(selector: string, options?: { timeout?: number }): Promise<void>;
+}
+
 // How long a queued dialog waits for an answer before being dismissed.
 //
 // This matters more than it looks. Attaching a listener at all CHANGES
@@ -206,4 +219,58 @@ export function attachAoiBrowserDriveTabs(
       return current;
     },
   };
+}
+
+/**
+ * Click something that starts a download and save the file.
+ *
+ * Playwright does not expose this as a page method either: a download arrives as
+ * an EVENT, and the file only exists in a temporary location until something
+ * calls saveAs. So a drive that merely clicked would produce a file that is
+ * silently discarded when the browser context closes -- an action that appears
+ * to work and leaves nothing behind.
+ *
+ * The wait is armed BEFORE the click. Arming it afterwards is a race the page
+ * usually wins on a fast connection, and losing it looks identical to a site
+ * that never offered a file.
+ *
+ * The filename comes from the SITE, so it is used as a name and never as a path:
+ * anything with a separator or a parent reference in it would otherwise let the
+ * page choose where on disk its file lands, which is the whole point of bounding
+ * the directory.
+ */
+export async function downloadAoiBrowserDriveFile(
+  page: AoiBrowserDriveDownloadablePage,
+  selector: string,
+  directory: string,
+  options: { timeout?: number } = {},
+): Promise<{ path: string; suggestedFilename: string }> {
+  const waiter = page.waitForEvent('download', {
+    ...(options.timeout ? { timeout: options.timeout } : {}),
+  });
+  await page.click(selector, { ...(options.timeout ? { timeout: options.timeout } : {}) });
+  const download = await waiter;
+
+  const suggested = (() => {
+    try {
+      return download.suggestedFilename();
+    } catch {
+      return '';
+    }
+  })();
+  // Reduce whatever the site suggested to a bare filename.
+  const bare = suggested.split(/[\\/]/).pop() ?? '';
+  const safe = bare && bare !== '.' && bare !== '..' ? bare : 'download';
+
+  const separator = directory.endsWith('/') || directory.endsWith('\\') ? '' : '/';
+  const target = `${directory}${separator}${safe}`;
+  await download.saveAs(target);
+
+  if (typeof download.failure === 'function') {
+    const failure = await download.failure();
+    if (failure) {
+      throw new Error(`the download did not complete: ${failure}`);
+    }
+  }
+  return { path: target, suggestedFilename: safe };
 }

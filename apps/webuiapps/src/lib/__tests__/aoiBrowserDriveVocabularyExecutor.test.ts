@@ -66,6 +66,10 @@ function vocabPage(options: VocabPageOptions = {}) {
     setInputFiles: vi.fn(async (selector: string, file: string) =>
       calls.push(`upload:${selector}=${file}`),
     ),
+    downloadTo: vi.fn(async (selector: string, directory: string) => {
+      calls.push(`download:${selector}->${directory}`);
+      return { path: `${directory}/report.pdf`, suggestedFilename: 'report.pdf' };
+    }),
     answerDialog: vi.fn(async (disposition: string) => {
       calls.push(`dialog:${disposition}`);
       if (options.dialogNeverResolves) {
@@ -104,6 +108,7 @@ function runStep(
   page: AoiBrowserDriveActablePage,
   action: AoiBrowserDriveActionRequest,
   uploadGate?: AoiBrowserDriveUploadGate,
+  downloadGate?: AoiBrowserDriveUploadGate,
 ) {
   const plan: AoiBrowserDrivePlan = {
     goal: 'do the thing',
@@ -117,6 +122,7 @@ function runStep(
     approvalGate: allowGate,
     now: 1_000,
     ...(uploadGate ? { uploadGate } : {}),
+    ...(downloadGate ? { downloadGate } : {}),
   });
 }
 
@@ -345,5 +351,75 @@ describe('a plan reports what its read steps saw', () => {
     const result = await runStep(page, { kind: 'tabs' });
     // A listing the caller never receives cannot inform which tab to switch to.
     expect(result.tabs?.map((tab) => tab.index)).toEqual([0, 1]);
+  });
+});
+
+// A download is the reverse direction of an upload: bytes the PAGE chose,
+// landing on the operator's disk. It gets the same shape of gate, bounded by
+// write roots instead of read roots, and the same deny-by-default.
+describe('downloads are gated like uploads, in the other direction', () => {
+  it('refuses when no gate is wired at all', async () => {
+    const { page, calls } = vocabPage();
+    const result = await runStep(page, {
+      kind: 'download',
+      selector: '#report',
+      filePath: 'C:/work/out',
+    });
+    expect(result.ok).toBe(false);
+    expect(calls.some((entry) => entry.startsWith('download:'))).toBe(false);
+  });
+
+  it('refuses a destination the gate rejects', async () => {
+    const { page, calls } = vocabPage();
+    const result = await runStep(
+      page,
+      { kind: 'download', selector: '#report', filePath: 'C:/Windows' },
+      undefined,
+      () => ({ allowed: false, reason: 'outside every registered write root' }),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.detail ?? '').toContain('outside every registered write root');
+    expect(calls.some((entry) => entry.startsWith('download:'))).toBe(false);
+  });
+
+  it('saves into an allowed directory and proves where it landed', async () => {
+    // The saved path read back off the completed download is real evidence,
+    // unlike a click that merely did not throw.
+    const { page, calls } = vocabPage();
+    const result = await runStep(
+      page,
+      { kind: 'download', selector: '#report', filePath: 'C:/work/out' },
+      undefined,
+      () => ({ allowed: true, reason: 'inside a registered write root' }),
+    );
+    expect(result.ok).toBe(true);
+    expect(calls).toContain('download:#report->C:/work/out');
+  });
+
+  it('refuses a download with no destination', async () => {
+    const { page, calls } = vocabPage();
+    const result = await runStep(
+      page,
+      { kind: 'download', selector: '#report' },
+      undefined,
+      () => ({
+        allowed: true,
+        reason: 'ok',
+      }),
+    );
+    expect(result.ok).toBe(false);
+    expect(calls.some((entry) => entry.startsWith('download:'))).toBe(false);
+  });
+
+  it('refuses a session that cannot save downloads', async () => {
+    const { page } = vocabPage({ omit: ['downloadTo'] });
+    const result = await runStep(
+      page,
+      { kind: 'download', selector: '#report', filePath: 'C:/work/out' },
+      undefined,
+      () => ({ allowed: true, reason: 'ok' }),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.detail ?? '').toContain('cannot save downloads');
   });
 });

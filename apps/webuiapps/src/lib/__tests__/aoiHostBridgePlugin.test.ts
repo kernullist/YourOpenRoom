@@ -139,10 +139,13 @@ describe('resolveAoiHostBridgeRoute /status + /killswitch', () => {
       now: 1000,
     });
     expect(status.status).toBe(200);
+    // Computer use ships ON, so a fresh machine reports it in force. An empty
+    // list here would mean the settings UI showed the feature off while it was
+    // working.
     expect(
       (status.payload as { killSwitch: { enabledCapabilities: string[] } }).killSwitch
         .enabledCapabilities,
-    ).toEqual([]);
+    ).toEqual(['os_computer_use']);
 
     // Enable a capability.
     const set = await resolveAoiHostBridgeRoute({
@@ -384,6 +387,12 @@ describe('resolveAoiHostBridgeRoute /browser-drive-read (BD gate)', () => {
 
   it('blocks when capability/consent is off', async () => {
     const { home, sessionsDir, token } = makeDaemonHome();
+    // Computer use is on by default now, so blocking is what happens when the
+    // operator switches it OFF -- that is the guarantee worth pinning.
+    saveAoiHostBridgeKillSwitchState(
+      home,
+      setAoiHostBridgeCapability(null, 'os_computer_use', false, 900),
+    );
     const result = await resolveAoiHostBridgeRoute({
       method: 'POST',
       route: '/browser-drive-read',
@@ -501,6 +510,12 @@ describe('resolveAoiHostBridgeRoute /browser-drive/preview + /execute (BD P2.3)'
 
   it('preview blocks when capability/consent is off', async () => {
     const { home, sessionsDir, token } = makeDaemonHome();
+    // Computer use is on by default now, so blocking is what happens when the
+    // operator switches it OFF -- that is the guarantee worth pinning.
+    saveAoiHostBridgeKillSwitchState(
+      home,
+      setAoiHostBridgeCapability(null, 'os_computer_use', false, 900),
+    );
     const result = await resolveAoiHostBridgeRoute({
       method: 'POST',
       route: '/browser-drive/preview',
@@ -606,6 +621,12 @@ describe('resolveAoiHostBridgeRoute /browser-drive/preview + /execute (BD P2.3)'
 
   it('execute blocks when capability/consent is off', async () => {
     const { home, sessionsDir, token } = makeDaemonHome();
+    // Computer use is on by default now, so blocking is what happens when the
+    // operator switches it OFF -- that is the guarantee worth pinning.
+    saveAoiHostBridgeKillSwitchState(
+      home,
+      setAoiHostBridgeCapability(null, 'os_computer_use', false, 900),
+    );
     const result = await resolveAoiHostBridgeRoute({
       method: 'POST',
       route: '/browser-drive/execute',
@@ -1761,10 +1782,64 @@ describe('desktop-input', () => {
     });
   }
 
-  it('is blocked until the operator turns the capability on', async () => {
+  it('works by default and stops the moment the switch is turned off', async () => {
+    // Computer use ships ON: the point of a single default-on switch is that the
+    // feature works without being discovered first. What still has to hold is
+    // that switching it off stops everything, before the helper is reached.
     const { home, sessionsDir, token } = makeDaemonHome();
     await withHelperPath(__filename, async () => {
-      const { spawn, seen } = fakeHelper({ ok: true, windows: [] });
+      const on = fakeHelper({ ok: true, windows: [] });
+      const allowed = await callDesktopInput(
+        home,
+        sessionsDir,
+        token,
+        { op: 'list_windows' },
+        on.spawn,
+      );
+      expect(allowed.status).toBe(200);
+
+      saveAoiHostBridgeKillSwitchState(
+        home,
+        setAoiHostBridgeCapability(null, 'os_computer_use', false, 4000),
+      );
+      const off = fakeHelper({ ok: true, windows: [] });
+      const blocked = await callDesktopInput(
+        home,
+        sessionsDir,
+        token,
+        { op: 'list_windows' },
+        off.spawn,
+      );
+      expect(blocked.status).toBe(403);
+      // Nothing was spawned: the gate runs before the helper is ever reached.
+      expect(off.seen).toHaveLength(0);
+    });
+  });
+
+  it('remembers being switched off instead of drifting back on', async () => {
+    // A default-on capability that forgets an OFF decision is worse than one
+    // that defaults off: the operator turns it off, and it comes back.
+    const { home, sessionsDir, token } = makeDaemonHome();
+    await withHelperPath(__filename, async () => {
+      saveAoiHostBridgeKillSwitchState(
+        home,
+        setAoiHostBridgeCapability(null, 'os_computer_use', false, 4000),
+      );
+      const status = await resolveAoiHostBridgeRoute({
+        method: 'GET',
+        route: '/status',
+        body: {},
+        token,
+        openroomHome: home,
+        sessionsDir,
+        now: 4100,
+      });
+      const reported = (status.payload as { killSwitch: { enabledCapabilities: string[] } })
+        .killSwitch.enabledCapabilities;
+      // The settings UI reads this list; it has to say OFF too.
+      expect(reported).not.toContain('os_computer_use');
+
+      const { spawn } = fakeHelper({ ok: true, windows: [] });
       const blocked = await callDesktopInput(
         home,
         sessionsDir,
@@ -1773,21 +1848,6 @@ describe('desktop-input', () => {
         spawn,
       );
       expect(blocked.status).toBe(403);
-      // Nothing was spawned: the gate runs before the helper is ever reached.
-      expect(seen).toHaveLength(0);
-
-      saveAoiHostBridgeKillSwitchState(
-        home,
-        setAoiHostBridgeCapability(null, 'os_desktop_input', true, 4000),
-      );
-      const allowed = await callDesktopInput(
-        home,
-        sessionsDir,
-        token,
-        { op: 'list_windows' },
-        spawn,
-      );
-      expect(allowed.status).toBe(200);
     });
   });
 
@@ -1798,7 +1858,7 @@ describe('desktop-input', () => {
     await withHelperPath(__filename, async () => {
       saveAoiHostBridgeKillSwitchState(
         home,
-        setAoiHostBridgeCapability(null, 'os_desktop_input', true, 4000),
+        setAoiHostBridgeCapability(null, 'os_computer_use', true, 4000),
       );
       const act = {
         op: 'invoke',
@@ -1844,7 +1904,7 @@ describe('desktop-input', () => {
     await withHelperPath(__filename, async () => {
       saveAoiHostBridgeKillSwitchState(
         home,
-        setAoiHostBridgeCapability(null, 'os_desktop_input', true, 4000),
+        setAoiHostBridgeCapability(null, 'os_computer_use', true, 4000),
       );
       const { spawn } = fakeHelper({
         ok: false,
@@ -1870,16 +1930,12 @@ describe('desktop-input', () => {
     });
   });
 
-  it('gates seeing a window separately from driving it', async () => {
-    // Driving a window reads control NAMES. Capturing it returns a picture of
-    // everything on it, which cannot be redacted, so turning on desktop input
-    // must not quietly grant that too.
+  it('covers seeing a window with the same switch that covers driving it', async () => {
+    // Capture used to have its own toggle. It is part of Computer-Use, so the
+    // single switch governs it -- and switching that off has to stop the
+    // screenshots too, not just the clicks.
     const { home, sessionsDir, token } = makeDaemonHome();
     await withHelperPath(__filename, async () => {
-      saveAoiHostBridgeKillSwitchState(
-        home,
-        setAoiHostBridgeCapability(null, 'os_desktop_input', true, 4000),
-      );
       const reply = {
         ok: true,
         snapshotId: 'dis-0a1b2c3d',
@@ -1892,38 +1948,34 @@ describe('desktop-input', () => {
         pngBase64: 'AAAA',
       };
 
-      const first = fakeHelper(reply);
-      const blocked = await callDesktopInput(
-        home,
-        sessionsDir,
-        token,
-        { op: 'capture', hwnd: '0x1a2b' },
-        first.spawn,
-      );
-      expect(blocked.status).toBe(403);
-      expect((blocked.payload as { detail: string[] }).detail).toContain(
-        'capability_disabled:os_desktop_capture',
-      );
-      // And the helper is never even reached.
-      expect(first.seen).toHaveLength(0);
-
-      const state = loadAoiHostBridgeKillSwitchState(home);
-      saveAoiHostBridgeKillSwitchState(
-        home,
-        setAoiHostBridgeCapability(state, 'os_desktop_capture', true, 4100),
-      );
-      const second = fakeHelper(reply);
+      const on = fakeHelper(reply);
       const allowed = await callDesktopInput(
         home,
         sessionsDir,
         token,
         { op: 'capture', hwnd: '0x1a2b' },
-        second.spawn,
+        on.spawn,
       );
       expect(allowed.status).toBe(200);
-      const capture = (allowed.payload as { capture: { pngBase64: string; mode: string } }).capture;
-      expect(capture.mode).toBe('som');
-      expect(capture.pngBase64).toBe('AAAA');
+      expect((allowed.payload as { capture: { pngBase64: string } }).capture.pngBase64).toBe(
+        'AAAA',
+      );
+
+      saveAoiHostBridgeKillSwitchState(
+        home,
+        setAoiHostBridgeCapability(null, 'os_computer_use', false, 4100),
+      );
+      const off = fakeHelper(reply);
+      const blocked = await callDesktopInput(
+        home,
+        sessionsDir,
+        token,
+        { op: 'capture', hwnd: '0x1a2b' },
+        off.spawn,
+      );
+      expect(blocked.status).toBe(403);
+      // And no picture was taken on the way to being refused.
+      expect(off.seen).toHaveLength(0);
     });
   });
 
@@ -1932,7 +1984,7 @@ describe('desktop-input', () => {
     await withHelperPath(join(home, 'no-such-helper.exe'), async () => {
       saveAoiHostBridgeKillSwitchState(
         home,
-        setAoiHostBridgeCapability(null, 'os_desktop_input', true, 4000),
+        setAoiHostBridgeCapability(null, 'os_computer_use', true, 4000),
       );
       const { spawn } = fakeHelper({ ok: true, windows: [] });
       const result = await callDesktopInput(

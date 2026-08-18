@@ -45,6 +45,11 @@ import styles from './index.module.scss';
 // desktop list also need per-session environment-source consent (auto-synced
 // from this panel when sessionPath is provided). Irreversible ops still need
 // per-action approval.
+// NOTE: the daemon reports EFFECTIVE enablement, so a capability that is on by
+// default and untouched arrives in enabledCapabilities like any other. This
+// panel therefore needs no default table of its own -- and must not grow one,
+// or the two would drift and the switch would stop describing the machine.
+
 const CAPABILITIES: { key: string; label: string; hint: string }[] = [
   {
     key: 'process_activity',
@@ -67,34 +72,24 @@ const CAPABILITIES: { key: string; label: string; hint: string }[] = [
     hint: 'Open public pages with local Chrome/Edge headless and extract text. Also grants host-browser-read consent.',
   },
   {
-    key: 'os_browser_drive',
-    label: 'Browser drive (my logged-in browser)',
-    hint: 'Let Aoi attach to your own Chrome/Edge over CDP and act on already-logged-in sites. Also grants browser-drive consent. Domains default to allowed; denylist blocks only. Interactions still need per-action approval; passwords/payments/CAPTCHAs are never entered.',
-  },
-  {
-    key: 'os_browser_drive_standing',
-    label: 'Browser drive: standing approval',
-    hint: 'HIGH RISK. While ON, an active standing grant lets Aoi act on its domain WITHOUT a per-action approval, up to the grant TTL + quota. Add grants under Standing grants. Panic and this toggle instantly disable it; forbidden actions and the domain denylist still apply.',
-  },
-  {
-    key: 'os_browser_drive_task',
-    label: 'Browser drive: bounded tasks',
-    hint: 'HIGHEST RISK. While ON, Aoi may run a bounded multi-act task (<=10 acts / <=40 steps, fail-stop) you asked for. Each act still needs a standing grant or per-action approval; panic and this toggle disable it. Leave OFF unless you want autonomous multi-step browser tasks.',
-  },
-  {
-    key: 'os_desktop_input',
-    label: 'Desktop input (drive real windows)',
-    hint: 'Let Aoi read the controls in a window and drive them through Windows UI Automation. This toggle IS the approval: while ON, Aoi acts without asking each time. Credential fields are never touched, and an action that cannot be proven is reported as unproven rather than done.',
-  },
-  {
-    key: 'os_desktop_capture',
-    label: 'Desktop input: see the window',
-    hint: 'Lets Aoi take a picture of a window and send it to your configured model, with the controls numbered on it. Needed to work with windows that do not describe their controls, and to judge layout. A screenshot shows everything on that window and CANNOT be redacted, so this is separate from the toggle above. Nothing is written to disk.',
+    key: 'os_computer_use',
+    label: 'Computer use (drive my PC and browser)',
+    hint: 'ON BY DEFAULT. The single switch for everything Aoi does with the machine: reading and driving app windows through Windows UI Automation, taking a numbered picture of a window, and acting on your own logged-in Chrome/Edge. Turning it off stops all of it at once. What it does NOT relax: credential fields and CAPTCHAs are never touched, payments are never committed, browser interactions still need per-action approval, and an action that cannot be proven is reported as unproven rather than done. The three switches below stay off unless you turn them on.',
   },
   {
     key: 'os_desktop_input_foreground',
-    label: 'Desktop input: synthetic mouse',
-    hint: 'HIGH RISK. Allows the fallback that pulls a window to the front and moves your REAL mouse when a control cannot be driven directly. Nothing can verify where that click landed, so it is always reported as unproven. Leave OFF to keep Aoi on the path that can prove what it did.',
+    label: 'Computer use: synthetic mouse and keyboard',
+    hint: 'HIGH RISK, off by default. Lets Aoi take the foreground and move your REAL cursor when a control cannot be driven any other way. It interrupts whatever you are doing, and nothing can verify where the click landed, so it is always reported as unproven. Leave off to keep Aoi on the paths that can prove what they did.',
+  },
+  {
+    key: 'os_browser_drive_standing',
+    label: 'Computer use: browser standing approval',
+    hint: 'HIGH RISK, off by default. While ON, an active standing grant lets Aoi act on its domain WITHOUT approving each action, up to the grant TTL and quota. Add grants under Standing grants. Panic and this switch disable it instantly; forbidden actions and the domain denylist still apply.',
+  },
+  {
+    key: 'os_browser_drive_task',
+    label: 'Computer use: autonomous browser tasks',
+    hint: 'HIGHEST RISK, off by default. While ON, Aoi may run a bounded multi-act browser task you asked for (<=10 acts / <=40 steps, fail-stop). Each act still needs a standing grant or per-action approval. Leave off unless you want multi-step browser work running unattended.',
   },
   { key: 'os_process_spawn', label: 'Start process', hint: 'Launch an allowlisted executable' },
   { key: 'os_file_read', label: 'Read files', hint: 'Read within registered read-roots' },

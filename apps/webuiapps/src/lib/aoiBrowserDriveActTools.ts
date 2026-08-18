@@ -79,7 +79,8 @@ const PLAN_PARAM_SCHEMA = {
               type: 'string',
               description:
                 'READ: navigate | scroll | back | wait | extract | elements | tabs | tab. ' +
-                'ACT: click | type | select | press | submit | hover | drag | dialog | upload. ' +
+                'ACT: click | type | select | press | submit | hover | drag | dialog | upload | ' +
+                'download. ' +
                 '`elements` lists the interactable elements with refs so an act can target ' +
                 '`element` instead of a hand-written selector. ' +
                 '`tabs` lists open tabs and `tab` switches to one -- needed whenever a link, ' +
@@ -90,7 +91,9 @@ const PLAN_PARAM_SCHEMA = {
                 '"really delete this?". ' +
                 '`hover` opens menus that only appear on hover. `drag` needs toSelector or ' +
                 'to_element. `upload` attaches a local file and works only for files inside the ' +
-                'roots the operator registered.',
+                'roots the operator registered. ' +
+                '`download` clicks something that saves a file and puts it in a directory the ' +
+                'operator registered as writable; give that directory in file_path.',
             },
             selector: {
               type: 'string',
@@ -148,9 +151,10 @@ const PLAN_PARAM_SCHEMA = {
             file_path: {
               type: 'string',
               description:
-                'Absolute path of the file to attach (`upload`). Refused unless it sits inside a ' +
-                'read root the operator registered -- never guess a path, and never upload ' +
-                'anything the user did not ask you to.',
+                'For `upload`, the absolute path of the file to attach -- refused unless it sits ' +
+                'inside a read root the operator registered. For `download`, the absolute path of ' +
+                'an existing directory to save into, bounded by the write roots instead. Never ' +
+                'guess a path, and never move a file the user did not ask you to.',
             },
           },
           required: ['kind'],

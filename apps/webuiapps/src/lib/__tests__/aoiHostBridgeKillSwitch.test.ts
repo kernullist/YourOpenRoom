@@ -93,7 +93,7 @@ describe('kill-switch state transitions', () => {
 });
 
 describe('normalizeAoiHostBridgeKillSwitchState', () => {
-  it('drops non-true and malformed entries and version mismatches', () => {
+  it('keeps boolean decisions, drops malformed entries and version mismatches', () => {
     const normalized = normalizeAoiHostBridgeKillSwitchState({
       version: 1,
       globalPanic: true,
@@ -101,7 +101,11 @@ describe('normalizeAoiHostBridgeKillSwitchState', () => {
       updatedAt: 42,
     });
     expect(normalized.globalPanic).toBe(true);
-    expect(normalized.entries).toEqual({ ok_key: true });
+    // An explicit false is KEPT. For a default-on capability "absent" means on,
+    // so dropping the false here would turn the feature back on by itself the
+    // next time the file was read -- the operator's decision would survive
+    // exactly one process lifetime. A bad key or a non-boolean is still dropped.
+    expect(normalized.entries).toEqual({ ok_key: true, off_key: false });
     expect(normalized.updatedAt).toBe(42);
 
     expect(normalizeAoiHostBridgeKillSwitchState({ version: 2 }).entries).toEqual({});

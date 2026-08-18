@@ -43,7 +43,10 @@ export type AoiBrowserDriveActionKind =
   // accepting a confirm is how a page asks "really delete this?".
   | 'dialog'
   // Attach a local file to a file input.
-  | 'upload';
+  | 'upload'
+  // Save a file the page offers. The click that triggers it is the act; this
+  // says where the bytes are allowed to land.
+  | 'download';
 
 export interface AoiBrowserDriveActionField {
   // The target input's `type` attribute (password/email/text/tel/number/...).
@@ -85,6 +88,7 @@ export interface AoiBrowserDriveActionRequest {
   promptText?: string;
   // upload: absolute path of the file to attach. Refused unless it sits inside
   // an operator-registered read root -- see the executor.
+  // download: the directory to save into, bounded the same way by WRITE roots.
   filePath?: string;
 }
 
@@ -166,6 +170,7 @@ const ACT_KINDS: ReadonlySet<AoiBrowserDriveActionKind> = new Set([
   'drag',
   'dialog',
   'upload',
+  'download',
 ]);
 
 // Autocomplete tokens that name a credential / payment / one-time secret.

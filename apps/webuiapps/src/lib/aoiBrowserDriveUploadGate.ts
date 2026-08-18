@@ -15,6 +15,7 @@ import * as fs from 'fs';
 import { isAbsolute, resolve } from 'path';
 
 import { isAoiPathInsideRoot, loadAoiHostReadRoots } from './aoiHostFileRead';
+import { loadAoiHostWriteRoots } from './aoiHostFileWrite';
 import type { AoiBrowserDriveUploadGate } from './aoiBrowserDriveExecutor';
 
 export interface AoiBrowserDriveUploadDecision {
@@ -89,6 +90,44 @@ export function buildAoiBrowserDriveUploadGate(openroomHome: string): AoiBrowser
       }
     } catch {
       return { allowed: false, reason: 'that file does not exist' };
+    }
+    return decision;
+  };
+}
+
+/**
+ * Where a download may be written.
+ *
+ * The mirror of the upload gate, bounded by WRITE roots rather than read roots.
+ * A download is the reverse direction -- bytes the page chose, landing on the
+ * operator's disk -- so the bound is the list that already says where Aoi may
+ * write at all, and the same DENY default applies when no gate is wired.
+ *
+ * The destination must be a DIRECTORY that already exists: creating one would
+ * be a second effect nobody asked for, and letting the browser invent the path
+ * would put the page in charge of where its own file lands.
+ */
+export function buildAoiBrowserDriveDownloadGate(openroomHome: string): AoiBrowserDriveUploadGate {
+  return (directory: string) => {
+    const config = loadAoiHostWriteRoots(openroomHome);
+    const roots = config.roots.map((entry) => entry.path);
+    const decision = decideAoiBrowserDriveUpload(directory, roots);
+    if (!decision.allowed) {
+      return {
+        allowed: false,
+        reason: decision.reason.replace('read root', 'write root'),
+      };
+    }
+    try {
+      const stats = fs.lstatSync(resolve(directory.trim()));
+      if (stats.isSymbolicLink()) {
+        return { allowed: false, reason: 'symlinked directories are not used; give the real path' };
+      }
+      if (!stats.isDirectory()) {
+        return { allowed: false, reason: 'the download destination must be a directory' };
+      }
+    } catch {
+      return { allowed: false, reason: 'that directory does not exist' };
     }
     return decision;
   };

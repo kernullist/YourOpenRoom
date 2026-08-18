@@ -97,6 +97,13 @@ export interface AoiBrowserDriveActablePage extends AoiBrowserDriveNavigablePage
   hover?(selector: string, options?: { timeout?: number }): Promise<void>;
   dragAndDrop?(source: string, target: string, options?: { timeout?: number }): Promise<void>;
   setInputFiles?(selector: string, files: string, options?: { timeout?: number }): Promise<void>;
+  // Click something that starts a download and save it. Returns where it landed
+  // plus the name the site suggested, which is the only proof the file arrived.
+  downloadTo?(
+    selector: string,
+    directory: string,
+    options?: { timeout?: number },
+  ): Promise<{ path: string; suggestedFilename: string }>;
   // Answer the NEXT native dialog. Playwright surfaces dialogs through an event
   // and auto-dismisses them when nothing is listening, so a drive that never
   // answers one silently loses whatever the page was asking.
@@ -211,6 +218,9 @@ export interface AoiBrowserDriveExecuteStepParams {
   // Decides whether a local file may be attached to the page. Absent means no
   // upload is possible, which is the safe default for a data-egress action.
   uploadGate?: AoiBrowserDriveUploadGate;
+  // Decides where a download may be written. Absent means no download, for the
+  // same reason: this one writes to the operator's disk.
+  downloadGate?: AoiBrowserDriveUploadGate;
 }
 
 const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -581,6 +591,7 @@ export async function executeAoiBrowserDriveStep(
       action,
       timeout,
       ...(params.uploadGate ? { uploadGate: params.uploadGate } : {}),
+      ...(params.downloadGate ? { downloadGate: params.downloadGate } : {}),
     });
 
     // Post-act drift: the effect may have navigated onto a denylisted host. If so,
@@ -863,9 +874,11 @@ async function executeActStep(params: {
   action: AoiBrowserDriveActionRequest;
   timeout: number;
   uploadGate?: AoiBrowserDriveUploadGate;
+  downloadGate?: AoiBrowserDriveUploadGate;
 }): Promise<{
   readBack?: { expected: string; actual: string | null };
   dialogMessage?: string;
+  downloadedTo?: string;
 }> {
   const { page, action, timeout } = params;
 
@@ -920,6 +933,33 @@ async function executeActStep(params: {
       }
       await page.dragAndDrop(selector, target, { timeout });
       return {};
+    }
+    case 'download': {
+      if (typeof page.downloadTo !== 'function') {
+        throw new Error('this browser session cannot save downloads');
+      }
+      const directory = typeof action.filePath === 'string' ? action.filePath : '';
+      if (!directory) {
+        throw new Error('download requires a destination directory');
+      }
+      // Same shape as upload and the same reason: a page influences the plan,
+      // and this one writes to disk. Fail closed without a gate.
+      const verdict = params.downloadGate
+        ? params.downloadGate(directory)
+        : { allowed: false, reason: 'downloads are not enabled for this session' };
+      if (!verdict.allowed) {
+        throw new Error(`download refused: ${verdict.reason}`);
+      }
+      const saved = await page.downloadTo(selector, directory, { timeout });
+      // A path read back off the completed download is real evidence, unlike a
+      // click that merely did not throw.
+      return {
+        readBack: {
+          expected: directory,
+          actual: typeof saved?.path === 'string' ? saved.path : null,
+        },
+        downloadedTo: typeof saved?.path === 'string' ? saved.path : '',
+      };
     }
     case 'upload': {
       if (typeof page.setInputFiles !== 'function') {

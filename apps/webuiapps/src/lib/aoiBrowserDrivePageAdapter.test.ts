@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   attachAoiBrowserDriveDialogs,
   attachAoiBrowserDriveTabs,
+  downloadAoiBrowserDriveFile,
+  type AoiBrowserDriveDownloadablePage,
   type AoiBrowserDriveDialog,
   type AoiBrowserDriveRawPage,
 } from './aoiBrowserDrivePageAdapter';
@@ -194,5 +196,91 @@ describe('tab handling', () => {
     // A tab mid-navigation is still a tab.
     expect(tabs).toHaveLength(2);
     expect(tabs[1].title).toBe('');
+  });
+});
+
+describe('saving a download', () => {
+  function downloadablePage(
+    options: {
+      suggested?: string;
+      failure?: string | null;
+      resolveBeforeClick?: boolean;
+    } = {},
+  ) {
+    const saved: string[] = [];
+    const order: string[] = [];
+    let releaseDownload: ((download: unknown) => void) | null = null;
+    const page = {
+      url: () => 'https://example.com/',
+      on: () => {},
+      waitForEvent: async () => {
+        order.push('wait-armed');
+        return new Promise((resolve) => {
+          releaseDownload = resolve;
+          if (options.resolveBeforeClick) {
+            resolve(makeDownload());
+          }
+        });
+      },
+      click: async (selector: string) => {
+        order.push(`click:${selector}`);
+        // A real site starts the download as a result of the click.
+        releaseDownload?.(makeDownload());
+      },
+    };
+    function makeDownload() {
+      return {
+        suggestedFilename: () => options.suggested ?? 'report.pdf',
+        saveAs: async (target: string) => {
+          saved.push(target);
+        },
+        failure: async () => options.failure ?? null,
+      };
+    }
+    return { page: page as unknown as AoiBrowserDriveDownloadablePage, saved, order };
+  }
+
+  it('saves the file into the given directory', async () => {
+    const { page, saved } = downloadablePage();
+    const result = await downloadAoiBrowserDriveFile(page, '#report', 'C:/work/out');
+    expect(saved).toEqual(['C:/work/out/report.pdf']);
+    expect(result.path).toBe('C:/work/out/report.pdf');
+  });
+
+  it('arms the wait BEFORE clicking', async () => {
+    // Arming afterwards is a race the page usually wins on a fast connection,
+    // and losing it looks exactly like a site that never offered a file.
+    const { page, order } = downloadablePage();
+    await downloadAoiBrowserDriveFile(page, '#report', 'C:/work/out');
+    expect(order[0]).toBe('wait-armed');
+    expect(order[1]).toBe('click:#report');
+  });
+
+  it('never lets the SITE choose where the file lands', async () => {
+    // The filename comes from the page, so it is used as a name and never as a
+    // path -- otherwise the directory bound means nothing.
+    const { page, saved } = downloadablePage({ suggested: '../../Windows/System32/evil.dll' });
+    await downloadAoiBrowserDriveFile(page, '#report', 'C:/work/out');
+    expect(saved).toEqual(['C:/work/out/evil.dll']);
+  });
+
+  it('refuses a filename that is only a traversal', async () => {
+    const { page, saved } = downloadablePage({ suggested: '..' });
+    await downloadAoiBrowserDriveFile(page, '#report', 'C:/work/out');
+    expect(saved).toEqual(['C:/work/out/download']);
+  });
+
+  it('does not double the separator when the directory ends in one', async () => {
+    const { page, saved } = downloadablePage();
+    await downloadAoiBrowserDriveFile(page, '#report', 'C:/work/out/');
+    expect(saved).toEqual(['C:/work/out/report.pdf']);
+  });
+
+  it('reports a download that did not complete', async () => {
+    // saveAs resolving is not proof the bytes arrived.
+    const { page } = downloadablePage({ failure: 'net::ERR_ABORTED' });
+    await expect(downloadAoiBrowserDriveFile(page, '#report', 'C:/work/out')).rejects.toThrow(
+      'did not complete',
+    );
   });
 });

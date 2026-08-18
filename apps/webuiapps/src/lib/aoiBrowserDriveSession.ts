@@ -48,6 +48,8 @@ export type AoiBrowserDriveStartDenyReason =
 import {
   attachAoiBrowserDriveDialogs,
   attachAoiBrowserDriveTabs,
+  downloadAoiBrowserDriveFile,
+  type AoiBrowserDriveDownloadablePage,
   type AoiBrowserDriveRawContext,
   type AoiBrowserDriveRawPage,
 } from './aoiBrowserDrivePageAdapter';
@@ -368,6 +370,18 @@ export async function startAoiBrowserDriveSession(
   }
   if (dialogs) {
     drivable.answerDialog = dialogs.answerDialog;
+  }
+  // Saving a download is the same story as dialogs: the file arrives as an event
+  // and is discarded unless something writes it out, so a plain Page cannot do
+  // it. Attached only when the page can actually wait for one.
+  if (typeof (page as unknown as { waitForEvent?: unknown }).waitForEvent === 'function') {
+    drivable.downloadTo = (selector: string, directory: string, opts?: { timeout?: number }) =>
+      downloadAoiBrowserDriveFile(
+        target() as unknown as AoiBrowserDriveDownloadablePage,
+        selector,
+        directory,
+        opts ?? {},
+      );
   }
 
   let closed = false;

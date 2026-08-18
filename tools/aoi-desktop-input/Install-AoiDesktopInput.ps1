@@ -10,12 +10,15 @@
 
       ~/.openroom/host-bridge/aoi_desktop_input.exe
 
-  Installing grants nothing. The daemon refuses every desktop-input request
-  until the operator separately turns on the os_desktop_input capability in
-  Settings > Advanced > Host bridge, and the synthetic-mouse fallback stays off
-  until os_desktop_input_foreground is turned on as well. Both default OFF and
-  both are killed by global panic. Copying a file here does not open that door;
-  it only means the door has something behind it.
+  Computer use (os_computer_use) is ON by default, so installing this DOES make
+  desktop input usable -- that is the point: a feature that has to be discovered
+  and enabled before it works is a feature that looks broken. Switching off
+  "Computer use" in Settings > Advanced > Host bridge stops all of it at once,
+  and global panic overrides everything.
+
+  What installing does NOT enable is the synthetic-mouse fallback
+  (os_desktop_input_foreground). That one takes the foreground and moves the
+  real cursor, so it stays off until explicitly turned on.
 
   The daemon must be running in the INTERACTIVE user session. UI Automation
   cannot see a desktop from session 0, so a helper spawned by a service-hosted
@@ -101,7 +104,9 @@ if ($probe -notmatch '"ok":true')
 Write-Host '[install] self-test ok'
 
 Write-Host ''
-Write-Host 'Installed, but NOT enabled. Aoi still cannot touch the desktop until you turn on:'
-Write-Host '  Settings > Advanced > Host bridge > "Desktop input (drive real windows)"'
-Write-Host 'and, only if you want the synthetic-mouse fallback as well:'
-Write-Host '  "Desktop input: synthetic mouse"  (moves your real cursor; never verifiable)'
+Write-Host 'Installed. Computer use is ON by default, so Aoi can now read and drive app'
+Write-Host 'windows. To stop all of it at once:'
+Write-Host '  Settings > Advanced > Host bridge > "Computer use (drive my PC and browser)"'
+Write-Host ''
+Write-Host 'Still OFF unless you turn it on separately:'
+Write-Host '  "Computer use: synthetic mouse and keyboard"  (takes your real cursor; never verifiable)'
