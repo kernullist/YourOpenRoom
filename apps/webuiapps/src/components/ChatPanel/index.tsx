@@ -47,6 +47,7 @@ import {
   buildAoiAppActionClaimFailureMessage,
   createAoiAppActionClaimEvidence,
   observeAoiAppActionDispatch,
+  parseDeclaredAppActions,
   resolveAoiAppActionClaimContract,
   verifyAoiAppActionClaimContract,
   type AoiAppActionClaimEvidence,
@@ -2293,6 +2294,12 @@ function getRespondToUserToolDef() {
               },
             },
           },
+          performed_actions: {
+            type: 'array',
+            items: { type: 'string' },
+            description:
+              'Every in-room app action your message tells the user you performed, as "<app> <ACTION>" (e.g. "youtube OPEN_SEARCH"). Leave EMPTY unless you actually called app_action and it succeeded this turn. This is checked against what was really dispatched: declaring an action that did not run is rejected. If you did not perform one, leave this empty and do not write that you played, opened, or started anything.',
+          },
         },
         required: ['character_expression'],
       },
@@ -2492,7 +2499,13 @@ When you receive "[User performed action in ... (appName: xxx)]", the appName is
     // tool-capable turn, independent of the app toolset.
     prompt += `
 
-IMPORTANT: You MUST use the respond_to_user tool to send all messages to the user. Do NOT output plain text responses. Include your emotion and 3 suggested replies. respond_to_user is terminal and must be the final tool call in the assistant turn.${hasImageGen ? '\n\nYou can use generate_image to create images from text prompts. The generated image will be displayed in chat.' : ''}`;
+IMPORTANT: You MUST use the respond_to_user tool to send all messages to the user. Do NOT output plain text responses. Include your emotion and 3 suggested replies. respond_to_user is terminal and must be the final tool call in the assistant turn.
+
+Reporting app actions honestly:
+- respond_to_user takes performed_actions: list every in-room app action your message tells the user you performed, as "<app> <ACTION>".
+- Leave it EMPTY unless you actually called app_action this turn AND it succeeded. It is compared against what was really dispatched, and a declared action that did not run is rejected.
+- app_action results that start with "error:" or "timeout:" mean the action did NOT happen. Do not list those, and do not describe them as done.
+- If you did not perform the action, never write that you played, opened, started, or lined anything up. Say what you could not do and ask for what you need instead.${hasImageGen ? '\n\nYou can use generate_image to create images from text prompts. The generated image will be displayed in chat.' : ''}`;
   } else {
     prompt += `
 
@@ -8034,7 +8047,10 @@ const ChatPanel: React.FC<{
         additionalArtifactIssues,
       });
     };
-    const evaluateConversationCompletion = (assistantContent: string) => {
+    const evaluateConversationCompletion = (
+      assistantContent: string,
+      declaredAppActions: readonly string[] = [],
+    ) => {
       const fileTask = evaluateFileTaskCompletion(assistantContent);
       const outcomeFeedback = verifyAoiOutcomeFeedbackCompletion({
         contract: outcomeFeedbackContract,
@@ -8045,6 +8061,7 @@ const ChatPanel: React.FC<{
         contract: appActionClaimContract,
         evidence: appActionClaimEvidence,
         assistantContent,
+        declaredActions: declaredAppActions,
       });
       const issues = [...fileTask.issues, ...outcomeFeedback.issues, ...appActionClaim.issues];
       const correctionPrompt = [
@@ -8637,7 +8654,10 @@ const ChatPanel: React.FC<{
             });
             continue;
           }
-          const completionVerification = evaluateConversationCompletion(content);
+          const completionVerification = evaluateConversationCompletion(
+            content,
+            parseDeclaredAppActions(params),
+          );
           if (!completionVerification.passed) {
             console.warn('[ChatPanel] respond_to_user blocked by deterministic postconditions', {
               issues: completionVerification.issues,

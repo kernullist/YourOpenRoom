@@ -148,12 +148,55 @@ export function detectAoiAppActionClaim(
 
 // --- Verification -------------------------------------------------------------
 
+/**
+ * Read respond_to_user's self-declaration of what it performed.
+ *
+ * This is the primary check. Reading the prose and guessing whether it asserts
+ * an action is inherently lossy -- a phrasing nobody anticipated slips through,
+ * which is how every fix in this area started. A declared list is structured on
+ * both sides: the model states what it did, and that is compared against what
+ * was really dispatched. The prose detector below stays as the backstop for a
+ * reply that claims something while leaving this empty.
+ */
+export function parseDeclaredAppActions(params: unknown): string[] {
+  const raw = (params as { performed_actions?: unknown })?.performed_actions;
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw
+    .filter((entry): entry is string => typeof entry === 'string')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
 export function verifyAoiAppActionClaimContract(params: {
   contract: AoiAppActionClaimContract | null;
   evidence: AoiAppActionClaimEvidence;
   assistantContent: string;
+  declaredActions?: readonly string[];
 }): AoiAppActionClaimVerification {
   const { contract, evidence, assistantContent } = params;
+  const declaredActions = params.declaredActions ?? [];
+
+  // A self-declaration is checked on its own terms, with no request contract
+  // required: if the model states it performed something and nothing was
+  // dispatched, that is a false claim whatever the user happened to ask for.
+  if (declaredActions.length > 0 && evidence.succeeded.length === 0) {
+    const attempted =
+      evidence.failed.length > 0
+        ? ` Every app_action attempted this turn failed: ${evidence.failed
+            .map((record) => `${record.actionType} -> ${record.result.trim().slice(0, 80)}`)
+            .join('; ')}.`
+        : ' No app_action was dispatched in this turn.';
+    return {
+      passed: false,
+      enforced: true,
+      issues: [
+        `the reply declares performed_actions [${declaredActions.join(', ')}] that did not happen.${attempted}`,
+      ],
+    };
+  }
+
   if (!contract) {
     return { passed: true, enforced: false, issues: [] };
   }
@@ -188,16 +231,18 @@ export function buildAoiAppActionClaimCorrectionPrompt(
   contract: AoiAppActionClaimContract | null,
   evidence: AoiAppActionClaimEvidence,
 ): string {
-  if (verification.passed || !contract) {
+  if (verification.passed) {
     return '';
   }
   const lines = [
     'respond_to_user rejected: you reported an app action that did not happen.',
     ...verification.issues.map((issue) => `- ${issue}`),
-    `The user asked: "${contract.sourceMessage.slice(0, 160)}"`,
+    // A self-declaration failure can arrive without a request contract, so this
+    // line is only added when there is a request to quote back.
+    ...(contract ? [`The user asked: "${contract.sourceMessage.slice(0, 160)}"`] : []),
     'Do exactly one of these, then call respond_to_user again:',
     '1. Actually perform it. Call list_apps for the numeric app_id, then app_action with the real action (for playback that is the YouTube app OPEN_SEARCH with a query, autoplay="1").',
-    '2. If you cannot -- you do not know what to play, or the action is unavailable -- say so plainly and ask for what you need. Do NOT write that you played, opened, started, or lined anything up.',
+    '2. If you cannot -- you do not know what to play, or the action is unavailable -- say so plainly and ask for what you need. Do NOT write that you played, opened, started, or lined anything up, and leave performed_actions empty.',
   ];
   if (evidence.failed.length > 0) {
     lines.push(

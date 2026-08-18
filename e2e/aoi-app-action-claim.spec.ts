@@ -20,7 +20,7 @@ const HALLUCINATED = '아, 그거! 지금 바로 틀어줄게. 늦은 밤에 은
 const HONEST =
   '미안, 뭘 틀지 못 찾았어. 아직 아무것도 재생하지 않았어. 제목을 알려주면 바로 찾아볼게.';
 
-function respondToUser(content: string) {
+function respondToUser(content: string, performedActions: string[] = []) {
   return {
     choices: [
       {
@@ -35,6 +35,7 @@ function respondToUser(content: string) {
                 arguments: JSON.stringify({
                   character_expression: { content, emotion: 'neutral' },
                   recommended_replies: ['그래', '아니 됐어', '다른 거'],
+                  performed_actions: performedActions,
                 }),
               },
             },
@@ -106,6 +107,63 @@ test.describe('Aoi app-action claim postcondition', () => {
     // swapped out from under it.
     expect(correctionSeen).toBe(true);
     expect(sentContents).toEqual([HALLUCINATED, HONEST]);
+  });
+
+  test('catches a declared action the prose detector would never have flagged', async ({
+    page,
+  }) => {
+    // The reason the field exists. This reply asserts nothing a phrase pattern
+    // could match -- it reads as an ordinary sentence -- but the model declared
+    // it performed an action, and nothing was dispatched.
+    const BLAND = '응, 다 됐어. 편하게 즐겨.';
+    let correctionSeen = false;
+    const shown: string[] = [];
+
+    await page.addInitScript((configKey) => {
+      localStorage.clear();
+      localStorage.setItem(
+        configKey,
+        JSON.stringify({
+          provider: 'openai',
+          apiKey: 'sk-test',
+          baseUrl: 'https://mock-llm.test/v1',
+          model: 'gpt-4',
+        }),
+      );
+    }, CONFIG_KEY);
+    await page.route('**/api/aoi-autonomy/**', (route) => route.abort());
+    await page.route('**/api/kira-automation/**', (route) => route.abort());
+    await page.route('**/api/llm-proxy', async (route) => {
+      const body = route.request().postDataJSON() as {
+        messages?: { role: string; content?: string }[];
+      };
+      if (
+        (body.messages ?? []).some(
+          (message) =>
+            typeof message.content === 'string' &&
+            message.content.includes('performed_actions [youtube OPEN_SEARCH]'),
+        )
+      ) {
+        correctionSeen = true;
+        shown.push(HONEST);
+        await route.fulfill({ json: respondToUser(HONEST) });
+        return;
+      }
+      shown.push(BLAND);
+      await route.fulfill({ json: respondToUser(BLAND, ['youtube OPEN_SEARCH']) });
+    });
+
+    await page.goto('/');
+    // Must NOT end in a phrase the deterministic parser handles, or it never
+    // reaches the model at all.
+    await page.getByTestId('chat-input').fill('아무거나 하나 골라서 틀어달라니까');
+    await page.getByTestId('send-btn').click();
+
+    const messages = page.getByTestId('chat-messages');
+    await expect(messages).toContainText('아직 아무것도 재생하지 않았어', { timeout: 30_000 });
+    await expect(messages).not.toContainText(BLAND);
+    expect(correctionSeen).toBe(true);
+    expect(shown).toEqual([BLAND, HONEST]);
   });
 
   test('leaves an honest answer alone when nothing was claimed', async ({ page }) => {

@@ -6,6 +6,7 @@ import {
   createAoiAppActionClaimEvidence,
   detectAoiAppActionClaim,
   observeAoiAppActionDispatch,
+  parseDeclaredAppActions,
   resolveAoiAppActionClaimContract,
   verifyAoiAppActionClaimContract,
   type AoiAppActionClaimEvidence,
@@ -207,6 +208,120 @@ describe('the app-open obligation', () => {
 
   it('handles an empty reply without claiming anything', () => {
     expect(detectAoiAppActionClaim('', 'app_open')).toBe(false);
+  });
+});
+
+describe('parseDeclaredAppActions', () => {
+  it('reads the declared list off respond_to_user params', () => {
+    expect(
+      parseDeclaredAppActions({
+        performed_actions: ['youtube OPEN_SEARCH', ' cyberNews VIEW_ARTICLE '],
+      }),
+    ).toEqual(['youtube OPEN_SEARCH', 'cyberNews VIEW_ARTICLE']);
+  });
+
+  it('treats anything missing or malformed as no declaration', () => {
+    for (const params of [
+      {},
+      null,
+      undefined,
+      { performed_actions: null },
+      { performed_actions: 'youtube OPEN_SEARCH' },
+      { performed_actions: [] },
+      { performed_actions: ['', '   ', 42] },
+    ]) {
+      expect(parseDeclaredAppActions(params), JSON.stringify(params)).toEqual([]);
+    }
+  });
+});
+
+describe('the self-declaration check', () => {
+  it('fails a declared action that never dispatched, whatever the prose says', () => {
+    // The point of the field: no phrase matching involved. The reply here reads
+    // as an ordinary sentence, and it is still caught.
+    const verification = verifyAoiAppActionClaimContract({
+      contract: PLAYBACK_CONTRACT,
+      evidence: createAoiAppActionClaimEvidence(),
+      assistantContent: '오케이, 준비됐어.',
+      declaredActions: ['youtube OPEN_SEARCH'],
+    });
+    expect(verification.passed).toBe(false);
+    expect(verification.enforced).toBe(true);
+    expect(verification.issues.join(' ')).toContain('performed_actions [youtube OPEN_SEARCH]');
+  });
+
+  it('catches a declaration even when the user never asked for anything', () => {
+    // No request contract exists here. A self-declaration is checked on its own
+    // terms: stating you did something you did not is false either way.
+    const verification = verifyAoiAppActionClaimContract({
+      contract: null,
+      evidence: createAoiAppActionClaimEvidence(),
+      assistantContent: '심심해서 하나 틀어놨어.',
+      declaredActions: ['youtube OPEN_SEARCH'],
+    });
+    expect(verification.passed).toBe(false);
+    expect(verification.enforced).toBe(true);
+  });
+
+  it('names the failed attempt when one was made', () => {
+    const verification = verifyAoiAppActionClaimContract({
+      contract: PLAYBACK_CONTRACT,
+      evidence: evidenceWith(['timeout: no response from app']),
+      assistantContent: '틀었어.',
+      declaredActions: ['youtube OPEN_SEARCH'],
+    });
+    expect(verification.issues.join(' ')).toContain('Every app_action attempted this turn failed');
+  });
+
+  it('passes a declaration backed by a real dispatch', () => {
+    expect(
+      verifyAoiAppActionClaimContract({
+        contract: PLAYBACK_CONTRACT,
+        evidence: evidenceWith(['success']),
+        assistantContent: '틀었어.',
+        declaredActions: ['youtube OPEN_SEARCH'],
+      }).passed,
+    ).toBe(true);
+  });
+
+  it('still catches a prose claim when the declaration was left empty', () => {
+    // The backstop the field does not replace: claiming in text while declaring
+    // nothing.
+    const verification = verifyAoiAppActionClaimContract({
+      contract: PLAYBACK_CONTRACT,
+      evidence: createAoiAppActionClaimEvidence(),
+      assistantContent: '지금 바로 틀어줄게.',
+      declaredActions: [],
+    });
+    expect(verification.passed).toBe(false);
+    expect(verification.issues.join(' ')).toContain('no app_action was dispatched');
+  });
+
+  it('does not invent a violation from an empty declaration alone', () => {
+    expect(
+      verifyAoiAppActionClaimContract({
+        contract: PLAYBACK_CONTRACT,
+        evidence: createAoiAppActionClaimEvidence(),
+        assistantContent: '뭘 틀까?',
+        declaredActions: [],
+      }).passed,
+    ).toBe(true);
+  });
+
+  it('explains a contract-less declaration failure without quoting a request', () => {
+    const verification = verifyAoiAppActionClaimContract({
+      contract: null,
+      evidence: createAoiAppActionClaimEvidence(),
+      assistantContent: '틀어놨어.',
+      declaredActions: ['youtube OPEN_SEARCH'],
+    });
+    const prompt = buildAoiAppActionClaimCorrectionPrompt(
+      verification,
+      null,
+      createAoiAppActionClaimEvidence(),
+    );
+    expect(prompt).toContain('performed_actions');
+    expect(prompt).not.toContain('The user asked');
   });
 });
 
