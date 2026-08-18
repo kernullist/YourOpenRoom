@@ -105,12 +105,64 @@ describe('getDesktopInputToolDefinitions', () => {
     expect(snapshot?.function.description).toContain('no_automation_tree');
   });
 
-  it('claims exactly the three tool names it handles', () => {
+  it('claims exactly the tool names it handles', () => {
     const names = getDesktopInputToolDefinitions().map((def) => def.function.name);
-    expect(names).toEqual(['desktop_windows', 'desktop_snapshot', 'desktop_act']);
+    expect(names).toEqual([
+      'desktop_windows',
+      'desktop_snapshot',
+      'desktop_act',
+      'desktop_key',
+      'desktop_type',
+      'desktop_click',
+      'desktop_scroll',
+      'desktop_drag',
+      'desktop_focus',
+      'desktop_apps',
+    ]);
     for (const name of names) {
       expect(isDesktopInputTool(name)).toBe(true);
     }
     expect(isDesktopInputTool('browser_drive_run')).toBe(false);
+  });
+
+  it('every tool declares the arguments it cannot work without', () => {
+    // A tool that lets the model omit the snapshot id would let it address an
+    // element by a bare index, which is the thing refs exist to prevent.
+    const byName = new Map(
+      getDesktopInputToolDefinitions().map((def) => [def.function.name, def.function]),
+    );
+    for (const name of ['desktop_click', 'desktop_scroll', 'desktop_drag']) {
+      expect(byName.get(name)?.parameters.required, name).toContain('snapshot_id');
+      expect(byName.get(name)?.parameters.required, name).toContain('ref');
+    }
+    // These act on the window, not an element -- demanding a ref would be theatre.
+    for (const name of ['desktop_key', 'desktop_type', 'desktop_focus']) {
+      expect(byName.get(name)?.parameters.required, name).not.toContain('ref');
+    }
+  });
+
+  it('points the model at the provable tool instead of the loose one', () => {
+    const byName = new Map(
+      getDesktopInputToolDefinitions().map((def) => [def.function.name, def.function]),
+    );
+    // desktop_type cannot verify anything; desktop_act with a value can.
+    expect(byName.get('desktop_type')?.description).toContain('desktop_act');
+    // A single left click is provable through UIA; desktop_click is not.
+    expect(byName.get('desktop_click')?.description).toContain('desktop_act');
+  });
+
+  it('warns that raising a window is not free', () => {
+    const focus = getDesktopInputToolDefinitions().find(
+      (def) => def.function.name === 'desktop_focus',
+    );
+    // Focus is the one action whose side effect outlives the call.
+    expect(focus?.function.description).toContain('CHANGES WHAT THE USER IS LOOKING AT');
+  });
+
+  it('tells the model a dropped modifier is refused, not silently ignored', () => {
+    const click = getDesktopInputToolDefinitions().find(
+      (def) => def.function.name === 'desktop_click',
+    );
+    expect(click?.function.description).toContain('refused');
   });
 });

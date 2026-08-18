@@ -2112,6 +2112,9 @@ export async function resolveAoiHostBridgeRoute(
     if (result.kind === 'windows') {
       return { status: 200, payload: { ok: true, windows: result.windows } };
     }
+    if (result.kind === 'apps') {
+      return { status: 200, payload: { ok: true, apps: result.apps } };
+    }
     if (result.kind === 'snapshot') {
       return { status: 200, payload: { ok: true, snapshot: result.snapshot } };
     }

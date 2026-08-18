@@ -13,18 +13,46 @@
 import type { ToolDef } from './llmClient';
 import {
   actOnAoiHostDesktopElement,
+  listAoiHostDesktopApps,
   listAoiHostDesktopWindows,
+  sendAoiHostDesktopWindowInput,
   snapshotAoiHostDesktopWindow,
 } from './aoiHostBridgeClient';
 
+// A refused call must not read as an ambiguous failure. "Nothing happened" is
+// the fact that matters, and it belongs in the same shape as every other result.
+function notPerformed(reason: string): Record<string, unknown> {
+  return {
+    ok: false,
+    status: 'not_performed',
+    error: reason,
+    code: 'bad_request',
+    note: 'Nothing was done. Fix the call and try again; do not describe this as done.',
+  };
+}
+
 export const DESKTOP_WINDOWS_TOOL = 'desktop_windows';
+export const DESKTOP_APPS_TOOL = 'desktop_apps';
 export const DESKTOP_SNAPSHOT_TOOL = 'desktop_snapshot';
 export const DESKTOP_ACT_TOOL = 'desktop_act';
+export const DESKTOP_CLICK_TOOL = 'desktop_click';
+export const DESKTOP_KEY_TOOL = 'desktop_key';
+export const DESKTOP_TYPE_TOOL = 'desktop_type';
+export const DESKTOP_SCROLL_TOOL = 'desktop_scroll';
+export const DESKTOP_DRAG_TOOL = 'desktop_drag';
+export const DESKTOP_FOCUS_TOOL = 'desktop_focus';
 
 const DESKTOP_INPUT_TOOLS: ReadonlySet<string> = new Set([
   DESKTOP_WINDOWS_TOOL,
+  DESKTOP_APPS_TOOL,
   DESKTOP_SNAPSHOT_TOOL,
   DESKTOP_ACT_TOOL,
+  DESKTOP_CLICK_TOOL,
+  DESKTOP_KEY_TOOL,
+  DESKTOP_TYPE_TOOL,
+  DESKTOP_SCROLL_TOOL,
+  DESKTOP_DRAG_TOOL,
+  DESKTOP_FOCUS_TOOL,
 ]);
 
 export function isDesktopInputTool(toolName: string): boolean {
@@ -32,11 +60,20 @@ export function isDesktopInputTool(toolName: string): boolean {
 }
 
 export function getDesktopInputToolPendingSummary(toolName: string): string {
-  if (toolName === DESKTOP_WINDOWS_TOOL) {
+  if (toolName === DESKTOP_WINDOWS_TOOL || toolName === DESKTOP_APPS_TOOL) {
     return 'listing desktop windows';
   }
   if (toolName === DESKTOP_SNAPSHOT_TOOL) {
     return 'reading a window';
+  }
+  if (toolName === DESKTOP_KEY_TOOL || toolName === DESKTOP_TYPE_TOOL) {
+    return 'typing into a window';
+  }
+  if (toolName === DESKTOP_SCROLL_TOOL) {
+    return 'scrolling a window';
+  }
+  if (toolName === DESKTOP_FOCUS_TOOL) {
+    return 'bringing a window to the front';
   }
   return 'acting on a window';
 }
@@ -113,6 +150,180 @@ export function getDesktopInputToolDefinitions(): ToolDef[] {
           },
           required: ['hwnd', 'ref', 'snapshot_id'],
         },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: DESKTOP_KEY_TOOL,
+        description:
+          'Send a keystroke or key combo to a window: "ctrl+s", "tab", "escape", "f5", "enter". ' +
+          'Keys go wherever focus already is inside that window, so there is no element to name. ' +
+          'A plain key is delivered without taking focus; a MODIFIER COMBO cannot be, because the ' +
+          'app reads modifier state from the real keyboard -- those need the synthetic-input path ' +
+          'and are refused with modifiers_need_foreground when it is off. ' +
+          'Nothing can prove the app acted on a keystroke, so this never reports "done": check the ' +
+          'result with a fresh desktop_snapshot before saying what happened.',
+        parameters: {
+          type: 'object',
+          properties: {
+            hwnd: { type: 'string', description: 'Window handle from desktop_windows.' },
+            keys: {
+              type: 'string',
+              description: 'Combo joined with "+", e.g. "ctrl+shift+s", "tab", "f5".',
+            },
+            delivery: {
+              type: 'string',
+              enum: ['auto', 'background', 'foreground'],
+              description:
+                'Which path to use. Omit for auto. "background" never takes focus and refuses if ' +
+                'it cannot deliver; "foreground" takes focus and needs the operator to have ' +
+                'enabled synthetic input.',
+            },
+          },
+          required: ['hwnd', 'keys'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: DESKTOP_TYPE_TOOL,
+        description:
+          'Type text into whatever holds focus in a window. ' +
+          'PREFER desktop_act with a `value` when a specific field is the target: that addresses ' +
+          'the field, replaces its contents, and can PROVE the text landed. This cannot -- it has ' +
+          'no element to read back, and the text goes in at the caret, wherever that happens to ' +
+          'be (after a programmatic write the caret sits at the START, so typing prepends). ' +
+          'Never send passwords, card numbers or one-time codes through this.',
+        parameters: {
+          type: 'object',
+          properties: {
+            hwnd: { type: 'string', description: 'Window handle from desktop_windows.' },
+            text: { type: 'string', description: 'Text to type at the current caret.' },
+            delivery: {
+              type: 'string',
+              enum: ['auto', 'background', 'foreground'],
+              description: 'Which path to use. Omit for auto.',
+            },
+          },
+          required: ['hwnd', 'text'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: DESKTOP_CLICK_TOOL,
+        description:
+          'Click a control with a specific button, count, or held modifiers -- right-click, ' +
+          'double-click, ctrl+click. For an ordinary single left click use desktop_act instead: ' +
+          'it goes through UI Automation, which can PROVE the click happened, while this cannot. ' +
+          'Pass the ref AND the snapshot_id from the desktop_snapshot that produced it. ' +
+          'Held modifiers need the synthetic-input path and are refused without it, rather than ' +
+          'being dropped and delivered as a plain click.',
+        parameters: {
+          type: 'object',
+          properties: {
+            hwnd: { type: 'string', description: 'Window handle.' },
+            ref: { type: 'number', description: 'Element ref from the snapshot.' },
+            snapshot_id: { type: 'string', description: 'The snapshot that produced this ref.' },
+            button: {
+              type: 'string',
+              enum: ['left', 'right', 'middle'],
+              description: 'Mouse button. Defaults to left.',
+            },
+            clicks: {
+              type: 'number',
+              description: '1 (default), 2 for a double click, 3 for a triple click.',
+            },
+            modifiers: {
+              type: 'array',
+              items: { type: 'string', enum: ['ctrl', 'shift', 'alt', 'win'] },
+              description: 'Modifier keys held during the click.',
+            },
+            delivery: {
+              type: 'string',
+              enum: ['auto', 'background', 'foreground'],
+              description: 'Which path to use. Omit for auto.',
+            },
+          },
+          required: ['hwnd', 'ref', 'snapshot_id'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: DESKTOP_SCROLL_TOOL,
+        description:
+          'Scroll a control. This is the ONE input action that can prove itself: it reads the ' +
+          'scroll position back, so status "done" here really means the view moved. ' +
+          'A status of "not_performed" with a suspected no-op means the view was already at that ' +
+          'end -- scrolling further will not help, so change approach instead of repeating. ' +
+          'Scrolling can reveal new controls, so take a fresh desktop_snapshot afterwards before ' +
+          'addressing anything you can now see.',
+        parameters: {
+          type: 'object',
+          properties: {
+            hwnd: { type: 'string', description: 'Window handle.' },
+            ref: { type: 'number', description: 'Ref of the control to scroll.' },
+            snapshot_id: { type: 'string', description: 'The snapshot that produced this ref.' },
+            direction: { type: 'string', enum: ['up', 'down', 'left', 'right'] },
+            amount: { type: 'number', description: 'Wheel ticks, 1-30. Defaults to 3.' },
+          },
+          required: ['hwnd', 'ref', 'snapshot_id', 'direction'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: DESKTOP_DRAG_TOOL,
+        description:
+          'Drag from one control to another within a window. Real pointer input only -- there is ' +
+          'no way to deliver a drag without taking focus and moving the cursor, so this needs the ' +
+          'operator to have enabled synthetic input and is refused otherwise. Nothing can prove ' +
+          'the app accepted the drag; verify with a fresh desktop_snapshot.',
+        parameters: {
+          type: 'object',
+          properties: {
+            hwnd: { type: 'string', description: 'Window handle.' },
+            ref: { type: 'number', description: 'Ref to drag FROM.' },
+            to_ref: { type: 'number', description: 'Ref to drag TO, from the same snapshot.' },
+            snapshot_id: { type: 'string', description: 'The snapshot that produced both refs.' },
+          },
+          required: ['hwnd', 'ref', 'to_ref', 'snapshot_id'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: DESKTOP_FOCUS_TOOL,
+        description:
+          'Bring a window to the front. This CHANGES WHAT THE USER IS LOOKING AT and persists ' +
+          'after the call, unlike the momentary focus other actions take -- so use it only when ' +
+          'the user asked to see the window, not to make another action work. Most actions do not ' +
+          'need it: they are delivered without disturbing what is in front.',
+        parameters: {
+          type: 'object',
+          properties: {
+            hwnd: { type: 'string', description: 'Window handle to raise.' },
+          },
+          required: ['hwnd'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: DESKTOP_APPS_TOOL,
+        description:
+          'List the running desktop apps that have windows, grouped by program, with a window ' +
+          'count each. Read-only. Use when the user names an app ("my editor", "Chrome") rather ' +
+          'than a window, then desktop_windows to pick the specific window.',
+        parameters: { type: 'object', properties: {}, required: [] },
       },
     },
   ];
@@ -208,6 +419,10 @@ export async function executeDesktopInputTool(
     const windows = await listAoiHostDesktopWindows();
     return { ok: true, windows };
   }
+  if (toolName === DESKTOP_APPS_TOOL) {
+    const apps = await listAoiHostDesktopApps();
+    return { ok: true, apps };
+  }
 
   const hwnd = typeof params.hwnd === 'string' ? params.hwnd.trim() : '';
   if (!hwnd) {
@@ -220,6 +435,14 @@ export async function executeDesktopInputTool(
       ok: true,
       snapshot_id: snapshot.snapshotId,
       note: snapshot.note,
+      // Never present a cut list as the whole window.
+      total_elements: snapshot.totalElements,
+      ...(snapshot.truncated
+        ? {
+            truncated: true,
+            truncation_note: `Only ${snapshot.elements.length} of ${snapshot.totalElements} controls are listed. What you need may not be here.`,
+          }
+        : {}),
       // Sensitive controls are listed so Aoi knows they exist and does not keep
       // hunting for them, but they are marked as undrivable rather than hidden.
       elements: snapshot.elements.map((element) => ({
@@ -232,6 +455,35 @@ export async function executeDesktopInputTool(
     };
   }
 
+  const delivery =
+    params.delivery === 'background' || params.delivery === 'foreground'
+      ? params.delivery
+      : undefined;
+
+  // Window-scoped input: no element, because a keystroke goes wherever focus
+  // already is and there is nothing to address.
+  if (toolName === DESKTOP_KEY_TOOL) {
+    const keys = typeof params.keys === 'string' ? params.keys.trim() : '';
+    if (!keys) {
+      return notPerformed('keys is required');
+    }
+    return describeDesktopActVerdict(
+      await sendAoiHostDesktopWindowInput({ op: 'key', hwnd, keys, delivery }),
+    );
+  }
+  if (toolName === DESKTOP_TYPE_TOOL) {
+    const text = typeof params.text === 'string' ? params.text : '';
+    if (!text) {
+      return notPerformed('text is required');
+    }
+    return describeDesktopActVerdict(
+      await sendAoiHostDesktopWindowInput({ op: 'type', hwnd, text, delivery }),
+    );
+  }
+  if (toolName === DESKTOP_FOCUS_TOOL) {
+    return describeDesktopActVerdict(await sendAoiHostDesktopWindowInput({ op: 'focus', hwnd }));
+  }
+
   const ref = typeof params.ref === 'number' ? params.ref : Number.NaN;
   const snapshotId =
     typeof params.snapshot_id === 'string'
@@ -240,16 +492,60 @@ export async function executeDesktopInputTool(
         ? params.snapshotId.trim()
         : '';
   if (!Number.isInteger(ref) || !snapshotId) {
-    return {
-      ok: false,
-      status: 'not_performed',
-      error: 'ref and snapshot_id are required together',
-      code: 'bad_request',
-      note: 'Nothing was done. Take a desktop_snapshot and use a ref from it with its snapshot_id.',
-    };
+    return notPerformed('ref and snapshot_id are required together');
   }
 
+  if (toolName === DESKTOP_CLICK_TOOL) {
+    const modifiers = Array.isArray(params.modifiers)
+      ? params.modifiers.filter((entry): entry is string => typeof entry === 'string')
+      : typeof params.modifiers === 'string'
+        ? [params.modifiers]
+        : [];
+    return describeDesktopActVerdict(
+      await actOnAoiHostDesktopElement({
+        op: 'click',
+        hwnd,
+        ref,
+        snapshotId,
+        ...(typeof params.button === 'string' ? { button: params.button } : {}),
+        ...(typeof params.clicks === 'number' ? { clicks: params.clicks } : {}),
+        ...(modifiers.length ? { modifiers } : {}),
+        ...(delivery ? { delivery } : {}),
+      }),
+    );
+  }
+
+  if (toolName === DESKTOP_SCROLL_TOOL) {
+    const direction = typeof params.direction === 'string' ? params.direction.trim() : '';
+    if (!direction) {
+      return notPerformed('direction is required');
+    }
+    return describeDesktopActVerdict(
+      await actOnAoiHostDesktopElement({
+        op: 'scroll',
+        hwnd,
+        ref,
+        snapshotId,
+        direction,
+        ...(typeof params.amount === 'number' ? { amount: params.amount } : {}),
+        ...(delivery ? { delivery } : {}),
+      }),
+    );
+  }
+
+  if (toolName === DESKTOP_DRAG_TOOL) {
+    const toRef = typeof params.to_ref === 'number' ? params.to_ref : Number.NaN;
+    if (!Number.isInteger(toRef)) {
+      return notPerformed('to_ref is required');
+    }
+    return describeDesktopActVerdict(
+      await actOnAoiHostDesktopElement({ op: 'drag', hwnd, ref, snapshotId, toRef }),
+    );
+  }
+
+  // desktop_act: invoke, or set_value when a value is supplied.
   const view = await actOnAoiHostDesktopElement({
+    op: typeof params.value === 'string' ? 'set_value' : 'invoke',
     hwnd,
     ref,
     snapshotId,

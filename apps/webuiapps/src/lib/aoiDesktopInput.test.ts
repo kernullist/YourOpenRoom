@@ -48,8 +48,97 @@ describe('parseAoiDesktopInputRequest', () => {
       hwnd: '0x1a2b',
       ref: 3,
       snapshotId: 'dis-0a1b2c3d',
+      delivery: 'auto',
       allowForeground: false,
     });
+  });
+
+  it('accepts every op it claims to support', () => {
+    // A missed op falls through to another branch's required fields and gets
+    // rejected for lacking them -- which is how `invoke` was briefly demanding
+    // a drag destination. One case per op is cheap insurance.
+    const base = { hwnd: '0x1a2b', ref: 3, snapshotId: 'dis-0a1b2c3d' };
+    const cases: Record<string, unknown>[] = [
+      { op: 'list_windows' },
+      { op: 'list_apps' },
+      { op: 'snapshot', hwnd: base.hwnd },
+      { op: 'focus', hwnd: base.hwnd },
+      { op: 'key', hwnd: base.hwnd, keys: 'ctrl+s' },
+      { op: 'type', hwnd: base.hwnd, text: 'hi' },
+      { ...base, op: 'invoke' },
+      { ...base, op: 'set_value', value: 'x' },
+      { ...base, op: 'click' },
+      { ...base, op: 'scroll', direction: 'down' },
+      { ...base, op: 'drag', toRef: 4 },
+    ];
+    for (const input of cases) {
+      expect(parseAoiDesktopInputRequest(input), String(input.op)).not.toBeNull();
+    }
+  });
+
+  it('refuses input that names no target', () => {
+    expect(parseAoiDesktopInputRequest({ op: 'key', hwnd: '0x1' })).toBeNull();
+    expect(parseAoiDesktopInputRequest({ op: 'type', hwnd: '0x1', text: '' })).toBeNull();
+    expect(
+      parseAoiDesktopInputRequest({
+        op: 'scroll',
+        hwnd: '0x1',
+        ref: 1,
+        snapshotId: 'dis-00000000',
+      }),
+    ).toBeNull();
+    expect(
+      parseAoiDesktopInputRequest({ op: 'drag', hwnd: '0x1', ref: 1, snapshotId: 'dis-00000000' }),
+    ).toBeNull();
+  });
+
+  it('refuses out-of-range click counts and scroll amounts', () => {
+    // These become real input. An unchecked number turns one action into a
+    // flood of them.
+    const base = { hwnd: '0x1', ref: 1, snapshotId: 'dis-00000000' };
+    expect(parseAoiDesktopInputRequest({ ...base, op: 'click', clicks: 99 })).toBeNull();
+    expect(parseAoiDesktopInputRequest({ ...base, op: 'click', clicks: 0 })).toBeNull();
+    expect(
+      parseAoiDesktopInputRequest({ ...base, op: 'scroll', direction: 'down', amount: 5000 }),
+    ).toBeNull();
+  });
+
+  it('refuses a rung it does not know instead of quietly using auto', () => {
+    // Naming a rung is a request for something specific. Downgrading it
+    // silently could route input through a more invasive path than was asked
+    // for -- or a less capable one, reported as if it were the same thing.
+    expect(
+      parseAoiDesktopInputRequest({
+        op: 'invoke',
+        hwnd: '0x1',
+        ref: 1,
+        snapshotId: 'dis-00000000',
+        delivery: 'telepathy',
+      }),
+    ).toBeNull();
+  });
+
+  it('refuses an unknown mouse button rather than falling back to left', () => {
+    expect(
+      parseAoiDesktopInputRequest({
+        op: 'click',
+        hwnd: '0x1',
+        ref: 1,
+        snapshotId: 'dis-00000000',
+        button: 'thumb',
+      }),
+    ).toBeNull();
+  });
+
+  it('normalizes a modifier array into the wire form', () => {
+    const request = parseAoiDesktopInputRequest({
+      op: 'click',
+      hwnd: '0x1',
+      ref: 1,
+      snapshotId: 'dis-00000000',
+      modifiers: ['ctrl', 'shift'],
+    });
+    expect(request?.modifiers).toBe('ctrl+shift');
   });
 
   it('refuses an act with no snapshot id', () => {

@@ -40,7 +40,23 @@ const MAX_VALUE_CHARS = 4096;
 const HWND_PATTERN = /^0x[0-9a-f]{1,16}$/i;
 const SNAPSHOT_ID_PATTERN = /^dis-[0-9a-f]{8}$/;
 
-export type AoiDesktopInputOp = 'list_windows' | 'snapshot' | 'invoke' | 'set_value';
+export type AoiDesktopInputOp =
+  | 'list_windows'
+  | 'list_apps'
+  | 'snapshot'
+  | 'invoke'
+  | 'set_value'
+  | 'click'
+  | 'scroll'
+  | 'key'
+  | 'type'
+  | 'drag'
+  | 'focus';
+
+// Which rung to use. 'auto' walks them weakest-side-effect first; naming one
+// pins it, and a pinned rung that cannot run refuses instead of quietly falling
+// through to a more invasive one.
+export type AoiDesktopInputDelivery = 'auto' | 'background' | 'foreground';
 
 export interface AoiDesktopInputRequest {
   op: AoiDesktopInputOp;
@@ -48,6 +64,15 @@ export interface AoiDesktopInputRequest {
   ref?: number;
   snapshotId?: string;
   value?: string;
+  delivery?: AoiDesktopInputDelivery;
+  button?: string;
+  clicks?: number;
+  modifiers?: string;
+  direction?: string;
+  amount?: number;
+  keys?: string;
+  text?: string;
+  toRef?: number;
   // Opt in to the SendInput rung. Honored only when the separate foreground
   // capability is also enabled; the route enforces that, not this parser.
   allowForeground?: boolean;
@@ -57,6 +82,12 @@ export interface AoiDesktopInputWindow {
   hwnd: string;
   title: string;
   process: string;
+}
+
+export interface AoiDesktopInputApp {
+  process: string;
+  windowCount: number;
+  sampleTitle: string;
 }
 
 export interface AoiDesktopInputElement {
@@ -70,6 +101,10 @@ export interface AoiDesktopInputElement {
 
 export interface AoiDesktopInputSnapshot {
   snapshotId: string;
+  // How many elements the window actually has, and whether the list was cut.
+  // A cap that reports nothing reads as "this is all of them".
+  totalElements: number;
+  truncated: boolean;
   // 'ok' | 'no_interactable_elements' | 'no_automation_tree' -- an empty list is
   // ambiguous and the helper says which kind of empty it is.
   note: string;
@@ -87,6 +122,7 @@ export interface AoiDesktopInputActResult {
 
 export type AoiDesktopInputResult =
   | { kind: 'windows'; windows: AoiDesktopInputWindow[] }
+  | { kind: 'apps'; apps: AoiDesktopInputApp[] }
   | { kind: 'snapshot'; snapshot: AoiDesktopInputSnapshot }
   | { kind: 'act'; act: AoiDesktopInputActResult }
   | { kind: 'error'; code: string; detail: string };
@@ -110,6 +146,14 @@ function readString(body: Record<string, unknown>, key: string): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+const DELIVERIES: ReadonlySet<string> = new Set(['auto', 'background', 'foreground']);
+const BUTTONS: ReadonlySet<string> = new Set(['left', 'right', 'middle']);
+const DIRECTIONS: ReadonlySet<string> = new Set(['up', 'down', 'left', 'right']);
+// Bounded so a bad number cannot turn one action into a flood of real input.
+const MAX_CLICKS = 3;
+const MAX_SCROLL = 30;
+const MAX_KEYS_CHARS = 64;
+
 /**
  * Parse and validate a desktop-input request.
  *
@@ -118,13 +162,17 @@ function readString(body: Record<string, unknown>, key: string): string {
  * paired with the snapshot that minted it, so the two are required together --
  * the helper refuses a mismatch anyway, but a request that cannot possibly
  * succeed should not reach the spawn boundary.
+ *
+ * Note which ops do NOT take a ref: key, type and focus act on the window, not
+ * on an element, because there is no element to aim a keystroke at -- it goes
+ * wherever focus already is. Requiring a ref there would be theatre.
  */
 export function parseAoiDesktopInputRequest(
   body: Record<string, unknown>,
 ): AoiDesktopInputRequest | null {
   const op = readString(body, 'op');
-  if (op === 'list_windows') {
-    return { op: 'list_windows' };
+  if (op === 'list_windows' || op === 'list_apps') {
+    return { op };
   }
 
   const hwnd = readString(body, 'hwnd');
@@ -132,11 +180,46 @@ export function parseAoiDesktopInputRequest(
     return null;
   }
 
-  if (op === 'snapshot') {
-    return { op: 'snapshot', hwnd };
+  if (op === 'snapshot' || op === 'focus') {
+    return { op, hwnd };
   }
 
-  if (op !== 'invoke' && op !== 'set_value') {
+  const deliveryRaw = readString(body, 'delivery');
+  const delivery: AoiDesktopInputDelivery = DELIVERIES.has(deliveryRaw)
+    ? (deliveryRaw as AoiDesktopInputDelivery)
+    : 'auto';
+  // Naming a rung this parser does not know is a request for something specific
+  // that would not be honored, so it is refused rather than downgraded to auto.
+  if (deliveryRaw && !DELIVERIES.has(deliveryRaw)) {
+    return null;
+  }
+  const allowForeground = body.allowForeground === true;
+
+  // Window-scoped input: no element, because a keystroke goes to whatever holds
+  // focus and there is nothing to address.
+  if (op === 'key') {
+    const keys = readString(body, 'keys');
+    if (!keys || keys.length > MAX_KEYS_CHARS) {
+      return null;
+    }
+    return { op, hwnd, keys, delivery, allowForeground };
+  }
+  if (op === 'type') {
+    const text = body.text;
+    if (typeof text !== 'string' || !text || text.length > MAX_VALUE_CHARS) {
+      return null;
+    }
+    return { op, hwnd, text, delivery, allowForeground };
+  }
+
+  const ELEMENT_OPS: ReadonlySet<string> = new Set([
+    'invoke',
+    'set_value',
+    'click',
+    'scroll',
+    'drag',
+  ]);
+  if (!ELEMENT_OPS.has(op)) {
     return null;
   }
 
@@ -150,11 +233,12 @@ export function parseAoiDesktopInputRequest(
   }
 
   const request: AoiDesktopInputRequest = {
-    op,
+    op: op as AoiDesktopInputOp,
     hwnd,
     ref,
     snapshotId,
-    allowForeground: body.allowForeground === true,
+    delivery,
+    allowForeground,
   };
 
   if (op === 'set_value') {
@@ -163,7 +247,69 @@ export function parseAoiDesktopInputRequest(
       return null;
     }
     request.value = value;
+    return request;
   }
+
+  if (op === 'click') {
+    const button = readString(body, 'button');
+    if (button && !BUTTONS.has(button)) {
+      return null;
+    }
+    if (button) {
+      request.button = button;
+    }
+    const clicks = body.clicks;
+    if (clicks !== undefined) {
+      if (
+        typeof clicks !== 'number' ||
+        !Number.isInteger(clicks) ||
+        clicks < 1 ||
+        clicks > MAX_CLICKS
+      ) {
+        return null;
+      }
+      request.clicks = clicks;
+    }
+    const modifiers = body.modifiers;
+    if (Array.isArray(modifiers)) {
+      request.modifiers = modifiers.filter((entry) => typeof entry === 'string').join('+');
+    } else if (typeof modifiers === 'string') {
+      request.modifiers = modifiers;
+    }
+    return request;
+  }
+
+  if (op === 'scroll') {
+    const direction = readString(body, 'direction');
+    if (!DIRECTIONS.has(direction)) {
+      return null;
+    }
+    request.direction = direction;
+    const amount = body.amount;
+    if (amount !== undefined) {
+      if (
+        typeof amount !== 'number' ||
+        !Number.isInteger(amount) ||
+        amount < 1 ||
+        amount > MAX_SCROLL
+      ) {
+        return null;
+      }
+      request.amount = amount;
+    }
+    return request;
+  }
+
+  if (op === 'drag') {
+    const toRef = body.toRef;
+    if (typeof toRef !== 'number' || !Number.isInteger(toRef) || toRef < 1 || toRef > 10_000) {
+      return null;
+    }
+    request.toRef = toRef;
+    return request;
+  }
+
+  // invoke: a ref and its snapshot are all it needs.
   return request;
 }
 
@@ -255,9 +401,17 @@ function mapSnapshot(raw: Record<string, unknown>): AoiDesktopInputSnapshot | nu
       sensitive: item.sensitive !== false,
     });
   }
+  const totalElements =
+    typeof raw.totalElements === 'number' && raw.totalElements >= elements.length
+      ? raw.totalElements
+      : elements.length;
   return {
     snapshotId,
     note: typeof raw.note === 'string' ? raw.note : 'ok',
+    totalElements,
+    // Trust the count over the flag: a helper that under-reported truncation
+    // would otherwise present a cut list as complete.
+    truncated: raw.truncated === true || totalElements > elements.length,
     elements,
   };
 }
@@ -355,6 +509,19 @@ export function runAoiDesktopInput(params: RunAoiDesktopInputParams): AoiDesktop
     command.value = request.value;
   }
 
+  for (const key of ['button', 'modifiers', 'direction', 'keys', 'text', 'delivery'] as const) {
+    const value = request[key];
+    if (typeof value === 'string' && value) {
+      command[key] = value;
+    }
+  }
+  for (const key of ['clicks', 'amount', 'toRef'] as const) {
+    const value = request[key];
+    if (typeof value === 'number') {
+      command[key] = value;
+    }
+  }
+
   const args = ['--stdin'];
   // Asking for the rung is not the same as being allowed it.
   if (request.allowForeground === true && params.foregroundAllowed) {
@@ -379,6 +546,27 @@ export function runAoiDesktopInput(params: RunAoiDesktopInputParams): AoiDesktop
       kind: 'error',
       code: 'helper_no_reply',
       detail: outcome.stderr.trim().slice(0, 400) || 'the helper produced no parseable reply',
+    };
+  }
+
+  if (request.op === 'list_apps') {
+    if (raw.ok !== true) {
+      return {
+        kind: 'error',
+        code: typeof raw.code === 'string' ? raw.code : 'list_failed',
+        detail: typeof raw.detail === 'string' ? raw.detail : '',
+      };
+    }
+    const list = Array.isArray(raw.apps) ? raw.apps : [];
+    return {
+      kind: 'apps',
+      apps: list
+        .filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === 'object')
+        .map((entry) => ({
+          process: typeof entry.process === 'string' ? entry.process.slice(0, 120) : '',
+          windowCount: typeof entry.windowCount === 'number' ? entry.windowCount : 0,
+          sampleTitle: typeof entry.sampleTitle === 'string' ? entry.sampleTitle.slice(0, 200) : '',
+        })),
     };
   }
 

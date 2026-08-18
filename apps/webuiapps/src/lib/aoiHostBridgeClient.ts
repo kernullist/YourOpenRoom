@@ -910,6 +910,9 @@ export interface AoiHostDesktopElementView {
 
 export interface AoiHostDesktopSnapshotView {
   snapshotId: string;
+  // What the window actually holds, versus what fit in the list.
+  totalElements: number;
+  truncated: boolean;
   // 'ok' | 'no_interactable_elements' | 'no_automation_tree'. The last one means
   // the window told UI Automation nothing -- which is NOT the same as having
   // nothing to click, and the caller must not read it that way.
@@ -950,10 +953,17 @@ export async function snapshotAoiHostDesktopWindow(
   const payload = await sendJson('/desktop-input', 'POST', { op: 'snapshot', hwnd });
   const snapshot = isRecord(payload.snapshot) ? payload.snapshot : {};
   const elements = Array.isArray(snapshot.elements) ? snapshot.elements : [];
+  const mapped = elements.filter(isRecord);
+  const totalElements =
+    typeof snapshot.totalElements === 'number' && snapshot.totalElements >= mapped.length
+      ? snapshot.totalElements
+      : mapped.length;
   return {
     snapshotId: asString(snapshot.snapshotId),
     note: asString(snapshot.note) || 'ok',
-    elements: elements.filter(isRecord).map((record) => ({
+    totalElements,
+    truncated: snapshot.truncated === true || totalElements > mapped.length,
+    elements: mapped.map((record) => ({
       ref: typeof record.ref === 'number' ? record.ref : 0,
       role: asString(record.role),
       name: asString(record.name),
@@ -977,20 +987,47 @@ export async function snapshotAoiHostDesktopWindow(
  * whether anything happened.
  */
 export async function actOnAoiHostDesktopElement(params: {
+  op?: 'invoke' | 'set_value' | 'click' | 'scroll' | 'drag';
   hwnd: string;
   ref: number;
   snapshotId: string;
   value?: string;
+  button?: string;
+  clicks?: number;
+  modifiers?: string[];
+  direction?: string;
+  amount?: number;
+  toRef?: number;
+  delivery?: 'background' | 'foreground';
   allowForeground?: boolean;
 }): Promise<AoiHostDesktopActView> {
+  const op = params.op ?? (typeof params.value === 'string' ? 'set_value' : 'invoke');
+  // The synthetic-input rung is asked for whenever a rung was pinned to it or
+  // the action cannot be delivered any other way. The daemon still decides
+  // whether it is granted -- asking is not the same as being allowed.
+  const wantsForeground =
+    params.allowForeground === true || params.delivery === 'foreground' || op === 'drag';
   const payload = await sendJson('/desktop-input', 'POST', {
-    op: typeof params.value === 'string' ? 'set_value' : 'invoke',
+    op,
     hwnd: params.hwnd,
     ref: params.ref,
     snapshotId: params.snapshotId,
     ...(typeof params.value === 'string' ? { value: params.value } : {}),
-    ...(params.allowForeground === true ? { allowForeground: true } : {}),
+    ...(params.button ? { button: params.button } : {}),
+    ...(typeof params.clicks === 'number' ? { clicks: params.clicks } : {}),
+    ...(params.modifiers?.length ? { modifiers: params.modifiers } : {}),
+    ...(params.direction ? { direction: params.direction } : {}),
+    ...(typeof params.amount === 'number' ? { amount: params.amount } : {}),
+    ...(typeof params.toRef === 'number' ? { toRef: params.toRef } : {}),
+    ...(params.delivery ? { delivery: params.delivery } : {}),
+    ...(wantsForeground ? { allowForeground: true } : {}),
   });
+  return readDesktopActPayload(payload);
+}
+
+// One reader for every acting route, so a new op cannot accidentally get a
+// looser reading of the same verdict than the ops that came before it.
+function readDesktopActPayload(payload: Record<string, unknown>): AoiHostDesktopActView {
   const act = isRecord(payload.act) ? payload.act : {};
   const verdict = isRecord(act.verdict) ? act.verdict : {};
   const effect = asString(verdict.effect);
@@ -1011,4 +1048,49 @@ export async function actOnAoiHostDesktopElement(params: {
     view.code = verdict.code.trim();
   }
   return view;
+}
+
+export interface AoiHostDesktopAppView {
+  process: string;
+  windowCount: number;
+  sampleTitle: string;
+}
+
+// Running apps that have windows, grouped by program.
+export async function listAoiHostDesktopApps(): Promise<AoiHostDesktopAppView[]> {
+  const payload = await sendJson('/desktop-input', 'POST', { op: 'list_apps' });
+  const apps = Array.isArray(payload.apps) ? payload.apps : [];
+  return apps.filter(isRecord).map((record) => ({
+    process: asString(record.process),
+    windowCount: typeof record.windowCount === 'number' ? record.windowCount : 0,
+    sampleTitle: asString(record.sampleTitle),
+  }));
+}
+
+/**
+ * Input aimed at a WINDOW rather than an element: keystrokes, typed text, and
+ * raising it.
+ *
+ * There is no ref here because there is nothing to address -- a keystroke goes
+ * wherever focus already is. That also means none of these can be proven, so
+ * they answer with the same verdict shape and lean on 'unverifiable' rather than
+ * inventing a weaker kind of certainty.
+ */
+export async function sendAoiHostDesktopWindowInput(params: {
+  op: 'key' | 'type' | 'focus';
+  hwnd: string;
+  keys?: string;
+  text?: string;
+  delivery?: 'background' | 'foreground';
+}): Promise<AoiHostDesktopActView> {
+  const payload = await sendJson('/desktop-input', 'POST', {
+    op: params.op,
+    hwnd: params.hwnd,
+    ...(params.keys ? { keys: params.keys } : {}),
+    ...(typeof params.text === 'string' ? { text: params.text } : {}),
+    ...(params.delivery ? { delivery: params.delivery } : {}),
+    // focus exists to raise a window, so it always needs the rung that can.
+    ...(params.delivery === 'foreground' || params.op === 'focus' ? { allowForeground: true } : {}),
+  });
+  return readDesktopActPayload(payload);
 }
