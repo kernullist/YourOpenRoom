@@ -34,7 +34,9 @@
     "user-authorized-plan:build": "vite build --config vite.user-authorized-plan.config.ts",
     "user-authorized-plan": "node dist-user-authorized-plan/aoiUserAuthorizedPlan.js",
     "measured-memory-recall:build": "vite build --config vite.measured-memory-recall.config.ts",
-    "measured-memory-recall": "node dist-measured-memory-recall/aoiMeasuredMemoryRecall.js"
+    "measured-memory-recall": "node dist-measured-memory-recall/aoiMeasuredMemoryRecall.js",
+    "claim-sweep:build": "vite build --config vite.claim-sweep.config.ts",
+    "claim-sweep": "npm run claim-sweep:build && node dist-claim-sweep/aoiClaimSweep.js"
   },
   "dependencies": {
     "framer-motion": "^12.34.0",

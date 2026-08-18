@@ -181,6 +181,7 @@ import {
   loadActionsFromMeta,
   describeAppActionResultForModel,
   formatAppReference,
+  getAppRecognitionEntries,
   getOsActionTargetApp,
 } from '@/lib/appRegistry';
 import { parseAppActionToolParamsWithValidation } from '@/lib/appActionParams';
@@ -877,6 +878,15 @@ const KIRA_APP_ID = 18;
 const IDE_APP_ID = 19;
 const PE_ANALYST_APP_ID = 20;
 const KIRA_AUTOMATION_NOTICE_EVENT = 'openroom-kira-automation-notice';
+// Names and labels of the in-room apps, used to keep the "you said you opened
+// it" obligation off host PC programs: "계산기 실행해줘" goes through
+// host_process_spawn, never app_action.
+const knownInRoomAppNames: readonly string[] = getAppRecognitionEntries().flatMap((app) =>
+  [app.appName, app.displayName].filter(
+    (value): value is string => typeof value === 'string' && value.trim().length > 1,
+  ),
+);
+
 const YOUTUBE_APP_ID = 3;
 const CYBERNEWS_APP_ID = 14;
 const cyberNewsFileApi = createAppFileApi('cyberNews');
@@ -7509,15 +7519,6 @@ const ChatPanel: React.FC<{
       history,
       confirmedActionRequest,
     });
-    // Obligation for this turn: if the user asked an app to DO something, the
-    // reply may not claim it happened unless an app_action actually succeeded.
-    // Only meaningful when the model can dispatch at all -- a provider without
-    // structured tool calls physically cannot satisfy the contract, and the
-    // system prompt already tells it not to claim tool actions, so enforcing
-    // here would just burn the correction budget.
-    const appActionClaimContract = toolCallRuntimeAvailable
-      ? resolveAoiAppActionClaimContract({ latestUserMessage })
-      : null;
     const liveFieldTruthRequested = shouldLoadAoiLiveFieldTruth(
       [latestUserMessage, confirmedActionRequest ?? '', fileTaskContract?.sourceMessage ?? ''].join(
         '\n',
@@ -7527,6 +7528,20 @@ const ChatPanel: React.FC<{
       toolCallRuntimeAvailable &&
       !useDialogModel &&
       shouldEnableAppTools(latestUserMessage, history);
+    // Obligation for this turn: if the user asked an app to DO something, the
+    // reply may not claim it happened unless an app_action actually succeeded.
+    // Skipped entirely without structured tool calls -- that provider cannot
+    // dispatch and the system prompt already tells it not to claim tool actions.
+    // includeAppTools is carried into the contract rather than switching it off,
+    // because a claim made on a turn without app tools is still false; only the
+    // correction changes, from "go do it" to "do not say you did".
+    const appActionClaimContract = toolCallRuntimeAvailable
+      ? resolveAoiAppActionClaimContract({
+          latestUserMessage,
+          knownAppNames: knownInRoomAppNames,
+          appToolsAvailable: includeAppTools,
+        })
+      : null;
     // Whether search_web is actually in this turn's tools array. hasTavily only
     // says a key is configured; the dialog route ships a two-tool array, so the
     // key being present there does not mean the model can search. The system

@@ -24,6 +24,10 @@ export interface AoiAppActionClaimContract {
   kind: AoiAppActionClaimKind;
   // The user message that created the obligation, for the correction prompt.
   sourceMessage: string;
+  // Whether app_action was actually in this turn's tool array. False means the
+  // claim is still wrong, but the model cannot fix it by dispatching -- the
+  // correction has to ask it to drop the claim instead of telling it to act.
+  appToolsAvailable: boolean;
 }
 
 export interface AoiAppActionDispatchRecord {
@@ -87,11 +91,20 @@ const NON_REQUEST_PATTERN =
  *
  * Returns null when it does not, which is the common case; the postcondition is
  * then never enforced for the turn.
+ *
+ * @param knownAppNames In-room app names/labels. "Open X" only arms when the
+ * message names one of these. Without that guard the obligation also fired on
+ * host PC programs ("계산기 실행해줘"), which go through host_process_spawn and
+ * never touch app_action -- the correction would then have demanded the one
+ * tool that is wrong for the job. Found by the offline sweep on real runs.
  */
 export function resolveAoiAppActionClaimContract(params: {
   latestUserMessage: string;
+  knownAppNames?: readonly string[];
+  appToolsAvailable?: boolean;
 }): AoiAppActionClaimContract | null {
   const message = params.latestUserMessage?.trim() ?? '';
+  const appToolsAvailable = params.appToolsAvailable ?? true;
   if (!message) {
     return null;
   }
@@ -99,12 +112,20 @@ export function resolveAoiAppActionClaimContract(params: {
     return null;
   }
   if (PLAYBACK_REQUEST_PATTERN.test(message)) {
-    return { kind: 'playback', sourceMessage: message };
+    return { kind: 'playback', sourceMessage: message, appToolsAvailable };
   }
-  if (APP_OPEN_REQUEST_PATTERN.test(message)) {
-    return { kind: 'app_open', sourceMessage: message };
+  if (APP_OPEN_REQUEST_PATTERN.test(message) && namesKnownApp(message, params.knownAppNames)) {
+    return { kind: 'app_open', sourceMessage: message, appToolsAvailable };
   }
   return null;
+}
+
+function namesKnownApp(message: string, knownAppNames: readonly string[] | undefined): boolean {
+  const normalized = message.toLowerCase();
+  return (knownAppNames ?? []).some((name) => {
+    const candidate = name.trim().toLowerCase();
+    return candidate.length > 1 && normalized.includes(candidate);
+  });
 }
 
 // --- Claim detection ----------------------------------------------------------
@@ -240,9 +261,19 @@ export function buildAoiAppActionClaimCorrectionPrompt(
     // A self-declaration failure can arrive without a request contract, so this
     // line is only added when there is a request to quote back.
     ...(contract ? [`The user asked: "${contract.sourceMessage.slice(0, 160)}"`] : []),
-    'Do exactly one of these, then call respond_to_user again:',
-    '1. Actually perform it. Call list_apps for the numeric app_id, then app_action with the real action (for playback that is the YouTube app OPEN_SEARCH with a query, autoplay="1").',
-    '2. If you cannot -- you do not know what to play, or the action is unavailable -- say so plainly and ask for what you need. Do NOT write that you played, opened, started, or lined anything up, and leave performed_actions empty.',
+    // When app_action is not in this turn's tools there is only one way out, and
+    // telling the model to call it would loop until the correction budget runs
+    // out. Both real cases the sweep surfaced were this.
+    ...(contract && !contract.appToolsAvailable
+      ? [
+          'app_action is NOT available to you in this turn, so you cannot perform it here.',
+          'Say plainly that you have not done it and ask for what you need. Do NOT write that you played, opened, started, or lined anything up, and leave performed_actions empty.',
+        ]
+      : [
+          'Do exactly one of these, then call respond_to_user again:',
+          '1. Actually perform it. Call list_apps for the numeric app_id, then app_action with the real action (for playback that is the YouTube app OPEN_SEARCH with a query, autoplay="1").',
+          '2. If you cannot -- you do not know what to play, or the action is unavailable -- say so plainly and ask for what you need. Do NOT write that you played, opened, started, or lined anything up, and leave performed_actions empty.',
+        ]),
   ];
   if (evidence.failed.length > 0) {
     lines.push(

@@ -12,7 +12,11 @@ import {
   type AoiAppActionClaimEvidence,
 } from '../aoiAppActionClaimContract';
 
-const PLAYBACK_CONTRACT = { kind: 'playback' as const, sourceMessage: '아까 그거 틀어줘' };
+const PLAYBACK_CONTRACT = {
+  kind: 'playback' as const,
+  sourceMessage: '아까 그거 틀어줘',
+  appToolsAvailable: true,
+};
 
 function evidenceWith(results: string[]): AoiAppActionClaimEvidence {
   return results.reduce(
@@ -40,12 +44,40 @@ describe('resolveAoiAppActionClaimContract', () => {
     }
   });
 
-  it('creates an app-open obligation for a request to open an app', () => {
+  it('creates an app-open obligation only for a named in-room app', () => {
+    const knownAppNames = ['youtube', '유튜브', 'kira', 'notes'];
     for (const message of ['유튜브 열어줘', 'Kira 실행해', 'open the notes app']) {
-      expect(resolveAoiAppActionClaimContract({ latestUserMessage: message })?.kind, message).toBe(
-        'app_open',
-      );
+      expect(
+        resolveAoiAppActionClaimContract({ latestUserMessage: message, knownAppNames })?.kind,
+        message,
+      ).toBe('app_open');
     }
+  });
+
+  it('leaves host PC program launches alone', () => {
+    // Found by the offline sweep on real runs: "계산기 실행해줘" goes through
+    // host_process_spawn and never touches app_action, so an obligation here
+    // would have told the model to call exactly the wrong tool.
+    const knownAppNames = ['youtube', '유튜브', 'kira', 'notes'];
+    for (const message of ['계산기 실행해줘', '메모장 띄워줘', 'launch notepad']) {
+      expect(
+        resolveAoiAppActionClaimContract({ latestUserMessage: message, knownAppNames }),
+        message,
+      ).toBeNull();
+    }
+  });
+
+  it('never arms app_open without a known app list', () => {
+    expect(resolveAoiAppActionClaimContract({ latestUserMessage: '유튜브 열어줘' })).toBeNull();
+  });
+
+  it('carries whether app tools were available for the turn', () => {
+    expect(
+      resolveAoiAppActionClaimContract({
+        latestUserMessage: '노래 틀어줘',
+        appToolsAvailable: false,
+      })?.appToolsAvailable,
+    ).toBe(false);
   });
 
   it('does not oblige anything for a question about music', () => {
@@ -166,7 +198,11 @@ describe('verifyAoiAppActionClaimContract', () => {
 });
 
 describe('the app-open obligation', () => {
-  const OPEN_CONTRACT = { kind: 'app_open' as const, sourceMessage: '유튜브 열어줘' };
+  const OPEN_CONTRACT = {
+    kind: 'app_open' as const,
+    sourceMessage: '유튜브 열어줘',
+    appToolsAvailable: true,
+  };
 
   it('recognizes a reply asserting an app was opened', () => {
     // The literal acks the app ships, which an exact-phrase pattern missed.
@@ -353,6 +389,28 @@ describe('correction and failure copy', () => {
     expect(
       buildAoiAppActionClaimCorrectionPrompt(verification, PLAYBACK_CONTRACT, evidence),
     ).toContain('never describe a failed action as done');
+  });
+
+  it('tells the model to drop the claim when app tools were not available', () => {
+    // Both real cases the sweep surfaced ran without app_action in the tool
+    // array. Telling the model to call it would loop to the correction limit.
+    const contract = {
+      kind: 'playback' as const,
+      sourceMessage: '아까 그거 틀어줘',
+      appToolsAvailable: false,
+    };
+    const verification = verifyAoiAppActionClaimContract({
+      contract,
+      evidence: createAoiAppActionClaimEvidence(),
+      assistantContent: '지금 바로 틀어줄게.',
+    });
+    const prompt = buildAoiAppActionClaimCorrectionPrompt(
+      verification,
+      contract,
+      createAoiAppActionClaimEvidence(),
+    );
+    expect(prompt).toContain('app_action is NOT available to you in this turn');
+    expect(prompt).not.toContain('Call list_apps');
   });
 
   it('produces nothing when the contract passed', () => {
