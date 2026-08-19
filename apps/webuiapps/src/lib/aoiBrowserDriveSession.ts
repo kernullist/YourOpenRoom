@@ -85,6 +85,9 @@ export interface AoiBrowserDriveSessionDeps {
   pickPort?: () => Promise<number>;
   resolveDefaultUserDataDir?: (engine: AoiBrowserDriveEngine) => string | null;
   readFile?: (path: string) => string;
+  // Ask the browser's own DevTools HTTP endpoint who it is. See the handshake
+  // below for why this exists at all.
+  probeDevTools?: (port: number) => Promise<string | null>;
   fileExists?: (path: string) => boolean;
   connect?: AoiBrowserDriveConnect;
   now?: () => number;
@@ -179,6 +182,39 @@ const lazyConnect: AoiBrowserDriveConnect = async (cdpHttpEndpoint) => {
  * Launch + attach + open an Aoi-only page. Returns a session handle whose close()
  * tears down ONLY the Aoi page (never the shared browser).
  */
+/**
+ * Ask http://127.0.0.1:<port>/json/version for the browser WebSocket URL.
+ *
+ * This replaced waiting for a DevToolsActivePort FILE, which current Chrome no
+ * longer writes. Verified against Chrome 151: the browser starts, DevTools
+ * listens, and that file appears nowhere -- not in the profile, not in temp --
+ * so the wait could only ever time out. Worse, it timed out as "attach_timeout:
+ * DevToolsActivePort never appeared", which reads as "the browser did not
+ * start" when the browser had started perfectly well.
+ *
+ * The HTTP endpoint is the documented way to discover this and answered in
+ * ~400ms on the same machine. The port is ours -- we pass it on the command
+ * line -- so nothing is being guessed here.
+ */
+async function probeAoiDevToolsEndpoint(port: number): Promise<string | null> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/json/version`, {
+      // The endpoint is loopback and answers instantly when it is up; a long
+      // wait here would just delay the retry.
+      signal: AbortSignal.timeout(1_500),
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const payload = (await response.json()) as { webSocketDebuggerUrl?: unknown };
+    const url = payload?.webSocketDebuggerUrl;
+    return typeof url === 'string' && url.startsWith('ws://') ? url : null;
+  } catch {
+    // Not up yet, or not answering. The caller retries.
+    return null;
+  }
+}
+
 export async function startAoiBrowserDriveSession(
   options: AoiBrowserDriveStartOptions = {},
   deps: AoiBrowserDriveSessionDeps = {},
@@ -191,6 +227,7 @@ export async function startAoiBrowserDriveSession(
   const readFile = deps.readFile ?? ((path: string) => fs.readFileSync(path, 'utf8'));
   const fileExists = deps.fileExists ?? ((path: string) => fs.existsSync(path));
   const connect = deps.connect ?? lazyConnect;
+  const probeDevTools = deps.probeDevTools ?? probeAoiDevToolsEndpoint;
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? realSleep;
 
@@ -249,14 +286,44 @@ export async function startAoiBrowserDriveSession(
 
   let handshake: AoiDevToolsActivePort;
   try {
-    handshake = await pollForAoiDevToolsActivePort({
-      userDataDir,
-      timeoutMs,
-      fileExists,
-      readFile,
-      now,
-      sleep,
-    });
+    // Ask the browser directly first. The DevToolsActivePort file is a legacy
+    // signal that current Chrome does not write at all, so the file poll is kept
+    // only as a fallback for older builds -- it can no longer be the primary
+    // path without the attach failing on every modern browser.
+    const deadline = now() + timeoutMs;
+    const probeIntervalMs = 200;
+    // Bounded by BOTH the clock and a count. The clock is injected, so a caller
+    // that holds it still -- every test harness does -- would otherwise turn
+    // this into a tight loop that never ends and never reports anything.
+    const maxProbes = Math.max(1, Math.ceil(timeoutMs / probeIntervalMs));
+    let socketUrl: string | null = null;
+    for (let attempt = 0; attempt < maxProbes && now() < deadline; attempt += 1) {
+      socketUrl = await probeDevTools(port);
+      if (socketUrl) {
+        break;
+      }
+      await sleep(probeIntervalMs);
+    }
+    if (socketUrl) {
+      const wsPath = (() => {
+        try {
+          return new URL(socketUrl).pathname;
+        } catch {
+          return '';
+        }
+      })();
+      handshake = { port, wsPath };
+    } else {
+      handshake = await pollForAoiDevToolsActivePort({
+        userDataDir,
+        // Whatever is left of the budget; the probe already spent most of it.
+        timeoutMs: Math.max(1_000, deadline - now()),
+        fileExists,
+        readFile,
+        now,
+        sleep,
+      });
+    }
   } catch (error) {
     safeKill(child);
     if (error instanceof AoiBrowserDriveStartError) {

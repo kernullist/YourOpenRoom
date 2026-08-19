@@ -347,3 +347,92 @@ describe('the session supplies the capabilities Playwright does not', () => {
     await session.close();
   });
 });
+
+// How the session learns the browser is ready.
+//
+// It used to wait for Chrome to write a DevToolsActivePort file into the profile
+// directory. Verified against Chrome 151 on a real machine: the browser starts,
+// DevTools listens, and that file appears NOWHERE -- so the wait could only ever
+// run out, and it reported "attach_timeout: DevToolsActivePort never appeared",
+// which reads as "the browser did not start" when it had started fine.
+describe('the attach handshake', () => {
+  // A clock that moves. happyDeps freezes time, which is fine when a signal
+  // arrives immediately but turns any wait into an endless one.
+  function advancingClock(stepMs = 100) {
+    let t = 1_000;
+    return () => {
+      t += stepMs;
+      return t;
+    };
+  }
+
+  function browserFor(page: AoiBrowserDrivePage) {
+    return {
+      contexts: () => [{ newPage: async () => page, pages: () => [page] }],
+      isConnected: () => true,
+      close: vi.fn(async () => {}),
+    } as unknown as AoiBrowserDriveBrowser;
+  }
+
+  it('asks the browser directly instead of waiting for a file', async () => {
+    const page = fakePage();
+    const { deps } = happyDeps({
+      connect: async () => browserFor(page),
+      // No file, ever -- which is what current Chrome actually does.
+      fileExists: () => false,
+      readFile: () => {
+        throw new Error('the port file must not be required');
+      },
+      probeDevTools: async (port: number) => `ws://127.0.0.1:${port}/devtools/browser/abc`,
+      now: advancingClock(),
+    });
+    const session = await startAoiBrowserDriveSession({ engine: 'chrome' }, deps);
+    expect(session.port).toBeGreaterThan(0);
+    await session.close();
+  });
+
+  it('retries until the endpoint answers', async () => {
+    // The browser takes a moment to open the port; a single probe would report a
+    // perfectly healthy launch as a failure.
+    const page = fakePage();
+    let attempts = 0;
+    const { deps } = happyDeps({
+      connect: async () => browserFor(page),
+      fileExists: () => false,
+      probeDevTools: async (port: number) => {
+        attempts += 1;
+        return attempts < 3 ? null : `ws://127.0.0.1:${port}/devtools/browser/abc`;
+      },
+      now: advancingClock(),
+    });
+    const session = await startAoiBrowserDriveSession({ engine: 'chrome' }, deps);
+    expect(attempts).toBe(3);
+    await session.close();
+  });
+
+  it('still falls back to the port file for an older browser', async () => {
+    // Older builds do write it, and dropping that path would trade one broken
+    // case for another.
+    const page = fakePage();
+    const { deps } = happyDeps({
+      connect: async () => browserFor(page),
+      probeDevTools: async () => null,
+      fileExists: () => true,
+      readFile: () => '51222\n/devtools/browser/from-file',
+    });
+    const session = await startAoiBrowserDriveSession({ engine: 'chrome' }, deps);
+    expect(session.port).toBe(51222);
+    await session.close();
+  });
+
+  it('reports attach_timeout only when neither signal arrives', async () => {
+    const { deps } = happyDeps({
+      probeDevTools: async () => null,
+      fileExists: () => false,
+      now: advancingClock(),
+    });
+    await expect(
+      startAoiBrowserDriveSession({ engine: 'chrome', timeoutMs: 1_000 }, deps),
+    ).rejects.toMatchObject({ reason: 'attach_timeout' });
+  });
+});
