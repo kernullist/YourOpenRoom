@@ -1318,3 +1318,15 @@ export async function setAoiBrowserDriveProfile(
     defaultProfileDir: asString(payload.defaultProfileDir),
   };
 }
+
+/**
+ * Open the configured profile so the operator can sign in.
+ *
+ * Launched WITHOUT a debug port: this window is theirs, not Aoi's, and the drive
+ * opens its own session later. Close it before driving -- a browser already
+ * running on a profile swallows the next launch, so the debug port never opens.
+ */
+export async function openAoiBrowserDriveProfile(): Promise<string> {
+  const payload = await sendJson('/browser-drive/profile/open', 'POST', {});
+  return asString(payload.userDataDir);
+}

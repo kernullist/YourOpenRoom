@@ -1734,6 +1734,131 @@ describe('delete preview -> approve -> execute (injected recycle)', () => {
   });
 });
 
+describe('browser-drive profile', () => {
+  // Chrome refuses remote debugging on its own default profile, so the profile
+  // is a required setup step rather than a preference -- and a setting that
+  // stores something unusable looks applied and fails much later.
+  it('stores an absolute directory and reports it back', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    const saved = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive/profile',
+      body: { userDataDir: join(home, 'drive-profile') },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 1000,
+    });
+    expect(saved.status).toBe(200);
+    expect((saved.payload as { configured: boolean }).configured).toBe(true);
+
+    const read = await resolveAoiHostBridgeRoute({
+      method: 'GET',
+      route: '/browser-drive/profile',
+      body: {},
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 1100,
+    });
+    expect((read.payload as { userDataDir: string }).userDataDir).toContain('drive-profile');
+  });
+
+  it('refuses a relative path', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive/profile',
+      body: { userDataDir: 'drive-profile' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 1000,
+    });
+    expect(result.status).toBe(400);
+    expect((result.payload as { code: string }).code).toBe('invalid_profile_dir');
+  });
+
+  it('clears the setting when given an empty value', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive/profile',
+      body: { userDataDir: join(home, 'drive-profile') },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 1000,
+    });
+    const cleared = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive/profile',
+      body: { userDataDir: '' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 1100,
+    });
+    expect((cleared.payload as { configured: boolean }).configured).toBe(false);
+  });
+
+  it('opens the configured profile for signing in', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    const dir = join(home, 'drive-profile');
+    await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive/profile',
+      body: { userDataDir: dir },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 1000,
+    });
+
+    const opened: { exe: string; dir: string }[] = [];
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive/profile/open',
+      body: {},
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 1200,
+      browserProfileOpenImpl: (exe: string, userDataDir: string) => {
+        opened.push({ exe, dir: userDataDir });
+      },
+    });
+    // A machine with no Chrome installed answers 501 rather than pretending.
+    if (result.status === 501) {
+      expect(opened).toHaveLength(0);
+      return;
+    }
+    expect(result.status).toBe(200);
+    expect(opened).toHaveLength(1);
+    expect(opened[0].dir).toBe(dir);
+  });
+
+  it('refuses to open anything when no profile is set', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    const opened: string[] = [];
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive/profile/open',
+      body: {},
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 1200,
+      browserProfileOpenImpl: (_exe: string, dir: string) => {
+        opened.push(dir);
+      },
+    });
+    expect(result.status).toBe(400);
+    expect((result.payload as { code: string }).code).toBe('profile_not_configured');
+    expect(opened).toHaveLength(0);
+  });
+});
+
 describe('desktop-input', () => {
   // A stand-in for the native helper. It records what it was asked and answers
   // with whatever verdict the test wants, so the ROUTE's decisions are under

@@ -22,6 +22,7 @@ import {
   fetchAoiBrowserDriveAudit,
   fetchAoiBrowserDriveProfile,
   setAoiBrowserDriveProfile,
+  openAoiBrowserDriveProfile,
   type AoiHostBridgeStatus,
   type AoiHostSpawnAllowlistEntryView,
   type AoiHostRootView,
@@ -795,6 +796,31 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
                       }}
                     >
                       Save
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.cancelBtn}
+                      disabled={!driveProfile?.configured || busy === 'drive-profile-open'}
+                      onClick={async () => {
+                        setBusy('drive-profile-open');
+                        setError('');
+                        setConsentNote('');
+                        try {
+                          await openAoiBrowserDriveProfile();
+                          setConsentNote(
+                            'Opened that profile. Sign in to the sites Aoi should reach, then CLOSE the window -- a browser left running on the profile blocks Aoi from attaching to it.',
+                          );
+                        } catch (openError) {
+                          setError(
+                            openError instanceof Error ? openError.message : String(openError),
+                          );
+                        } finally {
+                          setBusy('');
+                        }
+                      }}
+                      data-testid="aoi-browser-drive-profile-open"
+                    >
+                      Open to sign in
                     </button>
                   </div>
                   {driveProfile && !driveProfile.configured ? (

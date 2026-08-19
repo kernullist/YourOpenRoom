@@ -17,6 +17,7 @@
 import { type IncomingMessage, type ServerResponse } from 'http';
 import { resolve } from 'path';
 import { randomUUID } from 'crypto';
+import { spawn } from 'child_process';
 import {
   AOI_HOST_BRIDGE_AUTH_HEADER,
   loadAoiHostBridgeToken,
@@ -41,6 +42,7 @@ import {
   selectAoiBrowserDriveUserDataDir,
 } from './aoiBrowserDriveProfile';
 import { resolveAoiBrowserDriveDefaultUserDataDir } from './aoiBrowserDrive';
+import { resolveAoiHostBrowserExecutable } from './aoiHostBrowserRead';
 import {
   buildAoiBrowserDriveDownloadGate,
   buildAoiBrowserDriveUploadGate,
@@ -234,6 +236,8 @@ export interface ResolveAoiHostBridgeRouteParams {
   killImpl?: (pid: number) => boolean;
   recycleImpl?: (path: string) => boolean;
   desktopInputSpawnImpl?: AoiDesktopInputSpawn;
+  // Injected so the open-profile route can be tested without launching a browser.
+  browserProfileOpenImpl?: (executablePath: string, userDataDir: string) => void;
 }
 
 function summarizeKillSwitch(state: AoiHostBridgeKillSwitchState): {
@@ -407,6 +411,18 @@ function parseAoiBrowserDriveTaskRequest(
 // Production session factory for the ACT runner: a fresh CDP session against the
 // operator's OWN browser, adapted to the runner's minimal { page, close } shape.
 // A start failure surfaces through the runner as session_start_failed.
+// Launch the profile for the operator to sign into. Detached and fully
+// disowned: this window has to outlive the request that started it, and the
+// daemon must not hold its pipes open.
+function defaultOpenAoiBrowserProfile(executablePath: string, userDataDir: string): void {
+  const child = spawn(
+    executablePath,
+    [`--user-data-dir=${userDataDir}`, '--no-first-run', '--no-default-browser-check'],
+    { detached: true, stdio: 'ignore', windowsHide: false },
+  );
+  child.unref();
+}
+
 function resolveAoiBrowserDriveProfileDir(openroomHome: string): string {
   const dir = selectAoiBrowserDriveUserDataDir(loadAoiBrowserDriveProfileConfig(openroomHome));
   if (!dir) {
@@ -2181,6 +2197,46 @@ export async function resolveAoiHostBridgeRoute(
         payload: { ok: true, userDataDir: decision.path, configured: true },
       };
     }
+  }
+
+  // --- POST /browser-drive/profile/open: open the configured profile so the
+  //     operator can sign in. Deliberately launched WITHOUT a debug port: this
+  //     window is for them, not for Aoi, and the drive opens its own later.
+  if (params.method === 'POST' && params.route === '/browser-drive/profile/open') {
+    const dir = selectAoiBrowserDriveUserDataDir(
+      loadAoiBrowserDriveProfileConfig(params.openroomHome),
+    );
+    if (!dir) {
+      return {
+        status: 400,
+        payload: {
+          ok: false,
+          error: 'set a browser profile directory first',
+          code: 'profile_not_configured',
+        },
+      };
+    }
+    const executable = resolveAoiHostBrowserExecutable({});
+    if (!executable) {
+      return {
+        status: 501,
+        payload: { ok: false, error: 'no Chrome/Edge executable found', code: 'browser_not_found' },
+      };
+    }
+    try {
+      const opener = params.browserProfileOpenImpl ?? defaultOpenAoiBrowserProfile;
+      opener(executable.path, dir);
+    } catch (error) {
+      return {
+        status: 500,
+        payload: {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+          code: 'profile_open_failed',
+        },
+      };
+    }
+    return { status: 200, payload: { ok: true, userDataDir: dir } };
   }
 
   // --- POST /desktop-input (DI2): enumerate / snapshot / drive a real window.

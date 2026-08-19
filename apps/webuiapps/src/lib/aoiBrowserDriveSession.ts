@@ -326,6 +326,30 @@ export async function startAoiBrowserDriveSession(
     }
   } catch (error) {
     safeKill(child);
+    if (error instanceof AoiBrowserDriveStartError && error.reason === 'attach_timeout') {
+      // A browser already running on this profile is the usual cause, and it
+      // fails in the least helpful way: the second launch hands its command line
+      // to the running instance and exits, so no debug port ever opens and the
+      // wait times out talking about DevTools. Chrome keeps a `lockfile` in the
+      // profile while it is running, so say what is actually in the way.
+      //
+      // Reported, not enforced: a crashed browser can leave the file behind, and
+      // refusing on a stale marker would block a profile that is perfectly free.
+      let profileBusy = false;
+      try {
+        profileBusy =
+          fileExists(`${userDataDir}\\lockfile`) || fileExists(`${userDataDir}/lockfile`);
+      } catch {
+        profileBusy = false;
+      }
+      if (profileBusy) {
+        throw new AoiBrowserDriveStartError(
+          'attach_timeout',
+          'a browser window is already open on this profile, so the debug port never opened. ' +
+            'Close that window and try again.',
+        );
+      }
+    }
     if (error instanceof AoiBrowserDriveStartError) {
       throw error;
     }

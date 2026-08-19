@@ -425,6 +425,22 @@ describe('the attach handshake', () => {
     await session.close();
   });
 
+  it('names an already-open browser as the reason it could not attach', async () => {
+    // The unhelpful shape of this failure: a second launch on a profile that is
+    // already open hands its command line to the running instance and exits, so
+    // no debug port appears and the wait times out talking about DevTools --
+    // describing a symptom of something else entirely.
+    const { deps } = happyDeps({
+      probeDevTools: async () => null,
+      // Chrome keeps a lockfile in the profile while it is running.
+      fileExists: (path: string) => path.includes('lockfile'),
+      now: advancingClock(),
+    });
+    await expect(
+      startAoiBrowserDriveSession({ engine: 'chrome', timeoutMs: 1_000 }, deps),
+    ).rejects.toThrow('already open on this profile');
+  });
+
   it('reports attach_timeout only when neither signal arrives', async () => {
     const { deps } = happyDeps({
       probeDevTools: async () => null,
