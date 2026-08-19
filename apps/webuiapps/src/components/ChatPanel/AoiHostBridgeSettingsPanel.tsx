@@ -20,6 +20,8 @@ import {
   addAoiBrowserDriveStandingGrant,
   removeAoiBrowserDriveStandingGrant,
   fetchAoiBrowserDriveAudit,
+  fetchAoiBrowserDriveProfile,
+  setAoiBrowserDriveProfile,
   type AoiHostBridgeStatus,
   type AoiHostSpawnAllowlistEntryView,
   type AoiHostRootView,
@@ -28,6 +30,7 @@ import {
   type AoiBrowserDriveAllowlistEntryView,
   type AoiBrowserDriveStandingGrantView,
   type AoiBrowserDriveAuditEntryView,
+  type AoiBrowserDriveProfileView,
 } from '@/lib/aoiHostBridgeClient';
 import {
   AOI_HOST_BRIDGE_CONSENT_LINKS,
@@ -147,6 +150,8 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
     maxActions: '20',
   });
   const [auditEntries, setAuditEntries] = useState<AoiBrowserDriveAuditEntryView[]>([]);
+  const [driveProfile, setDriveProfile] = useState<AoiBrowserDriveProfileView | null>(null);
+  const [driveProfileDraft, setDriveProfileDraft] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
@@ -219,6 +224,14 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
       setAuditEntries(audit);
 
       // Repair footgun: capability already ON but session consent never granted.
+      try {
+        const profile = await fetchAoiBrowserDriveProfile();
+        setDriveProfile(profile);
+        setDriveProfileDraft(profile.userDataDir);
+      } catch {
+        // The panel still works without it; the browser-drive section says so.
+        setDriveProfile(null);
+      }
       const enabledKeys = new Set(nextStatus.killSwitch.enabledCapabilities);
       const path = sessionPath.trim();
       if (path && !nextStatus.killSwitch.globalPanic) {
@@ -738,6 +751,60 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
                   The domain must not be on the browser-drive denylist; forbidden actions
                   (passwords/payments/CAPTCHA) are never performed.
                 </span>
+                <div className={styles.connectorRow} data-testid="aoi-browser-drive-profile">
+                  <div className={styles.connectorRowHeader}>
+                    <strong>Browser profile</strong>
+                  </div>
+                  <span className={styles.modelHint}>
+                    Chrome refuses remote debugging on its own default profile, so Aoi drives a
+                    SEPARATE one. Point this at a directory you have signed into: whatever you log
+                    into there is what Aoi can reach, and nothing else.
+                    {driveProfile?.defaultProfileDir ? (
+                      <>
+                        {' '}
+                        Your everyday profile ({driveProfile.defaultProfileDir}) will be refused.
+                      </>
+                    ) : null}
+                  </span>
+                  <div className={styles.connectorToggleRow}>
+                    <input
+                      className={styles.textInput}
+                      placeholder="C:\\Users\\you\\.openroom\\browser-profile"
+                      value={driveProfileDraft}
+                      onChange={(event) => setDriveProfileDraft(event.target.value)}
+                      data-testid="aoi-browser-drive-profile-input"
+                    />
+                    <button
+                      type="button"
+                      className={styles.saveBtn}
+                      disabled={busy === 'drive-profile'}
+                      onClick={async () => {
+                        setBusy('drive-profile');
+                        setError('');
+                        try {
+                          const next = await setAoiBrowserDriveProfile(driveProfileDraft);
+                          setDriveProfile(next);
+                          setDriveProfileDraft(next.userDataDir);
+                        } catch (saveError) {
+                          setError(
+                            saveError instanceof Error ? saveError.message : String(saveError),
+                          );
+                        } finally {
+                          setBusy('');
+                        }
+                      }}
+                    >
+                      Save
+                    </button>
+                  </div>
+                  {driveProfile && !driveProfile.configured ? (
+                    <span className={styles.modelHint} data-testid="aoi-browser-drive-profile-warn">
+                      Not configured yet, so browser drive will refuse rather than attach to a
+                      profile that cannot work.
+                    </span>
+                  ) : null}
+                </div>
+
                 {!status?.killSwitch.enabledCapabilities.includes('os_browser_drive_standing') && (
                   <span className={styles.modelHint} data-testid="aoi-host-standing-off-hint">
                     Standing approval is currently OFF — grants below are inert until you enable it

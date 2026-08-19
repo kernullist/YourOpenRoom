@@ -35,6 +35,13 @@ import {
 } from './aoiHostBridgeKillSwitch';
 import { evaluateAoiHostBridgeGate } from './aoiHostBridgeGate';
 import {
+  loadAoiBrowserDriveProfileConfig,
+  normalizeAoiBrowserDriveProfilePath,
+  saveAoiBrowserDriveProfileConfig,
+  selectAoiBrowserDriveUserDataDir,
+} from './aoiBrowserDriveProfile';
+import { resolveAoiBrowserDriveDefaultUserDataDir } from './aoiBrowserDrive';
+import {
   buildAoiBrowserDriveDownloadGate,
   buildAoiBrowserDriveUploadGate,
 } from './aoiBrowserDriveUploadGate';
@@ -400,8 +407,27 @@ function parseAoiBrowserDriveTaskRequest(
 // Production session factory for the ACT runner: a fresh CDP session against the
 // operator's OWN browser, adapted to the runner's minimal { page, close } shape.
 // A start failure surfaces through the runner as session_start_failed.
-async function makeAoiBrowserDriveRunnerSession(): Promise<AoiBrowserDriveRunnerSession> {
-  const session = await startAoiBrowserDriveSession({});
+function resolveAoiBrowserDriveProfileDir(openroomHome: string): string {
+  const dir = selectAoiBrowserDriveUserDataDir(loadAoiBrowserDriveProfileConfig(openroomHome));
+  if (!dir) {
+    // Say what is actually wrong. Falling back to the browser default would
+    // fail at attach time with a message about a missing port file, which
+    // describes a symptom of an entirely different problem.
+    throw new Error(
+      'no browser profile is configured for Aoi. Chrome refuses remote debugging on its default ' +
+        'profile, so browser drive needs a separate signed-in profile directory: set it in ' +
+        'Settings > Advanced > Host bridge > Browser profile.',
+    );
+  }
+  return dir;
+}
+
+async function makeAoiBrowserDriveRunnerSession(
+  openroomHome: string,
+): Promise<AoiBrowserDriveRunnerSession> {
+  const session = await startAoiBrowserDriveSession({
+    userDataDir: resolveAoiBrowserDriveProfileDir(openroomHome),
+  });
   return {
     page: session.page as unknown as AoiBrowserDriveActablePage,
     close: () => session.close(),
@@ -415,13 +441,16 @@ async function runAoiBrowserDrivePreviewDefault(options: {
   targetStepIndex: number;
   allowlist: AoiBrowserDriveAllowlist;
   now: number;
+  // Needed to find the configured browser profile: preview opens a real session
+  // too, so it fails the same way without one.
+  openroomHome: string;
 }): Promise<AoiBrowserDriveActPreviewResult | AoiBrowserDriveRunFailure> {
   return previewAoiBrowserDriveActStep({
     plan: options.plan,
     targetStepIndex: options.targetStepIndex,
     allowlist: options.allowlist,
     now: options.now,
-    sessionFactory: makeAoiBrowserDriveRunnerSession,
+    sessionFactory: () => makeAoiBrowserDriveRunnerSession(options.openroomHome),
   });
 }
 
@@ -472,7 +501,7 @@ async function runAoiBrowserDriveExecuteDefault(options: {
     // Downloads land on disk, so they are bounded by the WRITE roots -- the
     // mirror of uploads being bounded by the read roots.
     downloadGate: buildAoiBrowserDriveDownloadGate(options.openroomHome),
-    sessionFactory: makeAoiBrowserDriveRunnerSession,
+    sessionFactory: () => makeAoiBrowserDriveRunnerSession(options.openroomHome),
     // Cooperative panic abort during the read-prefix replay (the entry gate already
     // blocks a call that starts while panicked).
     isPanicked: () => loadAoiHostBridgeKillSwitchState(options.openroomHome).globalPanic === true,
@@ -824,6 +853,7 @@ export async function resolveAoiHostBridgeRoute(
         targetStepIndex: parsed.targetStepIndex,
         allowlist,
         now: params.now,
+        openroomHome: params.openroomHome,
       });
       if (!browserPreview.ok) {
         return {
@@ -2096,6 +2126,61 @@ export async function resolveAoiHostBridgeRoute(
     }
     const summary = loadAoiHostDesktopActivitySummary(params.openroomHome, params.now);
     return { status: 200, payload: { ok: true, summary } };
+  }
+
+  // --- GET/POST /browser-drive/profile: which browser profile Aoi drives.
+  //
+  // Not a preference. Chrome refuses remote debugging on its own default
+  // profile, so browser drive only works against a separate directory the
+  // operator signs into -- and with nothing configured the honest answer is to
+  // say so rather than attach to something that cannot work.
+  if (params.route === '/browser-drive/profile') {
+    if (params.method === 'GET') {
+      const config = loadAoiBrowserDriveProfileConfig(params.openroomHome);
+      return {
+        status: 200,
+        payload: {
+          ok: true,
+          userDataDir: config.userDataDir,
+          configured: Boolean(selectAoiBrowserDriveUserDataDir(config)),
+          // Surfaced so the settings UI can warn before the operator pastes the
+          // one path that is guaranteed not to work.
+          defaultProfileDir: resolveAoiBrowserDriveDefaultUserDataDir('chrome') ?? '',
+        },
+      };
+    }
+    if (params.method === 'POST') {
+      const defaults = [
+        resolveAoiBrowserDriveDefaultUserDataDir('chrome') ?? '',
+        resolveAoiBrowserDriveDefaultUserDataDir('edge') ?? '',
+      ].filter(Boolean);
+      const raw = typeof params.body.userDataDir === 'string' ? params.body.userDataDir : '';
+      // An empty value clears the setting, which is a legitimate thing to want.
+      if (!raw.trim()) {
+        saveAoiBrowserDriveProfileConfig(params.openroomHome, {
+          version: 1,
+          userDataDir: '',
+          updatedAt: params.now,
+        });
+        return { status: 200, payload: { ok: true, userDataDir: '', configured: false } };
+      }
+      const decision = normalizeAoiBrowserDriveProfilePath(raw, defaults);
+      if (!decision.ok) {
+        return {
+          status: 400,
+          payload: { ok: false, error: decision.reason, code: 'invalid_profile_dir' },
+        };
+      }
+      saveAoiBrowserDriveProfileConfig(params.openroomHome, {
+        version: 1,
+        userDataDir: decision.path,
+        updatedAt: params.now,
+      });
+      return {
+        status: 200,
+        payload: { ok: true, userDataDir: decision.path, configured: true },
+      };
+    }
   }
 
   // --- POST /desktop-input (DI2): enumerate / snapshot / drive a real window.

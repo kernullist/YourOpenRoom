@@ -1288,3 +1288,33 @@ export async function captureAoiHostDesktopWindow(params: {
     dataUrl: base64 ? `data:image/png;base64,${base64}` : '',
   };
 }
+
+export interface AoiBrowserDriveProfileView {
+  userDataDir: string;
+  configured: boolean;
+  // The browser's own default directory, so the UI can say why it is refused.
+  defaultProfileDir: string;
+}
+
+// Which browser profile Aoi drives. Chrome refuses remote debugging on its
+// default profile, so this is a required setup step rather than a preference.
+export async function fetchAoiBrowserDriveProfile(): Promise<AoiBrowserDriveProfileView> {
+  const payload = await getJson('/browser-drive/profile');
+  return {
+    userDataDir: asString(payload.userDataDir),
+    configured: payload.configured === true,
+    defaultProfileDir: asString(payload.defaultProfileDir),
+  };
+}
+
+// Pass an empty string to clear it.
+export async function setAoiBrowserDriveProfile(
+  userDataDir: string,
+): Promise<AoiBrowserDriveProfileView> {
+  const payload = await sendJson('/browser-drive/profile', 'POST', { userDataDir });
+  return {
+    userDataDir: asString(payload.userDataDir),
+    configured: payload.configured === true,
+    defaultProfileDir: asString(payload.defaultProfileDir),
+  };
+}
