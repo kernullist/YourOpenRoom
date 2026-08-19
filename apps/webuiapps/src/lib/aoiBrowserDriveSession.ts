@@ -320,11 +320,23 @@ export async function startAoiBrowserDriveSession(
     typeof rawContext?.pages === 'function' ? attachAoiBrowserDriveTabs(rawContext, rawPage) : null;
 
   const target = () => (tabs ? tabs.currentPage() : rawPage) as unknown as Record<string, unknown>;
+  const own = page as unknown as Record<string, unknown>;
+
+  // Keep the ORIGINAL methods before any of them are replaced.
+  //
+  // Forwarding cannot simply look the method up on the current page, because
+  // when the current page is Aoi's own tab that IS the object whose methods were
+  // replaced -- so the lookup finds the forwarder and calls itself until the
+  // stack runs out. That is not an exotic case: it is every ordinary act, since
+  // most drives never switch tabs at all.
+  const originals = new Map<string, (...args: unknown[]) => unknown>();
+
   const forward =
     (method: string) =>
     (...args: unknown[]): unknown => {
       const current = target();
-      const fn = current[method];
+      // Own tab: use the method we saved, not the one we overwrote.
+      const fn = current === own ? originals.get(method) : (current[method] as unknown);
       if (typeof fn !== 'function') {
         throw new Error(`the current tab cannot ${method}`);
       }
@@ -356,13 +368,21 @@ export async function startAoiBrowserDriveSession(
   // same object -- and one more place for a mistake to hide.
   if (tabs) {
     for (const method of FORWARDED) {
-      if (typeof drivable[method] === 'function') {
+      const existing = drivable[method];
+      if (typeof existing === 'function') {
+        // Bind to the page it came from: Playwright methods carry internal
+        // state through `this`, and a detached reference would lose it.
+        originals.set(method, (existing as (...args: unknown[]) => unknown).bind(page));
         drivable[method] = forward(method);
       }
     }
+    const ownUrl = drivable.url;
+    if (typeof ownUrl === 'function') {
+      originals.set('url', (ownUrl as (...args: unknown[]) => unknown).bind(page));
+    }
     drivable.url = () => {
       const current = target();
-      const fn = current.url;
+      const fn = current === own ? originals.get('url') : current.url;
       return typeof fn === 'function' ? (fn as () => string).call(current) : '';
     };
     drivable.listTabs = tabs.listTabs;

@@ -290,6 +290,26 @@ describe('the session supplies the capabilities Playwright does not', () => {
     await session.close();
   });
 
+  it('delivers to its OWN tab without recursing', async () => {
+    // The common case: no tab switching at all. Forwarding looks the method up
+    // on the current page -- which IS the object whose methods were replaced --
+    // so a naive implementation finds its own forwarder and recurses forever.
+    const only = playwrightishPage('https://example.com/a');
+    const browser = {
+      contexts: () => [{ newPage: async () => only, pages: () => [only] }],
+      isConnected: () => true,
+      close: vi.fn(async () => {}),
+    } as unknown as AoiBrowserDriveBrowser;
+    const { deps } = happyDeps({ connect: async () => browser });
+    const originalClick = only.click;
+    const session = await startAoiBrowserDriveSession({ engine: 'chrome' }, deps);
+    const driven = session.page as unknown as Record<string, unknown>;
+
+    await (driven.click as (selector: string) => Promise<void>)('#go');
+    expect(originalClick).toHaveBeenCalledWith('#go');
+    await session.close();
+  });
+
   it('answers a dialog raised by the page', async () => {
     const first = playwrightishPage('https://example.com/a');
     const browser = {
