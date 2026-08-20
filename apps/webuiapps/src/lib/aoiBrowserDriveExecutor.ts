@@ -266,7 +266,14 @@ export function computeAoiBrowserDriveActionFingerprint(
   // an approval to DISMISS a dialog also authorized accepting it, and an
   // approval to upload one file authorized uploading any other file through the
   // same input.
-  const canonical = [
+  //
+  // Joined as JSON, not with a separator character. Newline-joining let a
+  // newline MOVE between fields without changing the string: text
+  // 'transfer\n5000' with value 'to-bob', and text 'transfer' with value
+  // '5000\nto-bob', produced ONE fingerprint -- so an approval for the
+  // first also authorized the second, and those two type different text. JSON
+  // escapes the separator out of the values, so no field can forge a boundary.
+  const canonical = JSON.stringify([
     (typeof goal === 'string' ? goal : '').trim(),
     String(stepIndex),
     action?.kind ?? '',
@@ -281,7 +288,7 @@ export function computeAoiBrowserDriveActionFingerprint(
     action?.promptText ?? '',
     action?.filePath ?? '',
     (typeof hostname === 'string' ? hostname : '').trim().toLowerCase(),
-  ].join('\n');
+  ]);
   return `${fnv1a(canonical, 0x811c9dc5)}${fnv1a(canonical, 0x9e3779b1)}`;
 }
 

@@ -51,6 +51,32 @@ describe('aoiHostBridgeClient', () => {
     await expect(fetchAoiHostBridgeStatus()).rejects.toThrow(/blocked \[panic\]/);
   });
 
+  it('carries the detail, not just the code', async () => {
+    // `error` is a CODE. Every explanation the routes write -- what is in the
+    // way and what to do instead -- lives in `detail`, and dropping it here
+    // meant a refusal reached the model as a bare slug and the helper install
+    // instructions reached nobody at all.
+    mockFetch({
+      ok: false,
+      error: 'helper_not_installed',
+      code: 'helper_not_installed',
+      detail: 'run tools/aoi-desktop-input/Install-AoiDesktopInput.ps1',
+    });
+    await expect(fetchAoiHostBridgeStatus()).rejects.toThrow(/Install-AoiDesktopInput/);
+  });
+
+  it('joins a detail that arrives as a list, alongside the deny reasons', async () => {
+    mockFetch({
+      ok: false,
+      error: 'blocked',
+      denyReasons: ['capability_disabled'],
+      detail: ['capability_disabled:os_computer_use'],
+    });
+    await expect(fetchAoiHostBridgeStatus()).rejects.toThrow(
+      /blocked \[capability_disabled\]: capability_disabled:os_computer_use/,
+    );
+  });
+
   it('posts a kill-switch set with the exact body', async () => {
     const fetchMock = mockFetch({
       ok: true,

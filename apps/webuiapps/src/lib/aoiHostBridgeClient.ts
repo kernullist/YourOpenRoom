@@ -42,7 +42,17 @@ async function readOk(response: Response): Promise<Record<string, unknown>> {
   if (payload.ok !== true) {
     const base = asString(payload.error) || `request failed (HTTP ${response.status})`;
     const reasons = Array.isArray(payload.denyReasons) ? asStringArray(payload.denyReasons) : [];
-    throw new Error(reasons.length > 0 ? `${base} [${reasons.join(', ')}]` : base);
+    // Carry the detail. `error` is a CODE -- 'helper_not_installed',
+    // 'browser_window_denylisted' -- and every explanation the routes write
+    // lives in `detail`: what is actually in the way, and what to do instead.
+    // Dropping it here meant the install instructions written specifically
+    // because "the message is the only place anyone will find out about it"
+    // reached nobody, and a refusal arrived at the model as a bare slug.
+    const detail = Array.isArray(payload.detail)
+      ? asStringArray(payload.detail).join('; ')
+      : asString(payload.detail);
+    const withReasons = reasons.length > 0 ? `${base} [${reasons.join(', ')}]` : base;
+    throw new Error(detail && detail !== base ? `${withReasons}: ${detail}` : withReasons);
   }
   return payload;
 }

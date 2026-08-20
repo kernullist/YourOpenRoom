@@ -515,6 +515,36 @@ describe('runAoiDesktopInput browser-window reads', () => {
     expect(result.kind).toBe('snapshot');
   });
 
+  it('refuses when the helper is too old to say whose window it is', () => {
+    // The helper is a SEPARATELY INSTALLED copy, so an operator can be running
+    // one built before it reported the process at all. An absent field is not
+    // evidence that this is not a browser, and treating it as such reopened the
+    // whole bypass silently on exactly the machines least likely to notice.
+    const home = homeWithDenylist(['bank.example']);
+    const request = parseAoiDesktopInputRequest({ op: 'snapshot', hwnd: '0x1234' });
+    const result = runAoiDesktopInput({
+      request: request!,
+      openroomHome: home,
+      foregroundAllowed: false,
+      spawnImpl: () => ({
+        status: 0,
+        stdout: JSON.stringify({
+          ok: true,
+          snapshotId: 'dis-0a1b2c3d',
+          note: 'ok',
+          totalElements: 1,
+          truncated: false,
+          elements: [{ ref: 1, role: 'button', name: 'Transfer', automationId: 'x' }],
+        }),
+        stderr: '',
+      }),
+      env: { AOI_DESKTOP_INPUT_HELPER: REAL_FILE },
+    });
+    expect(result.kind).toBe('error');
+    expect((result as { code: string }).code).toBe('browser_window_unknown');
+    expect(JSON.stringify(result)).not.toContain('Transfer');
+  });
+
   it('refuses nothing when the operator ruled nothing out', () => {
     // An empty denylist is the default, so the default posture is unchanged.
     const result = snapshotOf(homeWithDenylist([]), 'chrome.exe');

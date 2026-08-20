@@ -286,3 +286,44 @@ describe('standing-grant fallback (P3.1)', () => {
     expect(grants.grants[0].usedActions).toBe(0);
   });
 });
+
+// A fingerprint is what an approval is BOUND to, so two actions that do
+// different things must never share one.
+describe('computeAoiBrowserDriveActionFingerprint separator safety', () => {
+  it('does not let a newline move between fields', () => {
+    // Joining the fields with a newline let a newline shift from one field into
+    // the next without changing the joined string, so these two collided --
+    // and they type different text. An approval for the first authorized the
+    // second.
+    const a = computeAoiBrowserDriveActionFingerprint(
+      'goal',
+      0,
+      {
+        kind: 'type',
+        selector: '#msg',
+        text: 'transfer\n5000',
+        value: 'to-bob',
+      } as never,
+      'x.com',
+    );
+    const b = computeAoiBrowserDriveActionFingerprint(
+      'goal',
+      0,
+      {
+        kind: 'type',
+        selector: '#msg',
+        text: 'transfer',
+        value: '5000\nto-bob',
+      } as never,
+      'x.com',
+    );
+    expect(a).not.toBe(b);
+  });
+
+  it('still gives one action one fingerprint', () => {
+    const action = { kind: 'click', selector: '#pay' } as never;
+    expect(computeAoiBrowserDriveActionFingerprint('goal', 1, action, 'x.com')).toBe(
+      computeAoiBrowserDriveActionFingerprint('goal', 1, action, 'x.com'),
+    );
+  });
+});

@@ -628,7 +628,16 @@ function refuseBrowserWindowRead(
   if (op !== 'snapshot' && op !== 'capture') {
     return null;
   }
-  if (!AOI_BROWSER_PROCESS_NAMES.has(processName.trim().toLowerCase())) {
+  const name = processName.trim().toLowerCase();
+  const isBrowser = AOI_BROWSER_PROCESS_NAMES.has(name);
+  // An ABSENT name is not evidence that this is not a browser.
+  //
+  // The helper is a separately installed copy, so an operator can be running one
+  // built before it reported the process at all -- and OpenProcess can fail on a
+  // window owned by a more privileged process even with a current helper. Either
+  // way the answer is "cannot tell", and treating that as "not a browser" reopens
+  // the whole bypass silently, on exactly the machines least able to notice.
+  if (!isBrowser && name) {
     return null;
   }
   let denylisted = 0;
@@ -640,6 +649,17 @@ function refuseBrowserWindowRead(
   }
   if (denylisted === 0) {
     return null;
+  }
+  if (!isBrowser) {
+    return {
+      kind: 'error',
+      code: 'browser_window_unknown',
+      detail:
+        'a browser denylist is configured, and this reply does not say which process owns the ' +
+        'window -- so it cannot be ruled out that this is a browser showing a denylisted site. ' +
+        'Reinstall the desktop-input helper (tools/aoi-desktop-input/Install-AoiDesktopInput.ps1); ' +
+        'a current one reports the owning process.',
+    };
   }
   return {
     kind: 'error',
