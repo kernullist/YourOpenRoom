@@ -1840,6 +1840,76 @@ describe('an unreadable kill-switch file', () => {
   });
 });
 
+describe('a refusal that asks the operator to repair a file', () => {
+  // "Repair or delete the file first" named the file in a `path` field, and the
+  // client builds its error from `error` + `denyReasons` + `detail` only. So the
+  // instruction arrived without the one piece of information it needed.
+  it('names the denylist file in a field the client carries', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    const filePath = resolveAoiBrowserDriveAllowlistPath(home);
+    fs.mkdirSync(join(filePath, '..'), { recursive: true });
+    fs.writeFileSync(filePath, '{"version":1,"entr', 'utf-8');
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive-denylist',
+      body: { domain: 'evil.com' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 1000,
+    });
+    expect(result.status).toBe(409);
+    expect((result.payload as { detail?: string }).detail).toContain('denylist');
+  });
+
+  it('names the kill-switch file too', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    const filePath = resolveAoiHostBridgeKillSwitchPath(home);
+    fs.mkdirSync(join(filePath, '..'), { recursive: true });
+    fs.writeFileSync(filePath, 'not json', 'utf-8');
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/killswitch',
+      body: { action: 'clear_panic' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 1000,
+    });
+    expect(result.status).toBe(409);
+    expect((result.payload as { detail?: string }).detail).toContain('killswitch');
+  });
+
+  it('does not call an unreadable denylist a denylisted URL', async () => {
+    // Nothing is wrong with the URL. Saying "url_denylisted" sends the operator
+    // looking for an entry that does not exist.
+    const { home, sessionsDir, token } = makeDaemonHome();
+    const registry = getDefaultAoiEnvironmentSourceRegistry('aoi/default', 1000);
+    saveAoiEnvironmentSourceRegistry(sessionsDir, 'aoi/default', registry);
+    updateAoiEnvironmentSource(sessionsDir, 'aoi/default', {
+      sourceId: 'browser-drive',
+      patch: { enabled: true, consentReason: 'test' },
+      now: 1500,
+    });
+    const filePath = resolveAoiBrowserDriveAllowlistPath(home);
+    fs.mkdirSync(join(filePath, '..'), { recursive: true });
+    fs.writeFileSync(filePath, '{"version":1,"entr', 'utf-8');
+
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive-read',
+      body: { sessionPath: 'aoi/default', url: 'https://example.com/x' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+    });
+    expect(result.status).toBe(403);
+    expect((result.payload as { code: string }).code).toBe('denylist_unreadable');
+    expect((result.payload as { detail?: string }).detail).toContain('denylist');
+  });
+});
+
 describe('a busy store', () => {
   // The lock throws when it cannot be taken. Uncaught, that is a 500 with a raw
   // message and no code -- a transient, retryable condition reported as a crash,

@@ -453,7 +453,10 @@ function denylistUnreadableResponse(openroomHome: string): {
         'the stored denylist cannot be read, so editing it would overwrite entries that are ' +
         'still on disk. Repair or delete the file first',
       code: 'denylist_unreadable',
-      path: resolveAoiBrowserDriveAllowlistPath(openroomHome),
+      // In `detail`, which is what the client carries. Sent as its own `path`
+      // field this was dropped, so an instruction to repair a file arrived
+      // without naming one.
+      detail: resolveAoiBrowserDriveAllowlistPath(openroomHome),
     },
   };
 }
@@ -689,7 +692,7 @@ async function resolveAoiHostBridgeRouteInner(
             'the kill-switch file cannot be read, so everything is stopped and editing it would ' +
             'overwrite the settings still on disk. Repair or delete the file first',
           code: 'killswitch_unreadable',
-          path: resolveAoiHostBridgeKillSwitchPath(params.openroomHome),
+          detail: resolveAoiHostBridgeKillSwitchPath(params.openroomHome),
         },
       };
     }
@@ -895,14 +898,21 @@ async function resolveAoiHostBridgeRouteInner(
     const allowlist = loadAoiBrowserDriveAllowlist(params.openroomHome);
     const allowed = isAoiBrowserDriveUrlAllowed(allowlist, url);
     if (!allowed.allowed) {
+      // Nothing is wrong with the URL when the list itself cannot be read, and
+      // reporting it as denylisted sends the operator hunting for an entry that
+      // does not exist. The specific reason was only in denyReasons.
+      const unreadable = allowed.reason === 'denylist_unreadable';
       return {
         status: 403,
         payload: {
           ok: false,
-          error: 'url_denylisted',
-          code: 'url_denylisted',
+          error: unreadable ? 'denylist_unreadable' : 'url_denylisted',
+          code: unreadable ? 'denylist_unreadable' : 'url_denylisted',
           denyReasons: [allowed.reason ?? 'host_denylisted'],
-          detail: allowed.hostname,
+          detail: unreadable
+            ? `the stored denylist could not be read, so nothing may be browsed until it is ` +
+              `repaired: ${resolveAoiBrowserDriveAllowlistPath(params.openroomHome)}`
+            : allowed.hostname,
         },
       };
     }
