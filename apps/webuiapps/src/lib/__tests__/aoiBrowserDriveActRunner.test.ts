@@ -509,3 +509,77 @@ describe('preview -> approve -> execute, through the store gate', () => {
     expect(result.ok).toBe(false);
   });
 });
+
+// The denylist says which pages Aoi must not reach. The audit observer writes a
+// full screenshot AND the complete DOM of the CURRENT page to disk, so if that
+// runs before the denylist is consulted, a refused step still puts the contents
+// of a forbidden page on the operator's disk.
+describe('artifacts written before a step is refused', () => {
+  // A page that is ALREADY sitting on a denylisted host -- the operator's own
+  // browser, on their own tab. Nothing navigates there; Aoi just acts on what is
+  // in front of it.
+  function pageOn(url: string): AoiBrowserDriveActablePage {
+    return {
+      url: () => url,
+      goto: vi.fn(async () => {}),
+      content: vi.fn(async () => '<html><body>ACCOUNT SECRETS</body></html>'),
+      title: vi.fn(async () => 'T'),
+      click: vi.fn(async () => {}),
+      fill: vi.fn(async () => {}),
+      selectOption: vi.fn(async () => []),
+      press: vi.fn(async () => {}),
+      goBack: vi.fn(async () => null),
+      screenshot: vi.fn(async () => new Uint8Array([9, 9, 9])),
+      mouse: { wheel: vi.fn(async () => {}) },
+    } as unknown as AoiBrowserDriveActablePage;
+  }
+
+  it('does not write the forbidden page to disk before refusing', async () => {
+    const { factory } = sessionFactory(pageOn('https://evil.test/secrets'));
+    const artifacts: { ref: string; data: string }[] = [];
+    const result = await executeAoiBrowserDriveActStep({
+      plan: plan(clickStep),
+      targetStepIndex: 0,
+      allowlist: ALLOWLIST,
+      sessionFactory: factory,
+      approvalGate: allowGate,
+      now: 1,
+      audit: {
+        runId: 'run-deny',
+        writeArtifact: (ref, data) => {
+          artifacts.push({ ref, data: typeof data === 'string' ? data : '<bytes>' });
+        },
+        recordEntry: () => {},
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect((result as { target?: { stopReason?: string } }).target?.stopReason).toBe(
+      'host_denylisted',
+    );
+    // The refusal is recorded in the ledger; the page contents are not on disk.
+    expect(artifacts).toEqual([]);
+  });
+
+  it('still captures the page for a step it does allow', async () => {
+    // The bound is the refusal, not the auditing: an allowed act keeps its
+    // before/after evidence.
+    const { factory } = sessionFactory(pageOn('https://example.com/account'));
+    const artifacts: string[] = [];
+    await executeAoiBrowserDriveActStep({
+      plan: plan(clickStep),
+      targetStepIndex: 0,
+      allowlist: ALLOWLIST,
+      sessionFactory: factory,
+      approvalGate: allowGate,
+      now: 1,
+      audit: {
+        runId: 'run-ok',
+        writeArtifact: (ref) => {
+          artifacts.push(ref);
+        },
+        recordEntry: () => {},
+      },
+    });
+    expect(artifacts.length).toBeGreaterThan(0);
+  });
+});

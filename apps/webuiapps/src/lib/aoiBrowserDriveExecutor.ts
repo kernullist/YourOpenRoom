@@ -534,29 +534,39 @@ export async function executeAoiBrowserDriveStep(
     });
   }
   const action = resolvedRef.action;
-  const before = await observe(params.observer, {
-    stepIndex,
-    phase: 'before',
-    action,
-    url: beforeUrl,
-  });
 
   // 4) Denylist binding. 'navigate' delegates its own pre/post checks to
   //    navigateAndExtract; every other step acts on the CURRENT page, which must
   //    not be denylisted before we touch it.
+  //
+  // This runs BEFORE the audit observer. The observer writes a full screenshot
+  // and the complete DOM of the current page to disk, so capturing first meant a
+  // step refused for being on a denylisted host had already put that page's
+  // contents on the operator's disk. The denylist exists to say Aoi may not have
+  // that page; recording the refusal is right, keeping a copy of what was
+  // refused is not.
   if (action.kind !== 'navigate') {
     const here = isAoiBrowserDriveUrlAllowed(allowlist, beforeUrl);
     if (!here.allowed) {
-      return finish(params.observer, stepIndex, action, before, {
+      // No observation on either side: `finish` would capture an 'after' of the
+      // same forbidden page.
+      return {
         index: stepIndex,
         category: decision.category,
         ok: false,
         stopReason: 'host_denylisted',
         detail: here.reason,
         finalUrl: beforeUrl,
-      });
+      };
     }
   }
+
+  const before = await observe(params.observer, {
+    stepIndex,
+    phase: 'before',
+    action,
+    url: beforeUrl,
+  });
 
   // ACT steps: require per-action approval BEFORE the effect. A denying/erroring
   // gate is fail-closed.
