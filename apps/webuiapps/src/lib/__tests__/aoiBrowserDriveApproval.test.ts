@@ -6,6 +6,7 @@ import {
   recordAoiBrowserDriveActPendingApproval,
 } from '../aoiBrowserDriveApproval';
 import { AOI_BROWSER_DRIVE_CAPABILITY } from '../aoiBrowserDrive';
+import { AoiHostStoreLockTimeout } from '../aoiHostStoreLock';
 import { computeAoiBrowserDriveActionFingerprint } from '../aoiBrowserDriveExecutor';
 import {
   approveAoiHostBridgeApproval,
@@ -427,5 +428,70 @@ describe('what the approval is bound to', () => {
     if (first.ok && second.ok) {
       expect(first.fingerprint).toBe(second.fingerprint);
     }
+  });
+});
+
+// A lock timeout means the consume did NOT happen. The gate turns it into a
+// denial with a reason rather than letting it escape as an exception -- and
+// nothing pinned that, so a change to the catch would have gone unnoticed in a
+// fail-closed path.
+describe('the gate when the store is busy', () => {
+  it('denies rather than throwing when the approval store cannot be locked', async () => {
+    const gate = makeAoiBrowserDriveStoreApprovalGate({
+      consumeApproval: () => {
+        throw new AoiHostStoreLockTimeout('C:/openroom/host-bridge/approvals.lock');
+      },
+      now: 1_000,
+    });
+    const verdict = await gate({
+      fingerprint: 'deadbeef',
+      stepIndex: 0,
+      action: clickStep,
+      url: 'https://example.com/x',
+    });
+    expect(verdict.approved).toBe(false);
+    expect(verdict.reason).toBe('approval_store_busy');
+  });
+
+  it('denies when the standing-grant store cannot be locked', async () => {
+    const grants = addAoiBrowserDriveStandingGrant(null, { domain: 'example.com' }, 1_000).store;
+    const gate = makeAoiBrowserDriveStoreApprovalGate({
+      consumeApproval: () => ({ ok: false, reason: 'approval_missing' }),
+      now: 1_100,
+      standing: {
+        enabled: true,
+        loadGrants: () => grants,
+        consumeGrant: () => {
+          throw new AoiHostStoreLockTimeout('C:/openroom/host-bridge/standing-grants.lock');
+        },
+      },
+    });
+    const verdict = await gate({
+      fingerprint: 'deadbeef',
+      stepIndex: 0,
+      action: clickStep,
+      url: 'https://example.com/x',
+    });
+    expect(verdict.approved).toBe(false);
+    expect(verdict.reason).toBe('standing_store_busy');
+  });
+
+  it('still lets an unrelated error surface', async () => {
+    // Only a lock timeout is a denial. Anything else is a real fault and must
+    // not be dressed up as an ordinary refusal.
+    const gate = makeAoiBrowserDriveStoreApprovalGate({
+      consumeApproval: () => {
+        throw new Error('disk on fire');
+      },
+      now: 1_000,
+    });
+    await expect(
+      gate({
+        fingerprint: 'deadbeef',
+        stepIndex: 0,
+        action: clickStep,
+        url: 'https://example.com/x',
+      }),
+    ).rejects.toThrow('disk on fire');
   });
 });

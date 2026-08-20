@@ -1,9 +1,16 @@
-// Aoi browser-drive domain denylist (was P1.1 allowlist): containment for the
-// CDP-attach model. Aoi attaches to the operator's MAIN browser (every logged-in
-// site is reachable), so navigation defaults to ALLOWED for any http(s) host and
-// is refused only when the hostname matches an operator-authored denylist entry
-// (exact host or subdomain). Redirects onto a denylisted host are refused
-// fail-closed (tab blanked by the caller).
+// Aoi domain denylist (was P1.1 allowlist): the operator's list of hosts Aoi
+// must not reach. Navigation defaults to ALLOWED for any http(s) host and is
+// refused only when the hostname matches an entry (exact host or subdomain).
+// Redirects onto a denylisted host are refused fail-closed (tab blanked by the
+// caller).
+//
+// It was written for the CDP-attach model -- Aoi drives the operator's MAIN
+// browser, where every logged-in site is reachable -- but that is where it is
+// ENFORCED, not what it MEANS. An operator who rules out a host means Aoi does
+// not go there, and reading the scope narrowly is how three other doors to the
+// same content were found open: the desktop snapshot and capture ops, the audit
+// observer's page artifacts, and the headless browser-read route. All four are
+// bound to this list now; whoever adds a fifth should bind it too.
 //
 // Mirrors the host-bridge spawn-allowlist store shape: machine-global config under
 // <openroomHome>/host-bridge, auth-only to edit, pure normalize/add/remove + atomic

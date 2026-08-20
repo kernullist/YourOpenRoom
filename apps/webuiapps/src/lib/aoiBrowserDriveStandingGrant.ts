@@ -190,6 +190,11 @@ export function findLiveAoiBrowserDriveStandingGrant(
 
 // Consume one action from a grant (usedActions += 1). Returns the updated store and
 // whether a consume happened (false if the grant is missing / no longer live). Pure.
+//
+// PREFER consumeAoiBrowserDriveStandingGrantAtomic. Called as part of a
+// hand-assembled load-modify-save, this let two processes read the same
+// usedActions and both write it plus one -- a quota of one paying for one action
+// while two happened.
 export function consumeAoiBrowserDriveStandingGrant(
   store: AoiBrowserDriveStandingGrantStore | null | undefined,
   grantId: string,

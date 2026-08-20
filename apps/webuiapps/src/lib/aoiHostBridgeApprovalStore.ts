@@ -270,6 +270,14 @@ export function findAoiHostBridgeApproval(
 // Consume an APPROVED, unexpired entry for the fingerprint (single-use). Returns
 // ok only when such an entry existed; the entry is flipped to 'consumed' so it
 // can never execute twice. This is the gate execute calls.
+/**
+ * Pure consume. PREFER consumeAoiHostBridgeApprovalAtomic.
+ *
+ * This is one third of a load-modify-save, and assembling those three by hand
+ * is what let two processes consume the same single-use approval -- one
+ * operator click authorizing two actions. Use this only inside a lock already
+ * held, or in a pure test.
+ */
 export function consumeAoiHostBridgeApproval(
   store: AoiHostBridgeApprovalStoreData | null | undefined,
   params: { capability: string; approvalFingerprint: string; now: number },

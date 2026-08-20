@@ -202,7 +202,9 @@ export function getBrowserDriveActToolDefinitions(): ToolDef[] {
           '"delivered_unverified" (unverifiable -- re-read the page with a read step before saying ' +
           'anything, and do NOT repeat the action or claim success); "not_performed" (suspected no-op or ' +
           'refusal -- say plainly it did not happen, and follow `escalation.recommended`: ' +
-          'alternate_selector = try a different selector from a fresh snapshot, stop = do not retry).',
+          'alternate_selector = try a different selector from a fresh snapshot, stop = do not retry). ' +
+          'If `audit_recorded` is false the action HAPPENED but could not be written to the audit ' +
+          'ledger, so the record of what was done is missing it -- say so to the user.',
         parameters: {
           type: 'object',
           properties: PLAN_PARAM_SCHEMA,
