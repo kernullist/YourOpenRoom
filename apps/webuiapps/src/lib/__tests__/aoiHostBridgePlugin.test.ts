@@ -11,6 +11,7 @@ import {
 import { ensureAoiHostBridgeToken } from '../aoiHostBridgeAuth';
 import {
   loadAoiHostBridgeKillSwitchState,
+  resolveAoiHostBridgeKillSwitchPath,
   saveAoiHostBridgeKillSwitchState,
   setAoiHostBridgeCapability,
   engageAoiHostBridgePanic,
@@ -1771,6 +1772,71 @@ describe('delete preview -> approve -> execute (injected recycle)', () => {
     });
     expect(exec.status).toBe(200);
     expect(recycled).toBe(target);
+  });
+});
+
+describe('an unreadable kill-switch file', () => {
+  function corruptKillSwitch(home: string): string {
+    const filePath = resolveAoiHostBridgeKillSwitchPath(home);
+    fs.mkdirSync(join(filePath, '..'), { recursive: true });
+    fs.writeFileSync(filePath, '{"version":1,"globalPan', 'utf-8');
+    return filePath;
+  }
+
+  it('reports the machine as stopped, and says the file is why', async () => {
+    // Stopped either way, but "the operator pressed panic" and "the safety file
+    // cannot be read" call for different actions from them.
+    const { home, sessionsDir, token } = makeDaemonHome();
+    corruptKillSwitch(home);
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'GET',
+      route: '/status',
+      body: {},
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 1000,
+    });
+    const killSwitch = (
+      result.payload as { killSwitch: { globalPanic: boolean; unreadable?: boolean } }
+    ).killSwitch;
+    expect(killSwitch.globalPanic).toBe(true);
+    expect(killSwitch.unreadable).toBe(true);
+  });
+
+  it('refuses to edit it, because saving would overwrite the real settings', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    const filePath = corruptKillSwitch(home);
+    const before = fs.readFileSync(filePath, 'utf-8');
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/killswitch',
+      body: { action: 'clear_panic' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 1000,
+    });
+    expect(result.status).toBe(409);
+    expect((result.payload as { code: string }).code).toBe('killswitch_unreadable');
+    expect(fs.readFileSync(filePath, 'utf-8')).toBe(before);
+  });
+
+  it('blocks a capability route while the file is unreadable', async () => {
+    // The point of the stop: nothing acts on the machine until the operator's
+    // safety configuration can be read again.
+    const { home, sessionsDir, token } = makeDaemonHome();
+    corruptKillSwitch(home);
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/desktop-input',
+      body: { op: 'list_windows' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 1000,
+    });
+    expect(result.status).toBe(403);
   });
 });
 

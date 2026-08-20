@@ -131,3 +131,46 @@ describe('kill-switch persistence', () => {
     expect(loadAoiHostBridgeKillSwitchState(home).entries).toEqual({});
   });
 });
+
+// The kill switch is the operator's safety configuration: what Aoi may do on
+// this machine, and whether the emergency stop is engaged. An unreadable file
+// is not an absent one, and the difference is the whole point here.
+describe('an unreadable kill-switch file', () => {
+  function homeWithRaw(contents: string): string {
+    const home = fs.mkdtempSync(join(os.tmpdir(), 'aoi-ks-corrupt-'));
+    const filePath = resolveAoiHostBridgeKillSwitchPath(home);
+    fs.mkdirSync(join(filePath, '..'), { recursive: true });
+    fs.writeFileSync(filePath, contents, 'utf-8');
+    return home;
+  }
+
+  it('does not silently clear an engaged panic', () => {
+    // The operator hit the emergency stop. The file then became unreadable.
+    // Reporting "no panic" here restarts everything they just stopped.
+    const state = loadAoiHostBridgeKillSwitchState(homeWithRaw('{"version":1,"globalPan'));
+    expect(state.globalPanic).toBe(true);
+  });
+
+  it('does not restore a capability the operator switched off', () => {
+    // Computer use is default-ON, so falling back to defaults re-enables it --
+    // the one direction that must never happen by accident.
+    const state = loadAoiHostBridgeKillSwitchState(homeWithRaw('not json at all'));
+    expect(isAoiHostBridgeCapabilityEnabled(state, 'os_computer_use')).toBe(false);
+  });
+
+  it('refuses every capability, not just the ones named in the file', () => {
+    const state = loadAoiHostBridgeKillSwitchState(homeWithRaw('{"version":9}'));
+    for (const key of ['os_computer_use', 'os_file_read', 'os_browser_drive']) {
+      expect(isAoiHostBridgeCapabilityEnabled(state, key)).toBe(false);
+    }
+  });
+
+  it('still treats a genuinely absent file as never-configured', () => {
+    // The bound is unreadability, not absence: a fresh install must still get
+    // its defaults, or nothing works until the operator configures something.
+    const home = fs.mkdtempSync(join(os.tmpdir(), 'aoi-ks-none-'));
+    const state = loadAoiHostBridgeKillSwitchState(home);
+    expect(state.globalPanic).toBe(false);
+    expect(isAoiHostBridgeCapabilityEnabled(state, 'os_computer_use')).toBe(true);
+  });
+});

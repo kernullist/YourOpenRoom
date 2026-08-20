@@ -30,6 +30,7 @@ import {
   engageAoiHostBridgePanic,
   isAoiHostBridgeCapabilityEnabled,
   loadAoiHostBridgeKillSwitchState,
+  resolveAoiHostBridgeKillSwitchPath,
   saveAoiHostBridgeKillSwitchState,
   setAoiHostBridgeCapability,
   type AoiHostBridgeKillSwitchState,
@@ -247,6 +248,7 @@ function summarizeKillSwitch(state: AoiHostBridgeKillSwitchState): {
   globalPanic: boolean;
   enabledCapabilities: string[];
   updatedAt: number;
+  unreadable?: true;
 } {
   // What is actually in force, not merely what is written down. The store can
   // now hold an explicit false (that is how switching a default-on capability
@@ -269,6 +271,9 @@ function summarizeKillSwitch(state: AoiHostBridgeKillSwitchState): {
     globalPanic: state.globalPanic,
     enabledCapabilities: [...effective].sort(),
     updatedAt: state.updatedAt,
+    // Everything is stopped either way, but "the operator pressed panic" and
+    // "the safety file cannot be read" need different actions from them.
+    ...(state.unreadable === true ? { unreadable: true as const } : {}),
   };
 }
 
@@ -668,6 +673,23 @@ async function resolveAoiHostBridgeRouteInner(
           ok: false,
           error: 'action must be panic, clear_panic, or set',
           code: 'bad_request',
+        },
+      };
+    }
+    // Writing now would build a fresh file from the all-stopped stand-in and put
+    // it over whatever is still on disk -- the operator's capability settings,
+    // gone, with no way to tell what they were. Same reasoning as the denylist:
+    // repair or remove the file first.
+    if (loadAoiHostBridgeKillSwitchState(params.openroomHome).unreadable === true) {
+      return {
+        status: 409,
+        payload: {
+          ok: false,
+          error:
+            'the kill-switch file cannot be read, so everything is stopped and editing it would ' +
+            'overwrite the settings still on disk. Repair or delete the file first',
+          code: 'killswitch_unreadable',
+          path: resolveAoiHostBridgeKillSwitchPath(params.openroomHome),
         },
       };
     }

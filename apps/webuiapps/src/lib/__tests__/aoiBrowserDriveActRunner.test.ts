@@ -366,6 +366,34 @@ describe('executeAoiBrowserDriveActStep', () => {
     expect(result).toMatchObject({ ok: false, reason: 'panicked' });
   });
 
+  it('says so when the act happened but the ledger could not be written', async () => {
+    // A full disk, a denied permission, a read-only home. The act already
+    // happened, so refusing here would deny something already done -- but
+    // swallowing it left a clean success beside a ledger that does not mention
+    // the step, and nothing suggesting anyone look.
+    const page = fakePage();
+    const { factory } = sessionFactory(page);
+    const result = await executeAoiBrowserDriveActStep({
+      plan: plan(navStep, clickStep),
+      targetStepIndex: 1,
+      allowlist: ALLOWLIST,
+      sessionFactory: factory,
+      approvalGate: allowGate,
+      now: 1,
+      audit: {
+        runId: 'run-x',
+        writeArtifact: () => {},
+        recordEntry: () => {
+          throw new Error('ENOSPC: no space left on device');
+        },
+      },
+    });
+    // The act still happened, and still reports honestly that it did.
+    expect(result.ok).toBe(true);
+    // And the missing record travels with it.
+    expect((result as { auditRecorded?: false }).auditRecorded).toBe(false);
+  });
+
   it('records the denied target step in the audit ledger too', async () => {
     const page = fakePage();
     const { factory } = sessionFactory(page);

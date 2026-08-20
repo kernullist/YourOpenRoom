@@ -96,6 +96,10 @@ export interface AoiBrowserDriveActExecuteResult {
   action: AoiBrowserDriveActionRequest;
   prefix: AoiBrowserDriveStepResult[];
   target: AoiBrowserDriveStepResult;
+  // Present and false when the act happened but the audit ledger could not be
+  // written. The act is not undone by this; the record of it is simply missing,
+  // and that has to travel with the result rather than be discovered later.
+  auditRecorded?: false;
 }
 
 export interface AoiBrowserDriveRunFailure {
@@ -380,15 +384,14 @@ export async function executeAoiBrowserDriveActStep(
       ...(params.maxPlanSteps ? { maxPlanSteps: params.maxPlanSteps } : {}),
       ...(params.sleep ? { sleep: params.sleep } : {}),
     });
-    if (params.audit) {
-      recordAuditStep(params.audit, params.plan, target);
-    }
+    const auditRecorded = params.audit ? recordAuditStep(params.audit, params.plan, target) : true;
     return {
       ok: target.ok,
       stepIndex: params.targetStepIndex,
       action: params.plan.steps[params.targetStepIndex].action,
       prefix: prefix.results,
       target,
+      ...(auditRecorded ? {} : { auditRecorded: false as const }),
     };
   } finally {
     await safeClose(session);
@@ -403,11 +406,22 @@ function summarizeAuditAction(action: AoiBrowserDriveActionRequest): string {
 // Record ONE ledger entry for a completed step, pulling before/after artifact refs
 // from the observation the audit observer attached to the result. Best-effort: a
 // recorder failure never propagates (auditing must not fail a driven step).
+/**
+ * Record one step in the audit ledger. Returns whether it was recorded.
+ *
+ * Never fails the step: by the time this runs the act has already happened, so
+ * refusing here would deny a thing that is already done. But the failure is
+ * REPORTED. Swallowing it entirely meant that on a full disk -- or a denied
+ * permission, or a read-only home -- Aoi acted, the ledger did not mention it,
+ * and the result still read as a clean success. The one record that answers
+ * "what did Aoi do" was then quietly incomplete, which is worse than a loud
+ * failure because nothing suggests looking.
+ */
 function recordAuditStep(
   audit: AoiBrowserDriveRunAudit,
   plan: AoiBrowserDrivePlan,
   result: AoiBrowserDriveStepResult,
-): void {
+): boolean {
   try {
     const action =
       plan.steps[result.index]?.action ?? ({ kind: 'wait' } as AoiBrowserDriveActionRequest);
@@ -437,8 +451,10 @@ function recordAuditStep(
         ? { afterDomRef: result.observation.after.domRef }
         : {}),
     });
+    return true;
   } catch {
-    // best-effort audit; never fail a step because recording failed
+    // Never fails the step -- but the caller is told, and says so.
+    return false;
   }
 }
 

@@ -70,6 +70,14 @@ export interface AoiHostBridgeKillSwitchState {
   // Per-capability / per-source enable flags. Absent key => disabled (fail-closed).
   entries: Record<string, boolean>;
   updatedAt: number;
+  // The stored file EXISTS but could not be read.
+  //
+  // This file is the operator's safety configuration: what Aoi may do on this
+  // machine, and whether the emergency stop is engaged. Falling back to defaults
+  // when it cannot be read CLEARED AN ENGAGED PANIC and re-enabled every
+  // default-on capability -- including computer use, which the operator may have
+  // switched off deliberately. Absent and unreadable are not the same state.
+  unreadable?: true;
 }
 
 export const DEFAULT_AOI_HOST_BRIDGE_KILL_SWITCH_STATE: AoiHostBridgeKillSwitchState = {
@@ -159,6 +167,9 @@ export function normalizeAoiHostBridgeKillSwitchState(raw: unknown): AoiHostBrid
   if (value.version !== AOI_HOST_BRIDGE_KILL_SWITCH_VERSION) {
     return { ...DEFAULT_AOI_HOST_BRIDGE_KILL_SWITCH_STATE, entries: {} };
   }
+  // Carried through: every consumer funnels into this, so dropping the flag here
+  // would quietly restore the fail-open the loader closes.
+  const unreadable = value.unreadable === true ? ({ unreadable: true } as const) : null;
   const entries: Record<string, boolean> = {};
   if (value.entries && typeof value.entries === 'object' && !Array.isArray(value.entries)) {
     for (const [key, enabled] of Object.entries(value.entries)) {
@@ -177,10 +188,13 @@ export function normalizeAoiHostBridgeKillSwitchState(raw: unknown): AoiHostBrid
   }
   return {
     version: AOI_HOST_BRIDGE_KILL_SWITCH_VERSION,
-    globalPanic: value.globalPanic === true,
+    // An unreadable state stays stopped through normalize, so a consumer that
+    // normalizes before deciding cannot lose the stop.
+    globalPanic: value.globalPanic === true || unreadable !== null,
     entries,
     updatedAt:
       typeof value.updatedAt === 'number' && Number.isFinite(value.updatedAt) ? value.updatedAt : 0,
+    ...(unreadable ?? {}),
   };
 }
 
@@ -192,17 +206,46 @@ export function resolveAoiHostBridgeKillSwitchPath(openroomHome: string): string
 
 // Fail-closed load: an unreadable or malformed file yields the all-disabled
 // default (entries {}), so a corrupt store grants no capability.
+// Cannot read the safety configuration => the machine is stopped.
+//
+// globalPanic is set, not merely reported, so that every existing panic check
+// inherits this without having to know about it -- the alternative is a second
+// condition that each call site has to remember, and the ones that forgot would
+// be the ones that mattered. `unreadable` rides along so the operator is told
+// the stop came from an unreadable file rather than from their own panic press.
+function unreadableKillSwitchState(): AoiHostBridgeKillSwitchState {
+  return {
+    ...DEFAULT_AOI_HOST_BRIDGE_KILL_SWITCH_STATE,
+    entries: {},
+    globalPanic: true,
+    unreadable: true,
+  };
+}
+
 export function loadAoiHostBridgeKillSwitchState(
   openroomHome: string,
 ): AoiHostBridgeKillSwitchState {
   try {
     const filePath = resolveAoiHostBridgeKillSwitchPath(openroomHome);
     if (!fs.existsSync(filePath)) {
+      // Never configured. The one honest empty: a fresh install has to get its
+      // defaults or nothing works until something is written.
       return { ...DEFAULT_AOI_HOST_BRIDGE_KILL_SWITCH_STATE, entries: {} };
     }
-    return normalizeAoiHostBridgeKillSwitchState(JSON.parse(fs.readFileSync(filePath, 'utf-8')));
+    const raw: unknown = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    const shaped =
+      !!raw &&
+      typeof raw === 'object' &&
+      !Array.isArray(raw) &&
+      (raw as Partial<AoiHostBridgeKillSwitchState>).version ===
+        AOI_HOST_BRIDGE_KILL_SWITCH_VERSION;
+    if (!shaped) {
+      return unreadableKillSwitchState();
+    }
+    return normalizeAoiHostBridgeKillSwitchState(raw);
   } catch {
-    return { ...DEFAULT_AOI_HOST_BRIDGE_KILL_SWITCH_STATE, entries: {} };
+    // Present and unreadable: bad JSON, a truncated write, a denied permission.
+    return unreadableKillSwitchState();
   }
 }
 
