@@ -363,3 +363,69 @@ describe('computeAoiBrowserDriveActionFingerprint separator safety', () => {
     );
   });
 });
+
+// An approval is shown to the operator as a specific act on a specific page.
+// What it is BOUND to has to match that, or they are approving one thing and
+// authorizing another.
+describe('what the approval is bound to', () => {
+  it('does not let a different path to the same button reuse the approval', () => {
+    // Same goal, same step, same button, same host -- but the operator was shown
+    // bill 123 and the run navigates to bill 999. If those share a fingerprint,
+    // approving the first pays the second.
+    const shown = {
+      goal: 'pay the bill',
+      steps: [
+        { description: 'open', action: { kind: 'navigate', url: 'https://bank.example/bill/123' } },
+        { description: 'confirm', action: { kind: 'click', selector: '#confirm' } },
+      ],
+    } as unknown as AoiBrowserDrivePlan;
+    const swapped = {
+      goal: 'pay the bill',
+      steps: [
+        { description: 'open', action: { kind: 'navigate', url: 'https://bank.example/bill/999' } },
+        { description: 'confirm', action: { kind: 'click', selector: '#confirm' } },
+      ],
+    } as unknown as AoiBrowserDrivePlan;
+
+    const a = buildAoiBrowserDriveActApprovalPreview({
+      plan: shown,
+      stepIndex: 1,
+      hostname: 'bank.example',
+      now: 1_000,
+    });
+    const b = buildAoiBrowserDriveActApprovalPreview({
+      plan: swapped,
+      stepIndex: 1,
+      hostname: 'bank.example',
+      now: 1_000,
+    });
+    expect(a.ok && b.ok).toBe(true);
+    if (!a.ok || !b.ok) {
+      return;
+    }
+    expect(a.fingerprint).not.toBe(b.fingerprint);
+  });
+
+  it('still gives the same plan the same fingerprint', () => {
+    const p = plan(
+      { kind: 'navigate', url: 'https://x.test/a' } as AoiBrowserDriveActionRequest,
+      clickStep,
+    );
+    const first = buildAoiBrowserDriveActApprovalPreview({
+      plan: p,
+      stepIndex: 1,
+      hostname: 'x.test',
+      now: 1_000,
+    });
+    const second = buildAoiBrowserDriveActApprovalPreview({
+      plan: p,
+      stepIndex: 1,
+      hostname: 'x.test',
+      now: 2_000,
+    });
+    expect(first.ok && second.ok).toBe(true);
+    if (first.ok && second.ok) {
+      expect(first.fingerprint).toBe(second.fingerprint);
+    }
+  });
+});

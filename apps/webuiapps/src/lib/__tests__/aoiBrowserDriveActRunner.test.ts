@@ -15,6 +15,17 @@ import {
 } from '../aoiBrowserDriveAllowlist';
 import type { AoiBrowserDrivePlan } from '../aoiBrowserDrivePlan';
 import type { AoiBrowserDriveActionRequest } from '../aoiBrowserDriveAction';
+import {
+  buildAoiBrowserDriveActApprovalPreview,
+  makeAoiBrowserDriveStoreApprovalGate,
+  recordAoiBrowserDriveActPendingApproval,
+} from '../aoiBrowserDriveApproval';
+import {
+  approveAoiHostBridgeApproval,
+  consumeAoiHostBridgeApproval,
+  DEFAULT_AOI_HOST_BRIDGE_APPROVAL_STORE,
+  type AoiHostBridgeApprovalStoreData,
+} from '../aoiHostBridgeApprovalStore';
 
 // Denylist: block evil.test. example.com and other hosts are allowed by default.
 const ALLOWLIST: AoiBrowserDriveAllowlist = addAoiBrowserDriveAllowlistEntry(
@@ -413,5 +424,84 @@ describe('executeAoiBrowserDriveActStep', () => {
     });
     const target = entries.find((e) => e.stepIndex === 1);
     expect(target).toMatchObject({ ok: false, stopReason: 'approval_denied' });
+  });
+});
+
+// Nothing here used the real gate before: every case handed the runner an
+// allow-everything stub, so preview and executor could disagree about what a
+// fingerprint covers and no test would notice. This walks the actual sequence.
+describe('preview -> approve -> execute, through the store gate', () => {
+  function memGate(store: { value: AoiHostBridgeApprovalStoreData }) {
+    return makeAoiBrowserDriveStoreApprovalGate({
+      consumeApproval: (params) => {
+        const result = consumeAoiHostBridgeApproval(store.value, params);
+        if (result.ok) {
+          store.value = result.store;
+        }
+        return result;
+      },
+      now: 2_000,
+    });
+  }
+
+  it('the approval the operator granted is the one the run consumes', async () => {
+    const p = plan(navStep, clickStep);
+    const preview = buildAoiBrowserDriveActApprovalPreview({
+      plan: p,
+      stepIndex: 1,
+      hostname: 'example.com',
+      now: 1_000,
+    });
+    expect(preview.ok).toBe(true);
+    if (!preview.ok) {
+      return;
+    }
+    const store = { value: { ...DEFAULT_AOI_HOST_BRIDGE_APPROVAL_STORE, approvals: [] } };
+    store.value = recordAoiBrowserDriveActPendingApproval(store.value, preview, 1_000).store;
+    store.value = approveAoiHostBridgeApproval(store.value, preview.fingerprint, 1_100).store;
+
+    const { factory } = sessionFactory(fakePage());
+    const result = await executeAoiBrowserDriveActStep({
+      plan: p,
+      targetStepIndex: 1,
+      allowlist: ALLOWLIST,
+      sessionFactory: factory,
+      approvalGate: memGate(store),
+      now: 2_000,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('an approval for one path does not authorize the act reached by another', async () => {
+    // The operator previewed a run that opens /account. The run that arrives
+    // opens somewhere else and clicks the same button on the same host.
+    const shown = plan(navStep, clickStep);
+    const swapped = plan(
+      { kind: 'navigate', url: 'https://example.com/transfer' } as AoiBrowserDriveActionRequest,
+      clickStep,
+    );
+    const preview = buildAoiBrowserDriveActApprovalPreview({
+      plan: shown,
+      stepIndex: 1,
+      hostname: 'example.com',
+      now: 1_000,
+    });
+    if (!preview.ok) {
+      throw new Error('expected a preview');
+    }
+    const store = { value: { ...DEFAULT_AOI_HOST_BRIDGE_APPROVAL_STORE, approvals: [] } };
+    store.value = recordAoiBrowserDriveActPendingApproval(store.value, preview, 1_000).store;
+    store.value = approveAoiHostBridgeApproval(store.value, preview.fingerprint, 1_100).store;
+
+    const { factory } = sessionFactory(fakePage());
+    const result = await executeAoiBrowserDriveActStep({
+      plan: swapped,
+      targetStepIndex: 1,
+      allowlist: ALLOWLIST,
+      sessionFactory: factory,
+      approvalGate: memGate(store),
+      now: 2_000,
+    });
+    expect(result.ok).toBe(false);
   });
 });

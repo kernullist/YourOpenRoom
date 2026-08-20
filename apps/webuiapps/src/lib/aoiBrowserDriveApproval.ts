@@ -147,6 +147,9 @@ export function buildAoiBrowserDriveActApprovalPreview(params: {
     stepIndex,
     step.action,
     hostname,
+    // The same read steps the executor will replay. This is what ties the
+    // approval to the page the operator was actually shown.
+    plan.steps.slice(0, stepIndex),
   );
 
   return {

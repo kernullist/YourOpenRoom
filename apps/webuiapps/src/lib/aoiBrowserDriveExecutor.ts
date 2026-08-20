@@ -252,11 +252,38 @@ function fnv1a(value: string, seed: number): string {
 // page host at act time. An approval shown for one host therefore cannot be
 // consumed to act on a DIFFERENT host (the "approve what you saw" guarantee),
 // even when both hosts pass the denylist.
+/**
+ * Summarize the READ STEPS that lead to the act, for the fingerprint.
+ *
+ * Kept to the fields that decide which page the act lands on. A description
+ * change should not invalidate a live approval, but a different URL must.
+ */
+export function summarizeAoiBrowserDrivePrefix(
+  steps: readonly { action: AoiBrowserDriveActionRequest }[],
+): string {
+  return JSON.stringify(
+    steps.map((step) => [
+      step?.action?.kind ?? '',
+      step?.action?.url ?? '',
+      step?.action?.selector ?? '',
+      step?.action?.targetText ?? '',
+    ]),
+  );
+}
+
 export function computeAoiBrowserDriveActionFingerprint(
   goal: string,
   stepIndex: number,
   action: AoiBrowserDriveActionRequest,
   hostname = '',
+  // The read steps that run before this one.
+  //
+  // Without them the approval was bound to the act and the host but NOT to the
+  // page the operator was shown. Same goal, same step index, same button, same
+  // host, different navigation before it -- one fingerprint. Previewing "pay
+  // bill 123" and then running a plan that opens bill 999 reused the approval,
+  // and the operator had approved a screenshot of the first.
+  prefix: readonly { action: AoiBrowserDriveActionRequest }[] = [],
 ): string {
   // EVERY field that changes what the action does has to be in here.
   //
@@ -288,6 +315,7 @@ export function computeAoiBrowserDriveActionFingerprint(
     action?.promptText ?? '',
     action?.filePath ?? '',
     (typeof hostname === 'string' ? hostname : '').trim().toLowerCase(),
+    summarizeAoiBrowserDrivePrefix(prefix),
   ]);
   return `${fnv1a(canonical, 0x811c9dc5)}${fnv1a(canonical, 0x9e3779b1)}`;
 }
@@ -555,6 +583,7 @@ export async function executeAoiBrowserDriveStep(
       stepIndex,
       action,
       hostnameOf(beforeUrl),
+      plan.steps.slice(0, stepIndex),
     );
     let verdict: { approved: boolean; reason?: string; viaStanding?: boolean };
     try {
