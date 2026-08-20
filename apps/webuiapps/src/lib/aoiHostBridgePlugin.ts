@@ -170,6 +170,7 @@ import {
 } from './aoiHostBridgeOsImpl';
 import {
   consumeAoiHostBridgeApprovalAtomic,
+  findAoiHostBridgeApproval,
   loadAoiHostBridgeApprovalStore,
   recordAoiHostBridgePendingApprovalAtomic,
   approveAoiHostBridgeApprovalAtomic,
@@ -1838,12 +1839,16 @@ async function resolveAoiHostBridgeRouteInner(
         payload: { ok: false, error: 'approvalFingerprint is required', code: 'bad_request' },
       };
     }
-    const approved = approveAoiHostBridgeApprovalAtomic(
-      params.openroomHome,
+    // LOOK first, decide later. This used to approve and then check whether the
+    // run was allowed, so a refused attempt left a fully approved, still
+    // consumable entry behind: the operator meant "run it now", and it became
+    // "run it whenever the block lifts", with no second decision from them.
+    const entry = findAoiHostBridgeApproval(
+      loadAoiHostBridgeApprovalStore(params.openroomHome),
       approvalFingerprint,
       params.now,
     );
-    if (!approved.approved || !approved.entry) {
+    if (!entry) {
       return {
         status: 404,
         payload: {
@@ -1853,7 +1858,6 @@ async function resolveAoiHostBridgeRouteInner(
         },
       };
     }
-    const entry = approved.entry;
     if (entry.capability !== AOI_HOST_SPAWN_CAPABILITY || entry.executePayload?.kind !== 'spawn') {
       return {
         status: 400,
@@ -1883,6 +1887,22 @@ async function resolveAoiHostBridgeRouteInner(
           error: 'blocked',
           denyReasons: gate.denyReasons,
           detail: gate.detail,
+        },
+      };
+    }
+    // Allowed: NOW record the operator's decision.
+    const approved = approveAoiHostBridgeApprovalAtomic(
+      params.openroomHome,
+      approvalFingerprint,
+      params.now,
+    );
+    if (!approved.approved || !approved.entry) {
+      return {
+        status: 404,
+        payload: {
+          ok: false,
+          error: 'no pending or approved approval for that fingerprint',
+          code: 'approval_missing',
         },
       };
     }

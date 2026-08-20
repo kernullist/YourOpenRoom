@@ -23,6 +23,12 @@ import { addAoiHostReadRoot, saveAoiHostReadRoots } from '../aoiHostFileRead';
 import { addAoiHostSpawnAllowlistEntry, saveAoiHostSpawnAllowlist } from '../aoiHostProcessSpawn';
 import { addAoiHostWriteRoot, saveAoiHostWriteRoots } from '../aoiHostFileWrite';
 import {
+  findAoiHostBridgeApproval,
+  loadAoiHostBridgeApprovalStore,
+  recordAoiHostBridgePendingApproval,
+  saveAoiHostBridgeApprovalStore,
+} from '../aoiHostBridgeApprovalStore';
+import {
   addAoiBrowserDriveAllowlistEntry,
   resolveAoiBrowserDriveAllowlistPath,
   saveAoiBrowserDriveAllowlist,
@@ -1907,6 +1913,47 @@ describe('a refusal that asks the operator to repair a file', () => {
     expect(result.status).toBe(403);
     expect((result.payload as { code: string }).code).toBe('denylist_unreadable');
     expect((result.payload as { detail?: string }).detail).toContain('denylist');
+  });
+});
+
+describe('approve-and-execute when the capability is blocked', () => {
+  // The route approves first and gates second. A refused attempt therefore left
+  // a fully APPROVED, still-consumable entry behind: the operator meant "run it
+  // now", and it silently became "run it whenever the block lifts".
+  it('does not leave the approval granted when the run is refused', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    const now = 1_000;
+    const recorded = recordAoiHostBridgePendingApproval(null, {
+      capability: 'os_process_spawn',
+      approvalFingerprint: 'deadbeef01',
+      targetSummary: 'run tool.exe',
+      expiresAt: now + 600_000,
+      now,
+      executePayload: { kind: 'spawn', programPath: 'C:/tools/tool.exe' },
+    });
+    saveAoiHostBridgeApprovalStore(home, recorded.store);
+    // Everything host-side is stopped.
+    saveAoiHostBridgeKillSwitchState(home, engageAoiHostBridgePanic(null, now));
+
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/approvals/approve-and-execute',
+      body: { approvalFingerprint: 'deadbeef01' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: now + 10,
+    });
+    expect(result.status).toBe(403);
+
+    // The decision must not have been recorded: nothing may be waiting to run
+    // the moment the block is lifted.
+    const after = findAoiHostBridgeApproval(
+      loadAoiHostBridgeApprovalStore(home),
+      'deadbeef01',
+      now + 20,
+    );
+    expect(after?.state).toBe('pending');
   });
 });
 
