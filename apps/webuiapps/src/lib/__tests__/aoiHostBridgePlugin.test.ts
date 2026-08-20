@@ -1957,6 +1957,70 @@ describe('approve-and-execute when the capability is blocked', () => {
   });
 });
 
+describe('the denylist and the headless read door', () => {
+  // The operator's denylist names hosts Aoi must not reach. It guards the drive,
+  // the desktop read, and the audit capture. /browser-read takes a URL and
+  // fetches it, and consulted nothing.
+  async function readIt(home: string, sessionsDir: string, token: string) {
+    const registry = getDefaultAoiEnvironmentSourceRegistry('aoi/default', 1000);
+    saveAoiEnvironmentSourceRegistry(sessionsDir, 'aoi/default', registry);
+    updateAoiEnvironmentSource(sessionsDir, 'aoi/default', {
+      sourceId: 'host-browser-read',
+      patch: { enabled: true, consentReason: 'test' },
+      now: 1500,
+    });
+    saveAoiHostBridgeKillSwitchState(
+      home,
+      setAoiHostBridgeCapability(null, 'os_browser_read', true, 1500),
+    );
+    let fetched = '';
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-read',
+      body: { sessionPath: 'aoi/default', url: 'https://evil.com/page' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+      browserReadImpl: async ({ url }: { url: string; now: number }) => {
+        fetched = url;
+        return {
+          ok: true as const,
+          url,
+          finalUrl: url,
+          title: 'Secret',
+          excerpt: '',
+          siteName: 'evil.com',
+          blocks: [],
+          text: 'contents',
+          browserPath: 'C:/chrome.exe',
+          sampledAt: 2000,
+          durationMs: 1,
+          engine: 'chrome-headless' as const,
+        };
+      },
+    });
+    return { result, fetched };
+  }
+
+  it('refuses a denylisted host, and does not fetch it', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    saveAoiBrowserDriveAllowlist(
+      home,
+      addAoiBrowserDriveAllowlistEntry(null, { domain: 'evil.com' }, 1000).allowlist,
+    );
+    const { result, fetched } = await readIt(home, sessionsDir, token);
+    expect(result.status).toBe(403);
+    expect(fetched).toBe('');
+  });
+
+  it('still reads a host the operator did not rule out', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    const { result } = await readIt(home, sessionsDir, token);
+    expect(result.status).toBe(200);
+  });
+});
+
 describe('a busy store', () => {
   // The lock throws when it cannot be taken. Uncaught, that is a 500 with a raw
   // message and no code -- a transient, retryable condition reported as a crash,

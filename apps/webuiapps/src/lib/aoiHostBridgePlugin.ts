@@ -822,6 +822,31 @@ async function resolveAoiHostBridgeRouteInner(
         },
       };
     }
+    // The operator's denylist names hosts Aoi must not reach. It guards the
+    // drive, the desktop read and the audit capture -- and not this door, which
+    // takes a URL and fetches it. The list was written as containment for the
+    // CDP-attach model, but an operator who rules out a host does not mean "only
+    // when a session is attached": they mean Aoi does not go there.
+    //
+    // Checked BEFORE the fetch, so a refusal does not first pull the page.
+    const readAllowlist = loadAoiBrowserDriveAllowlist(params.openroomHome);
+    const readAllowed = isAoiBrowserDriveUrlAllowed(readAllowlist, url);
+    if (!readAllowed.allowed) {
+      const unreadable = readAllowed.reason === 'denylist_unreadable';
+      return {
+        status: 403,
+        payload: {
+          ok: false,
+          error: unreadable ? 'denylist_unreadable' : 'url_denylisted',
+          code: unreadable ? 'denylist_unreadable' : 'url_denylisted',
+          denyReasons: [readAllowed.reason ?? 'host_denylisted'],
+          detail: unreadable
+            ? `the stored denylist could not be read, so nothing may be fetched until it is ` +
+              `repaired: ${resolveAoiBrowserDriveAllowlistPath(params.openroomHome)}`
+            : readAllowed.hostname,
+        },
+      };
+    }
     try {
       const browserRead =
         params.browserReadImpl ??
