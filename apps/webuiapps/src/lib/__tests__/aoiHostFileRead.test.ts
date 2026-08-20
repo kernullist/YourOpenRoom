@@ -1,3 +1,4 @@
+import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import { join } from 'path';
@@ -189,5 +190,53 @@ describe('read operations over a real temp root', () => {
     const result = readAoiHostFileContent({ roots: [root], requestedPath: join(dir, 'sub') });
     expect(result.ok).toBe(false);
     expect(result.reason).toBe('not_a_file');
+  });
+});
+
+// Read roots bound WHICH FILES Aoi may open. A junction planted inside a root --
+// creatable on Windows without administrator -- makes any file on the machine
+// spell out as if it were inside. The upload gate had exactly this hole; these
+// pin that the filesystem doors do not.
+describe('a junction inside a read root', () => {
+  function withJunction(): { root: string; secret: string } | null {
+    const base = fs.mkdtempSync(join(os.tmpdir(), 'aoi-fs-junction-'));
+    tempRoots.push(base);
+    const root = join(base, 'safe');
+    const secret = join(base, 'secret');
+    fs.mkdirSync(root);
+    fs.mkdirSync(secret);
+    fs.writeFileSync(join(secret, 'id_rsa'), 'PRIVATE KEY');
+    try {
+      execFileSync('cmd', ['/c', 'mklink', '/J', join(root, 'out'), secret], { stdio: 'pipe' });
+    } catch {
+      return null;
+    }
+    return { root, secret };
+  }
+
+  it('cannot be read or listed through', () => {
+    if (process.platform !== 'win32') {
+      return;
+    }
+    const made = withJunction();
+    if (!made) {
+      return;
+    }
+    const roots: AoiHostReadRoot[] = [{ id: 'safe', label: 'safe', path: made.root }];
+
+    // Spelled inside the root, and a real file at the end of it.
+    const escaped = join(made.root, 'out', 'id_rsa');
+    expect(fs.lstatSync(escaped).isFile()).toBe(true);
+
+    expect(readAoiHostFileContent({ roots, requestedPath: escaped }).ok).toBe(false);
+    expect(listAoiHostDirectory({ roots, requestedPath: join(made.root, 'out') }).ok).toBe(false);
+    expect(statAoiHostPath({ roots, requestedPath: escaped }).ok).toBe(false);
+
+    // And a genuine file in the root still reads, so the bound is the escape
+    // rather than the feature.
+    fs.writeFileSync(join(made.root, 'notes.txt'), 'hello');
+    expect(readAoiHostFileContent({ roots, requestedPath: join(made.root, 'notes.txt') }).ok).toBe(
+      true,
+    );
   });
 });

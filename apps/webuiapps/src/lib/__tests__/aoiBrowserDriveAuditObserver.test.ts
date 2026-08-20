@@ -127,9 +127,37 @@ describe('writeAoiBrowserDriveArtifact (fs containment)', () => {
     expect(fs.readFileSync(target)[0]).toBe(9);
   });
 
-  it('refuses to escape the artifact root', () => {
+  it('refuses to escape the artifact root, and says so', () => {
+    // Returning quietly let the caller record an artifact ref for a file that
+    // was never written -- a ledger pointing at evidence that does not exist.
     const home = makeHome();
-    writeAoiBrowserDriveArtifact(home, '../../escape.txt', 'nope');
+    expect(() => writeAoiBrowserDriveArtifact(home, '../../escape.txt', 'nope')).toThrow(/outside/);
     expect(fs.existsSync(join(home, 'escape.txt'))).toBe(false);
+  });
+
+  it('leaves no ref behind when the write is refused', () => {
+    // The observer treats a throwing writer as a failed capture and omits the
+    // ref, which is the behaviour the ledger depends on.
+    const home = makeHome();
+    const observer = makeAoiBrowserDriveAuditObserver({
+      page: {
+        screenshot: async () => new Uint8Array([1]),
+        content: async () => '<html></html>',
+      } as unknown as AoiBrowserDriveActablePage,
+      runId: 'run-1',
+      writeArtifact: (relPath, data) => {
+        writeAoiBrowserDriveArtifact(home, `../../${relPath}`, data);
+      },
+    });
+    return observer
+      .onStep?.({
+        stepIndex: 0,
+        phase: 'before',
+        action: { kind: 'click', selector: '#x' },
+        url: 'https://example.com/',
+      })
+      ?.then((observation) => {
+        expect(observation).toBeUndefined();
+      });
   });
 });

@@ -88,8 +88,14 @@ export function writeAoiBrowserDriveArtifact(
   const root = resolveAoiBrowserDriveArtifactDir(openroomHome);
   const target = resolve(root, relPath);
   // Containment: never write outside the artifact root.
+  //
+  // THROW rather than return. Returning quietly meant the caller carried on and
+  // recorded an artifact ref in the ledger for a file that was never written --
+  // a ledger pointing at evidence that does not exist is worse than a ledger
+  // that says the capture failed, and the observer already treats a throw as a
+  // failed capture and omits the ref.
   if (target !== root && !target.startsWith(root + sep)) {
-    return;
+    throw new Error(`refusing to write an artifact outside ${root}`);
   }
   fs.mkdirSync(dirname(target), { recursive: true });
   fs.writeFileSync(target, data);
