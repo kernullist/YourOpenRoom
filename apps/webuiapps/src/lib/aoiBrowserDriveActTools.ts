@@ -493,11 +493,22 @@ export async function executeBrowserDriveRunTool(
       // all -- without this the model cannot use `element` + `snapshot_id` and
       // has to fall back to authoring selectors, which is the weaker path.
       ...(result.reads?.length ? { reads: result.reads } : {}),
-      note: verdict
-        ? describeAoiBrowserDriveVerdict(verdict)
-        : result.ok
-          ? 'The action was delivered to the live browser. Nothing here proves it landed -- re-read the page before telling the user it worked.'
-          : 'The action did not run; see stop_reason.',
+      // The act happened but the audit ledger could not be written. Said out
+      // loud, because the ledger is what the operator would consult afterwards
+      // to see what was done, and it will not mention this.
+      ...(result.auditRecorded === false ? { audit_recorded: false } : {}),
+      note: [
+        verdict
+          ? describeAoiBrowserDriveVerdict(verdict)
+          : result.ok
+            ? 'The action was delivered to the live browser. Nothing here proves it landed -- re-read the page before telling the user it worked.'
+            : 'The action did not run; see stop_reason.',
+        result.auditRecorded === false
+          ? 'The audit ledger could not be written, so this step is missing from the record of what Aoi did. Tell the user.'
+          : '',
+      ]
+        .filter(Boolean)
+        .join(' '),
     });
   } catch (error) {
     return formatActGateError(error);

@@ -281,6 +281,10 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
   }, []);
 
   const panic = status?.killSwitch.globalPanic ?? false;
+  // Stopped because the kill-switch file cannot be READ, not because anyone
+  // pressed panic. The stop is the same; what the operator has to do about it is
+  // not, and "Clear panic" cannot fix a file that will not parse.
+  const killSwitchUnreadable = status?.killSwitch.unreadable === true;
   const enabled = new Set(status?.killSwitch.enabledCapabilities ?? []);
 
   const toggleCapability = (key: string, next: boolean) =>
@@ -575,15 +579,27 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
                 <div className={styles.connectorRowHeader}>
                   <strong>Master kill switch</strong>
                   <span className={styles.modelHint}>
-                    {panic ? 'PANIC ENGAGED — everything blocked' : 'Per-capability control'}
+                    {killSwitchUnreadable
+                      ? 'STOPPED — the kill-switch file cannot be read'
+                      : panic
+                        ? 'PANIC ENGAGED — everything blocked'
+                        : 'Per-capability control'}
                   </span>
                 </div>
+                {killSwitchUnreadable ? (
+                  <span className={styles.modelHint} data-testid="aoi-host-killswitch-unreadable">
+                    Everything is blocked because the stored kill-switch file could not be read, not
+                    because panic was pressed — so clearing panic will not help, and editing is
+                    refused so a save cannot overwrite the settings still on disk. Repair or delete
+                    killswitch.json under the host-bridge folder.
+                  </span>
+                ) : null}
                 <div className={styles.connectorToggleRow}>
                   <button
                     type="button"
                     className={panic ? styles.saveBtn : styles.cancelBtn}
                     onClick={() => setPanic(!panic)}
-                    disabled={busy === 'panic'}
+                    disabled={busy === 'panic' || killSwitchUnreadable}
                     data-testid="aoi-host-panic"
                   >
                     {panic ? 'Clear panic' : 'Panic (block all)'}

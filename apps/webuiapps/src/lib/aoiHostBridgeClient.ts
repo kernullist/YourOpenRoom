@@ -81,6 +81,10 @@ export interface AoiHostBridgeKillSwitchView {
   globalPanic: boolean;
   enabledCapabilities: string[];
   updatedAt: number;
+  // Everything is stopped because the kill-switch file cannot be READ, not
+  // because the operator pressed panic. Same stop, different thing to do about
+  // it -- and picking a fixed set of fields here dropped the difference.
+  unreadable?: true;
 }
 
 export interface AoiHostBridgeStatus {
@@ -94,6 +98,7 @@ function parseKillSwitch(value: unknown): AoiHostBridgeKillSwitchView {
     globalPanic: record.globalPanic === true,
     enabledCapabilities: asStringArray(record.enabledCapabilities),
     updatedAt: typeof record.updatedAt === 'number' ? record.updatedAt : 0,
+    ...(record.unreadable === true ? { unreadable: true as const } : {}),
   };
 }
 
@@ -564,6 +569,11 @@ export interface AoiHostBrowserDriveActExecuteView {
   verdict?: AoiBrowserDriveVerdict;
   // What the read steps before the act observed: element refs, tabs, page text.
   reads?: AoiHostBrowserDriveReadView[];
+  // Present and false when the act happened but the audit ledger could not be
+  // written. The daemon reports this; picking a fixed set of fields here dropped
+  // it, so the flag existed and reached nobody -- the act looked cleanly
+  // successful while the record of it was missing.
+  auditRecorded?: false;
 }
 
 // Preview: replay the read prefix and record a PENDING per-action approval. The
@@ -632,6 +642,7 @@ export async function runAoiHostBrowserDriveActExecute(
       const reads = readViewsFrom(result.prefix);
       return reads.length ? { reads } : {};
     })(),
+    ...(result.auditRecorded === false ? { auditRecorded: false as const } : {}),
   };
 }
 

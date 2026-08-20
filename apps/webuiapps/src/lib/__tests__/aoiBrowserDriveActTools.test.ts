@@ -427,3 +427,46 @@ describe('gate-error mapping', () => {
     });
   }
 });
+
+// The daemon reports when an act happened but the ledger could not be written.
+// It reached the route payload and then died at the client, which picks a fixed
+// set of fields -- so the flag existed and nobody could see it. These pin the
+// whole path: what the daemon says, through the client view, to what Aoi is told.
+describe('an act whose audit could not be written', () => {
+  it('tells the model, in the machine field and in the note', async () => {
+    const executeFetcher = vi.fn(async () => ({
+      ok: true,
+      stepIndex: 1,
+      finalUrl: 'https://example.com/account',
+      verdict: { ok: true, effect: 'confirmed' as const, verified: true },
+      auditRecorded: false as const,
+    }));
+    const result = await executeBrowserDriveActTool(BROWSER_DRIVE_RUN_TOOL, PLAN_PARAMS, {
+      sessionPath: 'aoi/default',
+      previewFetcher: vi.fn(),
+      executeFetcher,
+    });
+    const parsed = JSON.parse(result);
+    expect(parsed.audit_recorded).toBe(false);
+    expect(parsed.note).toContain('audit ledger');
+    // And the act itself is still reported honestly as having happened.
+    expect(parsed.ok).toBe(true);
+  });
+
+  it('says nothing about the audit when it was written', async () => {
+    const executeFetcher = vi.fn(async () => ({
+      ok: true,
+      stepIndex: 1,
+      finalUrl: 'https://example.com/account',
+      verdict: { ok: true, effect: 'confirmed' as const, verified: true },
+    }));
+    const result = await executeBrowserDriveActTool(BROWSER_DRIVE_RUN_TOOL, PLAN_PARAMS, {
+      sessionPath: 'aoi/default',
+      previewFetcher: vi.fn(),
+      executeFetcher,
+    });
+    const parsed = JSON.parse(result);
+    expect(parsed.audit_recorded).toBeUndefined();
+    expect(parsed.note).not.toContain('audit ledger');
+  });
+});

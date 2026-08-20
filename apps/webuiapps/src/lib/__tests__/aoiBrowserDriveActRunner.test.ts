@@ -456,7 +456,9 @@ describe('preview -> approve -> execute, through the store gate', () => {
     if (!preview.ok) {
       return;
     }
-    const store = { value: { ...DEFAULT_AOI_HOST_BRIDGE_APPROVAL_STORE, approvals: [] } };
+    const store: { value: AoiHostBridgeApprovalStoreData } = {
+      value: { ...DEFAULT_AOI_HOST_BRIDGE_APPROVAL_STORE, approvals: [] },
+    };
     store.value = recordAoiBrowserDriveActPendingApproval(store.value, preview, 1_000).store;
     store.value = approveAoiHostBridgeApproval(store.value, preview.fingerprint, 1_100).store;
 
@@ -489,7 +491,9 @@ describe('preview -> approve -> execute, through the store gate', () => {
     if (!preview.ok) {
       throw new Error('expected a preview');
     }
-    const store = { value: { ...DEFAULT_AOI_HOST_BRIDGE_APPROVAL_STORE, approvals: [] } };
+    const store: { value: AoiHostBridgeApprovalStoreData } = {
+      value: { ...DEFAULT_AOI_HOST_BRIDGE_APPROVAL_STORE, approvals: [] },
+    };
     store.value = recordAoiBrowserDriveActPendingApproval(store.value, preview, 1_000).store;
     store.value = approveAoiHostBridgeApproval(store.value, preview.fingerprint, 1_100).store;
 
