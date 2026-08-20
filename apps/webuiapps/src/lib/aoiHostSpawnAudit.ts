@@ -16,6 +16,7 @@
 //   - Metadata only: pid, image basename, spawn time. No command line.
 //
 // Server-only (fs). The prune shaping is pure and exported for testing.
+import { withAoiHostStoreLock } from './aoiHostStoreLock';
 import * as fs from 'fs';
 import { dirname, resolve } from 'path';
 import { randomUUID } from 'crypto';
@@ -126,16 +127,21 @@ export function recordAoiHostSpawnedProcess(
   if (typeof spawned.pid !== 'number' || !Number.isFinite(spawned.pid) || spawned.pid <= 0) {
     return loadAoiHostSpawnedPids(openroomHome, now).length;
   }
-  const store = loadStore(openroomHome);
-  const entries = pruneAoiHostSpawnAuditEntries(
-    [
-      ...store.entries,
-      { pid: spawned.pid, imageName: normalizeImageName(spawned.imageName), spawnedAt: now },
-    ],
-    now,
-  );
-  saveStore(openroomHome, { version: 1, entries, updatedAt: now });
-  return entries.length;
+  // Under the store lock. A dropped append is not merely a missing log line:
+  // this set is what the kill policy consults to permit reclaiming a process
+  // Aoi spawned, so losing an entry loses the permission with it.
+  return withAoiHostStoreLock(openroomHome, 'spawn-audit', () => {
+    const store = loadStore(openroomHome);
+    const entries = pruneAoiHostSpawnAuditEntries(
+      [
+        ...store.entries,
+        { pid: spawned.pid, imageName: normalizeImageName(spawned.imageName), spawnedAt: now },
+      ],
+      now,
+    );
+    saveStore(openroomHome, { version: 1, entries, updatedAt: now });
+    return entries.length;
+  });
 }
 
 // The active set of pids Aoi has spawned (pruned). This is what the kill policy

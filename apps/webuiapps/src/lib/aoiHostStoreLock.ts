@@ -36,6 +36,32 @@ const STALE_LOCK_MS = 30_000;
 
 const RETRY_INTERVAL_MS = 5;
 
+/**
+ * The same process tried to take a lock it already holds.
+ *
+ * O_EXCL cannot tell "someone else has it" from "I have it", so without this the
+ * inner call waits on ITSELF for the whole timeout and then reports that another
+ * process is holding the lock -- a confident wrong answer that points whoever is
+ * debugging at the wrong machine. Nested critical sections are a design error
+ * here regardless: the outer one is working from a snapshot the inner one is
+ * about to invalidate.
+ */
+export class AoiHostStoreLockReentered extends Error {
+  readonly lockPath: string;
+
+  constructor(lockPath: string) {
+    super(
+      `the store lock at ${lockPath} is already held by THIS process. Store critical ` +
+        'sections must not nest. Nothing was changed.',
+    );
+    this.name = 'AoiHostStoreLockReentered';
+    this.lockPath = lockPath;
+  }
+}
+
+// Locks this process is currently inside, by path.
+const heldLocks = new Set<string>();
+
 export class AoiHostStoreLockTimeout extends Error {
   readonly lockPath: string;
 
@@ -93,6 +119,10 @@ export function withAoiHostStoreLock<T>(
   const staleMs = options.staleMs ?? STALE_LOCK_MS;
   const deadline = now() + timeoutMs;
 
+  if (heldLocks.has(lockPath)) {
+    throw new AoiHostStoreLockReentered(lockPath);
+  }
+
   fs.mkdirSync(dirname(lockPath), { recursive: true });
 
   let handle: number | null = null;
@@ -122,11 +152,13 @@ export function withAoiHostStoreLock<T>(
     }
   }
 
+  heldLocks.add(lockPath);
   try {
     // Who holds it, for anyone looking at a stuck lock on disk.
     fs.writeSync(handle, `${process.pid}\n`);
     return fn();
   } finally {
+    heldLocks.delete(lockPath);
     try {
       fs.closeSync(handle);
     } catch {

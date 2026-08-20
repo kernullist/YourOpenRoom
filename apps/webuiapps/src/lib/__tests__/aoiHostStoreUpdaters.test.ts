@@ -10,6 +10,7 @@ import {
   saveAoiHostReadRoots,
   updateAoiHostReadRoots,
 } from '../aoiHostFileRead';
+import { recordAoiHostSpawnedProcess, loadAoiHostSpawnedPids } from '../aoiHostSpawnAudit';
 import {
   addAoiBrowserDriveAllowlistEntry,
   loadAoiBrowserDriveAllowlist,
@@ -78,5 +79,16 @@ describe('store updaters re-read inside the lock', () => {
       return { next: added.config, result: null };
     });
     expect(saved?.roots).toHaveLength(2);
+  });
+
+  it('keeps every spawn-audit append, because that set gates killing', () => {
+    // Not just a log line: loadAoiHostSpawnedPids is what the kill policy
+    // consults to permit reclaiming a process Aoi spawned, so a lost append
+    // loses the permission with it.
+    const home = makeHome();
+    const now = 1_000;
+    recordAoiHostSpawnedProcess(home, { pid: 111, imageName: 'a.exe' }, now);
+    recordAoiHostSpawnedProcess(home, { pid: 222, imageName: 'b.exe' }, now);
+    expect(loadAoiHostSpawnedPids(home, now).sort()).toEqual([111, 222]);
   });
 });

@@ -11,6 +11,7 @@
 // shaping is pure and exported for testing. Inert until P2.4b's audit observer + the
 // runner write to it.
 
+import { withAoiHostStoreLock } from './aoiHostStoreLock';
 import * as fs from 'fs';
 import { dirname, resolve } from 'path';
 import { randomUUID } from 'crypto';
@@ -234,14 +235,20 @@ export function recordAoiBrowserDriveAuditEntry(
   input: Omit<AoiBrowserDriveAuditEntry, 'version' | 'id' | 'recordedAt'>,
   now: number,
 ): number {
-  const appended = appendAoiBrowserDriveAuditEntry(
-    loadAoiBrowserDriveAuditStore(openroomHome),
-    input,
-    now,
-    randomUUID().slice(0, 8),
-  );
-  saveAoiBrowserDriveAuditStore(openroomHome, appended.store);
-  return appended.store.entries.length;
+  // Under the store lock: this is a read-modify-write like every other, and the
+  // daemon and the dev server are separate processes over one store. A dropped
+  // append here is a step Aoi took that the ledger does not mention -- the one
+  // record that exists to answer what Aoi actually did.
+  return withAoiHostStoreLock(openroomHome, 'browser-drive-audit', () => {
+    const appended = appendAoiBrowserDriveAuditEntry(
+      loadAoiBrowserDriveAuditStore(openroomHome),
+      input,
+      now,
+      randomUUID().slice(0, 8),
+    );
+    saveAoiBrowserDriveAuditStore(openroomHome, appended.store);
+    return appended.store.entries.length;
+  });
 }
 
 // The pruned audit entries, oldest-first (for a future audit UI / a run recap).

@@ -434,6 +434,25 @@ function defaultOpenAoiBrowserProfile(executablePath: string, userDataDir: strin
   child.unref();
 }
 
+// One place builds this answer, so the POST and DELETE paths cannot drift into
+// describing the same obstacle differently.
+function denylistUnreadableResponse(openroomHome: string): {
+  status: number;
+  payload: Record<string, unknown>;
+} {
+  return {
+    status: 409,
+    payload: {
+      ok: false,
+      error:
+        'the stored denylist cannot be read, so editing it would overwrite entries that are ' +
+        'still on disk. Repair or delete the file first',
+      code: 'denylist_unreadable',
+      path: resolveAoiBrowserDriveAllowlistPath(openroomHome),
+    },
+  };
+}
+
 function resolveAoiBrowserDriveProfileDir(openroomHome: string): string {
   const dir = selectAoiBrowserDriveUserDataDir(loadAoiBrowserDriveProfileConfig(openroomHome));
   if (!dir) {
@@ -1203,22 +1222,6 @@ export async function resolveAoiHostBridgeRoute(
         },
       };
     }
-    // Editing an unreadable list would write a NEW one over it, silently
-    // discarding whatever the operator actually had configured: `current` is
-    // the empty stand-in, and add/remove build the saved value from it.
-    if (current.unreadable === true && (params.method === 'POST' || params.method === 'DELETE')) {
-      return {
-        status: 409,
-        payload: {
-          ok: false,
-          error:
-            'the stored denylist cannot be read, so editing it would overwrite entries that are ' +
-            'still on disk. Repair or delete the file first',
-          code: 'denylist_unreadable',
-          path: resolveAoiBrowserDriveAllowlistPath(params.openroomHome),
-        },
-      };
-    }
     if (params.method === 'POST') {
       const id = typeof params.body.id === 'string' ? params.body.id : '';
       const domain = typeof params.body.domain === 'string' ? params.body.domain : '';
@@ -1226,7 +1229,16 @@ export async function resolveAoiHostBridgeRoute(
       // Compute the new list from state read INSIDE the lock. Building it from
       // the snapshot above and only writing under the lock is an atomic write of
       // a stale value, which still discards the other process's entry.
-      const { result, saved } = updateAoiBrowserDriveAllowlist(params.openroomHome, (fresh) => {
+      const { result, saved } = updateAoiBrowserDriveAllowlist<
+        { unreadable: true } | { added: boolean; reason?: string }
+      >(params.openroomHome, (fresh) => {
+        // Checked HERE, against the state the lock is protecting. Checked on the
+        // way in instead, it was a load-then-mutate window: the file can become
+        // unreadable in between, and writing then discards the entries still on
+        // disk -- the loss this guard exists to prevent.
+        if (fresh.unreadable === true) {
+          return { next: null, result: { unreadable: true as const } };
+        }
         const added = addAoiBrowserDriveAllowlistEntry(
           fresh,
           { ...(id ? { id } : {}), domain, ...(label ? { label } : {}) },
@@ -1234,6 +1246,9 @@ export async function resolveAoiHostBridgeRoute(
         );
         return { next: added.added ? added.allowlist : null, result: added };
       });
+      if ('unreadable' in result) {
+        return denylistUnreadableResponse(params.openroomHome);
+      }
       if (!result.added) {
         return { status: 400, payload: { ok: false, error: result.reason, code: 'bad_request' } };
       }
@@ -1244,10 +1259,21 @@ export async function resolveAoiHostBridgeRoute(
     }
     if (params.method === 'DELETE') {
       const id = typeof params.body.id === 'string' ? params.body.id : '';
-      const { saved } = updateAoiBrowserDriveAllowlist(params.openroomHome, (fresh) => ({
-        next: removeAoiBrowserDriveAllowlistEntry(fresh, id, params.now),
-        result: null,
-      }));
+      const { result, saved } = updateAoiBrowserDriveAllowlist<{ unreadable: true } | null>(
+        params.openroomHome,
+        (fresh) => {
+          if (fresh.unreadable === true) {
+            return { next: null, result: { unreadable: true as const } };
+          }
+          return {
+            next: removeAoiBrowserDriveAllowlistEntry(fresh, id, params.now),
+            result: null,
+          };
+        },
+      );
+      if (result && 'unreadable' in result) {
+        return denylistUnreadableResponse(params.openroomHome);
+      }
       return {
         status: 200,
         payload: { ok: true, entries: saved?.entries ?? [], mode: 'denylist' },

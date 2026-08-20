@@ -5,6 +5,7 @@ import { join } from 'path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  AoiHostStoreLockReentered,
   AoiHostStoreLockTimeout,
   resolveAoiHostStoreLockPath,
   withAoiHostStoreLock,
@@ -80,5 +81,34 @@ describe('withAoiHostStoreLock', () => {
     expect(
       withAoiHostStoreLock(home, 'standing-grants', () => 'independent', { timeoutMs: 30 }),
     ).toBe('independent');
+  });
+
+  it('names ITSELF when a critical section nests, rather than blaming another process', () => {
+    // O_EXCL cannot tell "someone else has it" from "I have it". Without the
+    // check the inner call waits on itself for the full timeout and then reports
+    // that another process is holding the lock -- confidently, and wrongly.
+    const home = makeHome();
+    let innerRan = false;
+    expect(() =>
+      withAoiHostStoreLock(home, 'approvals', () =>
+        withAoiHostStoreLock(home, 'approvals', () => {
+          innerRan = true;
+        }),
+      ),
+    ).toThrow(AoiHostStoreLockReentered);
+    expect(innerRan).toBe(false);
+    // And the outer release still happened, so the store is usable after.
+    expect(withAoiHostStoreLock(home, 'approvals', () => 'usable')).toBe('usable');
+  });
+
+  it('still allows a DIFFERENT store inside one critical section', () => {
+    // Only re-entering the SAME lock is the error; the gate legitimately touches
+    // approvals and then standing grants.
+    const home = makeHome();
+    expect(
+      withAoiHostStoreLock(home, 'approvals', () =>
+        withAoiHostStoreLock(home, 'standing-grants', () => 'nested-ok'),
+      ),
+    ).toBe('nested-ok');
   });
 });
