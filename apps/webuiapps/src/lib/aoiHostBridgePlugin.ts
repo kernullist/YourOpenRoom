@@ -62,6 +62,7 @@ import {
 } from './aoiHostBrowserRead';
 import { AOI_BROWSER_DRIVE_SOURCE_ID } from './aoiBrowserDrive';
 import { AoiBrowserDriveStartError, startAoiBrowserDriveSession } from './aoiBrowserDriveSession';
+import { AoiHostStoreLockTimeout, withAoiHostStoreLock } from './aoiHostStoreLock';
 import {
   addAoiBrowserDriveAllowlistEntry,
   isAoiBrowserDriveUrlAllowed,
@@ -100,6 +101,7 @@ import {
   loadAoiBrowserDriveStandingGrantStore,
   pruneAoiBrowserDriveStandingGrants,
   removeAoiBrowserDriveStandingGrant,
+  consumeAoiBrowserDriveStandingGrantAtomic,
   saveAoiBrowserDriveStandingGrantStore,
 } from './aoiBrowserDriveStandingGrant';
 import {
@@ -168,6 +170,7 @@ import {
 import {
   approveAoiHostBridgeApproval,
   consumeAoiHostBridgeApproval,
+  consumeAoiHostBridgeApprovalAtomic,
   loadAoiHostBridgeApprovalStore,
   recordAoiHostBridgePendingApproval,
   saveAoiHostBridgeApprovalStore,
@@ -504,17 +507,16 @@ async function runAoiBrowserDriveExecuteDefault(options: {
     AOI_BROWSER_DRIVE_STANDING_CAPABILITY,
   );
   const gate = makeAoiBrowserDriveStoreApprovalGate({
-    loadStore: () => loadAoiHostBridgeApprovalStore(options.openroomHome),
-    saveStore: (store) => {
-      saveAoiHostBridgeApprovalStore(options.openroomHome, store);
-    },
+    // The atomic forms: load, consume and save inside one cross-process lock.
+    // Assembled by hand from load/save this could be -- and was -- interleaved
+    // by the other process, consuming one approval twice.
+    consumeApproval: (params) => consumeAoiHostBridgeApprovalAtomic(options.openroomHome, params),
     now: options.now,
     standing: {
       enabled: standingEnabled,
       loadGrants: () => loadAoiBrowserDriveStandingGrantStore(options.openroomHome),
-      saveGrants: (store) => {
-        saveAoiBrowserDriveStandingGrantStore(options.openroomHome, store);
-      },
+      consumeGrant: (grantId, now) =>
+        consumeAoiBrowserDriveStandingGrantAtomic(options.openroomHome, grantId, now),
     },
   });
   // One run id per execute call groups its steps in the audit ledger; artifacts are
@@ -604,27 +606,9 @@ export async function resolveAoiHostBridgeRoute(
   // body: { action: 'panic' | 'clear_panic' | 'set', capability?, enabled? }
   if (params.method === 'POST' && params.route === '/killswitch') {
     const action = typeof params.body.action === 'string' ? params.body.action : '';
-    const current = loadAoiHostBridgeKillSwitchState(params.openroomHome);
-    let next: AoiHostBridgeKillSwitchState;
-    if (action === 'panic') {
-      next = engageAoiHostBridgePanic(current, params.now);
-    } else if (action === 'clear_panic') {
-      next = clearAoiHostBridgePanic(current, params.now);
-    } else if (action === 'set') {
-      const capability = typeof params.body.capability === 'string' ? params.body.capability : '';
-      const enabled = params.body.enabled === true;
-      if (!capability) {
-        return {
-          status: 400,
-          payload: {
-            ok: false,
-            error: 'capability is required for action=set',
-            code: 'bad_request',
-          },
-        };
-      }
-      next = setAoiHostBridgeCapability(current, capability, enabled, params.now);
-    } else {
+    // Validate BEFORE taking the lock; only the read-modify-write below needs to
+    // be exclusive, and a bad request should not wait on another process.
+    if (action !== 'panic' && action !== 'clear_panic' && action !== 'set') {
       return {
         status: 400,
         payload: {
@@ -634,7 +618,54 @@ export async function resolveAoiHostBridgeRoute(
         },
       };
     }
-    const saved = saveAoiHostBridgeKillSwitchState(params.openroomHome, next);
+    const capability = typeof params.body.capability === 'string' ? params.body.capability : '';
+    if (action === 'set' && !capability) {
+      return {
+        status: 400,
+        payload: {
+          ok: false,
+          error: 'capability is required for action=set',
+          code: 'bad_request',
+        },
+      };
+    }
+    // Re-read and re-apply INSIDE the lock. The state read above can be stale by
+    // the time we write: the daemon and the dev server both serve this route
+    // over one store, so a toggle computed from an old snapshot silently
+    // discards whatever the other process just wrote -- including an operator
+    // switching something OFF.
+    let saved: AoiHostBridgeKillSwitchState;
+    try {
+      saved = withAoiHostStoreLock(params.openroomHome, 'killswitch', () => {
+        const fresh = loadAoiHostBridgeKillSwitchState(params.openroomHome);
+        let applied: AoiHostBridgeKillSwitchState;
+        if (action === 'panic') {
+          applied = engageAoiHostBridgePanic(fresh, params.now);
+        } else if (action === 'clear_panic') {
+          applied = clearAoiHostBridgePanic(fresh, params.now);
+        } else {
+          applied = setAoiHostBridgeCapability(
+            fresh,
+            capability,
+            params.body.enabled === true,
+            params.now,
+          );
+        }
+        return saveAoiHostBridgeKillSwitchState(params.openroomHome, applied);
+      });
+    } catch (error) {
+      if (error instanceof AoiHostStoreLockTimeout) {
+        return {
+          status: 409,
+          payload: {
+            ok: false,
+            error: 'the kill-switch store is busy; nothing was changed',
+            code: 'killswitch_store_busy',
+          },
+        };
+      }
+      throw error;
+    }
     return { status: 200, payload: { ok: true, killSwitch: summarizeKillSwitch(saved) } };
   }
 

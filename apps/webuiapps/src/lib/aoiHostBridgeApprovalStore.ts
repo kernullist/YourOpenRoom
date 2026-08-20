@@ -28,6 +28,8 @@
 // Machine-scoped under ~/.openroom/host-bridge/approvals.json. Server-only (fs).
 // The pure state helpers are exported for unit testing without the filesystem.
 import * as fs from 'fs';
+
+import { withAoiHostStoreLock } from './aoiHostStoreLock';
 import { dirname, resolve } from 'path';
 import { randomUUID } from 'crypto';
 
@@ -301,6 +303,34 @@ export function consumeAoiHostBridgeApproval(
 }
 
 // --- Persistence -------------------------------------------------------------
+
+/**
+ * Load, consume, and save under an exclusive cross-process lock.
+ *
+ * The three steps have to be ONE critical section. Done separately, the daemon
+ * and the dev server -- separate processes over one store -- could both load a
+ * store still holding the approval, both consume it, and both save: one click
+ * authorizing two actions. That is not a lost update, it is the approval doing
+ * the opposite of its job.
+ *
+ * Prefer this over calling load/consume/save yourself; the loose form is kept
+ * only for pure tests and for callers already inside a lock.
+ */
+export function consumeAoiHostBridgeApprovalAtomic(
+  openroomHome: string,
+  params: { capability: string; approvalFingerprint: string; now: number },
+): { store: AoiHostBridgeApprovalStoreData; ok: boolean; reason?: string } {
+  return withAoiHostStoreLock(openroomHome, 'approvals', () => {
+    const result = consumeAoiHostBridgeApproval(
+      loadAoiHostBridgeApprovalStore(openroomHome),
+      params,
+    );
+    if (result.ok) {
+      saveAoiHostBridgeApprovalStore(openroomHome, result.store);
+    }
+    return result;
+  });
+}
 
 export function resolveAoiHostBridgeApprovalStorePath(openroomHome: string): string {
   return resolve(openroomHome, HOST_BRIDGE_DIR, APPROVALS_FILE);

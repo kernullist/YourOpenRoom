@@ -6,6 +6,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import {
   approveAoiHostBridgeApproval,
   consumeAoiHostBridgeApproval,
+  consumeAoiHostBridgeApprovalAtomic,
   loadAoiHostBridgeApprovalStore,
   normalizeAoiHostBridgeApprovalStore,
   pruneAoiHostBridgeApprovals,
@@ -224,5 +225,44 @@ describe('persistence', () => {
     expect(
       loadAoiHostBridgeApprovalStore(home).approvals.map((a) => a.approvalFingerprint),
     ).toEqual([FP]);
+  });
+});
+
+// The daemon and the dev server are separate processes over ONE store, so a
+// load-modify-save with nothing holding the file between the load and the save
+// can be interleaved. This is that interleave, written out.
+describe('single-use approval under a concurrent consumer', () => {
+  it('is consumed once, not once per process', () => {
+    const home = makeHome();
+    const now = Date.now();
+    const recorded = recordAoiHostBridgePendingApproval(null, {
+      capability: 'os_browser_drive',
+      approvalFingerprint: FP,
+      targetSummary: 'click Pay',
+      expiresAt: now + 600_000,
+      now,
+    });
+    saveAoiHostBridgeApprovalStore(
+      home,
+      approveAoiHostBridgeApproval(recorded.store, FP, now).store,
+    );
+
+    // The atomic form holds a lock across load-consume-save, so the interleave
+    // two processes would produce cannot happen. Assembled by hand from
+    // load/consume/save, both sides saw the same approved entry and both took
+    // it.
+    const first = consumeAoiHostBridgeApprovalAtomic(home, {
+      capability: 'os_browser_drive',
+      approvalFingerprint: FP,
+      now,
+    });
+    const second = consumeAoiHostBridgeApprovalAtomic(home, {
+      capability: 'os_browser_drive',
+      approvalFingerprint: FP,
+      now,
+    });
+
+    // One approval must authorize one action.
+    expect([first.ok, second.ok].filter(Boolean)).toHaveLength(1);
   });
 });

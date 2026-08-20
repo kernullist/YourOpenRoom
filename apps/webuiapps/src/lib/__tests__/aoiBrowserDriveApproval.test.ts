@@ -9,11 +9,13 @@ import { AOI_BROWSER_DRIVE_CAPABILITY } from '../aoiBrowserDrive';
 import { computeAoiBrowserDriveActionFingerprint } from '../aoiBrowserDriveExecutor';
 import {
   approveAoiHostBridgeApproval,
+  consumeAoiHostBridgeApproval,
   DEFAULT_AOI_HOST_BRIDGE_APPROVAL_STORE,
   type AoiHostBridgeApprovalStoreData,
 } from '../aoiHostBridgeApprovalStore';
 import {
   addAoiBrowserDriveStandingGrant,
+  consumeAoiBrowserDriveStandingGrant,
   type AoiBrowserDriveStandingGrantStore,
 } from '../aoiBrowserDriveStandingGrant';
 import type { AoiBrowserDrivePlan } from '../aoiBrowserDrivePlan';
@@ -97,7 +99,20 @@ describe('approval store round-trip via the gate', () => {
       approvals: [],
     };
     return {
-      loadStore: () => store,
+      // The gate now takes ONE consume operation rather than a load/save pair,
+      // because assembling those by hand is what let two processes consume the
+      // same single-use approval.
+      consumeApproval: (params: {
+        capability: string;
+        approvalFingerprint: string;
+        now: number;
+      }) => {
+        const result = consumeAoiHostBridgeApproval(store, params);
+        if (result.ok) {
+          store = result.store;
+        }
+        return result;
+      },
       saveStore: (next: AoiHostBridgeApprovalStoreData) => {
         store = next;
       },
@@ -119,8 +134,7 @@ describe('approval store round-trip via the gate', () => {
 
     // Gate denies BEFORE the operator approves (pending != approved).
     const gate = makeAoiBrowserDriveStoreApprovalGate({
-      loadStore: mem.loadStore,
-      saveStore: mem.saveStore,
+      consumeApproval: mem.consumeApproval,
       now: 1_100,
     });
     const beforeApprove = await gate({
@@ -158,8 +172,7 @@ describe('approval store round-trip via the gate', () => {
   it('denies an unknown fingerprint fail-closed', async () => {
     const mem = makeMemStore();
     const gate = makeAoiBrowserDriveStoreApprovalGate({
-      loadStore: mem.loadStore,
-      saveStore: mem.saveStore,
+      consumeApproval: mem.consumeApproval,
       now: 1,
     });
     const verdict = await gate({
@@ -180,10 +193,21 @@ describe('standing-grant fallback (P3.1)', () => {
       approvals: [],
     };
     return {
-      loadStore: () => store,
+      consumeApproval: (params: {
+        capability: string;
+        approvalFingerprint: string;
+        now: number;
+      }) => {
+        const result = consumeAoiHostBridgeApproval(store, params);
+        if (result.ok) {
+          store = result.store;
+        }
+        return result;
+      },
       saveStore: (next: AoiHostBridgeApprovalStoreData) => {
         store = next;
       },
+      current: () => store,
     };
   }
 
@@ -195,14 +219,17 @@ describe('standing-grant fallback (P3.1)', () => {
       1_000,
     ).store;
     const gate = makeAoiBrowserDriveStoreApprovalGate({
-      loadStore: mem.loadStore,
-      saveStore: mem.saveStore,
+      consumeApproval: mem.consumeApproval,
       now: 1_100,
       standing: {
         enabled: true,
         loadGrants: () => grants,
-        saveGrants: (next) => {
-          grants = next;
+        consumeGrant: (grantId: string, now: number) => {
+          const result = consumeAoiBrowserDriveStandingGrant(grants, grantId, now);
+          if (result.consumed) {
+            grants = result.store;
+          }
+          return result;
         },
       },
     });
@@ -221,10 +248,13 @@ describe('standing-grant fallback (P3.1)', () => {
     const mem = makeMemStore();
     const grants = addAoiBrowserDriveStandingGrant(null, { domain: 'example.com' }, 1_000).store;
     const gate = makeAoiBrowserDriveStoreApprovalGate({
-      loadStore: mem.loadStore,
-      saveStore: mem.saveStore,
+      consumeApproval: mem.consumeApproval,
       now: 1_100,
-      standing: { enabled: false, loadGrants: () => grants, saveGrants: () => {} },
+      standing: {
+        enabled: false,
+        loadGrants: () => grants,
+        consumeGrant: () => ({ consumed: false }),
+      },
     });
     const verdict = await gate({
       fingerprint: 'ff00aa',
@@ -239,10 +269,13 @@ describe('standing-grant fallback (P3.1)', () => {
     const mem = makeMemStore();
     const grants = addAoiBrowserDriveStandingGrant(null, { domain: 'example.com' }, 1_000).store;
     const gate = makeAoiBrowserDriveStoreApprovalGate({
-      loadStore: mem.loadStore,
-      saveStore: mem.saveStore,
+      consumeApproval: mem.consumeApproval,
       now: 1_100,
-      standing: { enabled: true, loadGrants: () => grants, saveGrants: () => {} },
+      standing: {
+        enabled: true,
+        loadGrants: () => grants,
+        consumeGrant: () => ({ consumed: false }),
+      },
     });
     const verdict = await gate({
       fingerprint: 'ff00aa',
@@ -260,18 +293,21 @@ describe('standing-grant fallback (P3.1)', () => {
     if (!preview.ok) {
       throw new Error('expected ok preview');
     }
-    mem.saveStore(recordAoiBrowserDriveActPendingApproval(mem.loadStore(), preview, 1_000).store);
-    mem.saveStore(approveAoiHostBridgeApproval(mem.loadStore(), preview.fingerprint, 1_050).store);
+    mem.saveStore(recordAoiBrowserDriveActPendingApproval(mem.current(), preview, 1_000).store);
+    mem.saveStore(approveAoiHostBridgeApproval(mem.current(), preview.fingerprint, 1_050).store);
     let grants = addAoiBrowserDriveStandingGrant(null, { domain: 'example.com' }, 1_000).store;
     const gate = makeAoiBrowserDriveStoreApprovalGate({
-      loadStore: mem.loadStore,
-      saveStore: mem.saveStore,
+      consumeApproval: mem.consumeApproval,
       now: 1_100,
       standing: {
         enabled: true,
         loadGrants: () => grants,
-        saveGrants: (next) => {
-          grants = next;
+        consumeGrant: (grantId: string, now: number) => {
+          const result = consumeAoiBrowserDriveStandingGrant(grants, grantId, now);
+          if (result.consumed) {
+            grants = result.store;
+          }
+          return result;
         },
       },
     });

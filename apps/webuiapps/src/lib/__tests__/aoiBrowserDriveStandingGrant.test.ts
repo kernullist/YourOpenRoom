@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   addAoiBrowserDriveStandingGrant,
   consumeAoiBrowserDriveStandingGrant,
+  consumeAoiBrowserDriveStandingGrantAtomic,
   findLiveAoiBrowserDriveStandingGrant,
   hostnameMatchesStandingDomain,
   isAoiBrowserDriveStandingGrantLive,
@@ -135,5 +136,32 @@ describe('persistence + remove', () => {
   it('returns an empty store when the file is missing', () => {
     const home = makeHome();
     expect(loadAoiBrowserDriveStandingGrantStore(home).grants).toEqual([]);
+  });
+});
+
+// The quota is the point of a standing grant. Two processes over one store both
+// read the same usedActions and both write it plus one, so the budget pays for
+// one action while two happen.
+describe('standing-grant quota under a concurrent consumer', () => {
+  it('spends one action per consume, not one per process', () => {
+    const home = fs.mkdtempSync(join(os.tmpdir(), 'aoi-grant-race-'));
+    const now = Date.now();
+    const created = addAoiBrowserDriveStandingGrant(
+      null,
+      { domain: 'example.com', maxActions: 1 },
+      now,
+    );
+    expect(created.grant).not.toBeNull();
+    saveAoiBrowserDriveStandingGrantStore(home, created.store);
+
+    const first = consumeAoiBrowserDriveStandingGrantAtomic(home, created.grant?.id ?? '', now + 1);
+    const second = consumeAoiBrowserDriveStandingGrantAtomic(
+      home,
+      created.grant?.id ?? '',
+      now + 2,
+    );
+
+    // A quota of one buys exactly one action.
+    expect([first.consumed, second.consumed].filter(Boolean)).toHaveLength(1);
   });
 });

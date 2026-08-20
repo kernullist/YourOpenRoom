@@ -26,6 +26,7 @@
 // until P2.3b wires the routes.
 
 import { AOI_BROWSER_DRIVE_CAPABILITY } from './aoiBrowserDrive';
+import { AoiHostStoreLockTimeout } from './aoiHostStoreLock';
 import {
   classifyAoiBrowserDriveAction,
   type AoiBrowserDriveActionRequest,
@@ -36,12 +37,10 @@ import {
 } from './aoiBrowserDriveExecutor';
 import { classifyAoiBrowserDrivePlan, type AoiBrowserDrivePlan } from './aoiBrowserDrivePlan';
 import {
-  consumeAoiHostBridgeApproval,
   recordAoiHostBridgePendingApproval,
   type AoiHostBridgeApprovalStoreData,
 } from './aoiHostBridgeApprovalStore';
 import {
-  consumeAoiBrowserDriveStandingGrant,
   findLiveAoiBrowserDriveStandingGrant,
   type AoiBrowserDriveStandingGrantStore,
 } from './aoiBrowserDriveStandingGrant';
@@ -193,12 +192,26 @@ export function recordAoiBrowserDriveActPendingApproval(
 export interface AoiBrowserDriveStandingFallback {
   enabled: boolean;
   loadGrants: () => AoiBrowserDriveStandingGrantStore;
-  saveGrants: (store: AoiBrowserDriveStandingGrantStore) => void;
+  // Consume one action. Must be ATOMIC across processes -- see consumeApproval.
+  // It re-checks liveness itself, so finding the grant outside the lock is fine.
+  consumeGrant: (grantId: string, now: number) => { consumed: boolean };
 }
 
 export interface AoiBrowserDriveApprovalGateDeps {
-  loadStore: () => AoiHostBridgeApprovalStoreData;
-  saveStore: (store: AoiHostBridgeApprovalStoreData) => void;
+  /**
+   * Consume the single-use approval, ATOMICALLY.
+   *
+   * This used to be a loadStore/saveStore pair, and the gate did load, consume,
+   * save. The daemon and the dev server are separate processes over one store,
+   * so both could load a store still holding the approval, both consume it, and
+   * both save -- one operator click authorizing two actions. One consume
+   * operation, holding a lock across the whole read-modify-write, is the only
+   * shape that cannot be assembled wrongly by a caller.
+   */
+  consumeApproval: (params: { capability: string; approvalFingerprint: string; now: number }) => {
+    ok: boolean;
+    reason?: string;
+  };
   now: number;
   capability?: string;
   standing?: AoiBrowserDriveStandingFallback;
@@ -224,13 +237,24 @@ export function makeAoiBrowserDriveStoreApprovalGate(
 ): AoiBrowserDriveApprovalGate {
   const capability = deps.capability ?? AOI_BROWSER_DRIVE_CAPABILITY;
   return async ({ fingerprint, url }) => {
-    const consumed = consumeAoiHostBridgeApproval(deps.loadStore(), {
-      capability,
-      approvalFingerprint: fingerprint,
-      now: deps.now,
-    });
+    // A lock timeout means the consume did NOT happen, which is a denial with a
+    // reason -- not an exception for the route to render as a server error. The
+    // distinction matters to the model: "busy, try again" is actionable, an
+    // opaque 500 is not.
+    let consumed: { ok: boolean; reason?: string };
+    try {
+      consumed = deps.consumeApproval({
+        capability,
+        approvalFingerprint: fingerprint,
+        now: deps.now,
+      });
+    } catch (error) {
+      if (error instanceof AoiHostStoreLockTimeout) {
+        return { approved: false, reason: 'approval_store_busy' };
+      }
+      throw error;
+    }
     if (consumed.ok) {
-      deps.saveStore(consumed.store);
       return { approved: true };
     }
     // Standing-grant fallback: only when explicitly enabled by the caller.
@@ -243,14 +267,16 @@ export function makeAoiBrowserDriveStoreApprovalGate(
           deps.now,
         );
         if (grant) {
-          const result = consumeAoiBrowserDriveStandingGrant(
-            deps.standing.loadGrants(),
-            grant.id,
-            deps.now,
-          );
-          if (result.consumed) {
-            deps.standing.saveGrants(result.store);
-            return { approved: true, viaStanding: true };
+          try {
+            const result = deps.standing.consumeGrant(grant.id, deps.now);
+            if (result.consumed) {
+              return { approved: true, viaStanding: true };
+            }
+          } catch (error) {
+            if (error instanceof AoiHostStoreLockTimeout) {
+              return { approved: false, reason: 'standing_store_busy' };
+            }
+            throw error;
           }
         }
       }

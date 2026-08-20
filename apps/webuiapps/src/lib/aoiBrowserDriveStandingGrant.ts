@@ -18,6 +18,8 @@
 // testing. Inert until P3.1b wires the approval gate.
 
 import * as fs from 'fs';
+
+import { withAoiHostStoreLock } from './aoiHostStoreLock';
 import { dirname, resolve } from 'path';
 import { randomUUID } from 'crypto';
 
@@ -299,6 +301,31 @@ export function loadAoiBrowserDriveStandingGrantStore(
   } catch {
     return { ...DEFAULT_AOI_BROWSER_DRIVE_STANDING_GRANT_STORE, grants: [] };
   }
+}
+
+/**
+ * Consume one action from a grant under the same cross-process lock.
+ *
+ * The quota is the whole point of a standing grant: without the lock two
+ * processes read the same usedActions, both write it plus one, and the budget
+ * pays for one action while two happen.
+ */
+export function consumeAoiBrowserDriveStandingGrantAtomic(
+  openroomHome: string,
+  grantId: string,
+  now: number,
+): { store: AoiBrowserDriveStandingGrantStore; consumed: boolean } {
+  return withAoiHostStoreLock(openroomHome, 'standing-grants', () => {
+    const result = consumeAoiBrowserDriveStandingGrant(
+      loadAoiBrowserDriveStandingGrantStore(openroomHome),
+      grantId,
+      now,
+    );
+    if (result.consumed) {
+      saveAoiBrowserDriveStandingGrantStore(openroomHome, result.store);
+    }
+    return result;
+  });
 }
 
 export function saveAoiBrowserDriveStandingGrantStore(
