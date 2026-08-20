@@ -28,6 +28,7 @@
 //
 // Server-only (fs / child_process). The allowlist helpers and policy evaluation
 // are PURE and unit-tested; the runner is exercised with an injected spawn.
+import { withAoiHostStoreLock } from './aoiHostStoreLock';
 import * as fs from 'fs';
 import { spawn } from 'child_process';
 import { dirname, isAbsolute, resolve } from 'path';
@@ -386,6 +387,27 @@ export function loadAoiHostSpawnAllowlist(openroomHome: string): AoiHostSpawnAll
   } catch {
     return { ...DEFAULT_AOI_HOST_SPAWN_ALLOWLIST, entries: [] };
   }
+}
+
+/**
+ * Load, mutate and save under the cross-process store lock.
+ *
+ * The daemon and the dev server are separate processes over one openroomHome,
+ * so a load-modify-save assembled from the pieces can be interleaved and the
+ * loser's write silently lost. The mutator receives state read INSIDE the lock;
+ * returning null means "do not save".
+ *
+ * The mutator must be synchronous -- an async one would release the lock at its
+ * first await while the rest of the work continued.
+ */
+export function updateAoiHostSpawnAllowlist<R>(
+  openroomHome: string,
+  mutate: (current: AoiHostSpawnAllowlist) => { next: AoiHostSpawnAllowlist | null; result: R },
+): { result: R; saved: AoiHostSpawnAllowlist | null } {
+  return withAoiHostStoreLock(openroomHome, 'spawn-allowlist', () => {
+    const { next, result } = mutate(loadAoiHostSpawnAllowlist(openroomHome));
+    return { result, saved: next ? saveAoiHostSpawnAllowlist(openroomHome, next) : null };
+  });
 }
 
 export function saveAoiHostSpawnAllowlist(

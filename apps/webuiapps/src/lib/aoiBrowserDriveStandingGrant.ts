@@ -328,6 +328,33 @@ export function consumeAoiBrowserDriveStandingGrantAtomic(
   });
 }
 
+/**
+ * Load, mutate and save under the cross-process store lock.
+ *
+ * The daemon and the dev server are separate processes over one openroomHome,
+ * so a load-modify-save assembled from the pieces can be interleaved and the
+ * loser's write silently lost. The mutator receives state read INSIDE the lock;
+ * returning null means "do not save".
+ *
+ * The mutator must be synchronous -- an async one would release the lock at its
+ * first await while the rest of the work continued.
+ */
+export function updateAoiBrowserDriveStandingGrantStore<R>(
+  openroomHome: string,
+  mutate: (current: AoiBrowserDriveStandingGrantStore) => {
+    next: AoiBrowserDriveStandingGrantStore | null;
+    result: R;
+  },
+): { result: R; saved: AoiBrowserDriveStandingGrantStore | null } {
+  return withAoiHostStoreLock(openroomHome, 'standing-grants', () => {
+    const { next, result } = mutate(loadAoiBrowserDriveStandingGrantStore(openroomHome));
+    return {
+      result,
+      saved: next ? saveAoiBrowserDriveStandingGrantStore(openroomHome, next) : null,
+    };
+  });
+}
+
 export function saveAoiBrowserDriveStandingGrantStore(
   openroomHome: string,
   store: AoiBrowserDriveStandingGrantStore,

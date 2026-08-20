@@ -38,7 +38,7 @@ import { evaluateAoiHostBridgeGate } from './aoiHostBridgeGate';
 import {
   loadAoiBrowserDriveProfileConfig,
   normalizeAoiBrowserDriveProfilePath,
-  saveAoiBrowserDriveProfileConfig,
+  updateAoiBrowserDriveProfileConfig,
   selectAoiBrowserDriveUserDataDir,
 } from './aoiBrowserDriveProfile';
 import { resolveAoiBrowserDriveDefaultUserDataDir } from './aoiBrowserDrive';
@@ -69,7 +69,7 @@ import {
   loadAoiBrowserDriveAllowlist,
   resolveAoiBrowserDriveAllowlistPath,
   removeAoiBrowserDriveAllowlistEntry,
-  saveAoiBrowserDriveAllowlist,
+  updateAoiBrowserDriveAllowlist,
   type AoiBrowserDriveAllowlist,
 } from './aoiBrowserDriveAllowlist';
 import {
@@ -88,7 +88,7 @@ import {
 import {
   buildAoiBrowserDriveActApprovalPreview,
   makeAoiBrowserDriveStoreApprovalGate,
-  recordAoiBrowserDriveActPendingApproval,
+  recordAoiBrowserDriveActPendingApprovalAtomic,
 } from './aoiBrowserDriveApproval';
 import {
   loadAoiBrowserDriveAuditEntries,
@@ -102,7 +102,7 @@ import {
   pruneAoiBrowserDriveStandingGrants,
   removeAoiBrowserDriveStandingGrant,
   consumeAoiBrowserDriveStandingGrantAtomic,
-  saveAoiBrowserDriveStandingGrantStore,
+  updateAoiBrowserDriveStandingGrantStore,
 } from './aoiBrowserDriveStandingGrant';
 import {
   AOI_BROWSER_DRIVE_TASK_CAPABILITY,
@@ -118,7 +118,7 @@ import {
   evaluateAoiHostSpawnPolicy,
   loadAoiHostSpawnAllowlist,
   removeAoiHostSpawnAllowlistEntry,
-  saveAoiHostSpawnAllowlist,
+  updateAoiHostSpawnAllowlist,
 } from './aoiHostProcessSpawn';
 import {
   AOI_HOST_FILE_READ_CAPABILITY,
@@ -127,7 +127,7 @@ import {
   loadAoiHostReadRoots,
   readAoiHostFileContent,
   removeAoiHostReadRoot,
-  saveAoiHostReadRoots,
+  updateAoiHostReadRoots,
   statAoiHostPath,
 } from './aoiHostFileRead';
 import {
@@ -137,7 +137,7 @@ import {
   loadAoiHostWriteRoots,
   removeAoiHostWriteRoot,
   runAoiHostFileWrite,
-  saveAoiHostWriteRoots,
+  updateAoiHostWriteRoots,
 } from './aoiHostFileWrite';
 import { runAoiHostSpawn } from './aoiHostProcessSpawn';
 import { recordAoiHostSpawnedProcess, loadAoiHostSpawnedPids } from './aoiHostSpawnAudit';
@@ -168,12 +168,10 @@ import {
   recycleAoiHostFile,
 } from './aoiHostBridgeOsImpl';
 import {
-  approveAoiHostBridgeApproval,
-  consumeAoiHostBridgeApproval,
   consumeAoiHostBridgeApprovalAtomic,
   loadAoiHostBridgeApprovalStore,
-  recordAoiHostBridgePendingApproval,
-  saveAoiHostBridgeApprovalStore,
+  recordAoiHostBridgePendingApprovalAtomic,
+  approveAoiHostBridgeApprovalAtomic,
 } from './aoiHostBridgeApprovalStore';
 import { loadAoiEnvironmentSourceRegistry } from './aoiAutonomyStore';
 import { checkAoiEnvironmentSourceOperation } from './aoiAutonomyPolicy';
@@ -965,12 +963,7 @@ export async function resolveAoiHostBridgeRoute(
           },
         };
       }
-      const recorded = recordAoiBrowserDriveActPendingApproval(
-        loadAoiHostBridgeApprovalStore(params.openroomHome),
-        approval,
-        params.now,
-      );
-      saveAoiHostBridgeApprovalStore(params.openroomHome, recorded.store);
+      recordAoiBrowserDriveActPendingApprovalAtomic(params.openroomHome, approval, params.now);
       return {
         status: 200,
         payload: {
@@ -1160,30 +1153,34 @@ export async function resolveAoiHostBridgeRoute(
       const fixedArgs = Array.isArray(params.body.fixedArgs)
         ? params.body.fixedArgs.filter((arg): arg is string => typeof arg === 'string')
         : undefined;
-      const result = addAoiHostSpawnAllowlistEntry(
-        current,
-        {
-          ...(id ? { id } : {}),
-          path,
-          match,
-          ...(label ? { label } : {}),
-          ...(fixedArgs ? { fixedArgs } : {}),
-        },
-        params.now,
-      );
+      // Re-read inside the lock: `current` above was read before this request
+      // decided anything, and the other process may have written since.
+      const { result, saved } = updateAoiHostSpawnAllowlist(params.openroomHome, (fresh) => {
+        const added = addAoiHostSpawnAllowlistEntry(
+          fresh,
+          {
+            ...(id ? { id } : {}),
+            path,
+            match,
+            ...(label ? { label } : {}),
+            ...(fixedArgs ? { fixedArgs } : {}),
+          },
+          params.now,
+        );
+        return { next: added.added ? added.allowlist : null, result: added };
+      });
       if (!result.added) {
         return { status: 400, payload: { ok: false, error: result.reason, code: 'bad_request' } };
       }
-      const saved = saveAoiHostSpawnAllowlist(params.openroomHome, result.allowlist);
-      return { status: 200, payload: { ok: true, entries: saved.entries } };
+      return { status: 200, payload: { ok: true, entries: saved?.entries ?? [] } };
     }
     if (params.method === 'DELETE') {
       const id = typeof params.body.id === 'string' ? params.body.id : '';
-      const saved = saveAoiHostSpawnAllowlist(
-        params.openroomHome,
-        removeAoiHostSpawnAllowlistEntry(current, id, params.now),
-      );
-      return { status: 200, payload: { ok: true, entries: saved.entries } };
+      const { saved } = updateAoiHostSpawnAllowlist(params.openroomHome, (fresh) => ({
+        next: removeAoiHostSpawnAllowlistEntry(fresh, id, params.now),
+        result: null,
+      }));
+      return { status: 200, payload: { ok: true, entries: saved?.entries ?? [] } };
     }
   }
 
@@ -1226,24 +1223,35 @@ export async function resolveAoiHostBridgeRoute(
       const id = typeof params.body.id === 'string' ? params.body.id : '';
       const domain = typeof params.body.domain === 'string' ? params.body.domain : '';
       const label = typeof params.body.label === 'string' ? params.body.label : undefined;
-      const result = addAoiBrowserDriveAllowlistEntry(
-        current,
-        { ...(id ? { id } : {}), domain, ...(label ? { label } : {}) },
-        params.now,
-      );
+      // Compute the new list from state read INSIDE the lock. Building it from
+      // the snapshot above and only writing under the lock is an atomic write of
+      // a stale value, which still discards the other process's entry.
+      const { result, saved } = updateAoiBrowserDriveAllowlist(params.openroomHome, (fresh) => {
+        const added = addAoiBrowserDriveAllowlistEntry(
+          fresh,
+          { ...(id ? { id } : {}), domain, ...(label ? { label } : {}) },
+          params.now,
+        );
+        return { next: added.added ? added.allowlist : null, result: added };
+      });
       if (!result.added) {
         return { status: 400, payload: { ok: false, error: result.reason, code: 'bad_request' } };
       }
-      const saved = saveAoiBrowserDriveAllowlist(params.openroomHome, result.allowlist);
-      return { status: 200, payload: { ok: true, entries: saved.entries, mode: 'denylist' } };
+      return {
+        status: 200,
+        payload: { ok: true, entries: saved?.entries ?? [], mode: 'denylist' },
+      };
     }
     if (params.method === 'DELETE') {
       const id = typeof params.body.id === 'string' ? params.body.id : '';
-      const saved = saveAoiBrowserDriveAllowlist(
-        params.openroomHome,
-        removeAoiBrowserDriveAllowlistEntry(current, id, params.now),
-      );
-      return { status: 200, payload: { ok: true, entries: saved.entries, mode: 'denylist' } };
+      const { saved } = updateAoiBrowserDriveAllowlist(params.openroomHome, (fresh) => ({
+        next: removeAoiBrowserDriveAllowlistEntry(fresh, id, params.now),
+        result: null,
+      }));
+      return {
+        status: 200,
+        payload: { ok: true, entries: saved?.entries ?? [], mode: 'denylist' },
+      };
     }
   }
 
@@ -1268,15 +1276,21 @@ export async function resolveAoiHostBridgeRoute(
       const ttlMs = typeof params.body.ttlMs === 'number' ? params.body.ttlMs : undefined;
       const maxActions =
         typeof params.body.maxActions === 'number' ? params.body.maxActions : undefined;
-      const result = addAoiBrowserDriveStandingGrant(
-        current,
-        {
-          domain,
-          ...(label ? { label } : {}),
-          ...(ttlMs !== undefined ? { ttlMs } : {}),
-          ...(maxActions !== undefined ? { maxActions } : {}),
+      const { result, saved } = updateAoiBrowserDriveStandingGrantStore(
+        params.openroomHome,
+        (fresh) => {
+          const added = addAoiBrowserDriveStandingGrant(
+            fresh,
+            {
+              domain,
+              ...(label ? { label } : {}),
+              ...(ttlMs !== undefined ? { ttlMs } : {}),
+              ...(maxActions !== undefined ? { maxActions } : {}),
+            },
+            params.now,
+          );
+          return { next: added.grant ? added.store : null, result: added };
         },
-        params.now,
       );
       if (!result.grant) {
         return {
@@ -1284,16 +1298,15 @@ export async function resolveAoiHostBridgeRoute(
           payload: { ok: false, error: result.reason ?? 'bad_request', code: 'bad_request' },
         };
       }
-      const saved = saveAoiBrowserDriveStandingGrantStore(params.openroomHome, result.store);
-      return { status: 200, payload: { ok: true, grants: saved.grants } };
+      return { status: 200, payload: { ok: true, grants: saved?.grants ?? [] } };
     }
     if (params.method === 'DELETE') {
       const id = typeof params.body.id === 'string' ? params.body.id : '';
-      const saved = saveAoiBrowserDriveStandingGrantStore(
-        params.openroomHome,
-        removeAoiBrowserDriveStandingGrant(current, id, params.now),
-      );
-      return { status: 200, payload: { ok: true, grants: saved.grants } };
+      const { saved } = updateAoiBrowserDriveStandingGrantStore(params.openroomHome, (fresh) => ({
+        next: removeAoiBrowserDriveStandingGrant(fresh, id, params.now),
+        result: null,
+      }));
+      return { status: 200, payload: { ok: true, grants: saved?.grants ?? [] } };
     }
   }
 
@@ -1315,24 +1328,29 @@ export async function resolveAoiHostBridgeRoute(
       const id = typeof params.body.id === 'string' ? params.body.id : '';
       const path = typeof params.body.path === 'string' ? params.body.path : '';
       const label = typeof params.body.label === 'string' ? params.body.label : undefined;
-      const result = addAoiHostReadRoot(
-        current,
-        { ...(id ? { id } : {}), path, ...(label ? { label } : {}) },
-        params.now,
-      );
+      // Computed from state read INSIDE the lock: building it from the snapshot
+      // above and only writing under the lock is an atomic write of a stale
+      // value, which still discards a root the other process just added.
+      const { result, saved } = updateAoiHostReadRoots(params.openroomHome, (fresh) => {
+        const added = addAoiHostReadRoot(
+          fresh,
+          { ...(id ? { id } : {}), path, ...(label ? { label } : {}) },
+          params.now,
+        );
+        return { next: added.added ? added.config : null, result: added };
+      });
       if (!result.added) {
         return { status: 400, payload: { ok: false, error: result.reason, code: 'bad_request' } };
       }
-      const saved = saveAoiHostReadRoots(params.openroomHome, result.config);
-      return { status: 200, payload: { ok: true, roots: saved.roots } };
+      return { status: 200, payload: { ok: true, roots: saved?.roots ?? [] } };
     }
     if (params.method === 'DELETE') {
       const id = typeof params.body.id === 'string' ? params.body.id : '';
-      const saved = saveAoiHostReadRoots(
-        params.openroomHome,
-        removeAoiHostReadRoot(current, id, params.now),
-      );
-      return { status: 200, payload: { ok: true, roots: saved.roots } };
+      const { saved } = updateAoiHostReadRoots(params.openroomHome, (fresh) => ({
+        next: removeAoiHostReadRoot(fresh, id, params.now),
+        result: null,
+      }));
+      return { status: 200, payload: { ok: true, roots: saved?.roots ?? [] } };
     }
   }
 
@@ -1345,24 +1363,29 @@ export async function resolveAoiHostBridgeRoute(
       const id = typeof params.body.id === 'string' ? params.body.id : '';
       const path = typeof params.body.path === 'string' ? params.body.path : '';
       const label = typeof params.body.label === 'string' ? params.body.label : undefined;
-      const result = addAoiHostWriteRoot(
-        current,
-        { ...(id ? { id } : {}), path, ...(label ? { label } : {}) },
-        params.now,
-      );
+      // Computed from state read INSIDE the lock: building it from the snapshot
+      // above and only writing under the lock is an atomic write of a stale
+      // value, which still discards a root the other process just added.
+      const { result, saved } = updateAoiHostWriteRoots(params.openroomHome, (fresh) => {
+        const added = addAoiHostWriteRoot(
+          fresh,
+          { ...(id ? { id } : {}), path, ...(label ? { label } : {}) },
+          params.now,
+        );
+        return { next: added.added ? added.config : null, result: added };
+      });
       if (!result.added) {
         return { status: 400, payload: { ok: false, error: result.reason, code: 'bad_request' } };
       }
-      const saved = saveAoiHostWriteRoots(params.openroomHome, result.config);
-      return { status: 200, payload: { ok: true, roots: saved.roots } };
+      return { status: 200, payload: { ok: true, roots: saved?.roots ?? [] } };
     }
     if (params.method === 'DELETE') {
       const id = typeof params.body.id === 'string' ? params.body.id : '';
-      const saved = saveAoiHostWriteRoots(
-        params.openroomHome,
-        removeAoiHostWriteRoot(current, id, params.now),
-      );
-      return { status: 200, payload: { ok: true, roots: saved.roots } };
+      const { saved } = updateAoiHostWriteRoots(params.openroomHome, (fresh) => ({
+        next: removeAoiHostWriteRoot(fresh, id, params.now),
+        result: null,
+      }));
+      return { status: 200, payload: { ok: true, roots: saved?.roots ?? [] } };
     }
   }
 
@@ -1452,29 +1475,25 @@ export async function resolveAoiHostBridgeRoute(
       const requestArgs = Array.isArray(params.body.args)
         ? params.body.args.filter((arg): arg is string => typeof arg === 'string')
         : undefined;
-      const recorded = recordAoiHostBridgePendingApproval(
-        loadAoiHostBridgeApprovalStore(params.openroomHome),
-        {
-          capability: AOI_HOST_SPAWN_CAPABILITY,
-          approvalFingerprint: policy.approvalFingerprint,
-          // Show the argument vector (bounded) so the operator approves what will
-          // actually run, not just the program name. The full args are bound in
-          // the fingerprint (aoiHostProcessSpawn), so a hidden tail cannot slip in.
-          targetSummary:
-            `spawn ${policy.label} (${policy.program} ${policy.args.join(' ').slice(0, 200)})`.trim(),
-          expiresAt: policy.expiresAt,
-          now: params.now,
-          // Bound the exact spawn body so Settings → Approvals can Approve & Run
-          // without needing the chat model to call host_process_spawn_run.
-          executePayload: {
-            kind: 'spawn',
-            ...(policy.allowlistId ? { allowlistId: policy.allowlistId } : {}),
-            ...(policy.program ? { programPath: policy.program } : {}),
-            ...(requestArgs && requestArgs.length > 0 ? { args: requestArgs } : {}),
-          },
+      recordAoiHostBridgePendingApprovalAtomic(params.openroomHome, {
+        capability: AOI_HOST_SPAWN_CAPABILITY,
+        approvalFingerprint: policy.approvalFingerprint,
+        // Show the argument vector (bounded) so the operator approves what will
+        // actually run, not just the program name. The full args are bound in
+        // the fingerprint (aoiHostProcessSpawn), so a hidden tail cannot slip in.
+        targetSummary:
+          `spawn ${policy.label} (${policy.program} ${policy.args.join(' ').slice(0, 200)})`.trim(),
+        expiresAt: policy.expiresAt,
+        now: params.now,
+        // Bound the exact spawn body so Settings → Approvals can Approve & Run
+        // without needing the chat model to call host_process_spawn_run.
+        executePayload: {
+          kind: 'spawn',
+          ...(policy.allowlistId ? { allowlistId: policy.allowlistId } : {}),
+          ...(policy.program ? { programPath: policy.program } : {}),
+          ...(requestArgs && requestArgs.length > 0 ? { args: requestArgs } : {}),
         },
-      );
-      saveAoiHostBridgeApprovalStore(params.openroomHome, recorded.store);
+      });
     }
     return {
       status: 200,
@@ -1533,14 +1552,11 @@ export async function resolveAoiHostBridgeRoute(
       allowlist,
       now: params.now,
     });
-    const consumed = consumeAoiHostBridgeApproval(
-      loadAoiHostBridgeApprovalStore(params.openroomHome),
-      {
-        capability: AOI_HOST_SPAWN_CAPABILITY,
-        approvalFingerprint: policy.approvalFingerprint,
-        now: params.now,
-      },
-    );
+    const consumed = consumeAoiHostBridgeApprovalAtomic(params.openroomHome, {
+      capability: AOI_HOST_SPAWN_CAPABILITY,
+      approvalFingerprint: policy.approvalFingerprint,
+      now: params.now,
+    });
     if (!consumed.ok) {
       return {
         status: 403,
@@ -1551,7 +1567,6 @@ export async function resolveAoiHostBridgeRoute(
         },
       };
     }
-    saveAoiHostBridgeApprovalStore(params.openroomHome, consumed.store);
     const result = runAoiHostSpawn({
       request: spawnRequest,
       allowlist,
@@ -1596,17 +1611,13 @@ export async function resolveAoiHostBridgeRoute(
       roots: loadAoiHostWriteRoots(params.openroomHome).roots,
     });
     if (policy.allowed) {
-      const recorded = recordAoiHostBridgePendingApproval(
-        loadAoiHostBridgeApprovalStore(params.openroomHome),
-        {
-          capability: AOI_HOST_FILE_WRITE_CAPABILITY,
-          approvalFingerprint: policy.approvalFingerprint,
-          targetSummary: `write ${policy.resolvedPath} (${policy.byteLength} bytes)`,
-          expiresAt: policy.expiresAt,
-          now: params.now,
-        },
-      );
-      saveAoiHostBridgeApprovalStore(params.openroomHome, recorded.store);
+      recordAoiHostBridgePendingApprovalAtomic(params.openroomHome, {
+        capability: AOI_HOST_FILE_WRITE_CAPABILITY,
+        approvalFingerprint: policy.approvalFingerprint,
+        targetSummary: `write ${policy.resolvedPath} (${policy.byteLength} bytes)`,
+        expiresAt: policy.expiresAt,
+        now: params.now,
+      });
     }
     return {
       status: 200,
@@ -1654,14 +1665,11 @@ export async function resolveAoiHostBridgeRoute(
       request: { requestedPath, content, requestedAt: params.now },
       roots,
     });
-    const consumed = consumeAoiHostBridgeApproval(
-      loadAoiHostBridgeApprovalStore(params.openroomHome),
-      {
-        capability: AOI_HOST_FILE_WRITE_CAPABILITY,
-        approvalFingerprint: policy.approvalFingerprint,
-        now: params.now,
-      },
-    );
+    const consumed = consumeAoiHostBridgeApprovalAtomic(params.openroomHome, {
+      capability: AOI_HOST_FILE_WRITE_CAPABILITY,
+      approvalFingerprint: policy.approvalFingerprint,
+      now: params.now,
+    });
     if (!consumed.ok) {
       return {
         status: 403,
@@ -1672,7 +1680,6 @@ export async function resolveAoiHostBridgeRoute(
         },
       };
     }
-    saveAoiHostBridgeApprovalStore(params.openroomHome, consumed.store);
     const result = runAoiHostFileWrite({
       request: { requestedPath, content, requestedAt: params.now },
       roots,
@@ -1709,12 +1716,11 @@ export async function resolveAoiHostBridgeRoute(
         payload: { ok: false, error: 'approvalFingerprint is required', code: 'bad_request' },
       };
     }
-    const result = approveAoiHostBridgeApproval(
-      loadAoiHostBridgeApprovalStore(params.openroomHome),
+    const result = approveAoiHostBridgeApprovalAtomic(
+      params.openroomHome,
       approvalFingerprint,
       params.now,
     );
-    saveAoiHostBridgeApprovalStore(params.openroomHome, result.store);
     if (result.approved) {
       return {
         status: 200,
@@ -1753,12 +1759,11 @@ export async function resolveAoiHostBridgeRoute(
         payload: { ok: false, error: 'approvalFingerprint is required', code: 'bad_request' },
       };
     }
-    const approved = approveAoiHostBridgeApproval(
-      loadAoiHostBridgeApprovalStore(params.openroomHome),
+    const approved = approveAoiHostBridgeApprovalAtomic(
+      params.openroomHome,
       approvalFingerprint,
       params.now,
     );
-    saveAoiHostBridgeApprovalStore(params.openroomHome, approved.store);
     if (!approved.approved || !approved.entry) {
       return {
         status: 404,
@@ -1827,14 +1832,11 @@ export async function resolveAoiHostBridgeRoute(
         },
       };
     }
-    const consumed = consumeAoiHostBridgeApproval(
-      loadAoiHostBridgeApprovalStore(params.openroomHome),
-      {
-        capability: AOI_HOST_SPAWN_CAPABILITY,
-        approvalFingerprint,
-        now: params.now,
-      },
-    );
+    const consumed = consumeAoiHostBridgeApprovalAtomic(params.openroomHome, {
+      capability: AOI_HOST_SPAWN_CAPABILITY,
+      approvalFingerprint,
+      now: params.now,
+    });
     if (!consumed.ok) {
       return {
         status: 403,
@@ -1845,7 +1847,6 @@ export async function resolveAoiHostBridgeRoute(
         },
       };
     }
-    saveAoiHostBridgeApprovalStore(params.openroomHome, consumed.store);
     const result = runAoiHostSpawn({
       request: spawnRequest,
       allowlist,
@@ -1917,17 +1918,13 @@ export async function resolveAoiHostBridgeRoute(
       now: params.now,
     });
     if (policy.allowed) {
-      const recorded = recordAoiHostBridgePendingApproval(
-        loadAoiHostBridgeApprovalStore(params.openroomHome),
-        {
-          capability: AOI_HOST_KILL_CAPABILITY,
-          approvalFingerprint: policy.approvalFingerprint,
-          targetSummary: `kill ${policy.imageName} (pid ${policy.pid})`,
-          expiresAt: policy.expiresAt,
-          now: params.now,
-        },
-      );
-      saveAoiHostBridgeApprovalStore(params.openroomHome, recorded.store);
+      recordAoiHostBridgePendingApprovalAtomic(params.openroomHome, {
+        capability: AOI_HOST_KILL_CAPABILITY,
+        approvalFingerprint: policy.approvalFingerprint,
+        targetSummary: `kill ${policy.imageName} (pid ${policy.pid})`,
+        expiresAt: policy.expiresAt,
+        now: params.now,
+      });
     }
     return {
       status: 200,
@@ -1989,14 +1986,11 @@ export async function resolveAoiHostBridgeRoute(
       requestedAt: params.now,
     };
     const policy = evaluateAoiHostKillPolicy({ request, context, now: params.now });
-    const consumed = consumeAoiHostBridgeApproval(
-      loadAoiHostBridgeApprovalStore(params.openroomHome),
-      {
-        capability: AOI_HOST_KILL_CAPABILITY,
-        approvalFingerprint: policy.approvalFingerprint,
-        now: params.now,
-      },
-    );
+    const consumed = consumeAoiHostBridgeApprovalAtomic(params.openroomHome, {
+      capability: AOI_HOST_KILL_CAPABILITY,
+      approvalFingerprint: policy.approvalFingerprint,
+      now: params.now,
+    });
     if (!consumed.ok) {
       return {
         status: 403,
@@ -2007,7 +2001,6 @@ export async function resolveAoiHostBridgeRoute(
         },
       };
     }
-    saveAoiHostBridgeApprovalStore(params.openroomHome, consumed.store);
     const result = runAoiHostKill({
       request,
       context,
@@ -2046,17 +2039,13 @@ export async function resolveAoiHostBridgeRoute(
       roots: loadAoiHostWriteRoots(params.openroomHome).roots,
     });
     if (policy.allowed) {
-      const recorded = recordAoiHostBridgePendingApproval(
-        loadAoiHostBridgeApprovalStore(params.openroomHome),
-        {
-          capability: AOI_HOST_FILE_DELETE_CAPABILITY,
-          approvalFingerprint: policy.approvalFingerprint,
-          targetSummary: `recycle ${policy.resolvedPath}`,
-          expiresAt: policy.expiresAt,
-          now: params.now,
-        },
-      );
-      saveAoiHostBridgeApprovalStore(params.openroomHome, recorded.store);
+      recordAoiHostBridgePendingApprovalAtomic(params.openroomHome, {
+        capability: AOI_HOST_FILE_DELETE_CAPABILITY,
+        approvalFingerprint: policy.approvalFingerprint,
+        targetSummary: `recycle ${policy.resolvedPath}`,
+        expiresAt: policy.expiresAt,
+        now: params.now,
+      });
     }
     return {
       status: 200,
@@ -2100,14 +2089,11 @@ export async function resolveAoiHostBridgeRoute(
       request: { requestedPath, requestedAt: params.now },
       roots,
     });
-    const consumed = consumeAoiHostBridgeApproval(
-      loadAoiHostBridgeApprovalStore(params.openroomHome),
-      {
-        capability: AOI_HOST_FILE_DELETE_CAPABILITY,
-        approvalFingerprint: policy.approvalFingerprint,
-        now: params.now,
-      },
-    );
+    const consumed = consumeAoiHostBridgeApprovalAtomic(params.openroomHome, {
+      capability: AOI_HOST_FILE_DELETE_CAPABILITY,
+      approvalFingerprint: policy.approvalFingerprint,
+      now: params.now,
+    });
     if (!consumed.ok) {
       return {
         status: 403,
@@ -2118,7 +2104,6 @@ export async function resolveAoiHostBridgeRoute(
         },
       };
     }
-    saveAoiHostBridgeApprovalStore(params.openroomHome, consumed.store);
     const result = runAoiHostFileDelete({
       request: { requestedPath, requestedAt: params.now },
       roots,
@@ -2252,11 +2237,10 @@ export async function resolveAoiHostBridgeRoute(
       const raw = typeof params.body.userDataDir === 'string' ? params.body.userDataDir : '';
       // An empty value clears the setting, which is a legitimate thing to want.
       if (!raw.trim()) {
-        saveAoiBrowserDriveProfileConfig(params.openroomHome, {
-          version: 1,
-          userDataDir: '',
-          updatedAt: params.now,
-        });
+        updateAoiBrowserDriveProfileConfig(params.openroomHome, () => ({
+          next: { version: 1 as const, userDataDir: '', updatedAt: params.now },
+          result: null,
+        }));
         return { status: 200, payload: { ok: true, userDataDir: '', configured: false } };
       }
       const decision = normalizeAoiBrowserDriveProfilePath(raw, defaults);
@@ -2266,11 +2250,10 @@ export async function resolveAoiHostBridgeRoute(
           payload: { ok: false, error: decision.reason, code: 'invalid_profile_dir' },
         };
       }
-      saveAoiBrowserDriveProfileConfig(params.openroomHome, {
-        version: 1,
-        userDataDir: decision.path,
-        updatedAt: params.now,
-      });
+      updateAoiBrowserDriveProfileConfig(params.openroomHome, () => ({
+        next: { version: 1 as const, userDataDir: decision.path, updatedAt: params.now },
+        result: null,
+      }));
       return {
         status: 200,
         payload: { ok: true, userDataDir: decision.path, configured: true },

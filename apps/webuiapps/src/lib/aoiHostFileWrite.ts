@@ -24,6 +24,7 @@
 //
 // Server-only (fs / crypto). The path guard + policy are unit-tested with an
 // injectable realpath; the runner is exercised over a real temp root.
+import { withAoiHostStoreLock } from './aoiHostStoreLock';
 import * as fs from 'fs';
 import { basename, dirname, isAbsolute, resolve } from 'path';
 import { createHash, randomUUID } from 'crypto';
@@ -248,6 +249,27 @@ export function loadAoiHostWriteRoots(openroomHome: string): AoiHostWriteRootsCo
   } catch {
     return { ...DEFAULT_AOI_HOST_WRITE_ROOTS, roots: [] };
   }
+}
+
+/**
+ * Load, mutate and save under the cross-process store lock.
+ *
+ * The daemon and the dev server are separate processes over one openroomHome,
+ * so a load-modify-save assembled from the pieces can be interleaved and the
+ * loser's write silently lost. The mutator receives state read INSIDE the lock;
+ * returning null means "do not save".
+ *
+ * The mutator must be synchronous -- an async one would release the lock at its
+ * first await while the rest of the work continued.
+ */
+export function updateAoiHostWriteRoots<R>(
+  openroomHome: string,
+  mutate: (current: AoiHostWriteRootsConfig) => { next: AoiHostWriteRootsConfig | null; result: R },
+): { result: R; saved: AoiHostWriteRootsConfig | null } {
+  return withAoiHostStoreLock(openroomHome, 'write-roots', () => {
+    const { next, result } = mutate(loadAoiHostWriteRoots(openroomHome));
+    return { result, saved: next ? saveAoiHostWriteRoots(openroomHome, next) : null };
+  });
 }
 
 export function saveAoiHostWriteRoots(

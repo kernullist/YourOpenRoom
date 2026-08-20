@@ -19,6 +19,7 @@
 // Server-only (fs). The containment check is pure; the resolver + readers accept
 // an injectable realpath so the symlink-escape guard is unit-testable without
 // creating real symlinks (which need privilege on Windows).
+import { withAoiHostStoreLock } from './aoiHostStoreLock';
 import * as fs from 'fs';
 import { dirname, isAbsolute, relative, resolve } from 'path';
 import { randomUUID } from 'crypto';
@@ -210,6 +211,27 @@ export function loadAoiHostReadRoots(openroomHome: string): AoiHostReadRootsConf
   } catch {
     return { ...DEFAULT_AOI_HOST_READ_ROOTS, roots: [] };
   }
+}
+
+/**
+ * Load, mutate and save under the cross-process store lock.
+ *
+ * The daemon and the dev server are separate processes over one openroomHome,
+ * so a load-modify-save assembled from the pieces can be interleaved and the
+ * loser's write silently lost. The mutator receives state read INSIDE the lock;
+ * returning null means "do not save".
+ *
+ * The mutator must be synchronous -- an async one would release the lock at its
+ * first await while the rest of the work continued.
+ */
+export function updateAoiHostReadRoots<R>(
+  openroomHome: string,
+  mutate: (current: AoiHostReadRootsConfig) => { next: AoiHostReadRootsConfig | null; result: R },
+): { result: R; saved: AoiHostReadRootsConfig | null } {
+  return withAoiHostStoreLock(openroomHome, 'read-roots', () => {
+    const { next, result } = mutate(loadAoiHostReadRoots(openroomHome));
+    return { result, saved: next ? saveAoiHostReadRoots(openroomHome, next) : null };
+  });
 }
 
 export function saveAoiHostReadRoots(

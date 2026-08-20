@@ -14,6 +14,7 @@
 //
 // Server-only (fs). The pure normalize/select helpers are exported so the policy
 // is testable without a filesystem.
+import { withAoiHostStoreLock } from './aoiHostStoreLock';
 import * as fs from 'fs';
 import { dirname, isAbsolute, resolve } from 'path';
 
@@ -108,6 +109,35 @@ export function loadAoiBrowserDriveProfileConfig(
     // rather than papering over with a directory that cannot work.
     return { ...DEFAULT_AOI_BROWSER_DRIVE_PROFILE };
   }
+}
+
+/**
+ * Load, mutate and save under the cross-process store lock.
+ *
+ * The daemon and the dev server are separate processes over one openroomHome,
+ * so a load-modify-save assembled from the pieces can be interleaved and the
+ * loser's write silently lost. The mutator receives state read INSIDE the lock;
+ * returning null means "do not save".
+ *
+ * The mutator must be synchronous -- an async one would release the lock at its
+ * first await while the rest of the work continued.
+ */
+export function updateAoiBrowserDriveProfileConfig<R>(
+  openroomHome: string,
+  mutate: (current: AoiBrowserDriveProfileConfig) => {
+    next: AoiBrowserDriveProfileConfig | null;
+    result: R;
+  },
+): { result: R; saved: AoiBrowserDriveProfileConfig | null } {
+  return withAoiHostStoreLock(openroomHome, 'browser-drive-profile', () => {
+    const { next, result } = mutate(loadAoiBrowserDriveProfileConfig(openroomHome));
+    if (!next) {
+      return { result, saved: null };
+    }
+    // This saver returns void, so report the state we actually wrote.
+    saveAoiBrowserDriveProfileConfig(openroomHome, next);
+    return { result, saved: next };
+  });
 }
 
 export function saveAoiBrowserDriveProfileConfig(

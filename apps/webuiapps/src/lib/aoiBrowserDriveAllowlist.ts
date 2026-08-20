@@ -16,6 +16,7 @@
 // browser-drive-allowlist.json is intentionally NOT migrated -- its entries meant
 // "permit these", which would wrongly become blocks).
 
+import { withAoiHostStoreLock } from './aoiHostStoreLock';
 import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import { dirname, resolve } from 'path';
@@ -313,6 +314,30 @@ export function loadAoiBrowserDriveAllowlist(openroomHome: string): AoiBrowserDr
     // permission. Fail closed and say so rather than reporting no restrictions.
     return { ...DEFAULT_AOI_BROWSER_DRIVE_ALLOWLIST, entries: [], unreadable: true };
   }
+}
+
+/**
+ * Load, mutate and save under the cross-process store lock.
+ *
+ * The daemon and the dev server are separate processes over one openroomHome,
+ * so a load-modify-save assembled from the pieces can be interleaved and the
+ * loser's write silently lost. The mutator receives state read INSIDE the lock;
+ * returning null means "do not save".
+ *
+ * The mutator must be synchronous -- an async one would release the lock at its
+ * first await while the rest of the work continued.
+ */
+export function updateAoiBrowserDriveAllowlist<R>(
+  openroomHome: string,
+  mutate: (current: AoiBrowserDriveAllowlist) => {
+    next: AoiBrowserDriveAllowlist | null;
+    result: R;
+  },
+): { result: R; saved: AoiBrowserDriveAllowlist | null } {
+  return withAoiHostStoreLock(openroomHome, 'browser-drive-denylist', () => {
+    const { next, result } = mutate(loadAoiBrowserDriveAllowlist(openroomHome));
+    return { result, saved: next ? saveAoiBrowserDriveAllowlist(openroomHome, next) : null };
+  });
 }
 
 export function saveAoiBrowserDriveAllowlist(

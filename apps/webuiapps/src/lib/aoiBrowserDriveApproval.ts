@@ -38,6 +38,7 @@ import {
 import { classifyAoiBrowserDrivePlan, type AoiBrowserDrivePlan } from './aoiBrowserDrivePlan';
 import {
   recordAoiHostBridgePendingApproval,
+  recordAoiHostBridgePendingApprovalAtomic,
   type AoiHostBridgeApprovalStoreData,
 } from './aoiHostBridgeApprovalStore';
 import {
@@ -182,6 +183,23 @@ export function recordAoiBrowserDriveActPendingApproval(
     now,
   });
   return { store: recorded.store };
+}
+
+/** Record the pending act approval under the approvals store lock. */
+export function recordAoiBrowserDriveActPendingApprovalAtomic(
+  openroomHome: string,
+  preview: AoiBrowserDriveActApprovalPreview,
+  now: number,
+): { store: AoiHostBridgeApprovalStoreData } {
+  return {
+    store: recordAoiHostBridgePendingApprovalAtomic(openroomHome, {
+      capability: preview.capability,
+      approvalFingerprint: preview.fingerprint,
+      targetSummary: preview.targetSummary,
+      expiresAt: preview.expiresAt,
+      now,
+    }).store,
+  };
 }
 
 // Optional standing-grant fallback (P3.1): when the os_browser_drive_standing toggle

@@ -316,6 +316,57 @@ export function consumeAoiHostBridgeApproval(
  * Prefer this over calling load/consume/save yourself; the loose form is kept
  * only for pure tests and for callers already inside a lock.
  */
+/**
+ * Record a pending approval under the store lock.
+ *
+ * Locking only the CONSUME was not enough. Every writer of a file has to take
+ * the same lock, or an unlocked one silently reverts a locked one: a record or
+ * an approve that loaded before a consume and saved after it puts the consumed
+ * entry back, which is a replay of an approval the operator already spent.
+ */
+export function recordAoiHostBridgePendingApprovalAtomic(
+  openroomHome: string,
+  params: {
+    capability: string;
+    approvalFingerprint: string;
+    targetSummary: string;
+    expiresAt: number;
+    now: number;
+    executePayload?: AoiHostBridgeApprovalExecutePayload;
+  },
+): { store: AoiHostBridgeApprovalStoreData; approval: AoiHostBridgeApproval } {
+  return withAoiHostStoreLock(openroomHome, 'approvals', () => {
+    const result = recordAoiHostBridgePendingApproval(
+      loadAoiHostBridgeApprovalStore(openroomHome),
+      params,
+    );
+    saveAoiHostBridgeApprovalStore(openroomHome, result.store);
+    return result;
+  });
+}
+
+/** Approve a pending fingerprint under the store lock. See the note above. */
+export function approveAoiHostBridgeApprovalAtomic(
+  openroomHome: string,
+  approvalFingerprint: string,
+  now: number,
+): {
+  store: AoiHostBridgeApprovalStoreData;
+  approved: boolean;
+  alreadyApproved: boolean;
+  entry: AoiHostBridgeApproval | null;
+} {
+  return withAoiHostStoreLock(openroomHome, 'approvals', () => {
+    const result = approveAoiHostBridgeApproval(
+      loadAoiHostBridgeApprovalStore(openroomHome),
+      approvalFingerprint,
+      now,
+    );
+    saveAoiHostBridgeApprovalStore(openroomHome, result.store);
+    return result;
+  });
+}
+
 export function consumeAoiHostBridgeApprovalAtomic(
   openroomHome: string,
   params: { capability: string; approvalFingerprint: string; now: number },
