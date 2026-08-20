@@ -158,3 +158,54 @@ describe('load/save persistence', () => {
     }
   });
 });
+
+// Empty means allow-all here, so "never configured" and "configured but the
+// file is now unreadable" were the same state -- and a corrupted denylist
+// silently became no denylist, for exactly the operator who configured one.
+describe('an unreadable denylist is not an empty one', () => {
+  function homeWithRawDenylist(contents: string): string {
+    const home = fs.mkdtempSync(join(os.tmpdir(), 'aoi-denylist-corrupt-'));
+    const filePath = resolveAoiBrowserDriveAllowlistPath(home);
+    fs.mkdirSync(join(filePath, '..'), { recursive: true });
+    fs.writeFileSync(filePath, contents, 'utf-8');
+    return home;
+  }
+
+  it('refuses every URL when the stored file is not valid JSON', () => {
+    const list = loadAoiBrowserDriveAllowlist(homeWithRawDenylist('{"version":1,"entr'));
+    expect(list.unreadable).toBe(true);
+    const decision = isAoiBrowserDriveUrlAllowed(list, 'https://example.com/');
+    expect(decision.allowed).toBe(false);
+    expect(decision.reason).toBe('denylist_unreadable');
+  });
+
+  it('refuses when the file parses but is not a denylist', () => {
+    const list = loadAoiBrowserDriveAllowlist(homeWithRawDenylist('{"version":9,"nope":true}'));
+    expect(list.unreadable).toBe(true);
+    expect(isAoiBrowserDriveUrlAllowed(list, 'https://example.com/').allowed).toBe(false);
+  });
+
+  it('still allows everything for a genuinely empty stored list', () => {
+    // The bound is unreadability, not emptiness: an operator who ruled nothing
+    // out must keep browsing.
+    const list = loadAoiBrowserDriveAllowlist(
+      homeWithRawDenylist('{"version":1,"entries":[],"updatedAt":0}'),
+    );
+    expect(list.unreadable).toBeUndefined();
+    expect(isAoiBrowserDriveUrlAllowed(list, 'https://example.com/').allowed).toBe(true);
+  });
+
+  it('still allows everything when nothing was ever stored', () => {
+    const home = fs.mkdtempSync(join(os.tmpdir(), 'aoi-denylist-none-'));
+    const list = loadAoiBrowserDriveAllowlist(home);
+    expect(list.unreadable).toBeUndefined();
+    expect(isAoiBrowserDriveUrlAllowed(list, 'https://example.com/').allowed).toBe(true);
+  });
+
+  it('survives normalize, which every consumer funnels through', () => {
+    // The matcher normalizes its argument before deciding, so a flag dropped
+    // there would quietly restore the fail-open.
+    const list = loadAoiBrowserDriveAllowlist(homeWithRawDenylist('not json at all'));
+    expect(normalizeAoiBrowserDriveAllowlist(list).unreadable).toBe(true);
+  });
+});

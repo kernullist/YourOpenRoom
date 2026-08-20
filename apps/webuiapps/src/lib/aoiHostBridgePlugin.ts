@@ -66,6 +66,7 @@ import {
   addAoiBrowserDriveAllowlistEntry,
   isAoiBrowserDriveUrlAllowed,
   loadAoiBrowserDriveAllowlist,
+  resolveAoiBrowserDriveAllowlistPath,
   removeAoiBrowserDriveAllowlistEntry,
   saveAoiBrowserDriveAllowlist,
   type AoiBrowserDriveAllowlist,
@@ -1161,7 +1162,34 @@ export async function resolveAoiHostBridgeRoute(
   if (params.route === '/browser-drive-allowlist' || params.route === '/browser-drive-denylist') {
     const current = loadAoiBrowserDriveAllowlist(params.openroomHome);
     if (params.method === 'GET') {
-      return { status: 200, payload: { ok: true, entries: current.entries, mode: 'denylist' } };
+      return {
+        status: 200,
+        payload: {
+          ok: true,
+          entries: current.entries,
+          mode: 'denylist',
+          // Surfaced, because an unreadable list reads as an EMPTY one here --
+          // no entries, nothing wrong on screen -- while browsing is being
+          // refused. The operator has to be able to see which of the two it is.
+          ...(current.unreadable === true ? { unreadable: true } : {}),
+        },
+      };
+    }
+    // Editing an unreadable list would write a NEW one over it, silently
+    // discarding whatever the operator actually had configured: `current` is
+    // the empty stand-in, and add/remove build the saved value from it.
+    if (current.unreadable === true && (params.method === 'POST' || params.method === 'DELETE')) {
+      return {
+        status: 409,
+        payload: {
+          ok: false,
+          error:
+            'the stored denylist cannot be read, so editing it would overwrite entries that are ' +
+            'still on disk. Repair or delete the file first',
+          code: 'denylist_unreadable',
+          path: resolveAoiBrowserDriveAllowlistPath(params.openroomHome),
+        },
+      };
     }
     if (params.method === 'POST') {
       const id = typeof params.body.id === 'string' ? params.body.id : '';

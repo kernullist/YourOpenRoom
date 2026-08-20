@@ -16,6 +16,7 @@
 // browser-drive-allowlist.json is intentionally NOT migrated -- its entries meant
 // "permit these", which would wrongly become blocks).
 
+import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import { dirname, resolve } from 'path';
 import { isAoiPrivateOrLocalHostname } from './aoiHostUrlSafety';
@@ -42,6 +43,13 @@ export interface AoiBrowserDriveAllowlist {
   version: 1;
   entries: AoiBrowserDriveAllowlistEntry[];
   updatedAt: number;
+  // The stored list EXISTS but could not be read.
+  //
+  // Empty means "allow everything" here, which is right when the operator never
+  // configured containment and catastrophic when they did and the file was then
+  // truncated or hand-edited into invalid JSON: the two states were
+  // indistinguishable, so a corrupted denylist silently became no denylist.
+  unreadable?: true;
 }
 
 export const DEFAULT_AOI_BROWSER_DRIVE_ALLOWLIST: AoiBrowserDriveAllowlist = {
@@ -56,6 +64,9 @@ export type AoiBrowserDriveUrlDenyReason =
   | 'empty_host'
   | 'host_private'
   | 'host_denylisted'
+  // The stored denylist exists but could not be read, so containment cannot be
+  // applied. Distinct from every other reason: nothing about the URL is wrong.
+  | 'denylist_unreadable'
   // Legacy alias kept for older error strings / log greps.
   | 'host_not_allowlisted';
 
@@ -119,6 +130,10 @@ export function normalizeAoiBrowserDriveAllowlist(raw: unknown): AoiBrowserDrive
   if (value.version !== 1 || !Array.isArray(value.entries)) {
     return { ...DEFAULT_AOI_BROWSER_DRIVE_ALLOWLIST, entries: [] };
   }
+  // Carried through, because this is what every consumer funnels into -- the
+  // matcher normalizes its argument before deciding. Dropping the flag here
+  // would quietly restore the fail-open the loader just closed.
+  const unreadable = value.unreadable === true ? ({ unreadable: true } as const) : null;
   const entries: AoiBrowserDriveAllowlistEntry[] = [];
   const seenIds = new Set<string>();
   const seenDomains = new Set<string>();
@@ -154,6 +169,7 @@ export function normalizeAoiBrowserDriveAllowlist(raw: unknown): AoiBrowserDrive
     entries,
     updatedAt:
       typeof value.updatedAt === 'number' && Number.isFinite(value.updatedAt) ? value.updatedAt : 0,
+    ...(unreadable ?? {}),
   };
 }
 
@@ -248,6 +264,13 @@ export function isAoiBrowserDriveUrlAllowed(
     return { allowed: false, hostname, reason: 'host_private' };
   }
   const list = normalizeAoiBrowserDriveAllowlist(allowlist);
+  // A denylist that exists but cannot be read is not an empty denylist. Empty
+  // means allow-all here, so treating the two the same turned a corrupted file
+  // into no containment at all -- silently, and exactly for the operator who
+  // bothered to configure some.
+  if (list.unreadable === true) {
+    return { allowed: false, hostname, reason: 'denylist_unreadable' };
+  }
   const entry = findDenylistMatch(list, hostname);
   if (entry) {
     return { allowed: false, hostname, reason: 'host_denylisted', entry };
@@ -268,11 +291,27 @@ export function loadAoiBrowserDriveAllowlist(openroomHome: string): AoiBrowserDr
   try {
     const filePath = resolveAoiBrowserDriveAllowlistPath(openroomHome);
     if (!fs.existsSync(filePath)) {
+      // Never configured. This is the one honest empty.
       return { ...DEFAULT_AOI_BROWSER_DRIVE_ALLOWLIST, entries: [] };
     }
-    return normalizeAoiBrowserDriveAllowlist(JSON.parse(fs.readFileSync(filePath, 'utf-8')));
+    const raw: unknown = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    // Present, parsed, and shaped like a list -- even an empty one -- is a real
+    // answer. Present and shaped like anything else is a file we cannot read,
+    // which is not the same as a file that permits everything.
+    const shaped =
+      !!raw &&
+      typeof raw === 'object' &&
+      !Array.isArray(raw) &&
+      (raw as Partial<AoiBrowserDriveAllowlist>).version === 1 &&
+      Array.isArray((raw as Partial<AoiBrowserDriveAllowlist>).entries);
+    if (!shaped) {
+      return { ...DEFAULT_AOI_BROWSER_DRIVE_ALLOWLIST, entries: [], unreadable: true };
+    }
+    return normalizeAoiBrowserDriveAllowlist(raw);
   } catch {
-    return { ...DEFAULT_AOI_BROWSER_DRIVE_ALLOWLIST, entries: [] };
+    // The file is there and unreadable: bad JSON, a truncated write, a bad
+    // permission. Fail closed and say so rather than reporting no restrictions.
+    return { ...DEFAULT_AOI_BROWSER_DRIVE_ALLOWLIST, entries: [], unreadable: true };
   }
 }
 
@@ -283,7 +322,11 @@ export function saveAoiBrowserDriveAllowlist(
   const normalized = normalizeAoiBrowserDriveAllowlist(allowlist);
   const filePath = resolveAoiBrowserDriveAllowlistPath(openroomHome);
   fs.mkdirSync(dirname(filePath), { recursive: true });
-  const tmpPath = `${filePath}.tmp`;
+  // pid + random, like every other store here. A fixed name is raced by the
+  // daemon and the dev server -- separate processes over one store -- and the
+  // loser renames a half-written file into place, which is precisely the
+  // corruption the loader above now has to survive.
+  const tmpPath = `${filePath}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
   fs.writeFileSync(tmpPath, `${JSON.stringify(normalized, null, 2)}\n`, 'utf-8');
   fs.renameSync(tmpPath, filePath);
   return normalized;

@@ -816,10 +816,18 @@ function parseBrowserDriveAllowlistEntries(value: unknown): AoiBrowserDriveAllow
   }));
 }
 
-export async function fetchAoiBrowserDriveAllowlist(): Promise<
-  AoiBrowserDriveAllowlistEntryView[]
-> {
-  return parseBrowserDriveAllowlistEntries((await getJson('/browser-drive-allowlist')).entries);
+export async function fetchAoiBrowserDriveAllowlist(): Promise<{
+  entries: AoiBrowserDriveAllowlistEntryView[];
+  // The stored list exists but could not be read. Carried, not dropped: an
+  // unreadable list arrives here looking exactly like an empty one, and the
+  // operator would see "nothing blocked" while browsing is being refused.
+  unreadable: boolean;
+}> {
+  const payload = await getJson('/browser-drive-allowlist');
+  return {
+    entries: parseBrowserDriveAllowlistEntries(payload.entries),
+    unreadable: payload.unreadable === true,
+  };
 }
 
 export async function addAoiBrowserDriveAllowlistDomain(entry: {

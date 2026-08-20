@@ -22,6 +22,7 @@ import { addAoiHostSpawnAllowlistEntry, saveAoiHostSpawnAllowlist } from '../aoi
 import { addAoiHostWriteRoot, saveAoiHostWriteRoots } from '../aoiHostFileWrite';
 import {
   addAoiBrowserDriveAllowlistEntry,
+  resolveAoiBrowserDriveAllowlistPath,
   saveAoiBrowserDriveAllowlist,
 } from '../aoiBrowserDriveAllowlist';
 import { recordAoiBrowserDriveAuditEntry } from '../aoiBrowserDriveAuditStore';
@@ -1769,6 +1770,66 @@ describe('delete preview -> approve -> execute (injected recycle)', () => {
     });
     expect(exec.status).toBe(200);
     expect(recycled).toBe(target);
+  });
+});
+
+describe('browser-drive denylist when the stored file is unreadable', () => {
+  function corrupt(home: string): void {
+    const filePath = resolveAoiBrowserDriveAllowlistPath(home);
+    fs.mkdirSync(join(filePath, '..'), { recursive: true });
+    fs.writeFileSync(filePath, '{"version":1,"entr', 'utf-8');
+  }
+
+  it('says so instead of reporting an empty list', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    corrupt(home);
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'GET',
+      route: '/browser-drive-denylist',
+      body: {},
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 1000,
+    });
+    expect(result.status).toBe(200);
+    expect((result.payload as { unreadable?: boolean }).unreadable).toBe(true);
+  });
+
+  it('refuses to edit it, because saving would overwrite the real entries', async () => {
+    // add/remove build the saved value from the loaded one, and the loaded one
+    // is an empty stand-in here -- so one edit would discard whatever is still
+    // on disk.
+    const { home, sessionsDir, token } = makeDaemonHome();
+    corrupt(home);
+    const before = fs.readFileSync(resolveAoiBrowserDriveAllowlistPath(home), 'utf-8');
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive-denylist',
+      body: { domain: 'evil.com' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 1000,
+    });
+    expect(result.status).toBe(409);
+    expect((result.payload as { code: string }).code).toBe('denylist_unreadable');
+    expect(fs.readFileSync(resolveAoiBrowserDriveAllowlistPath(home), 'utf-8')).toBe(before);
+  });
+
+  it('still edits a readable list normally', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive-denylist',
+      body: { domain: 'evil.com' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 1000,
+    });
+    expect(result.status).toBe(200);
+    expect((result.payload as { entries: unknown[] }).entries).toHaveLength(1);
   });
 });
 

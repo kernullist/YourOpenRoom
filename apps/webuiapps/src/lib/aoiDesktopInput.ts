@@ -640,14 +640,17 @@ function refuseBrowserWindowRead(
   if (!isBrowser && name) {
     return null;
   }
-  let denylisted = 0;
+  let contained = true;
   try {
-    denylisted = loadAoiBrowserDriveAllowlist(openroomHome).entries.length;
+    const denylist = loadAoiBrowserDriveAllowlist(openroomHome);
+    // Unreadable counts as configured. A stored list that cannot be read is not
+    // an absent one, and this gate exists precisely to respect that list.
+    contained = denylist.unreadable === true || denylist.entries.length > 0;
   } catch {
     // Fail closed: if the denylist cannot be read, we cannot claim it is empty.
-    denylisted = 1;
+    contained = true;
   }
-  if (denylisted === 0) {
+  if (!contained) {
     return null;
   }
   if (!isBrowser) {

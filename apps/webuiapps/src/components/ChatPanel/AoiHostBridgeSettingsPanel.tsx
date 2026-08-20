@@ -140,6 +140,7 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
   const [readRoots, setReadRoots] = useState<AoiHostRootView[]>([]);
   const [writeRoots, setWriteRoots] = useState<AoiHostRootView[]>([]);
   const [approvals, setApprovals] = useState<AoiHostBridgeApprovalView[]>([]);
+  const [browserDriveUnreadable, setBrowserDriveUnreadable] = useState(false);
   const [browserDriveEntries, setBrowserDriveEntries] = useState<
     AoiBrowserDriveAllowlistEntryView[]
   >([]);
@@ -220,7 +221,8 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
       setReadRoots(read);
       setWriteRoots(write);
       setApprovals(pending);
-      setBrowserDriveEntries(driveAllow);
+      setBrowserDriveEntries(driveAllow.entries);
+      setBrowserDriveUnreadable(driveAllow.unreadable);
       setStandingGrants(grants);
       setAuditEntries(audit);
 
@@ -688,7 +690,11 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
               <div className={styles.connectorRow} data-testid="aoi-host-browser-drive-denylist">
                 <div className={styles.connectorRowHeader}>
                   <strong>Browser-drive denylist</strong>
-                  <span className={styles.modelHint}>{browserDriveEntries.length} blocked</span>
+                  <span className={styles.modelHint}>
+                    {browserDriveUnreadable
+                      ? 'unreadable'
+                      : `${browserDriveEntries.length} blocked`}
+                  </span>
                 </div>
                 <span className={styles.modelHint}>
                   Default ALLOW for public http(s) hosts. Domains listed here are blocked (exact
@@ -697,6 +703,14 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
                   automated. Interactions still need per-action approval;
                   passwords/payments/CAPTCHAs are never entered.
                 </span>
+                {browserDriveUnreadable ? (
+                  <span className={styles.modelHint} data-testid="aoi-denylist-unreadable">
+                    The stored denylist exists but could not be read, so browsing is refused rather
+                    than treated as unrestricted, and editing is blocked so a save cannot overwrite
+                    the entries still on disk. Repair or delete browser-drive-denylist.json under
+                    the host-bridge folder.
+                  </span>
+                ) : null}
                 {browserDriveEntries.map((entry) => (
                   <div key={entry.id} className={styles.connectorToggleRow}>
                     <span className={styles.modelHint}>
