@@ -29,6 +29,10 @@ function fakeChild(): ChildProcess {
   return emitter;
 }
 
+// A profile is required now: the browser refuses remote debugging on its own
+// default directory, so there is nothing sane to fall back to.
+const PROFILE_OPTIONS = { engine: 'chrome' as const, userDataDir: 'C:/profiles/aoi' };
+
 function fakePage(): AoiBrowserDrivePage & { closed: boolean } {
   const page = {
     closed: false,
@@ -119,7 +123,7 @@ describe('pollForAoiDevToolsActivePort', () => {
 describe('startAoiBrowserDriveSession', () => {
   it('launches, attaches, opens an Aoi page, and closes only the page', async () => {
     const { deps, page, browser } = happyDeps();
-    const session = await startAoiBrowserDriveSession({ engine: 'chrome' }, deps);
+    const session = await startAoiBrowserDriveSession(PROFILE_OPTIONS, deps);
     expect(session.port).toBe(51222);
     expect(session.cdpHttpEndpoint).toBe('http://127.0.0.1:51222');
     expect(session.engine).toBe('chrome');
@@ -135,7 +139,7 @@ describe('startAoiBrowserDriveSession', () => {
 
   it('passes the pinned launch args to spawn', async () => {
     const { deps } = happyDeps();
-    await startAoiBrowserDriveSession({ engine: 'chrome', userDataDir: '/profile' }, deps);
+    await startAoiBrowserDriveSession({ ...PROFILE_OPTIONS, userDataDir: '/profile' }, deps);
     const spawnMock = deps.spawnImpl as unknown as ReturnType<typeof vi.fn>;
     const args = spawnMock.mock.calls[0][1] as string[];
     expect(args).toContain('--remote-debugging-port=51222');
@@ -145,14 +149,16 @@ describe('startAoiBrowserDriveSession', () => {
 
   it('fails browser_not_found when no executable resolves', async () => {
     const { deps } = happyDeps({ resolveExecutable: () => null });
-    await expect(startAoiBrowserDriveSession({}, deps)).rejects.toMatchObject({
+    await expect(startAoiBrowserDriveSession(PROFILE_OPTIONS, deps)).rejects.toMatchObject({
       reason: 'browser_not_found',
     });
   });
 
-  it('fails user_data_dir_unresolved when no dir resolves', async () => {
-    const { deps } = happyDeps({ resolveDefaultUserDataDir: () => null });
-    await expect(startAoiBrowserDriveSession({}, deps)).rejects.toMatchObject({
+  it('fails user_data_dir_unresolved when no profile is given', async () => {
+    // There is no fallback any more: the only directory one could fall back to
+    // is the browser's own default, which refuses remote debugging.
+    const { deps } = happyDeps();
+    await expect(startAoiBrowserDriveSession({ engine: 'chrome' }, deps)).rejects.toMatchObject({
       reason: 'user_data_dir_unresolved',
     });
   });
@@ -163,7 +169,7 @@ describe('startAoiBrowserDriveSession', () => {
         throw new Error('no port');
       },
     });
-    await expect(startAoiBrowserDriveSession({}, deps)).rejects.toMatchObject({
+    await expect(startAoiBrowserDriveSession(PROFILE_OPTIONS, deps)).rejects.toMatchObject({
       reason: 'port_unavailable',
     });
   });
@@ -174,7 +180,7 @@ describe('startAoiBrowserDriveSession', () => {
         throw new Error('ENOENT');
       }) as unknown as AoiBrowserDriveSessionDeps['spawnImpl'],
     });
-    await expect(startAoiBrowserDriveSession({}, deps)).rejects.toMatchObject({
+    await expect(startAoiBrowserDriveSession(PROFILE_OPTIONS, deps)).rejects.toMatchObject({
       reason: 'spawn_failed',
     });
   });
@@ -190,7 +196,9 @@ describe('startAoiBrowserDriveSession', () => {
         return value;
       },
     });
-    await expect(startAoiBrowserDriveSession({ timeoutMs: 1_000 }, deps)).rejects.toMatchObject({
+    await expect(
+      startAoiBrowserDriveSession({ ...PROFILE_OPTIONS, timeoutMs: 1_000 }, deps),
+    ).rejects.toMatchObject({
       reason: 'attach_timeout',
     });
     expect(child.kill as unknown as ReturnType<typeof vi.fn>).toHaveBeenCalled();
@@ -202,7 +210,7 @@ describe('startAoiBrowserDriveSession', () => {
         throw new Error('ECONNREFUSED');
       },
     });
-    await expect(startAoiBrowserDriveSession({}, deps)).rejects.toMatchObject({
+    await expect(startAoiBrowserDriveSession(PROFILE_OPTIONS, deps)).rejects.toMatchObject({
       reason: 'connect_failed',
     });
     expect(child.kill as unknown as ReturnType<typeof vi.fn>).toHaveBeenCalled();
@@ -219,7 +227,7 @@ describe('startAoiBrowserDriveSession', () => {
       },
     ];
     const { deps } = happyDeps({ connect: async () => browser });
-    await expect(startAoiBrowserDriveSession({}, deps)).rejects.toMatchObject({
+    await expect(startAoiBrowserDriveSession(PROFILE_OPTIONS, deps)).rejects.toMatchObject({
       reason: 'connect_failed',
     });
     expect(browser.closedBrowser).toBe(true);
@@ -267,7 +275,7 @@ describe('the session supplies the capabilities Playwright does not', () => {
     // them, so the original spy has to be captured first or the assertion below
     // would be checking the forwarder against itself.
     const firstClick = first.click;
-    const session = await startAoiBrowserDriveSession({ engine: 'chrome' }, deps);
+    const session = await startAoiBrowserDriveSession(PROFILE_OPTIONS, deps);
     const driven = session.page as unknown as Record<string, unknown>;
 
     expect(typeof driven.answerDialog).toBe('function');
@@ -302,7 +310,7 @@ describe('the session supplies the capabilities Playwright does not', () => {
     } as unknown as AoiBrowserDriveBrowser;
     const { deps } = happyDeps({ connect: async () => browser });
     const originalClick = only.click;
-    const session = await startAoiBrowserDriveSession({ engine: 'chrome' }, deps);
+    const session = await startAoiBrowserDriveSession(PROFILE_OPTIONS, deps);
     const driven = session.page as unknown as Record<string, unknown>;
 
     await (driven.click as (selector: string) => Promise<void>)('#go');
@@ -318,7 +326,7 @@ describe('the session supplies the capabilities Playwright does not', () => {
       close: vi.fn(async () => {}),
     } as unknown as AoiBrowserDriveBrowser;
     const { deps } = happyDeps({ connect: async () => browser });
-    const session = await startAoiBrowserDriveSession({ engine: 'chrome' }, deps);
+    const session = await startAoiBrowserDriveSession(PROFILE_OPTIONS, deps);
     const driven = session.page as unknown as Record<string, unknown>;
 
     let dismissed = 0;
@@ -340,7 +348,7 @@ describe('the session supplies the capabilities Playwright does not', () => {
     // A session factory that satisfies the DECLARED contract (url + close) must
     // not crash here; the executor then refuses those steps by name.
     const { deps } = happyDeps();
-    const session = await startAoiBrowserDriveSession({ engine: 'chrome' }, deps);
+    const session = await startAoiBrowserDriveSession(PROFILE_OPTIONS, deps);
     const driven = session.page as unknown as Record<string, unknown>;
     expect(driven.answerDialog).toBeUndefined();
     expect(driven.listTabs).toBeUndefined();
@@ -355,6 +363,44 @@ describe('the session supplies the capabilities Playwright does not', () => {
 // DevTools listens, and that file appears NOWHERE -- so the wait could only ever
 // run out, and it reported "attach_timeout: DevToolsActivePort never appeared",
 // which reads as "the browser did not start" when it had started fine.
+describe('the browser default profile', () => {
+  it('is refused up front instead of attempted', async () => {
+    // Chrome refuses remote debugging there, so falling back to it produces an
+    // attempt that looks reasonable and then fails seconds later describing a
+    // missing DevTools port -- a symptom of a completely different problem. A
+    // caller with no profile has not been configured yet and should hear that.
+    const { deps } = happyDeps();
+    await expect(
+      startAoiBrowserDriveSession(
+        { engine: 'chrome', userDataDir: 'C:/Users/me/AppData/Local/Google/Chrome/User Data' },
+        {
+          ...deps,
+          resolveDefaultUserDataDir: () => 'C:/Users/me/AppData/Local/Google/Chrome/User Data',
+        },
+      ),
+    ).rejects.toThrow('refuses remote debugging');
+  });
+
+  it('does not refuse a dedicated directory', async () => {
+    const page = fakePage();
+    const { deps } = happyDeps({
+      connect: async () =>
+        ({
+          contexts: () => [{ newPage: async () => page, pages: () => [page] }],
+          isConnected: () => true,
+          close: vi.fn(async () => {}),
+        }) as unknown as AoiBrowserDriveBrowser,
+      resolveDefaultUserDataDir: () => 'C:/Users/me/AppData/Local/Google/Chrome/User Data',
+    });
+    const session = await startAoiBrowserDriveSession(
+      { engine: 'chrome', userDataDir: 'C:/Users/me/.openroom/browser-profile' },
+      deps,
+    );
+    expect(session.port).toBeGreaterThan(0);
+    await session.close();
+  });
+});
+
 describe('the attach handshake', () => {
   // A clock that moves. happyDeps freezes time, which is fine when a signal
   // arrives immediately but turns any wait into an endless one.
@@ -386,7 +432,7 @@ describe('the attach handshake', () => {
       probeDevTools: async (port: number) => `ws://127.0.0.1:${port}/devtools/browser/abc`,
       now: advancingClock(),
     });
-    const session = await startAoiBrowserDriveSession({ engine: 'chrome' }, deps);
+    const session = await startAoiBrowserDriveSession(PROFILE_OPTIONS, deps);
     expect(session.port).toBeGreaterThan(0);
     await session.close();
   });
@@ -405,7 +451,7 @@ describe('the attach handshake', () => {
       },
       now: advancingClock(),
     });
-    const session = await startAoiBrowserDriveSession({ engine: 'chrome' }, deps);
+    const session = await startAoiBrowserDriveSession(PROFILE_OPTIONS, deps);
     expect(attempts).toBe(3);
     await session.close();
   });
@@ -420,16 +466,20 @@ describe('the attach handshake', () => {
       fileExists: () => true,
       readFile: () => '51222\n/devtools/browser/from-file',
     });
-    const session = await startAoiBrowserDriveSession({ engine: 'chrome' }, deps);
+    const session = await startAoiBrowserDriveSession(PROFILE_OPTIONS, deps);
     expect(session.port).toBe(51222);
     await session.close();
   });
 
-  it('names an already-open browser as the reason it could not attach', async () => {
+  it('points at the lockfile without asserting a window is definitely open', async () => {
     // The unhelpful shape of this failure: a second launch on a profile that is
     // already open hands its command line to the running instance and exits, so
     // no debug port appears and the wait times out talking about DevTools --
     // describing a symptom of something else entirely.
+    //
+    // The message stops short of claiming a window IS open, because a killed
+    // browser leaves the same file behind and the claim would then be false --
+    // which is exactly what happened when this was first written.
     const { deps } = happyDeps({
       probeDevTools: async () => null,
       // Chrome keeps a lockfile in the profile while it is running.
@@ -437,8 +487,8 @@ describe('the attach handshake', () => {
       now: advancingClock(),
     });
     await expect(
-      startAoiBrowserDriveSession({ engine: 'chrome', timeoutMs: 1_000 }, deps),
-    ).rejects.toThrow('already open on this profile');
+      startAoiBrowserDriveSession({ ...PROFILE_OPTIONS, timeoutMs: 1_000 }, deps),
+    ).rejects.toThrow('this profile has a lockfile');
   });
 
   it('reports attach_timeout only when neither signal arrives', async () => {
@@ -448,7 +498,7 @@ describe('the attach handshake', () => {
       now: advancingClock(),
     });
     await expect(
-      startAoiBrowserDriveSession({ engine: 'chrome', timeoutMs: 1_000 }, deps),
+      startAoiBrowserDriveSession({ ...PROFILE_OPTIONS, timeoutMs: 1_000 }, deps),
     ).rejects.toMatchObject({ reason: 'attach_timeout' });
   });
 });

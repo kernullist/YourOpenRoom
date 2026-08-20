@@ -18,6 +18,7 @@
 import { spawn, type ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as net from 'net';
+import { resolve } from 'path';
 import { join } from 'path';
 import {
   type AoiBrowserDriveEngine,
@@ -240,12 +241,37 @@ export async function startAoiBrowserDriveSession(
   const resolveDefaultUserDataDir =
     deps.resolveDefaultUserDataDir ??
     ((engineKind: AoiBrowserDriveEngine) => resolveAoiBrowserDriveDefaultUserDataDir(engineKind));
-  const userDataDir =
-    (typeof options.userDataDir === 'string' ? options.userDataDir.trim() : '') ||
-    resolveDefaultUserDataDir(engine) ||
-    '';
+  // The profile is REQUIRED; there is deliberately no fallback.
+  //
+  // The obvious fallback -- the browser's own default profile -- is the one
+  // directory that can never work: Chrome 136+ refuses remote debugging there.
+  // Falling back to it produced an attempt that looked reasonable and then
+  // failed seconds later complaining about a missing DevTools port, which is a
+  // symptom of an entirely different problem and sends you looking in the wrong
+  // place. A caller with no profile has not been configured yet, and hearing
+  // that immediately is more useful than a plausible-looking failure.
+  const userDataDir = typeof options.userDataDir === 'string' ? options.userDataDir.trim() : '';
   if (!userDataDir) {
-    throw new AoiBrowserDriveStartError('user_data_dir_unresolved');
+    throw new AoiBrowserDriveStartError(
+      'user_data_dir_unresolved',
+      'no browser profile is configured. Chrome refuses remote debugging on its own default ' +
+        'profile, so this needs a separate signed-in profile directory: set it in Settings > ' +
+        'Advanced > Host bridge > Browser profile.',
+    );
+  }
+
+  // And refuse the default profile even when it is named explicitly, so the same
+  // impossible configuration cannot be reached the long way round.
+  const browserDefault = resolveDefaultUserDataDir(engine);
+  if (
+    browserDefault &&
+    resolve(browserDefault).toLowerCase() === resolve(userDataDir).toLowerCase()
+  ) {
+    throw new AoiBrowserDriveStartError(
+      'user_data_dir_unresolved',
+      'that is the browser default profile, which refuses remote debugging. Use a separate ' +
+        'signed-in profile directory.',
+    );
   }
 
   let port: number;
@@ -345,8 +371,9 @@ export async function startAoiBrowserDriveSession(
       if (profileBusy) {
         throw new AoiBrowserDriveStartError(
           'attach_timeout',
-          'a browser window is already open on this profile, so the debug port never opened. ' +
-            'Close that window and try again.',
+          'the debug port never opened, and this profile has a lockfile. That usually means a ' +
+            'browser window is open on it -- close the window and try again. If none is open, a ' +
+            'previous browser was killed and left the file behind; deleting it is safe.',
         );
       }
     }
