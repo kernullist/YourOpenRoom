@@ -15,6 +15,7 @@ import {
   setAoiHostBridgeCapability,
   engageAoiHostBridgePanic,
 } from '../aoiHostBridgeKillSwitch';
+import { resolveAoiHostStoreLockPath } from '../aoiHostStoreLock';
 import { getDefaultAoiEnvironmentSourceRegistry } from '../aoiAutonomyPolicy';
 import { saveAoiEnvironmentSourceRegistry, updateAoiEnvironmentSource } from '../aoiAutonomyStore';
 import { addAoiHostReadRoot, saveAoiHostReadRoots } from '../aoiHostFileRead';
@@ -1770,6 +1771,68 @@ describe('delete preview -> approve -> execute (injected recycle)', () => {
     });
     expect(exec.status).toBe(200);
     expect(recycled).toBe(target);
+  });
+});
+
+describe('a busy store', () => {
+  // The lock throws when it cannot be taken. Uncaught, that is a 500 with a raw
+  // message and no code -- a transient, retryable condition reported as a crash,
+  // and answered differently on every route.
+  function holdLock(home: string, name: string): void {
+    const lockPath = resolveAoiHostStoreLockPath(home, name);
+    fs.mkdirSync(join(lockPath, '..'), { recursive: true });
+    fs.writeFileSync(lockPath, 'held-by-another-process');
+  }
+
+  it('answers 409 store_busy on a config route, not 500', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    holdLock(home, 'read-roots');
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/read-roots',
+      body: { path: join(home, 'docs') },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 1000,
+    });
+    expect(result.status).toBe(409);
+    expect((result.payload as { code: string }).code).toBe('store_busy');
+  });
+
+  it('answers the same way on the kill switch', async () => {
+    // Same condition, same answer. It used to be a bespoke code here and a bare
+    // 500 elsewhere.
+    const { home, sessionsDir, token } = makeDaemonHome();
+    holdLock(home, 'killswitch');
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/killswitch',
+      body: { action: 'panic' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 1000,
+    });
+    expect(result.status).toBe(409);
+    expect((result.payload as { code: string }).code).toBe('store_busy');
+  });
+
+  it('rejects a bad request without waiting on the lock', async () => {
+    // Validation happens before the lock is taken, so a malformed request is
+    // not made to queue behind another process.
+    const { home, sessionsDir, token } = makeDaemonHome();
+    holdLock(home, 'killswitch');
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/killswitch',
+      body: { action: 'nonsense' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 1000,
+    });
+    expect(result.status).toBe(400);
   });
 });
 

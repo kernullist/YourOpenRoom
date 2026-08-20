@@ -597,7 +597,43 @@ async function runAoiBrowserDriveTaskDefault(options: {
 }
 
 // The pure routing core. Auth is enforced first; then the route is dispatched.
+/**
+ * Every route, with one shared answer for "the store is busy".
+ *
+ * The store lock throws when it cannot be taken, and a throw here becomes a 500
+ * carrying a raw message and no code -- a transient, retryable condition
+ * reported as a crash. Worse, it was answered THREE different ways depending on
+ * which route you hit: a bespoke 409 on the kill switch, a denial reason inside
+ * the approval gate, and a bare 500 everywhere else.
+ *
+ * Handled once, here, so a route added later inherits it instead of having to
+ * remember it.
+ *
+ * Re-entry is deliberately NOT caught: that is a programming error in the
+ * critical sections themselves, and it should stay loud.
+ */
 export async function resolveAoiHostBridgeRoute(
+  params: ResolveAoiHostBridgeRouteParams,
+): Promise<AoiHostBridgeRouteResult> {
+  try {
+    return await resolveAoiHostBridgeRouteInner(params);
+  } catch (error) {
+    if (error instanceof AoiHostStoreLockTimeout) {
+      return {
+        status: 409,
+        payload: {
+          ok: false,
+          error: error.message,
+          code: 'store_busy',
+          detail: 'Nothing was changed. Retry.',
+        },
+      };
+    }
+    throw error;
+  }
+}
+
+async function resolveAoiHostBridgeRouteInner(
   params: ResolveAoiHostBridgeRouteParams,
 ): Promise<AoiHostBridgeRouteResult> {
   // --- Authentication (outermost gate) --------------------------------------
@@ -651,38 +687,23 @@ export async function resolveAoiHostBridgeRoute(
     // over one store, so a toggle computed from an old snapshot silently
     // discards whatever the other process just wrote -- including an operator
     // switching something OFF.
-    let saved: AoiHostBridgeKillSwitchState;
-    try {
-      saved = withAoiHostStoreLock(params.openroomHome, 'killswitch', () => {
-        const fresh = loadAoiHostBridgeKillSwitchState(params.openroomHome);
-        let applied: AoiHostBridgeKillSwitchState;
-        if (action === 'panic') {
-          applied = engageAoiHostBridgePanic(fresh, params.now);
-        } else if (action === 'clear_panic') {
-          applied = clearAoiHostBridgePanic(fresh, params.now);
-        } else {
-          applied = setAoiHostBridgeCapability(
-            fresh,
-            capability,
-            params.body.enabled === true,
-            params.now,
-          );
-        }
-        return saveAoiHostBridgeKillSwitchState(params.openroomHome, applied);
-      });
-    } catch (error) {
-      if (error instanceof AoiHostStoreLockTimeout) {
-        return {
-          status: 409,
-          payload: {
-            ok: false,
-            error: 'the kill-switch store is busy; nothing was changed',
-            code: 'killswitch_store_busy',
-          },
-        };
+    const saved = withAoiHostStoreLock(params.openroomHome, 'killswitch', () => {
+      const fresh = loadAoiHostBridgeKillSwitchState(params.openroomHome);
+      let applied: AoiHostBridgeKillSwitchState;
+      if (action === 'panic') {
+        applied = engageAoiHostBridgePanic(fresh, params.now);
+      } else if (action === 'clear_panic') {
+        applied = clearAoiHostBridgePanic(fresh, params.now);
+      } else {
+        applied = setAoiHostBridgeCapability(
+          fresh,
+          capability,
+          params.body.enabled === true,
+          params.now,
+        );
       }
-      throw error;
-    }
+      return saveAoiHostBridgeKillSwitchState(params.openroomHome, applied);
+    });
     return { status: 200, payload: { ok: true, killSwitch: summarizeKillSwitch(saved) } };
   }
 

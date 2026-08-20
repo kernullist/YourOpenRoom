@@ -24,15 +24,27 @@ import { dirname, resolve } from 'path';
 
 const HOST_BRIDGE_DIR = 'host-bridge';
 
+// NOTE: acquisition BLOCKS THE EVENT LOOP.
+//
+// The wait is synchronous because the critical sections are, and they are
+// synchronous on purpose: an async body would release the lock at its first
+// await while the rest of the work continued. The cost is that a caller waiting
+// here serves nothing else meanwhile, so both bounds below are set by what a
+// real critical section costs, not by what feels safe.
+//
 // How long a caller waits for the holder to finish. Every critical section here
-// is a few small synchronous file operations, so real contention clears in
-// microseconds; this bound exists for a holder that died badly.
-const DEFAULT_LOCK_TIMEOUT_MS = 5_000;
+// is a few small synchronous file operations -- microseconds -- so genuine
+// contention clears on the first or second retry. A wait longer than this does
+// not mean "busy", it means something is wrong, and refusing quickly beats
+// stalling the process that is still healthy.
+const DEFAULT_LOCK_TIMEOUT_MS = 1_000;
 
 // A lock file older than this is assumed abandoned by a process that crashed or
-// was killed between taking it and releasing it. Long enough that it can never
-// describe a live holder of one of these critical sections.
-const STALE_LOCK_MS = 30_000;
+// was killed between taking it and releasing it. Still four orders of magnitude
+// above a real critical section, so it cannot describe a live holder -- but
+// short enough that a crash does not leave every caller paying the full timeout
+// for half a minute.
+const STALE_LOCK_MS = 10_000;
 
 const RETRY_INTERVAL_MS = 5;
 
