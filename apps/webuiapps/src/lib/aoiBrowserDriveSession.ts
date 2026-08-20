@@ -262,11 +262,16 @@ export async function startAoiBrowserDriveSession(
 
   // And refuse the default profile even when it is named explicitly, so the same
   // impossible configuration cannot be reached the long way round.
-  const browserDefault = resolveDefaultUserDataDir(engine);
-  if (
-    browserDefault &&
-    resolve(browserDefault).toLowerCase() === resolve(userDataDir).toLowerCase()
-  ) {
+  //
+  // BOTH engines, not just the one being launched. The settings route validates
+  // against both, but a hand-edited config never passes through it, and pointing
+  // Chrome at Edge's default directory is just as unusable as pointing it at its
+  // own -- checking only the launching engine would let exactly that through.
+  const requestedDir = resolve(userDataDir).toLowerCase();
+  const browserDefault = (['chrome', 'edge'] as const)
+    .map((kind) => resolveDefaultUserDataDir(kind))
+    .find((dir) => Boolean(dir) && resolve(dir as string).toLowerCase() === requestedDir);
+  if (browserDefault) {
     throw new AoiBrowserDriveStartError(
       'user_data_dir_unresolved',
       'that is the browser default profile, which refuses remote debugging. Use a separate ' +
@@ -537,14 +542,17 @@ export async function startAoiBrowserDriveSession(
       await dialogs.releasePendingDialogs().catch(() => {});
     }
     // Close ONLY Aoi's page; the shared browser stays up (the user is using it).
-    // We deliberately never call browser.close(): over connectOverCDP that would
-    // clear the user's existing contexts / disconnect their real logged-in
-    // browser. The CDP transport is released when the daemon process exits.
     try {
       await page.close();
     } catch {
       // best-effort teardown
     }
+    // Then release the CDP client. Over connectOverCDP, close() DISCONNECTS --
+    // measured against Chrome 151: the browser stays running, the operator's
+    // tabs survive, and a later attach reconnects fine. Leaving it out did not
+    // keep anything safe; it just leaked one websocket and one Playwright
+    // browser object per act, for the whole life of the daemon.
+    await safeCloseBrowser(browser);
   };
 
   return {

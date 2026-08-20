@@ -121,8 +121,8 @@ describe('pollForAoiDevToolsActivePort', () => {
 });
 
 describe('startAoiBrowserDriveSession', () => {
-  it('launches, attaches, opens an Aoi page, and closes only the page', async () => {
-    const { deps, page, browser } = happyDeps();
+  it('launches, attaches, opens an Aoi page, and leaves the browser running', async () => {
+    const { deps, page, browser, child } = happyDeps();
     const session = await startAoiBrowserDriveSession(PROFILE_OPTIONS, deps);
     expect(session.port).toBe(51222);
     expect(session.cdpHttpEndpoint).toBe('http://127.0.0.1:51222');
@@ -131,8 +131,14 @@ describe('startAoiBrowserDriveSession', () => {
 
     await session.close();
     expect(page.closed).toBe(true);
-    // The shared browser is never closed by teardown.
-    expect(browser.closedBrowser).toBe(false);
+    // The CDP client is released. Measured against Chrome 151: close() over
+    // connectOverCDP disconnects, the browser keeps running and the operator's
+    // tabs survive -- so holding the connection open protected nothing and
+    // leaked one websocket per act instead.
+    expect(browser.closedBrowser).toBe(true);
+    // What must NOT happen is killing the browser the operator is using, and
+    // that is the spawned process, not the client.
+    expect((child as unknown as { killed: boolean }).killed).toBeFalsy();
     // Idempotent close.
     await session.close();
   });

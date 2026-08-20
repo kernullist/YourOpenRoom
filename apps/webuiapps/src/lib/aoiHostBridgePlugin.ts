@@ -210,6 +210,7 @@ export interface ResolveAoiHostBridgeRouteParams {
     url: string;
     allowlist: AoiBrowserDriveAllowlist;
     now: number;
+    openroomHome: string;
   }) => Promise<AoiBrowserDriveReadOutcome>;
   browserDrivePreviewImpl?: (options: {
     plan: AoiBrowserDrivePlan;
@@ -279,10 +280,18 @@ async function runAoiBrowserDriveReadDefault(options: {
   url: string;
   allowlist: AoiBrowserDriveAllowlist;
   now: number;
+  // The same configured profile the drive uses. Reading the operator's
+  // logged-in browser means reading THAT browser, and this path opened a
+  // session with no profile at all -- so it could only ever have read a
+  // signed-out one, and once the default fallback went away it stopped working
+  // entirely.
+  openroomHome: string;
 }): Promise<AoiBrowserDriveReadOutcome> {
   let session;
   try {
-    session = await startAoiBrowserDriveSession({});
+    session = await startAoiBrowserDriveSession({
+      userDataDir: resolveAoiBrowserDriveProfileDir(options.openroomHome),
+    });
   } catch (error) {
     if (error instanceof AoiBrowserDriveStartError) {
       return {
@@ -429,7 +438,13 @@ function resolveAoiBrowserDriveProfileDir(openroomHome: string): string {
     // Say what is actually wrong. Falling back to the browser default would
     // fail at attach time with a message about a missing port file, which
     // describes a symptom of an entirely different problem.
-    throw new Error(
+    //
+    // The same error type the session raises, so every caller's existing
+    // handling applies. A plain Error escaped the read route's catch and became
+    // a 500 carrying a raw message, instead of the clean failure that route
+    // returns for every other start problem.
+    throw new AoiBrowserDriveStartError(
+      'user_data_dir_unresolved',
       'no browser profile is configured for Aoi. Chrome refuses remote debugging on its default ' +
         'profile, so browser drive needs a separate signed-in profile directory: set it in ' +
         'Settings > Advanced > Host bridge > Browser profile.',
@@ -801,7 +816,12 @@ export async function resolveAoiHostBridgeRoute(
     }
     try {
       const driveRead = params.browserDriveReadImpl ?? runAoiBrowserDriveReadDefault;
-      const result = await driveRead({ url, allowlist, now: params.now });
+      const result = await driveRead({
+        url,
+        allowlist,
+        now: params.now,
+        openroomHome: params.openroomHome,
+      });
       if (!result.ok) {
         return {
           status: 422,
@@ -2203,6 +2223,24 @@ export async function resolveAoiHostBridgeRoute(
   //     operator can sign in. Deliberately launched WITHOUT a debug port: this
   //     window is for them, not for Aoi, and the drive opens its own later.
   if (params.method === 'POST' && params.route === '/browser-drive/profile/open') {
+    // Panic is the emergency stop for everything host-side, and this route
+    // launches a real process on the operator's desktop. It consulted nothing,
+    // so a panicked bridge still opened browser windows.
+    //
+    // Deliberately panic and NOT the Computer-Use capability: signing a profile
+    // in is setup, and an operator preparing the profile before switching the
+    // feature on is doing the sensible thing in the sensible order.
+    if (loadAoiHostBridgeKillSwitchState(params.openroomHome)?.globalPanic === true) {
+      return {
+        status: 403,
+        payload: {
+          ok: false,
+          error: 'host bridge is panicked',
+          code: 'panic',
+          denyReasons: ['global_panic'],
+        },
+      };
+    }
     const dir = selectAoiBrowserDriveUserDataDir(
       loadAoiBrowserDriveProfileConfig(params.openroomHome),
     );

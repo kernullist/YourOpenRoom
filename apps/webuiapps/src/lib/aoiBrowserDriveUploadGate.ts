@@ -33,7 +33,13 @@ export interface AoiBrowserDriveUploadDecision {
 export function decideAoiBrowserDriveUpload(
   filePath: string,
   roots: string[],
+  // Which direction is being decided. Only the wording depends on it, but the
+  // wording is what the operator acts on: a download refused with "no read roots
+  // are registered" sends them to edit the wrong list.
+  kind: 'upload' | 'download' = 'upload',
 ): AoiBrowserDriveUploadDecision {
+  const rootNoun = kind === 'upload' ? 'read' : 'write';
+  const direction = kind === 'upload' ? 'upload from' : 'download to';
   const raw = typeof filePath === 'string' ? filePath.trim() : '';
   if (!raw) {
     return { allowed: false, reason: 'no file path was given' };
@@ -47,7 +53,7 @@ export function decideAoiBrowserDriveUpload(
   if (!roots.length) {
     return {
       allowed: false,
-      reason: 'no read roots are registered, so there is nowhere Aoi may upload from',
+      reason: `no ${rootNoun} roots are registered, so there is nowhere Aoi may ${direction}`,
     };
   }
   const target = resolve(raw);
@@ -58,7 +64,7 @@ export function decideAoiBrowserDriveUpload(
   }
   return {
     allowed: false,
-    reason: 'the file is outside every registered read root; register it first if this is intended',
+    reason: `that path is outside every registered ${rootNoun} root; register it first if this is intended`,
   };
 }
 
@@ -70,6 +76,61 @@ export function decideAoiBrowserDriveUpload(
  * transport error, which reads to the model as "the site rejected it" rather
  * than "that is not a file".
  */
+/**
+ * Re-check the REAL path against the REAL roots.
+ *
+ * The string containment check answers "does this path spell out somewhere
+ * inside a root", which is not the same question as "is this file inside a
+ * root". A directory junction planted inside a root -- and on Windows a
+ * junction needs no administrator -- makes any file on the machine spell out
+ * correctly: `<root>\out\id_rsa` passes containment, and the lstat below sees
+ * a perfectly ordinary file, because only the LAST component is ever stat'd.
+ *
+ * So resolve every intermediate component and ask again. The roots are resolved
+ * too, otherwise a root that itself lives behind a symlink (the usual /tmp ->
+ * /private/tmp) would refuse files that are genuinely inside it.
+ *
+ * This is the check the read, write and delete paths already do; these two gates
+ * were the ones missing it.
+ */
+function checkRealPathInsideRoots(
+  absolute: string,
+  roots: string[],
+  kind: 'upload' | 'download',
+): AoiBrowserDriveUploadDecision {
+  let real: string;
+  try {
+    real = fs.realpathSync.native(absolute);
+  } catch {
+    return { allowed: false, reason: 'that path could not be resolved' };
+  }
+  const realRoots: string[] = [];
+  for (const root of roots) {
+    try {
+      realRoots.push(fs.realpathSync.native(resolve(root)));
+    } catch {
+      // A configured root that no longer resolves is skipped, not fatal -- the
+      // same handling the read path uses. Skipping can only refuse more.
+    }
+  }
+  const decision = decideAoiBrowserDriveUpload(real, realRoots, kind);
+  if (decision.allowed) {
+    return decision;
+  }
+  if (real.toLowerCase() === absolute.toLowerCase()) {
+    return decision;
+  }
+  // Name the path it actually resolved to. "outside every registered root" for a
+  // path that plainly reads as inside one is the kind of answer that gets argued
+  // with rather than acted on.
+  return {
+    allowed: false,
+    reason: `that path resolves to ${real}, which is outside every registered ${
+      kind === 'upload' ? 'read' : 'write'
+    } root`,
+  };
+}
+
 export function buildAoiBrowserDriveUploadGate(openroomHome: string): AoiBrowserDriveUploadGate {
   return (filePath: string) => {
     const config = loadAoiHostReadRoots(openroomHome);
@@ -91,7 +152,7 @@ export function buildAoiBrowserDriveUploadGate(openroomHome: string): AoiBrowser
     } catch {
       return { allowed: false, reason: 'that file does not exist' };
     }
-    return decision;
+    return checkRealPathInsideRoots(resolve(filePath.trim()), roots, 'upload');
   };
 }
 
@@ -111,12 +172,9 @@ export function buildAoiBrowserDriveDownloadGate(openroomHome: string): AoiBrows
   return (directory: string) => {
     const config = loadAoiHostWriteRoots(openroomHome);
     const roots = config.roots.map((entry) => entry.path);
-    const decision = decideAoiBrowserDriveUpload(directory, roots);
+    const decision = decideAoiBrowserDriveUpload(directory, roots, 'download');
     if (!decision.allowed) {
-      return {
-        allowed: false,
-        reason: decision.reason.replace('read root', 'write root'),
-      };
+      return decision;
     }
     try {
       const stats = fs.lstatSync(resolve(directory.trim()));
@@ -129,6 +187,6 @@ export function buildAoiBrowserDriveDownloadGate(openroomHome: string): AoiBrows
     } catch {
       return { allowed: false, reason: 'that directory does not exist' };
     }
-    return decision;
+    return checkRealPathInsideRoots(resolve(directory.trim()), roots, 'download');
   };
 }

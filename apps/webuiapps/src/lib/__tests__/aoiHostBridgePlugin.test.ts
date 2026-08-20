@@ -13,6 +13,7 @@ import {
   loadAoiHostBridgeKillSwitchState,
   saveAoiHostBridgeKillSwitchState,
   setAoiHostBridgeCapability,
+  engageAoiHostBridgePanic,
 } from '../aoiHostBridgeKillSwitch';
 import { getDefaultAoiEnvironmentSourceRegistry } from '../aoiAutonomyPolicy';
 import { saveAoiEnvironmentSourceRegistry, updateAoiEnvironmentSource } from '../aoiAutonomyStore';
@@ -459,6 +460,43 @@ describe('resolveAoiHostBridgeRoute /browser-drive-read (BD gate)', () => {
       title: 'My Dashboard',
       hostname: 'example.com',
     });
+  });
+
+  it('reads through the configured profile, not an unconfigured browser', async () => {
+    // Reading the operator's logged-in browser means reading THAT browser. This
+    // path used to start a session with no profile at all, so it could only ever
+    // have read a signed-out one -- and once the default fallback went away it
+    // could not start a session at all. The home has to reach the impl for the
+    // profile to be resolvable from it.
+    const { home, sessionsDir, token } = makeDaemonHome();
+    enableDriveConsent(sessionsDir, home);
+    let seenHome: string | undefined;
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive-read',
+      body: { sessionPath: 'aoi/default', url: 'https://example.com/account' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+      browserDriveReadImpl: async ({ url, openroomHome }) => {
+        seenHome = openroomHome;
+        return {
+          ok: true,
+          url,
+          finalUrl: url,
+          hostname: 'example.com',
+          title: 'Inbox',
+          excerpt: '',
+          siteName: 'example.com',
+          blocks: [],
+          text: '',
+          sampledAt: 2000,
+        };
+      },
+    });
+    expect(result.status).toBe(200);
+    expect(seenHome).toBe(home);
   });
 
   it('maps a drive failure to 422', async () => {
@@ -1836,6 +1874,41 @@ describe('browser-drive profile', () => {
     expect(result.status).toBe(200);
     expect(opened).toHaveLength(1);
     expect(opened[0].dir).toBe(dir);
+  });
+
+  it('refuses to spawn a browser while the bridge is panicked', async () => {
+    // Panic is the emergency stop for everything host-side. This route launches
+    // a real process on the desktop and used to consult nothing at all, so a
+    // panicked bridge still opened windows.
+    const { home, sessionsDir, token } = makeDaemonHome();
+    const dir = join(home, 'drive-profile');
+    await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive/profile',
+      body: { userDataDir: dir },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 1000,
+    });
+    saveAoiHostBridgeKillSwitchState(home, engageAoiHostBridgePanic(null, 1100));
+
+    const opened: string[] = [];
+    const result = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/browser-drive/profile/open',
+      body: {},
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 1200,
+      browserProfileOpenImpl: (_exe: string, userDataDir: string) => {
+        opened.push(userDataDir);
+      },
+    });
+    expect(result.status).toBe(403);
+    expect((result.payload as { code: string }).code).toBe('panic');
+    expect(opened).toHaveLength(0);
   });
 
   it('refuses to open anything when no profile is set', async () => {
