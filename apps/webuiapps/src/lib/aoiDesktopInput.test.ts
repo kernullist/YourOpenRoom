@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import * as fs from 'fs';
+import * as os from 'os';
+import { join } from 'path';
+
+import {
+  addAoiBrowserDriveAllowlistEntry,
+  saveAoiBrowserDriveAllowlist,
+} from './aoiBrowserDriveAllowlist';
 import {
   mapAoiDesktopInputActReply,
   parseAoiDesktopInputRequest,
@@ -441,3 +448,76 @@ function resolve(...parts: string[]): string {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   return (require('path') as typeof import('path')).resolve(...parts);
 }
+
+// The browser denylist is containment for what Aoi may reach on the web. A UIA
+// snapshot of a browser window returns the LIVE PAGE -- verified against a real
+// Chrome window, whose snapshot came back carrying the page's own buttons and
+// links -- so these two ops were a way around it.
+describe('runAoiDesktopInput browser-window reads', () => {
+  function homeWithDenylist(entries: string[]): string {
+    const home = fs.mkdtempSync(join(os.tmpdir(), 'aoi-di-denylist-'));
+    let list = null;
+    for (const domain of entries) {
+      list = addAoiBrowserDriveAllowlistEntry(list, { domain }, 1000).allowlist;
+    }
+    if (list) {
+      saveAoiBrowserDriveAllowlist(home, list);
+    }
+    return home;
+  }
+
+  function snapshotOf(home: string, processName: string, op = 'snapshot') {
+    const request = parseAoiDesktopInputRequest({ op, hwnd: '0x1234' });
+    expect(request).not.toBeNull();
+    return runAoiDesktopInput({
+      request: request!,
+      openroomHome: home,
+      foregroundAllowed: false,
+      spawnImpl: () => ({
+        status: 0,
+        stdout: JSON.stringify({
+          ok: true,
+          snapshotId: 'dis-0a1b2c3d',
+          process: processName,
+          note: 'ok',
+          totalElements: 1,
+          truncated: false,
+          pngBase64: 'iVBORw0KGgo=',
+          elements: [
+            { ref: 1, role: 'button', name: 'Transfer', automationId: 'x', enabled: true },
+          ],
+        }),
+        stderr: '',
+      }),
+      env: { AOI_DESKTOP_INPUT_HELPER: REAL_FILE },
+    });
+  }
+
+  it('refuses a snapshot of a browser window when a denylist exists', () => {
+    const result = snapshotOf(homeWithDenylist(['bank.example']), 'chrome.exe');
+    expect(result.kind).toBe('error');
+    expect((result as { code: string }).code).toBe('browser_window_denylisted');
+    // The page content must not ride along on the refusal.
+    expect(JSON.stringify(result)).not.toContain('Transfer');
+  });
+
+  it('refuses a capture of a browser window too', () => {
+    const result = snapshotOf(homeWithDenylist(['bank.example']), 'msedge.exe', 'capture');
+    expect(result.kind).toBe('error');
+    expect((result as { code: string }).code).toBe('browser_window_denylisted');
+    expect(JSON.stringify(result)).not.toContain('iVBORw0KGgo=');
+  });
+
+  it('leaves an ordinary app alone', () => {
+    // The bound is the browser, not the feature: denylisting a site must not
+    // quietly stop Aoi from reading Notepad.
+    const result = snapshotOf(homeWithDenylist(['bank.example']), 'notepad.exe');
+    expect(result.kind).toBe('snapshot');
+  });
+
+  it('refuses nothing when the operator ruled nothing out', () => {
+    // An empty denylist is the default, so the default posture is unchanged.
+    const result = snapshotOf(homeWithDenylist([]), 'chrome.exe');
+    expect(result.kind).toBe('snapshot');
+  });
+});

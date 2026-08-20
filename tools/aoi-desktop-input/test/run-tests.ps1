@@ -177,6 +177,10 @@ try
     $snap = Invoke-Helper @{ op = 'snapshot'; hwnd = $handle }
     Assert-That 'the snapshot succeeds' ($snap.ok -eq $true)
     Assert-That 'the snapshot carries an id' (-not [string]::IsNullOrWhiteSpace($snap.snapshotId))
+    # The owning process travels with the reply. Looking it up separately reads a
+    # DIFFERENT window whenever the handle was recycled in between, and the caller
+    # uses this to decide whether the reply may be returned at all.
+    Assert-That 'the snapshot names its process' ($snap.process -match 'testwindow') "process=$($snap.process)"
     Assert-That 'a real tree is not reported as absent' ($snap.note -eq 'ok') "note=$($snap.note)"
     # A cap that reports nothing turns "120 of 400" into "the controls".
     Assert-That 'the snapshot reports the true element count' ($snap.totalElements -ge $snap.elements.Count) "total=$($snap.totalElements) shown=$($snap.elements.Count)"
@@ -205,6 +209,7 @@ try
     Write-Host '[test] capture'
     $shot = Invoke-Helper @{ op = 'capture'; hwnd = $handle; mode = 'som' }
     Assert-That 'the capture succeeds' ($shot.ok -eq $true) "detail=$($shot.detail)"
+    Assert-That 'the capture names its process' ($shot.process -match 'testwindow') "process=$($shot.process)"
     Assert-That 'it reports the numbered mode' ($shot.mode -eq 'som') "mode=$($shot.mode)"
     Assert-That 'it returns a real image' ($shot.pngBase64.Length -gt 2000) "base64 length=$($shot.pngBase64.Length)"
 

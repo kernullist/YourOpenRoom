@@ -24,6 +24,7 @@ import * as fs from 'fs';
 import { resolve } from 'path';
 import { spawnSync } from 'child_process';
 import { parseAoiBrowserDriveVerdict, type AoiBrowserDriveVerdict } from './aoiBrowserDriveVerdict';
+import { loadAoiBrowserDriveAllowlist } from './aoiBrowserDriveAllowlist';
 
 // Kill-switch capability: snapshot + drive through UIA patterns. Default OFF.
 export const AOI_DESKTOP_INPUT_CAPABILITY = 'os_desktop_input';
@@ -583,6 +584,74 @@ function defaultSpawn(
   };
 }
 
+// Processes whose windows show CONTENT FROM THE WEB. Snapshotting one returns
+// the live page's controls and text; capturing one returns a picture of it.
+const AOI_BROWSER_PROCESS_NAMES = new Set([
+  'chrome.exe',
+  'msedge.exe',
+  'firefox.exe',
+  'brave.exe',
+  'opera.exe',
+  'vivaldi.exe',
+  'chromium.exe',
+  'whale.exe',
+]);
+
+/**
+ * The browser denylist is containment, and these two ops walked around it.
+ *
+ * The denylist stops browser-drive from NAVIGATING to a host the operator ruled
+ * out. It says nothing about the desktop tools, and a UIA snapshot of a browser
+ * window returns the live page's controls and text -- measured, not assumed: a
+ * snapshot of a Chrome window comes back with the page's own buttons and links,
+ * not just the browser chrome. So an operator who denylisted a site and then had
+ * it open in their own browser was still one snapshot away from handing it over.
+ *
+ * There is nothing to check per-URL here: the UIA tree of a browser window
+ * carries no URL at all (also measured -- no edit control, no element whose
+ * value is a URL). A containment check that cannot see what it is bounding is
+ * worse than none, because it reads as protection.
+ *
+ * So this refuses the whole read when a denylist exists, and points at the tools
+ * that DO enforce it. An empty denylist means the operator ruled nothing out and
+ * nothing is refused, so the default posture is unchanged.
+ *
+ * Only the READ ops. Acting is not exempted by oversight: a click that navigates
+ * somewhere denylisted still cannot be read back through either op, so the
+ * content never reaches Aoi -- which is what the denylist is protecting.
+ */
+function refuseBrowserWindowRead(
+  op: string,
+  processName: string,
+  openroomHome: string,
+): AoiDesktopInputResult | null {
+  if (op !== 'snapshot' && op !== 'capture') {
+    return null;
+  }
+  if (!AOI_BROWSER_PROCESS_NAMES.has(processName.trim().toLowerCase())) {
+    return null;
+  }
+  let denylisted = 0;
+  try {
+    denylisted = loadAoiBrowserDriveAllowlist(openroomHome).entries.length;
+  } catch {
+    // Fail closed: if the denylist cannot be read, we cannot claim it is empty.
+    denylisted = 1;
+  }
+  if (denylisted === 0) {
+    return null;
+  }
+  return {
+    kind: 'error',
+    code: 'browser_window_denylisted',
+    detail:
+      `that window belongs to ${processName}, and a browser denylist is configured. Reading a ` +
+      'browser this way returns the live page, and the window exposes no URL to check it ' +
+      'against, so the denylist could not be applied. Use the browser tools instead -- they ' +
+      'enforce it.',
+  };
+}
+
 export interface RunAoiDesktopInputParams {
   request: AoiDesktopInputRequest;
   openroomHome: string;
@@ -679,6 +748,17 @@ export function runAoiDesktopInput(params: RunAoiDesktopInputParams): AoiDesktop
       code: 'helper_no_reply',
       detail: outcome.stderr.trim().slice(0, 400) || 'the helper produced no parseable reply',
     };
+  }
+
+  // Before anything is mapped or returned: a browser window read while a
+  // denylist exists is refused, and the reply is dropped rather than shaped.
+  const browserRefusal = refuseBrowserWindowRead(
+    request.op,
+    typeof raw.process === 'string' ? raw.process : '',
+    params.openroomHome,
+  );
+  if (browserRefusal) {
+    return browserRefusal;
   }
 
   if (request.op === 'list_apps') {

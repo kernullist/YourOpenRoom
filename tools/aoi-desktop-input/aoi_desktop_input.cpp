@@ -1079,7 +1079,12 @@ void RunSnapshot(IUIAutomation* automation, HWND hwnd)
     const int shown = static_cast<int>(elements.size());
     const std::string id = SnapshotIdFor(hwnd, elements);
     std::ostringstream out;
-    out << "{\"ok\":true,\"snapshotId\":\"" << id << "\",\"note\":\"" << note
+    // The owning process travels with the reply. A caller that has to look it up
+    // separately is reading a DIFFERENT window whenever the handle was recycled
+    // between the two calls, and the answer is used to decide what may be
+    // returned at all.
+    out << "{\"ok\":true,\"snapshotId\":\"" << id << "\",\"process\":\""
+        << JsonEscape(ProcessNameOf(hwnd)) << "\",\"note\":\"" << note
         << "\",\"totalElements\":" << totalFound
         << ",\"truncated\":" << ((totalFound > shown) ? "true" : "false") << ",\"elements\":[";
     for (size_t i = 0; i < elements.size(); ++i)
@@ -2638,9 +2643,27 @@ void RunSelect(IUIAutomation* automation, HWND hwnd, int ref, const std::string&
     int matchIndex = -1;
     int expandAttempts = 0;
     bool openedMenu = false;
+    // Whether the option list was readable at ANY point, not merely on the last
+    // pass. A list that opened and was read, then closed again before the final
+    // look, is a list whose labels we genuinely saw -- reporting it as unreadable
+    // would blame the wrong thing.
+    bool everSawOptions = false;
 
     while (true)
     {
+        // Release last pass's query objects before rebuilding them. The retry
+        // path re-entered this loop without doing so, leaking one condition and
+        // one element array per attempt.
+        if (anything != NULL)
+        {
+            anything->Release();
+            anything = NULL;
+        }
+        if (found != NULL)
+        {
+            found->Release();
+            found = NULL;
+        }
         if (FAILED(automation->CreateTrueCondition(&anything)) || anything == NULL)
         {
             EmitFailure("uia_unavailable", "could not build an element query");
@@ -2698,6 +2721,11 @@ void RunSelect(IUIAutomation* automation, HWND hwnd, int ref, const std::string&
             node->Release();
         }
 
+        if (listIndex >= 0)
+        {
+            everSawOptions = true;
+        }
+
         if (match == NULL && expandAttempts < 6)
         {
             // A closed Win32 dropdown has no list to search: its items do not
@@ -2706,41 +2734,65 @@ void RunSelect(IUIAutomation* automation, HWND hwnd, int ref, const std::string&
             // -- an open menu is a popup that did not exist when the snapshot
             // was taken -- but refusing outright would make dropdowns
             // undrivable, which is worse.
+            //
+            // Acquire the pattern on EVERY attempt until it is held. Asking only
+            // once meant a control that was momentarily busy -- exactly when the
+            // list is also missing -- never got a second try, and the run ended
+            // by blaming the caller's label instead.
             if (expanded == NULL)
             {
-                if (SUCCEEDED(container->GetCurrentPatternAs(
-                        UIA_ExpandCollapsePatternId,
-                        __uuidof(IUIAutomationExpandCollapsePattern),
-                        reinterpret_cast<void**>(&expanded))) &&
-                    expanded != NULL)
-                {
-                    expanded->Expand();
-                }
+                container->GetCurrentPatternAs(UIA_ExpandCollapsePatternId,
+                                               __uuidof(IUIAutomationExpandCollapsePattern),
+                                               reinterpret_cast<void**>(&expanded));
             }
             if (expanded != NULL)
             {
+                // Re-issue Expand rather than trusting the first one: a dropdown
+                // that ignored the request stays shut forever otherwise, and the
+                // poll below only waits for a list that is never coming.
+                //
+                // But only when it is actually shut. Some providers treat Expand
+                // on an open list as a toggle, so asking unconditionally made the
+                // list flap open and closed and the final read could land on a
+                // closed one -- turning a plain "no such option" into "the list
+                // could not be read".
+                ExpandCollapseState state = ExpandCollapseState_Collapsed;
+                if (FAILED(expanded->get_CurrentExpandCollapseState(&state)) ||
+                    state != ExpandCollapseState_Expanded)
+                {
+                    expanded->Expand();
+                }
                 // The list does not appear the instant Expand returns, and how
                 // long it takes is the app's business, not ours. A single fixed
                 // wait made the option intermittently "not found" on a dropdown
                 // that plainly contained it, so poll rather than guess one
                 // number -- and still give up after a bounded wait.
                 expandAttempts += 1;
+                openedMenu = true;
                 Sleep(100);
-                found->Release();
-                found = NULL;
-                if (SUCCEEDED(container->FindAll(TreeScope_Subtree, anything, &found)) &&
-                    found != NULL)
-                {
-                    openedMenu = true;
-                    continue;
-                }
+                continue;
             }
         }
         if (match == NULL)
         {
-            EmitFailure("option_not_found",
-                        "no option with that exact label; take a fresh snapshot and read the "
-                        "available options rather than guessing");
+            // Name the obstacle that is actually in the way. "no option with
+            // that label, go read the options" sends the caller to re-read a
+            // list that was never readable -- and it re-reads it forever.
+            if (!everSawOptions)
+            {
+                EmitFailure("option_list_unavailable",
+                            expanded == NULL
+                                ? "this control lists no options and cannot be opened, so its "
+                                  "options could not be read at all; it may not be a dropdown"
+                                : "the dropdown did not open in time, so its options could not "
+                                  "be read; nothing was selected");
+            }
+            else
+            {
+                EmitFailure("option_not_found",
+                            "no option with that exact label; take a fresh snapshot and read the "
+                            "available options rather than guessing");
+            }
             break;
         }
         if (candidates > 1)
@@ -3370,7 +3422,8 @@ void RunCapture(IUIAutomation* automation, HWND hwnd, const std::string& mode, i
 
     const std::string id = SnapshotIdFor(hwnd, elements);
     std::ostringstream out;
-    out << "{\"ok\":true,\"snapshotId\":\"" << id << "\",\"mode\":\""
+    out << "{\"ok\":true,\"snapshotId\":\"" << id << "\",\"process\":\""
+        << JsonEscape(ProcessNameOf(hwnd)) << "\",\"mode\":\""
         << (wantOverlay && !elements.empty() ? "som" : "plain") << "\",\"width\":" << width
         << ",\"height\":" << height << ",\"scale\":" << scale
         << ",\"totalElements\":" << totalFound << ",\"elements\":[";
