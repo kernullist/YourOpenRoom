@@ -4,7 +4,12 @@ export interface DirectMusicIntent {
   query: string;
 }
 
-const MUSIC_QUERY_SUFFIX_PATTERN = /\s*(?:노래|음악|곡|track|song|music)\s*$/i;
+// The generic-filler word is stripped only as a STANDALONE trailing word
+// (start-of-string or whitespace before it). Without the boundary the bare
+// suffix match ate the last syllable of compounds -- "aespa 신곡" became
+// "aespa 신", "soundtrack" became "sound" -- and the corrupted query searched.
+// Attached filler ("에스파노래") now stays whole, which YouTube handles fine.
+const MUSIC_QUERY_SUFFIX_PATTERN = /(?:^|\s)(?:노래|음악|곡|track|song|music)\s*$/i;
 // A usable search title needs at least one letter or digit (any script).
 // Symbol-only fragments -- stray emoji, a bare marker -- must not become YouTube
 // queries. (The specific case of a tapped "▶ 재생" chip is resolved earlier, from

@@ -103,6 +103,18 @@ describe('parseDirectMusicIntent', () => {
     expect(parseDirectMusicIntent('이무진 라일락을 틀어줘')).toEqual({ query: '이무진 라일락' });
   });
 
+  // Regression: the filler-word strip had no word boundary, so compounds lost
+  // their final syllable -- "aespa 신곡" searched as "aespa 신", "soundtrack"
+  // as "sound".
+  it('strips a standalone filler word but never a compound ending in one', () => {
+    expect(parseDirectMusicIntent('aespa 노래 틀어줘')).toEqual({ query: 'aespa' });
+    expect(parseDirectMusicIntent('신곡 틀어줘')).toEqual({ query: '신곡' });
+    expect(parseDirectMusicIntent('aespa 신곡을 틀어줘')).toEqual({ query: 'aespa 신곡' });
+    expect(parseDirectMusicIntent('play soundtrack')).toEqual({ query: 'soundtrack' });
+    // A bare filler word alone still yields nothing to search for.
+    expect(parseDirectMusicIntent('노래 틀어줘')).toBeNull();
+  });
+
   it('never strips exclusion words from a recovered recommendation title', () => {
     // A real title can contain " 말고 " -- the play chip resolves against the
     // taste card verbatim, bypassing the request-only cleanup.
