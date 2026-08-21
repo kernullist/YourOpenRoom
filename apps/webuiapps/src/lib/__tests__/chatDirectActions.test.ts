@@ -68,26 +68,68 @@ describe('parseDirectMusicIntent', () => {
 
   // Regression: "달플리 말고 2026년 8월 여돌 노래모음을 틀어줘" searched YouTube
   // for the whole utterance, rejected pick and object particle included, and
-  // landed on the very series the user had just refused.
-  it('keeps only the requested side of an "A 말고 B" rejection', () => {
+  // landed on the very series the user had just refused. The rejected pick now
+  // also rides along so the app can minus-operator and filter it out.
+  it('keeps the requested side of an "A 말고 B" rejection and carries A as exclusion', () => {
     expect(parseDirectMusicIntent('달플리 말고 2026년 8월 여돌 노래모음을 틀어줘')).toEqual({
       query: '2026년 8월 여돌 노래모음',
+      exclude: ['달플리'],
     });
+    // A pronoun rejection names nothing filterable, so no exclusion is carried.
     expect(parseDirectMusicIntent('그거 말고 aespa 틀어줘')).toEqual({
       query: 'aespa',
     });
   });
 
-  it('handles 빼고/대신 variants and chained rejections', () => {
+  it('handles 빼고/대신 variants, chained rejections, and rejected-term particles', () => {
+    expect(parseDirectMusicIntent('달플리 대신 8월 여돌 모음 재생해줘')).toEqual({
+      query: '8월 여돌 모음',
+      exclude: ['달플리'],
+    });
+    expect(parseDirectMusicIntent('발라드 말고 힙합도 말고 시티팝 틀어줘')).toEqual({
+      query: '시티팝',
+      exclude: ['발라드', '힙합'],
+    });
+    expect(parseDirectMusicIntent('달플리는 말고 aespa 틀어줘')).toEqual({
+      query: 'aespa',
+      exclude: ['달플리'],
+    });
+  });
+
+  // Adversarial-review regressions: every guard here exists because the naive
+  // needle it prevents was verified to empty real result sets.
+  it('never splits an exclusion marker embedded inside a word', () => {
+    // "말고기" is a word, not "말고 + 기" -- a needle of "기" would filter
+    // nearly every Korean title.
+    expect(parseDirectMusicIntent('말고기 빼고 소불고기 틀어줘')).toEqual({
+      query: '소불고기',
+      exclude: ['말고기'],
+    });
+  });
+
+  it('keeps a name-final 이 and refuses 1-char or deictic needles', () => {
+    // 싸이 is a name, not "싸 + subject particle".
+    expect(parseDirectMusicIntent('싸이 말고 지드래곤 틀어줘')).toEqual({
+      query: '지드래곤',
+      exclude: ['싸이'],
+    });
+    // A 1-char rejection ("너") is too broad for substring filtering; the
+    // request side alone carries the intent. This also keeps the actual song
+    // "너 말고 니 언니" playable when typed directly.
+    expect(parseDirectMusicIntent('너 말고 니 언니 틀어줘')).toEqual({
+      query: '니 언니',
+    });
+    // Demonstratives name nothing filterable.
+    expect(parseDirectMusicIntent('그건 말고 백예린 틀어줘')).toEqual({
+      query: '백예린',
+    });
     expect(parseDirectMusicIntent('그 채널 빼고 뉴진스 틀어줘')).toEqual({
       query: '뉴진스',
     });
-    expect(parseDirectMusicIntent('달플리 대신 8월 여돌 모음 재생해줘')).toEqual({
-      query: '8월 여돌 모음',
-    });
-    expect(parseDirectMusicIntent('A 말고 B도 말고 시티팝 틀어줘')).toEqual({
-      query: '시티팝',
-    });
+  });
+
+  it('yields to the conversation when only a deferral pronoun remains after the rejection', () => {
+    expect(parseDirectMusicIntent('그거 말고 다시 틀어줘')).toBeNull();
   });
 
   it('returns null when the rejection names no replacement', () => {

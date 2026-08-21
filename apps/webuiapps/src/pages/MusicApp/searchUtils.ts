@@ -199,6 +199,85 @@ export function pickAutoplayResult(
   return fallback;
 }
 
+// ---- rejection-aware search ("A 말고 B" requests) -------------------------
+
+const MAX_EXCLUDE_TERMS = 4;
+const MAX_EXCLUDE_TERM_CHARS = 60;
+
+// A term arriving over the agent wire can carry a lone UTF-16 surrogate half;
+// encodeURIComponent throws URIError on those, killing the whole search, and
+// NFKC matching stops folding the styled titles the filter exists to catch.
+const LONE_SURROGATE_PATTERN =
+  /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
+const EXCLUDE_TERM_WORD_CHAR_PATTERN = /[\p{L}\p{N}]/u;
+
+/**
+ * Parse the newline-separated `exclude` action param. The param crosses the
+ * app boundary as a plain string from the agent surface, so everything here is
+ * bounded rather than trusted: count and length caps, no lone surrogates, no
+ * symbol-only or single-char needles (a substring filter fed "|" or "기" would
+ * nuke most of a result set).
+ */
+export function parseExcludeParam(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  const seen = new Set<string>();
+  const terms: string[] = [];
+  for (const line of raw.split('\n')) {
+    // Code-point slice: a UTF-16 slice at the cap could split an emoji or
+    // math-bold pair and manufacture the very lone surrogate removed above.
+    const term = [...line.trim().replace(LONE_SURROGATE_PATTERN, '')]
+      .slice(0, MAX_EXCLUDE_TERM_CHARS)
+      .join('')
+      .trim();
+    if (term.length < 2 || !EXCLUDE_TERM_WORD_CHAR_PATTERN.test(term)) continue;
+    const key = normalizeForTitleMatch(term);
+    if (key.length < 2 || seen.has(key)) continue;
+    seen.add(key);
+    terms.push(term);
+    if (terms.length >= MAX_EXCLUDE_TERMS) break;
+  }
+  return terms;
+}
+
+/**
+ * Append the search-engine minus operator for each excluded term. Verified
+ * against the backends this app actually uses: /api/youtube-search scrapes
+ * youtube.com/results (native operator support), and both fallbacks (DDG HTML,
+ * Google web) honor the same syntax. Multi-word terms are quoted so they
+ * exclude as a phrase; embedded quotes are dropped to keep the operator whole.
+ */
+export function buildExclusionSearchText(query: string, exclude: string[]): string {
+  if (exclude.length === 0) return query;
+  const operators = exclude
+    // Embedded quotes would break the phrase form; a leading dash would stack
+    // into "--term", which the engines read as a literal.
+    .map((term) => term.replace(/["“”]/g, '').replace(/^-+/, '').trim())
+    .filter(Boolean)
+    .map((term) => (/\s/.test(term) ? `-"${term}"` : `-${term}`));
+  return operators.length > 0 ? `${query} ${operators.join(' ')}` : query;
+}
+
+/**
+ * The guarantee behind the operator: whatever the engines did with the minus
+ * terms, nothing whose title or channel names a rejected pick may be offered
+ * or played. NFKC matching folds the styled unicode these titles favor
+ * (mathematical bold "Playlist" etc.) onto plain letters.
+ */
+export function filterExcludedResults(
+  results: readonly YoutubeSearchResult[],
+  exclude: string[],
+): YoutubeSearchResult[] {
+  // Same needle floor as parseExcludeParam, enforced again because this is
+  // exported: a 1-char substring needle silently empties result sets.
+  const needles = exclude.map(normalizeForTitleMatch).filter((needle) => needle.length >= 2);
+  if (needles.length === 0) return [...results];
+  return results.filter((result) => {
+    const haystack = normalizeForTitleMatch(`${result.title} ${result.channel}`);
+    return !needles.some((needle) => haystack.includes(needle));
+  });
+}
+
 export function extractYoutubeVideoId(url: string): string | null {
   try {
     const parsed = new URL(url);

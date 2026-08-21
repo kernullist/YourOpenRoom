@@ -24,6 +24,14 @@ actions:
           Optional. Set to "1" to auto-start the top result instead of only
           cueing it in the player.
         required: false
+      - name: exclude
+        type: string
+        description: >
+          Optional. Newline-separated terms the user rejected (for example the
+          "달플리" in "달플리 말고 ..."). They ride the search as minus
+          operators, and any result whose title or channel contains one is
+          filtered out so the refused pick cannot play again.
+        required: false
 
   - type: OPEN_HOME
     name: Open Home

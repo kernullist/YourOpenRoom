@@ -103,6 +103,9 @@ Notes:
 
 - If the user agrees to play a recommended song, search the full artist + song title together.
 - To auto-start the top result instead of only cueing it, pass `autoplay: "1"` to `OPEN_SEARCH`.
+- When the user rejects a pick ("X 말고 Y"), pass the rejected terms as newline-separated
+  `exclude` to `OPEN_SEARCH`: they become search minus operators and results naming them are
+  filtered, so the refused pick cannot play again.
 - `OPEN_VIDEO` starts playback automatically; pass `autoplay: "0"` to only cue the video.
 - If you already have a concrete YouTube link, prefer `OPEN_VIDEO` over a fresh search.
 - The app itself manages recent searches, saved topics, and playlists in `state.json`.

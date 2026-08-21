@@ -7118,7 +7118,15 @@ const ChatPanel: React.FC<{
           const result = await dispatchAgentAction({
             app_id: YOUTUBE_APP_ID,
             action_type: 'OPEN_SEARCH',
-            params: { query: directMusicIntent.query, autoplay: '1' },
+            params: {
+              query: directMusicIntent.query,
+              autoplay: '1',
+              // Rejected picks ("달플리 말고 ...") ride along so the app can
+              // minus-operator and filter them instead of replaying them.
+              ...(directMusicIntent.exclude?.length
+                ? { exclude: directMusicIntent.exclude.join('\n') }
+                : {}),
+            },
           });
           if (isFailedAgentActionResult(result)) {
             console.error('[ChatPanel] Direct music intent dispatch failed', result);

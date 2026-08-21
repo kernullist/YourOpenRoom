@@ -34,7 +34,10 @@ import {
 import './i18n';
 import {
   buildDirectResult,
+  buildExclusionSearchText,
   fetchYoutubeSearchResults,
+  filterExcludedResults,
+  parseExcludeParam,
   pickAutoplayResult,
   type YoutubeSearchResult,
 } from './searchUtils';
@@ -472,7 +475,7 @@ const YouTubeApp: React.FC = () => {
     async (
       rawQuery?: string,
       triggerBy: ActionTriggerBy = ActionTriggerBy.User,
-      options?: { autoplay?: boolean },
+      options?: { autoplay?: boolean; exclude?: string[] },
     ): Promise<{ ok: boolean; error?: string; played?: AutoplayOutcome }> => {
       const query = (rawQuery ?? searchQuery).trim();
       if (!query) return { ok: false, error: 'missing query' };
@@ -511,7 +514,33 @@ const YouTubeApp: React.FC = () => {
       setResultsLoading(true);
       setResultsError(null);
       try {
-        const results = await fetchYoutubeSearchResults(query);
+        const exclude = options?.exclude ?? [];
+        let results: YoutubeSearchResult[];
+        if (exclude.length === 0) {
+          results = await fetchYoutubeSearchResults(query);
+        } else {
+          // Rejected picks ride the search as minus operators (helps ranking
+          // upstream), but the client-side filter below is the actual
+          // guarantee -- nothing that names a rejected pick may play.
+          try {
+            results = filterExcludedResults(
+              await fetchYoutubeSearchResults(buildExclusionSearchText(query, exclude)),
+              exclude,
+            );
+          } catch {
+            results = [];
+          }
+          if (results.length === 0) {
+            // Bail before the retry fetch if a newer search already took over.
+            if (searchRequestSeqRef.current !== requestSeq) {
+              return { ok: false, error: 'search superseded by a newer one' };
+            }
+            // The operator can over-filter upstream (engines match it against
+            // descriptions too). Retry the plain query once and let the local
+            // filter do the excluding.
+            results = filterExcludedResults(await fetchYoutubeSearchResults(query), exclude);
+          }
+        }
         // A newer search replaced this one, so what is on screen is not what
         // this call asked for.
         if (searchRequestSeqRef.current !== requestSeq) {
@@ -532,7 +561,18 @@ const YouTubeApp: React.FC = () => {
           }
         }
         if (results.length === 0) {
-          return { ok: false, error: `no results for "${query}"` };
+          const excludeNote =
+            exclude.length > 0
+              ? ` after excluding ${exclude.map((term) => `"${term}"`).join(', ')}`
+              : '';
+          const message = `no results for "${query}"${excludeNote}`;
+          if (exclude.length > 0) {
+            // Unlike a genuinely empty set, filtered-to-empty must say WHY in
+            // the app too -- a bare "no results" for a query that had plenty
+            // reads as a search failure, not as the exclusion working.
+            setResultsError(message);
+          }
+          return { ok: false, error: message };
         }
         return { ok: true, played };
       } catch (error) {
@@ -1028,6 +1068,7 @@ const YouTubeApp: React.FC = () => {
             await waitForInit();
             const outcome = await submitSearch(query, ActionTriggerBy.Agent, {
               autoplay: action.params?.autoplay === '1',
+              exclude: parseExcludeParam(action.params?.exclude),
             });
             // The window opening is not the same as the search working. Report
             // a failed fetch or an empty result set so the caller does not

@@ -2,6 +2,12 @@ import type { ChatMessage } from './llmClient';
 
 export interface DirectMusicIntent {
   query: string;
+  /**
+   * Picks the user explicitly rejected ("달플리 말고 ..."). The YouTube app
+   * rides them as search minus operators and filters any result whose title or
+   * channel names one, so the refused pick cannot come back as the answer.
+   */
+  exclude?: string[];
 }
 
 // The generic-filler word is stripped only as a STANDALONE trailing word
@@ -95,7 +101,7 @@ export function parseStartedVideo(result: string | null | undefined): StartedVid
 // own ack for a mis-parsed request quotes the pronoun ("다시" 유튜브에서
 // 틀어볼게), and recovering that would search for the pronoun a second time.
 const MUSIC_DEFERRAL_PRONOUN_PATTERN =
-  /^(?:다시|또|그거|그걸|그것|이거|이것|저거|저것|아까|방금|한\s*번\s*더|again|that|it|the\s+same)$/iu;
+  /^(?:다시|또|그거|그걸|그것|그건|이거|이것|이건|저거|저것|저건|그때|아까|방금|한\s*번\s*더|again|that|it|the\s+same)$/iu;
 
 // A request to replay what Aoi just named, with no title of its own. Every
 // pattern is anchored end to end and requires a playback verb, so a message that
@@ -167,7 +173,12 @@ function cleanMusicQuery(value: string): string {
 // thing the user refused. Greedy up to the LAST marker so a chained rejection
 // ("A 말고 B도 말고 C") resolves to the final choice. The separator after the
 // marker is required so words that merely end in the marker ("말고기") survive.
-const MUSIC_EXCLUSION_PREFIX_PATTERN = /^.*(?:말고|말구|빼고|빼구|대신에?)[\s,]+/u;
+const MUSIC_EXCLUSION_PREFIX_PATTERN = /^(?<rejected>.*)(?:말고|말구|빼고|빼구|대신에?)[\s,]+/u;
+
+// Splits a rejected prefix that chained several rejections into its terms. The
+// marker must be followed by a separator, mirroring the prefix pattern above,
+// so a marker embedded inside a word ("말고기", "대신맨") never splits it.
+const MUSIC_EXCLUSION_MARKER_SPLIT_PATTERN = /(?:말고|말구|빼고|빼구|대신에?)(?=[\s,])|,/u;
 
 // The same markers at the very end ("달플리 말고 틀어줘") reject a pick without
 // naming a replacement -- there is no query to build from that.
@@ -178,21 +189,68 @@ const MUSIC_DANGLING_EXCLUSION_PATTERN = /(?:말고|말구|빼고|빼구|대신�
 // of the title, and it measurably skews YouTube ranking.
 const MUSIC_TRAILING_OBJECT_PARTICLE_PATTERN = /(?<=[\p{L}\p{N}])[을를]$/u;
 
+// Trailing topic/object particle on a REJECTED term ("달플리는", "B도"). 이/가
+// stay OUT of the class: they end too many real artist names (싸이, 이하이) to
+// strip blind -- an unstripped particle only makes the filter needle inert,
+// while a wrongly stripped name makes it destructive.
+const MUSIC_EXCLUSION_TERM_PARTICLE_PATTERN = /(?<=[\p{L}\p{N}])[은는을를도]$/u;
+
+// "그 채널 빼고", "이 노래 말고": a bare demonstrative + noun names nothing the
+// filter can act on, and its minus operator only skews the search.
+const MUSIC_EXCLUSION_DEIXIS_PATTERN = /^(?:그|이|저)\s/u;
+
+// Keep in sync with parseExcludeParam's cap on the MusicApp side, so what the
+// parser promises and what the app enforces truncate identically.
+const MAX_EXCLUSION_TERMS = 4;
+
+/**
+ * The rejected picks named before the exclusion markers, cleaned into terms
+ * the YouTube app can filter by. Every guard here errs toward dropping the
+ * term: the needles feed a substring filter, so a short, deictic, or pronoun
+ * needle ("너", "그거", "그 채널") would nuke unrelated results, while a
+ * dropped needle merely loses the active exclusion -- the cleaned request
+ * side alone already expresses the intent.
+ */
+function extractExclusionTerms(rejected: string): string[] {
+  const seen = new Set<string>();
+  const terms: string[] = [];
+  for (const segment of rejected.split(MUSIC_EXCLUSION_MARKER_SPLIT_PATTERN)) {
+    const trimmed = segment.trim();
+    const stripped = trimmed.replace(MUSIC_EXCLUSION_TERM_PARTICLE_PATTERN, '');
+    // Keep the particle when stripping would leave a single char: 싸이 and
+    // 유도 are names, not "싸 + 이" / "유 + 도".
+    const term = stripped.length >= 2 ? stripped : trimmed;
+    if (term.length < 2 || !MUSIC_QUERY_WORD_CHAR_PATTERN.test(term)) continue;
+    if (MUSIC_DEFERRAL_PRONOUN_PATTERN.test(term)) continue;
+    if (MUSIC_EXCLUSION_DEIXIS_PATTERN.test(term)) continue;
+    const key = term.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    terms.push(term);
+    if (terms.length >= MAX_EXCLUSION_TERMS) break;
+  }
+  return terms;
+}
+
 /**
  * Cleanup that is valid ONLY for the user's own typed request: exclusion
  * phrases and a trailing object particle. Recovered recommendation titles must
  * NOT pass through here -- a real title can contain " 말고 " ("너 말고 니 언니")
  * or end in 을/를, and stripping those would corrupt it.
  */
-function cleanRequestedMusicQuery(value: string): string {
-  const withoutExclusion = value.replace(MUSIC_EXCLUSION_PREFIX_PATTERN, '').trim();
-  if (!withoutExclusion || MUSIC_DANGLING_EXCLUSION_PATTERN.test(withoutExclusion)) {
-    // A rejection with no replacement named. Returning '' drops the direct
+function cleanRequestedMusicQuery(value: string): { query: string; exclude: string[] } {
+  const exclusionMatch = value.match(MUSIC_EXCLUSION_PREFIX_PATTERN);
+  const request = exclusionMatch ? value.slice(exclusionMatch[0].length).trim() : value.trim();
+  if (!request || MUSIC_DANGLING_EXCLUSION_PATTERN.test(request)) {
+    // A rejection with no replacement named. An empty query drops the direct
     // path entirely so the conversation resolves it, instead of literally
     // searching YouTube for the rejection words.
-    return '';
+    return { query: '', exclude: [] };
   }
-  return cleanMusicQuery(withoutExclusion.replace(MUSIC_TRAILING_OBJECT_PARTICLE_PATTERN, ''));
+  return {
+    query: cleanMusicQuery(request.replace(MUSIC_TRAILING_OBJECT_PARTICLE_PATTERN, '')),
+    exclude: exclusionMatch ? extractExclusionTerms(exclusionMatch.groups?.rejected ?? '') : [],
+  };
 }
 
 function enrichMusicQueryFromHistory(
@@ -316,9 +374,18 @@ export function parseDirectMusicIntent(
 
   for (const pattern of suffixPatterns) {
     const match = trimmed.match(pattern);
-    const query = cleanRequestedMusicQuery(match?.groups?.query ?? '');
+    const { query, exclude } = cleanRequestedMusicQuery(match?.groups?.query ?? '');
     if (query) {
-      return { query: enrichMusicQueryFromHistory(query, history) };
+      // "그거 말고 다시 틀어줘": once the rejection is removed, the request is
+      // a bare deferral pronoun -- nothing searchable. Yield to the
+      // conversation instead of searching the pronoun.
+      if (MUSIC_DEFERRAL_PRONOUN_PATTERN.test(query)) {
+        return null;
+      }
+      return {
+        query: enrichMusicQueryFromHistory(query, history),
+        ...(exclude.length > 0 ? { exclude } : {}),
+      };
     }
   }
 
@@ -331,9 +398,15 @@ export function parseDirectMusicIntent(
 
   for (const pattern of prefixPatterns) {
     const match = trimmed.match(pattern);
-    const query = cleanRequestedMusicQuery(match?.groups?.query ?? '');
+    const { query, exclude } = cleanRequestedMusicQuery(match?.groups?.query ?? '');
     if (query) {
-      return { query: enrichMusicQueryFromHistory(query, history) };
+      if (MUSIC_DEFERRAL_PRONOUN_PATTERN.test(query)) {
+        return null;
+      }
+      return {
+        query: enrichMusicQueryFromHistory(query, history),
+        ...(exclude.length > 0 ? { exclude } : {}),
+      };
     }
   }
 

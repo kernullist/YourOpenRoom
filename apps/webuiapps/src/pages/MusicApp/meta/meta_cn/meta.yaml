@@ -23,6 +23,13 @@ actions:
         description: >
           可选。设为 "1" 时自动播放第一条结果，而不是仅在播放器中加载待播。
         required: false
+      - name: exclude
+        type: string
+        description: >
+          可选。用户明确拒绝的关键词（换行分隔，例如"달플리 말고 ..."中的
+          "달플리"）。这些词会作为减号运算符附加到搜索中，且标题或频道包含
+          任一关键词的结果会被过滤，确保被拒绝的内容不会再次播放。
+        required: false
 
   - type: OPEN_HOME
     name: 打开首页

@@ -441,6 +441,75 @@ describe('YouTubeApp – in-app viewer UX', () => {
     expect(searchResult).toContain('no results');
   });
 
+  it('minus-operators and filters rejected picks on OPEN_SEARCH', async () => {
+    await renderApp();
+    fetchYoutubeSearchResultsMock.mockResolvedValueOnce([
+      makeResult('vid-jul', '2026년 7월 여돌 노래모음 | 달플리 Playlist'),
+      makeResult('vid-aug', '2026년 8월 여돌 노래모음'),
+    ]);
+
+    let searchResult: string | undefined;
+    await act(async () => {
+      searchResult = await capturedAgentHandler!({
+        action_type: 'OPEN_SEARCH',
+        params: { query: '2026년 8월 여돌 노래모음', autoplay: '1', exclude: '달플리' },
+      });
+    });
+
+    expect(fetchYoutubeSearchResultsMock).toHaveBeenCalledWith('2026년 8월 여돌 노래모음 -달플리');
+    expect(searchResult).toContain('success');
+    expect(searchResult).toContain('2026년 8월 여돌 노래모음');
+    // The rejected upload is not even offered in the result list.
+    await waitFor(() => expect(screen.getByTestId('yt-result-card-vid-aug')).toBeTruthy());
+    expect(screen.queryByTestId('yt-result-card-vid-jul')).toBeNull();
+  });
+
+  it('retries without the operator when it over-filters, keeping the local filter', async () => {
+    await renderApp();
+    fetchYoutubeSearchResultsMock
+      .mockRejectedValueOnce(new Error('nothing matched the minus query'))
+      .mockResolvedValueOnce([
+        makeResult('vid-jul', '달플리 7월 모음'),
+        makeResult('vid-aug', '8월 여돌 모음'),
+      ]);
+
+    let searchResult: string | undefined;
+    await act(async () => {
+      searchResult = await capturedAgentHandler!({
+        action_type: 'OPEN_SEARCH',
+        params: { query: '8월 여돌 모음', autoplay: '1', exclude: '달플리' },
+      });
+    });
+
+    expect(fetchYoutubeSearchResultsMock).toHaveBeenNthCalledWith(1, '8월 여돌 모음 -달플리');
+    expect(fetchYoutubeSearchResultsMock).toHaveBeenNthCalledWith(2, '8월 여돌 모음');
+    expect(searchResult).toContain('success');
+    expect(searchResult).toContain('8월 여돌 모음');
+  });
+
+  it('reports everything-excluded as an error naming the exclusion', async () => {
+    await renderApp();
+    fetchYoutubeSearchResultsMock
+      .mockResolvedValueOnce([makeResult('vid-jul', '달플리 7월 모음')])
+      .mockResolvedValueOnce([makeResult('vid-jul', '달플리 7월 모음')]);
+
+    let searchResult: string | undefined;
+    await act(async () => {
+      searchResult = await capturedAgentHandler!({
+        action_type: 'OPEN_SEARCH',
+        params: { query: '8월 여돌 모음', autoplay: '1', exclude: '달플리' },
+      });
+    });
+
+    // Playing the very pick the user refused would be worse than failing, so
+    // this reads as an error that names what was excluded.
+    expect(searchResult).toContain('error');
+    expect(searchResult).toContain('excluding');
+    expect(searchResult).toContain('달플리');
+    // The in-app view says WHY it is empty, not just "no results".
+    await waitFor(() => expect(screen.getByText(/after excluding/)).toBeTruthy());
+  });
+
   it('rejects an unknown agent action', async () => {
     await renderApp();
     let result: string | undefined;

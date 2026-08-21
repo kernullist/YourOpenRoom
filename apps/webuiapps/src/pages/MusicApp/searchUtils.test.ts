@@ -2,10 +2,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   buildDirectResult,
+  buildExclusionSearchText,
   extractYoutubeVideoId,
   fetchYoutubeSearchResults,
+  filterExcludedResults,
   normalizeExternalSearchResultsToYoutube,
   parseDuckDuckGoResults,
+  parseExcludeParam,
   parseGoogleSearchResults,
   pickAutoplayResult,
   type YoutubeSearchResult,
@@ -213,5 +216,74 @@ describe('pickAutoplayResult', () => {
   it('returns null only for an empty result set', () => {
     expect(pickAutoplayResult([], AUGUST)).toBeNull();
     expect(pickAutoplayResult([result('a', JULY)], '')?.result.id).toBe('a');
+  });
+});
+
+describe('rejection-aware search helpers', () => {
+  function entry(id: string, title: string, channel = 'OpenRoom'): YoutubeSearchResult {
+    return {
+      id,
+      title,
+      channel,
+      duration: '3:20',
+      views: '1M views',
+      published: 'today',
+      thumbnail: '',
+      url: `https://www.youtube.com/watch?v=${id}`,
+    };
+  }
+
+  it('parses the exclude param with trimming, dedupe, and caps', () => {
+    expect(parseExcludeParam(undefined)).toEqual([]);
+    expect(parseExcludeParam('  ')).toEqual([]);
+    expect(parseExcludeParam('달플리\n 달플리 \nBIGBANG')).toEqual(['달플리', 'BIGBANG']);
+    expect(parseExcludeParam('aa\nbb\ncc\ndd\nee\nff')).toHaveLength(4);
+  });
+
+  it('refuses needles a substring filter cannot be trusted with', () => {
+    // 1-char and symbol-only terms match most titles ("기", "|", "너").
+    expect(parseExcludeParam('기\n너\n|\n--\n달플리')).toEqual(['달플리']);
+  });
+
+  it('never manufactures a lone surrogate at the length cap and scrubs arriving ones', () => {
+    // 59 filler chars put the 60-char cap in the middle of the emoji pair.
+    const nearCap = `${'가'.repeat(59)}\u{1F525}`;
+    for (const term of parseExcludeParam(nearCap)) {
+      expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/u.test(term)).toBe(false);
+      expect(() => encodeURIComponent(term)).not.toThrow();
+    }
+    // A lone surrogate arriving over the agent wire is removed, keeping the
+    // NFKC needle able to match the styled title it names.
+    expect(parseExcludeParam('달플리\uD83D')).toEqual(['달플리']);
+  });
+
+  it('appends minus operators, quoting multi-word terms and dropping quotes', () => {
+    expect(buildExclusionSearchText('여돌 노래모음', [])).toBe('여돌 노래모음');
+    expect(buildExclusionSearchText('여돌 노래모음', ['달플리'])).toBe('여돌 노래모음 -달플리');
+    expect(buildExclusionSearchText('mix', ['달플리 Playlist'])).toBe('mix -"달플리 Playlist"');
+    expect(buildExclusionSearchText('mix', ['bad"quote'])).toBe('mix -badquote');
+    // A leading dash must not stack into a "--term" literal.
+    expect(buildExclusionSearchText('mix', ['-달플리'])).toBe('mix -달플리');
+  });
+
+  it('ignores sub-minimum needles even when called directly', () => {
+    const results = [entry('a', 'A | B mix'), entry('b', 'clean mix')];
+    expect(filterExcludedResults(results, ['|', '기'])).toHaveLength(2);
+  });
+
+  it('filters results whose title or channel names a rejected pick', () => {
+    const results = [
+      entry('july', '2026년 7월 여돌 노래모음 | 달플리 Playlist'),
+      entry('august', '2026년 8월 여돌 노래모음'),
+      entry('channel-hit', 'Fresh Idol Mix', '달플리'),
+    ];
+    const filtered = filterExcludedResults(results, ['달플리']);
+    expect(filtered.map((item) => item.id)).toEqual(['august']);
+    expect(filterExcludedResults(results, [])).toHaveLength(3);
+  });
+
+  it('folds styled unicode so the rejected pick cannot hide behind math-bold letters', () => {
+    const results = [entry('styled', '여돌 모음 | 달플리 𝑷𝒍𝒂𝒚𝒍𝒊𝒔𝒕'), entry('clean', '여돌 모음')];
+    expect(filterExcludedResults(results, ['playlist']).map((item) => item.id)).toEqual(['clean']);
   });
 });
