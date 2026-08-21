@@ -157,6 +157,39 @@ function cleanMusicQuery(value: string): string {
   return MUSIC_QUERY_WORD_CHAR_PATTERN.test(cleaned) ? cleaned : '';
 }
 
+// "A 말고 B" / "A 빼고 B" / "A 대신 B": A is the pick being rejected, B is the
+// actual request. Keeping A would hand YouTube a positive keyword for the very
+// thing the user refused. Greedy up to the LAST marker so a chained rejection
+// ("A 말고 B도 말고 C") resolves to the final choice. The separator after the
+// marker is required so words that merely end in the marker ("말고기") survive.
+const MUSIC_EXCLUSION_PREFIX_PATTERN = /^.*(?:말고|말구|빼고|빼구|대신에?)[\s,]+/u;
+
+// The same markers at the very end ("달플리 말고 틀어줘") reject a pick without
+// naming a replacement -- there is no query to build from that.
+const MUSIC_DANGLING_EXCLUSION_PATTERN = /(?:말고|말구|빼고|빼구|대신에?)$/u;
+
+// Object particle left dangling once the playback verb is stripped
+// ("...노래모음을 틀어줘" -> "...노래모음을"). It is request grammar, not part
+// of the title, and it measurably skews YouTube ranking.
+const MUSIC_TRAILING_OBJECT_PARTICLE_PATTERN = /(?<=[\p{L}\p{N}])[을를]$/u;
+
+/**
+ * Cleanup that is valid ONLY for the user's own typed request: exclusion
+ * phrases and a trailing object particle. Recovered recommendation titles must
+ * NOT pass through here -- a real title can contain " 말고 " ("너 말고 니 언니")
+ * or end in 을/를, and stripping those would corrupt it.
+ */
+function cleanRequestedMusicQuery(value: string): string {
+  const withoutExclusion = value.replace(MUSIC_EXCLUSION_PREFIX_PATTERN, '').trim();
+  if (!withoutExclusion || MUSIC_DANGLING_EXCLUSION_PATTERN.test(withoutExclusion)) {
+    // A rejection with no replacement named. Returning '' drops the direct
+    // path entirely so the conversation resolves it, instead of literally
+    // searching YouTube for the rejection words.
+    return '';
+  }
+  return cleanMusicQuery(withoutExclusion.replace(MUSIC_TRAILING_OBJECT_PARTICLE_PATTERN, ''));
+}
+
 function enrichMusicQueryFromHistory(
   query: string,
   history: Pick<ChatMessage, 'role' | 'content'>[],
@@ -278,7 +311,7 @@ export function parseDirectMusicIntent(
 
   for (const pattern of suffixPatterns) {
     const match = trimmed.match(pattern);
-    const query = cleanMusicQuery(match?.groups?.query ?? '');
+    const query = cleanRequestedMusicQuery(match?.groups?.query ?? '');
     if (query) {
       return { query: enrichMusicQueryFromHistory(query, history) };
     }
@@ -293,7 +326,7 @@ export function parseDirectMusicIntent(
 
   for (const pattern of prefixPatterns) {
     const match = trimmed.match(pattern);
-    const query = cleanMusicQuery(match?.groups?.query ?? '');
+    const query = cleanRequestedMusicQuery(match?.groups?.query ?? '');
     if (query) {
       return { query: enrichMusicQueryFromHistory(query, history) };
     }

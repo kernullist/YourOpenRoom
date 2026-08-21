@@ -66,6 +66,56 @@ describe('parseDirectMusicIntent', () => {
     });
   });
 
+  // Regression: "달플리 말고 2026년 8월 여돌 노래모음을 틀어줘" searched YouTube
+  // for the whole utterance, rejected pick and object particle included, and
+  // landed on the very series the user had just refused.
+  it('keeps only the requested side of an "A 말고 B" rejection', () => {
+    expect(parseDirectMusicIntent('달플리 말고 2026년 8월 여돌 노래모음을 틀어줘')).toEqual({
+      query: '2026년 8월 여돌 노래모음',
+    });
+    expect(parseDirectMusicIntent('그거 말고 aespa 틀어줘')).toEqual({
+      query: 'aespa',
+    });
+  });
+
+  it('handles 빼고/대신 variants and chained rejections', () => {
+    expect(parseDirectMusicIntent('그 채널 빼고 뉴진스 틀어줘')).toEqual({
+      query: '뉴진스',
+    });
+    expect(parseDirectMusicIntent('달플리 대신 8월 여돌 모음 재생해줘')).toEqual({
+      query: '8월 여돌 모음',
+    });
+    expect(parseDirectMusicIntent('A 말고 B도 말고 시티팝 틀어줘')).toEqual({
+      query: '시티팝',
+    });
+  });
+
+  it('returns null when the rejection names no replacement', () => {
+    // "not that one" with nothing else -- there is no query to build, so the
+    // direct path must yield to the conversation instead of searching the
+    // rejection words themselves.
+    expect(parseDirectMusicIntent('달플리 말고 틀어줘')).toBeNull();
+    expect(parseDirectMusicIntent('그거 빼고 재생해')).toBeNull();
+  });
+
+  it('drops a trailing object particle from the typed request', () => {
+    expect(parseDirectMusicIntent('노래모음을 틀어줘')).toEqual({ query: '노래모음' });
+    expect(parseDirectMusicIntent('이무진 라일락을 틀어줘')).toEqual({ query: '이무진 라일락' });
+  });
+
+  it('never strips exclusion words from a recovered recommendation title', () => {
+    // A real title can contain " 말고 " -- the play chip resolves against the
+    // taste card verbatim, bypassing the request-only cleanup.
+    expect(
+      parseDirectMusicIntent('▶ 재생', [
+        {
+          role: 'assistant',
+          content: '이 노래 어때?\n🎵 추천 (네 취향 반영): "너 말고 니 언니"',
+        },
+      ]),
+    ).toEqual({ query: '너 말고 니 언니' });
+  });
+
   it('enriches generic girl group replies from recent assistant context', () => {
     expect(
       parseDirectMusicIntent('걸그룹 노래로 가자', [
