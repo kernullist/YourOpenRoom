@@ -1,6 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppLifecycle, initVibeApp } from '@gui/vibe-container';
-import { Inbox as InboxIcon, NotebookText, RefreshCw, Rss } from 'lucide-react';
+import {
+  AlertTriangle,
+  CheckCircle2,
+  ChevronRight,
+  ExternalLink,
+  FlaskConical,
+  Inbox as InboxIcon,
+  Loader2,
+  NotebookText,
+  RefreshCw,
+  Rss,
+  ShieldAlert,
+  Terminal,
+} from 'lucide-react';
 import {
   createAppFileApi,
   reportLifecycle,
@@ -24,12 +37,14 @@ import {
   CATEGORY_FILTERS,
   CATEGORY_LABELS,
   composeResearchRequest,
+  countByCategory,
   filterSignals,
   formatCacheAge,
   formatRelativeTime,
   isBriefFileName,
   markSeen,
   parseBriefDoc,
+  scoreTier,
   summarizeOutcomes,
 } from './signalView';
 import {
@@ -55,6 +70,14 @@ const VIEW_META: Record<SignalDeskViewId, { label: string; Icon: typeof InboxIco
   sources: { label: 'Sources', Icon: Rss },
 };
 
+/** Icon per research phase — a lookup, not a branch, so coverage stays honest. */
+const RESEARCH_STATE_ICONS: Record<Exclude<ResearchPhase['kind'], 'idle'>, typeof CheckCircle2> = {
+  starting: Loader2,
+  started: CheckCircle2,
+  denied: ShieldAlert,
+  error: AlertTriangle,
+};
+
 type OpenedBrief =
   | { kind: 'idle' }
   | { kind: 'loading'; name: string }
@@ -74,9 +97,20 @@ function parseContent(content: unknown): unknown {
 
 function BriefDocContent({ doc }: { doc: SignalBriefDoc }): JSX.Element {
   return (
-    <div data-testid="signal-desk-brief-doc">
+    <div data-testid="signal-desk-brief-doc" className={styles.briefDoc}>
+      <div className={styles.briefMast}>
+        <span className={styles.briefDate}>{doc.date}</span>
+        <span className={styles.briefStamp}>
+          {new Date(doc.generatedAt).toISOString().slice(0, 16).replace('T', ' ')} UTC
+        </span>
+        <span
+          className={styles.briefInterest}
+          data-applied={doc.interest.applied ? 'true' : undefined}
+        >
+          {describeInterestMeta(doc.interest)}
+        </span>
+      </div>
       <p className={styles.briefHeadline}>{doc.headline}</p>
-      <p className={styles.briefInterest}>{describeInterestMeta(doc.interest)}</p>
       {doc.caveats.length > 0 ? (
         <ul className={styles.caveats} data-testid="signal-desk-brief-caveats">
           {doc.caveats.map((caveat) => (
@@ -85,12 +119,12 @@ function BriefDocContent({ doc }: { doc: SignalBriefDoc }): JSX.Element {
         </ul>
       ) : null}
       {doc.sections.map((section) => (
-        <div key={section.category} className={styles.briefSection}>
+        <div key={section.category} className={styles.briefSection} data-cat={section.category}>
           <h3 className={styles.briefSectionTitle}>{section.title}</h3>
           {section.items.map((item) => (
             <p key={item.id} className={styles.briefItem}>
               <span className={styles.briefItemScore}>{item.score}</span>
-              <span>{item.title}</span>
+              <span className={styles.briefItemTitle}>{item.title}</span>
               <span className={styles.briefItemMeta}>{item.sourceName}</span>
             </p>
           ))}
@@ -373,6 +407,7 @@ function SignalDesk(): JSX.Element {
   }, [state.activeView, brief.kind, savedBriefs.kind, loadBrief, loadSavedBriefs]);
 
   const nowMs = Date.now();
+  const categoryCounts = signals.kind === 'ready' ? countByCategory(signals.data.items) : null;
 
   return (
     <div
@@ -404,9 +439,23 @@ function SignalDesk(): JSX.Element {
         {/* Collection honesty at a glance: how old the snapshot is, whether it
             came from cache, and whether interest weighting actually applied. */}
         <p className={styles.summary} data-testid="signal-desk-meta">
-          {signals.kind === 'ready'
-            ? `${formatCacheAge(nowMs, signals.data.fetchedAt, signals.data.cache)} · ${describeInterestMeta(signals.data.interest)}`
-            : '실피드 트리아지 — CVE/KEV · MSRC · 커널 리서치 · arXiv · 릴리스'}
+          {signals.kind === 'ready' ? (
+            <>
+              <span
+                className={styles.statusDot}
+                data-cache={signals.data.cache}
+                aria-hidden="true"
+              />
+              <span className={styles.summaryLabel}>
+                {formatCacheAge(nowMs, signals.data.fetchedAt, signals.data.cache)} ·{' '}
+                {describeInterestMeta(signals.data.interest)}
+              </span>
+            </>
+          ) : (
+            <span className={styles.summaryLabel}>
+              실피드 트리아지 — CVE/KEV · MSRC · 커널 리서치 · arXiv · 릴리스
+            </span>
+          )}
         </p>
 
         <button
@@ -414,21 +463,25 @@ function SignalDesk(): JSX.Element {
           className={styles.iconButton}
           onClick={() => void loadSignals(true)}
           disabled={signals.kind === 'loading'}
+          data-loading={signals.kind === 'loading' ? 'true' : undefined}
           data-testid="signal-desk-refresh"
           aria-label="다시 수집"
         >
           <RefreshCw size={14} />
         </button>
 
-        <input
-          className={styles.session}
-          value={state.sessionPath}
-          placeholder="sessionPath (예: aoi/space_adventure)"
-          data-testid="signal-desk-session"
-          onChange={(event) =>
-            setState((current) => ({ ...current, sessionPath: event.target.value }))
-          }
-        />
+        <label className={styles.sessionField}>
+          <Terminal size={12} aria-hidden="true" />
+          <input
+            className={styles.session}
+            value={state.sessionPath}
+            placeholder="sessionPath (예: aoi/space_adventure)"
+            data-testid="signal-desk-session"
+            onChange={(event) =>
+              setState((current) => ({ ...current, sessionPath: event.target.value }))
+            }
+          />
+        </label>
       </header>
 
       <main className={styles.content}>
@@ -441,10 +494,14 @@ function SignalDesk(): JSX.Element {
                   type="button"
                   className={styles.chip}
                   data-active={state.category === category ? 'true' : undefined}
+                  data-cat={category === 'all' ? undefined : category}
                   data-testid={`signal-desk-chip-${category}`}
                   onClick={() => setState((current) => ({ ...current, category }))}
                 >
                   {CATEGORY_LABELS[category]}
+                  {categoryCounts ? (
+                    <span className={styles.chipCount}>{categoryCounts[category]}</span>
+                  ) : null}
                 </button>
               ))}
             </div>
@@ -484,20 +541,28 @@ function SignalDesk(): JSX.Element {
                       {visible.map((item) => {
                         const seen = state.seenIds.includes(item.id);
                         const expanded = expandedId === item.id;
+                        const rowResearch =
+                          research.kind !== 'idle' && research.itemId === item.id ? research : null;
+                        const PhaseIcon = rowResearch
+                          ? RESEARCH_STATE_ICONS[rowResearch.kind]
+                          : null;
                         return (
                           <li
                             key={item.id}
                             className={styles.row}
                             data-seen={seen ? 'true' : undefined}
+                            data-cat={item.category}
                             data-testid={`signal-desk-row-${item.id}`}
                           >
                             <button
                               type="button"
                               className={styles.rowMain}
+                              data-expanded={expanded ? 'true' : undefined}
                               onClick={() => toggleRow(item.id)}
                             >
                               <span
                                 className={styles.score}
+                                data-tier={scoreTier(item.score)}
                                 data-kev={item.kev ? 'true' : undefined}
                               >
                                 {item.score}
@@ -517,6 +582,11 @@ function SignalDesk(): JSX.Element {
                               <span className={styles.rowMeta}>
                                 {item.sourceName} · {formatRelativeTime(nowMs, item.publishedAt)}
                               </span>
+                              <ChevronRight
+                                size={13}
+                                className={styles.chevron}
+                                aria-hidden="true"
+                              />
                             </button>
 
                             {expanded ? (
@@ -555,6 +625,7 @@ function SignalDesk(): JSX.Element {
                                     }
                                     data-testid="signal-desk-open-url"
                                   >
+                                    <ExternalLink size={12} aria-hidden="true" />
                                     원문 열기
                                   </button>
                                   <button
@@ -566,6 +637,7 @@ function SignalDesk(): JSX.Element {
                                     onClick={() => void runHandoff(item)}
                                     data-testid="signal-desk-handoff"
                                   >
+                                    <FlaskConical size={12} aria-hidden="true" />
                                     Research 인계
                                   </button>
                                   {!state.sessionPath.trim() ? (
@@ -577,15 +649,22 @@ function SignalDesk(): JSX.Element {
                                     </span>
                                   ) : null}
                                 </div>
-                                {research.kind !== 'idle' && research.itemId === item.id ? (
+                                {rowResearch && PhaseIcon ? (
                                   <p
                                     className={styles.research}
-                                    data-variant={research.kind}
+                                    data-variant={rowResearch.kind}
                                     data-testid="signal-desk-research-state"
                                   >
-                                    {research.kind === 'starting'
-                                      ? '리서치 시작 중…'
-                                      : research.message}
+                                    <PhaseIcon
+                                      size={13}
+                                      className={styles.researchIcon}
+                                      aria-hidden="true"
+                                    />
+                                    <span>
+                                      {rowResearch.kind === 'starting'
+                                        ? '리서치 시작 중…'
+                                        : rowResearch.message}
+                                    </span>
                                   </p>
                                 ) : null}
                               </div>
@@ -653,6 +732,7 @@ function SignalDesk(): JSX.Element {
                         onClick={() => void openSavedBrief(name)}
                         data-testid={`signal-desk-saved-${name}`}
                       >
+                        <NotebookText size={12} aria-hidden="true" />
                         {briefNameToDate(name)}
                       </button>
                     </li>
@@ -686,32 +766,44 @@ function SignalDesk(): JSX.Element {
             subtitle="고정 레지스트리 — 실패는 사유와 함께, 0건과 구분해서 표시합니다."
             state={signals}
           >
-            {(data) => (
-              <ul className={styles.sourceList} data-testid="signal-desk-sources">
-                {data.sources.map((source) => (
-                  <li
-                    key={source.sourceId}
-                    className={styles.sourceRow}
-                    data-ok={source.ok ? 'true' : 'false'}
-                    data-testid={`signal-desk-source-${source.sourceId}`}
+            {(data) => {
+              const summary = summarizeOutcomes(data.sources);
+              return (
+                <div className={styles.sourcesBody}>
+                  <p
+                    className={styles.sourcesAgg}
+                    data-degraded={summary.okCount < summary.total ? 'true' : undefined}
                   >
-                    <span className={styles.sourceName}>{source.name}</span>
-                    <span className={styles.sourceKind}>
-                      {source.kind} · {CATEGORY_LABELS[source.category]}
-                    </span>
-                    {source.ok ? (
-                      <span className={styles.sourceOk}>
-                        정상 · {source.itemCount}건 · {source.ms}ms
-                      </span>
-                    ) : (
-                      <span className={styles.sourceFail}>
-                        실패 · {source.error || '원인 불명'}
-                      </span>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
+                    {summary.okCount}/{summary.total} 정상
+                  </p>
+                  <ul className={styles.sourceList} data-testid="signal-desk-sources">
+                    {data.sources.map((source) => (
+                      <li
+                        key={source.sourceId}
+                        className={styles.sourceRow}
+                        data-ok={source.ok ? 'true' : 'false'}
+                        data-cat={source.category}
+                        data-testid={`signal-desk-source-${source.sourceId}`}
+                      >
+                        <span className={styles.srcDot} aria-hidden="true" />
+                        <span className={styles.sourceName}>{source.name}</span>
+                        <span className={styles.sourceKind}>{source.kind}</span>
+                        <span className={styles.sourceCat}>{CATEGORY_LABELS[source.category]}</span>
+                        {source.ok ? (
+                          <span className={styles.sourceOk}>
+                            정상 · {source.itemCount}건 · {source.ms}ms
+                          </span>
+                        ) : (
+                          <span className={styles.sourceFail}>
+                            실패 · {source.error || '원인 불명'}
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              );
+            }}
           </StatePanel>
         ) : null}
       </main>

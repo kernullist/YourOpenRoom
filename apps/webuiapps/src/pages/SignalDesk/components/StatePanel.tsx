@@ -37,15 +37,24 @@ export function StatePanel<T>({
       </header>
 
       {state.kind === 'idle' || state.kind === 'loading' ? (
-        <div className={styles.note}>
-          <Loader2 size={15} className={styles.spinner} />
-          <span>불러오는 중…</span>
+        <div className={styles.loading}>
+          <div className={styles.note}>
+            <Loader2 size={15} className={styles.spinner} />
+            <span>불러오는 중…</span>
+          </div>
+          <div className={styles.skeleton} aria-hidden="true">
+            <span className={styles.skeletonBar} />
+            <span className={styles.skeletonBar} />
+            <span className={styles.skeletonBar} />
+          </div>
         </div>
       ) : null}
 
       {state.kind === 'empty' ? (
         <div className={styles.note} data-variant="empty" data-testid="signal-desk-empty">
-          <Inbox size={15} />
+          <span className={styles.noteIcon}>
+            <Inbox size={16} />
+          </span>
           <span>{state.reason}</span>
         </div>
       ) : null}
@@ -56,7 +65,9 @@ export function StatePanel<T>({
           data-variant="unconfigured"
           data-testid="signal-desk-unconfigured"
         >
-          <Plug size={15} />
+          <span className={styles.noteIcon}>
+            <Plug size={16} />
+          </span>
           <div>
             <p className={styles.noteTitle}>수집 라우트가 아직 없습니다.</p>
             <p className={styles.noteBody}>
@@ -69,14 +80,18 @@ export function StatePanel<T>({
 
       {state.kind === 'denied' ? (
         <div className={styles.note} data-variant="denied" data-testid="signal-desk-denied">
-          <ShieldAlert size={15} />
+          <span className={styles.noteIcon}>
+            <ShieldAlert size={16} />
+          </span>
           <span className={styles.noteBody}>{state.message}</span>
         </div>
       ) : null}
 
       {state.kind === 'error' ? (
         <div className={styles.note} data-variant="error" data-testid="signal-desk-error">
-          <AlertTriangle size={15} />
+          <span className={styles.noteIcon}>
+            <AlertTriangle size={16} />
+          </span>
           <span className={styles.noteBody}>{state.message}</span>
         </div>
       ) : null}

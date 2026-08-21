@@ -4,12 +4,14 @@ import {
   briefFilePath,
   briefNameToDate,
   composeResearchRequest,
+  countByCategory,
   filterSignals,
   formatCacheAge,
   formatRelativeTime,
   isBriefFileName,
   markSeen,
   parseBriefDoc,
+  scoreTier,
   summarizeOutcomes,
 } from '../signalView';
 
@@ -41,6 +43,46 @@ describe('filterSignals', () => {
     expect(filterSignals(items, 'all')).toHaveLength(2);
     expect(filterSignals(items, 'vuln').map((entry) => entry.id)).toEqual(['a']);
     expect(filterSignals(items, 'release')).toEqual([]);
+  });
+});
+
+describe('scoreTier', () => {
+  it('maps scores to tiers at the 35/60 boundaries', () => {
+    expect(scoreTier(60)).toBe('high');
+    expect(scoreTier(73)).toBe('high');
+    expect(scoreTier(59)).toBe('mid');
+    expect(scoreTier(35)).toBe('mid');
+    expect(scoreTier(34)).toBe('low');
+    expect(scoreTier(0)).toBe('low');
+  });
+});
+
+describe('countByCategory', () => {
+  it('counts every filter including all, with zeros for absent categories', () => {
+    const counts = countByCategory([
+      item({ id: 'a', category: 'vuln' }),
+      item({ id: 'b', category: 'vuln' }),
+      item({ id: 'c', category: 'paper' }),
+    ]);
+    expect(counts.all).toBe(3);
+    expect(counts.vuln).toBe(2);
+    expect(counts.paper).toBe(1);
+    expect(counts.release).toBe(0);
+    expect(counts.ai).toBe(0);
+  });
+
+  it('returns all-zero counts for an empty inbox', () => {
+    const counts = countByCategory([]);
+    expect(counts.all).toBe(0);
+    expect(counts.research).toBe(0);
+  });
+
+  it('ignores an out-of-registry category instead of producing NaN', () => {
+    const rogue = item({ id: 'x' });
+    (rogue as { category: string }).category = 'bogus';
+    const counts = countByCategory([rogue]);
+    expect(counts.all).toBe(1);
+    expect(Object.values(counts).every((count) => Number.isFinite(count))).toBe(true);
   });
 });
 

@@ -29,6 +29,38 @@ export function filterSignals(items: SignalItem[], category: CategoryFilter): Si
   return items.filter((item) => item.category === category);
 }
 
+/**
+ * Visual weight tier for a score. The boundaries mirror the server weighting:
+ * KEV (+25) or stacked interest hits push past 60, a bare recency hit stays
+ * under 35. Rendering-only — the number itself is always shown next to it.
+ */
+export type ScoreTier = 'high' | 'mid' | 'low';
+
+export function scoreTier(score: number): ScoreTier {
+  if (score >= 60) {
+    return 'high';
+  }
+  if (score >= 35) {
+    return 'mid';
+  }
+  return 'low';
+}
+
+/** Per-filter item counts for the category chips ('all' counts everything). */
+export function countByCategory(items: SignalItem[]): Record<CategoryFilter, number> {
+  const counts = {} as Record<CategoryFilter, number>;
+  for (const filter of CATEGORY_FILTERS) {
+    counts[filter] = 0;
+  }
+  for (const item of items) {
+    counts.all += 1;
+    if (item.category in counts) {
+      counts[item.category] += 1;
+    }
+  }
+  return counts;
+}
+
 export function markSeen(seenIds: string[], id: string, cap = SEEN_IDS_CAP): string[] {
   if (seenIds.includes(id)) {
     return seenIds;
