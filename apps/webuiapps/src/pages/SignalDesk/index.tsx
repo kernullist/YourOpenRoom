@@ -34,6 +34,7 @@ import { APP_ID, APP_NAME, APP_STORAGE_NAME, ActionTypes } from './actions/const
 import {
   briefFilePath,
   briefNameToDate,
+  buildInboxStats,
   CATEGORY_FILTERS,
   CATEGORY_LABELS,
   composeResearchRequest,
@@ -42,6 +43,7 @@ import {
   formatCacheAge,
   formatRelativeTime,
   isBriefFileName,
+  latencyGauge,
   markSeen,
   parseBriefDoc,
   scoreTier,
@@ -408,6 +410,7 @@ function SignalDesk(): JSX.Element {
 
   const nowMs = Date.now();
   const categoryCounts = signals.kind === 'ready' ? countByCategory(signals.data.items) : null;
+  const inboxStats = signals.kind === 'ready' ? buildInboxStats(signals.data) : null;
 
   return (
     <div
@@ -487,6 +490,82 @@ function SignalDesk(): JSX.Element {
       <main className={styles.content}>
         {state.activeView === 'inbox' ? (
           <>
+            {signals.kind === 'ready' && inboxStats ? (
+              <div className={styles.statBand} data-testid="signal-desk-stats">
+                <div className={styles.statCell}>
+                  <span className={styles.statLabel}>SIGNALS</span>
+                  <span className={styles.statValue}>{inboxStats.total}</span>
+                  <span className={styles.statSub}>중복 제거 후 신호</span>
+                </div>
+                <div
+                  className={styles.statCell}
+                  data-accent={inboxStats.kevCount > 0 ? 'kev' : undefined}
+                >
+                  <span className={styles.statLabel}>KEV</span>
+                  <span className={styles.statValue}>{inboxStats.kevCount}</span>
+                  <span className={styles.statSub}>실제 악용 등재</span>
+                </div>
+                <div
+                  className={styles.statCell}
+                  data-accent={
+                    inboxStats.totalSources === 0
+                      ? undefined
+                      : inboxStats.okSources === 0
+                        ? 'fail'
+                        : inboxStats.okSources < inboxStats.totalSources
+                          ? 'warn'
+                          : 'ok'
+                  }
+                >
+                  <span className={styles.statLabel}>SOURCES</span>
+                  <span className={styles.statValue}>
+                    {inboxStats.okSources}/{inboxStats.totalSources}
+                  </span>
+                  <span className={styles.statSub}>
+                    {/* The honesty ladder: 0/0 is "nothing collected", 0/N is
+                        "everything failed" (error-grade, matching the banner),
+                        never "some failed". */}
+                    {inboxStats.totalSources === 0
+                      ? '수집된 소스 없음'
+                      : inboxStats.okSources === 0
+                        ? '전 소스 수집 실패'
+                        : inboxStats.okSources < inboxStats.totalSources
+                          ? '일부 소스 수집 실패'
+                          : '전 소스 수집 정상'}
+                  </span>
+                </div>
+                <div
+                  className={styles.statCell}
+                  data-accent={signals.data.interest.applied ? 'interest' : undefined}
+                >
+                  <span className={styles.statLabel}>INTEREST</span>
+                  <span className={styles.statValue}>
+                    {signals.data.interest.applied ? signals.data.interest.keywordCount : '—'}
+                  </span>
+                  <span className={styles.statSub}>
+                    {signals.data.interest.applied ? '키워드 가중치 적용' : '기본 우선순위'}
+                  </span>
+                </div>
+              </div>
+            ) : null}
+
+            {/* Category mix at a glance; the chips right below share the same
+                hue per lane, so they double as this bar's legend. */}
+            {categoryCounts && categoryCounts.all > 0 ? (
+              <div className={styles.spectrum} aria-hidden="true">
+                {CATEGORY_FILTERS.filter(
+                  (category) => category !== 'all' && categoryCounts[category] > 0,
+                ).map((category) => (
+                  <span
+                    key={category}
+                    className={styles.spectrumSeg}
+                    data-cat={category}
+                    style={{ flexGrow: categoryCounts[category] }}
+                  />
+                ))}
+              </div>
+            ) : null}
+
             <div className={styles.chips} role="group" aria-label="카테고리 필터">
               {CATEGORY_FILTERS.map((category) => (
                 <button
@@ -509,6 +588,7 @@ function SignalDesk(): JSX.Element {
             <StatePanel
               title="Inbox"
               subtitle="점수순 신호 — 근거 칩과 함께. 클릭하면 펼쳐지고 본 것으로 표시됩니다."
+              icon={<InboxIcon size={14} />}
               state={signals}
             >
               {(data) => {
@@ -685,6 +765,7 @@ function SignalDesk(): JSX.Element {
             <StatePanel
               title="오늘의 브리프"
               subtitle="현재 수집 스냅샷에서 서버가 구성합니다."
+              icon={<NotebookText size={14} />}
               state={brief}
               actions={
                 <div className={styles.panelActions}>
@@ -721,7 +802,7 @@ function SignalDesk(): JSX.Element {
               )}
             </StatePanel>
 
-            <StatePanel title="저장된 브리프" state={savedBriefs}>
+            <StatePanel title="저장된 브리프" icon={<NotebookText size={14} />} state={savedBriefs}>
               {(names) => (
                 <ul className={styles.savedList} data-testid="signal-desk-saved-list">
                   {names.map((name) => (
@@ -764,6 +845,7 @@ function SignalDesk(): JSX.Element {
           <StatePanel
             title="Sources"
             subtitle="고정 레지스트리 — 실패는 사유와 함께, 0건과 구분해서 표시합니다."
+            icon={<Rss size={14} />}
             state={signals}
           >
             {(data) => {
@@ -790,9 +872,18 @@ function SignalDesk(): JSX.Element {
                         <span className={styles.sourceKind}>{source.kind}</span>
                         <span className={styles.sourceCat}>{CATEGORY_LABELS[source.category]}</span>
                         {source.ok ? (
-                          <span className={styles.sourceOk}>
-                            정상 · {source.itemCount}건 · {source.ms}ms
-                          </span>
+                          <>
+                            <span className={styles.sourceOk}>
+                              정상 · {source.itemCount}건 · {source.ms}ms
+                            </span>
+                            <span className={styles.latencyTrack} aria-hidden="true">
+                              <span
+                                className={styles.latencyFill}
+                                data-slow={latencyGauge(source.ms).slow ? 'true' : undefined}
+                                style={{ width: `${latencyGauge(source.ms).percent}%` }}
+                              />
+                            </span>
+                          </>
                         ) : (
                           <span className={styles.sourceFail}>
                             실패 · {source.error || '원인 불명'}

@@ -54,4 +54,20 @@ describe('StatePanel', () => {
     expect(screen.queryByTestId('signal-desk-error')).toBeNull();
     expect(screen.queryByTestId('signal-desk-empty')).toBeNull();
   });
+
+  it('renders an optional header icon without disturbing title or actions', () => {
+    render(
+      <StatePanel
+        title="패널"
+        icon={<svg data-testid="panel-icon" />}
+        state={{ kind: 'ready', data: 'x', fetchedAt: 1 }}
+        actions={<button type="button" data-testid="panel-action" />}
+      >
+        {(data) => <p data-testid="panel-data">{data}</p>}
+      </StatePanel>,
+    );
+    expect(screen.getByTestId('panel-icon')).toBeTruthy();
+    expect(screen.getByText('패널')).toBeTruthy();
+    expect(screen.getByTestId('panel-action')).toBeTruthy();
+  });
 });

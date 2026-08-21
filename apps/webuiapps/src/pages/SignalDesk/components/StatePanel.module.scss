@@ -22,8 +22,25 @@
 .header {
   display: flex;
   align-items: flex-start;
-  justify-content: space-between;
-  gap: 8px;
+  gap: 10px;
+}
+
+.headerIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  color: var(--text-secondary);
+  background: var(--fill-white-4, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--fill-white-6, rgba(255, 255, 255, 0.06));
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+.headerText {
+  flex: 1;
+  min-width: 0;
 }
 
 .title {

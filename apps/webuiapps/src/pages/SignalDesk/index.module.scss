@@ -1,4 +1,37 @@
 .root {
+  /* Design tokens (.claude/rules/design-tokens.md), self-defined at the app
+     root: neither the shell nor any global stylesheet actually implements the
+     token spec (verified live -- every var() resolved empty), so without these
+     the entire color system silently collapses to inherited colors. Scoped
+     here, they work identically in an iframe and inline on the shell desktop. */
+  --bg-1: #121214;
+  --bg-2: #1c1d20;
+  --bg-3: #282a2a;
+  --color-blue: #6083ff;
+  --color-yellow: #faea5f;
+  --color-yellow-10: rgba(250, 234, 95, 0.1);
+  --color-yellow-light: #fffdbb;
+  --color-red: #ff3f4d;
+  --color-cyan: #2ea7ff;
+  --color-purple: #7660ff;
+  --fill-white-20: rgba(255, 255, 255, 0.2);
+  --fill-white-15: rgba(255, 255, 255, 0.15);
+  --fill-white-10: rgba(255, 255, 255, 0.1);
+  --fill-white-6: rgba(255, 255, 255, 0.06);
+  --fill-white-4: rgba(255, 255, 255, 0.04);
+  --fill-white-2: rgba(255, 255, 255, 0.02);
+  --fill-black-10: rgba(0, 0, 0, 0.1);
+  --fill-black-15: rgba(0, 0, 0, 0.15);
+  --text-primary: rgba(255, 255, 255, 0.9);
+  --text-secondary: rgba(255, 255, 255, 0.75);
+  --text-tertiary: rgba(255, 255, 255, 0.6);
+  --text-quaternary: rgba(255, 255, 255, 0.5);
+  --text-placeholder: rgba(255, 255, 255, 0.35);
+  --text-accent: #faea5f;
+  --text-btn-primary: #121214;
+  --text-btn-secondary: rgba(18, 18, 20, 0.6);
+
+  position: relative;
   display: flex;
   flex-direction: column;
   width: 100%;
@@ -16,34 +49,58 @@
   overflow: hidden;
 }
 
+/* Signature mark: a hairline running the desk's category spectrum along the
+   very top edge. */
+.root::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  z-index: 1;
+  background: linear-gradient(
+    90deg,
+    var(--color-cyan),
+    var(--color-purple) 35%,
+    var(--color-red) 70%,
+    transparent
+  );
+  opacity: 0.65;
+  pointer-events: none;
+}
+
 /* Category hue channel: one variable per lane, consumed by the row accent bar,
-   category badges, chips, brief section dots, and source rows. Priority stays
-   on the score channel (cyan intensity); KEV stays yellow. */
-[data-cat='vuln'] {
+   category badges, chips, brief section dots, spectrum segments, and source
+   rows. Priority stays on the score channel (cyan intensity); KEV stays
+   yellow. Anchored under .root: a bare attribute selector is NOT localized by
+   CSS modules and would apply document-wide (this app renders inline on the
+   shell desktop, not in an iframe). */
+.root [data-cat='vuln'] {
   --cat-color: var(--color-red);
 }
 
-[data-cat='msrc'] {
+.root [data-cat='msrc'] {
   --cat-color: var(--color-blue);
 }
 
-[data-cat='research'] {
+.root [data-cat='research'] {
   --cat-color: var(--color-purple);
 }
 
-[data-cat='paper'] {
+.root [data-cat='paper'] {
   --cat-color: var(--color-cyan);
 }
 
-[data-cat='release'] {
+.root [data-cat='release'] {
   --cat-color: var(--color-yellow-light);
 }
 
-[data-cat='ai'] {
+.root [data-cat='ai'] {
   --cat-color: var(--color-yellow);
 }
 
-[data-cat='harness'] {
+.root [data-cat='harness'] {
   --cat-color: var(--text-secondary);
 }
 
@@ -241,6 +298,115 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+  /* Ambient depth: a faint cyan wash pinned to the top of the pane (default
+     background-attachment keeps it from scrolling with the list). */
+  background-image: radial-gradient(
+    560px 260px at 16% -10%,
+    color-mix(in srgb, var(--color-cyan) 5%, transparent),
+    transparent 70%
+  );
+}
+
+/* ------------------------------------------------------------- stat band */
+
+.statBand {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.statCell {
+  position: relative;
+  flex: 1;
+  min-width: 132px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 12px 14px;
+  background: var(--bg-2);
+  border: 1px solid var(--fill-white-6, rgba(255, 255, 255, 0.06));
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.statCell::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--stat-accent, var(--fill-white-10));
+  opacity: 0.8;
+}
+
+.statCell[data-accent='kev'],
+.statCell[data-accent='warn'] {
+  --stat-accent: var(--color-yellow);
+}
+
+.statCell[data-accent='fail'] {
+  --stat-accent: var(--color-red);
+}
+
+.statCell[data-accent='ok'],
+.statCell[data-accent='interest'] {
+  --stat-accent: var(--color-cyan);
+}
+
+.statCell[data-accent='kev'] .statValue,
+.statCell[data-accent='warn'] .statValue {
+  color: var(--color-yellow);
+}
+
+.statCell[data-accent='fail'] .statValue {
+  color: var(--color-red);
+}
+
+.statCell[data-accent='ok'] .statValue,
+.statCell[data-accent='interest'] .statValue {
+  color: var(--color-cyan);
+}
+
+.statLabel {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  color: var(--text-quaternary);
+}
+
+.statValue {
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.1;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.statSub {
+  font-size: 10px;
+  color: var(--text-placeholder);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Category mix strip; the chips below share the same hue per lane and act as
+   its legend. */
+.spectrum {
+  display: flex;
+  gap: 2px;
+  height: 4px;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.spectrumSeg {
+  min-width: 4px;
+  border-radius: 999px;
+  background: var(--cat-color, var(--fill-white-10));
+  opacity: 0.85;
 }
 
 .content::-webkit-scrollbar {
@@ -422,10 +588,15 @@
   font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
   font-size: 11px;
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
   text-align: center;
   border-radius: 6px;
   flex-shrink: 0;
   transition: opacity 140ms ease;
+}
+
+.score[data-tier='high']:not([data-kev='true']) {
+  box-shadow: 0 0 8px color-mix(in srgb, var(--color-cyan) 22%, transparent);
 }
 
 .score[data-tier='high'] {
@@ -458,6 +629,19 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   transition: color 140ms ease;
+}
+
+/* Inbox semantics: an unseen row carries an unread dot; expanding marks it
+   seen, which drops the dot and dims the row. */
+.row:not([data-seen='true']) .rowTitle::before {
+  content: '';
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin: 0 7px 1px 0;
+  border-radius: 50%;
+  background: var(--color-cyan);
+  vertical-align: middle;
 }
 
 .rowBadges {
@@ -746,7 +930,7 @@
 
 .briefHeadline {
   margin: 0;
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
   letter-spacing: -0.01em;
   line-height: 1.5;
@@ -991,8 +1175,29 @@
   min-width: 0;
   font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
   font-size: 11px;
+  font-variant-numeric: tabular-nums;
   text-align: right;
   color: var(--color-cyan);
+}
+
+.latencyTrack {
+  width: 56px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--fill-white-6, rgba(255, 255, 255, 0.06));
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.latencyFill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--color-cyan);
+}
+
+.latencyFill[data-slow='true'] {
+  background: var(--color-yellow);
 }
 
 .sourceFail {
@@ -1042,6 +1247,23 @@
 
   .sourceName {
     min-width: 110px;
+  }
+
+  .statCell {
+    min-width: 104px;
+    padding: 10px 12px;
+  }
+
+  .statValue {
+    font-size: 18px;
+  }
+
+  .statSub {
+    display: none;
+  }
+
+  .latencyTrack {
+    display: none;
   }
 }
 

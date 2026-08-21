@@ -5,6 +5,8 @@ import styles from './StatePanel.module.scss';
 interface StatePanelProps<T> {
   title: string;
   subtitle?: string;
+  /** Small lucide icon rendered in the header for panel identity. */
+  icon?: React.ReactNode;
   state: PanelState<T>;
   actions?: React.ReactNode;
   children: (data: T, fetchedAt: number) => React.ReactNode;
@@ -22,6 +24,7 @@ interface StatePanelProps<T> {
 export function StatePanel<T>({
   title,
   subtitle,
+  icon,
   state,
   actions,
   children,
@@ -29,7 +32,12 @@ export function StatePanel<T>({
   return (
     <section className={styles.panel} data-state={state.kind}>
       <header className={styles.header}>
-        <div>
+        {icon ? (
+          <span className={styles.headerIcon} aria-hidden="true">
+            {icon}
+          </span>
+        ) : null}
+        <div className={styles.headerText}>
           <h2 className={styles.title}>{title}</h2>
           {subtitle ? <p className={styles.subtitle}>{subtitle}</p> : null}
         </div>

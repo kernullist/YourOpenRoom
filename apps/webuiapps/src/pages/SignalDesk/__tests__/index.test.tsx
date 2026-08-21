@@ -237,6 +237,17 @@ describe('bootstrapping', () => {
 });
 
 describe('inbox honesty', () => {
+  it('renders the stat band with honest counts and accents', async () => {
+    await renderDesk();
+    const stats = await screen.findByTestId('signal-desk-stats');
+    // Default fixture: 2 signals, 1 KEV, 2/2 sources ok, interest applied (5).
+    expect(stats.textContent).toContain('2/2');
+    expect(stats.querySelector('[data-accent="kev"]')?.textContent).toContain('1');
+    expect(stats.querySelector('[data-accent="ok"]')).toBeTruthy();
+    expect(stats.querySelector('[data-accent="interest"]')?.textContent).toContain('5');
+    expect(stats.querySelector('[data-accent="warn"]')).toBeNull();
+  });
+
   it('renders rows with score reasons and marks a row seen on expand', async () => {
     await renderDesk();
     const row = await screen.findByTestId('signal-desk-row-sig-vuln');
@@ -280,6 +291,10 @@ describe('inbox honesty', () => {
     const banner = await screen.findByTestId('signal-desk-partial');
     expect(banner.textContent).toContain('MSRC Update Guide');
     expect(screen.queryByTestId('signal-desk-all-failed')).toBeNull();
+    // The stat band mirrors the degradation instead of claiming full health.
+    const stats = screen.getByTestId('signal-desk-stats');
+    expect(stats.querySelector('[data-accent="warn"]')?.textContent).toContain('1/2');
+    expect(stats.querySelector('[data-accent="ok"]')).toBeNull();
   });
 
   it('renders all-sources-failed as error-grade, never as an empty inbox', async () => {
@@ -303,6 +318,13 @@ describe('inbox honesty', () => {
     const block = await screen.findByTestId('signal-desk-all-failed');
     expect(block.textContent).toContain('읽지 못한 것');
     expect(screen.queryByTestId('signal-desk-inbox-empty')).toBeNull();
+    // The stat band must agree with the banner: ALL sources failed, not "some".
+    const stats = screen.getByTestId('signal-desk-stats');
+    expect(stats.querySelector('[data-accent="fail"]')?.textContent).toContain('0/1');
+    expect(stats.querySelector('[data-accent="fail"]')?.textContent).toContain('전 소스 수집 실패');
+    expect(stats.querySelector('[data-accent="warn"]')).toBeNull();
+    // No KEV items in this snapshot, so the KEV cell drops its accent too.
+    expect(stats.querySelector('[data-accent="kev"]')).toBeNull();
   });
 
   it('filters by category chips', async () => {

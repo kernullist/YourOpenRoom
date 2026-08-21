@@ -140,6 +140,9 @@ test.describe('Signal Desk', () => {
     // Interest honesty: not applied is stated with its reason, in the header.
     await expect(page.getByTestId('signal-desk-meta')).toContainText('관심 프로파일 없음');
 
+    // The stat band reflects the snapshot: 2 signals, 2/2 sources ok.
+    await expect(page.getByTestId('signal-desk-stats')).toContainText('2/2');
+
     await row.locator('button').first().click();
     const expand = page.getByTestId('signal-desk-expand-sig-vuln');
     await expect(expand).toBeVisible();
@@ -188,6 +191,9 @@ test.describe('Signal Desk', () => {
     const banner = page.getByTestId('signal-desk-partial');
     await expect(banner).toBeVisible({ timeout: 15_000 });
     await expect(banner).toContainText('MSRC Update Guide');
+
+    // The stat band mirrors the degradation rather than claiming full health.
+    await expect(page.getByTestId('signal-desk-stats')).toContainText('1/2');
 
     await page.getByTestId('signal-desk-rail-sources').click();
     const failedRow = page.getByTestId('signal-desk-source-msrc');

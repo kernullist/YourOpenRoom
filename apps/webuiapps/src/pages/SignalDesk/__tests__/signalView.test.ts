@@ -3,12 +3,14 @@ import type { SignalItem, SignalSourceOutcome } from '@/lib/signalDeskShared';
 import {
   briefFilePath,
   briefNameToDate,
+  buildInboxStats,
   composeResearchRequest,
   countByCategory,
   filterSignals,
   formatCacheAge,
   formatRelativeTime,
   isBriefFileName,
+  latencyGauge,
   markSeen,
   parseBriefDoc,
   scoreTier,
@@ -140,6 +142,62 @@ describe('summarizeOutcomes', () => {
       },
     ];
     expect(summarizeOutcomes(sources)).toEqual({ total: 2, okCount: 1, failedNames: ['B'] });
+  });
+});
+
+describe('latencyGauge', () => {
+  it('maps latency to a clamped fill percent with the slow threshold at 1200ms', () => {
+    expect(latencyGauge(0)).toEqual({ percent: 0, slow: false });
+    expect(latencyGauge(100)).toEqual({ percent: 5, slow: false });
+    expect(latencyGauge(1200)).toEqual({ percent: 60, slow: false });
+    expect(latencyGauge(1201)).toEqual({ percent: 60, slow: true });
+    expect(latencyGauge(2000)).toEqual({ percent: 100, slow: true });
+    expect(latencyGauge(99_999)).toEqual({ percent: 100, slow: true });
+  });
+
+  it('renders broken measurements as empty, never as a full bar', () => {
+    expect(latencyGauge(-5)).toEqual({ percent: 0, slow: false });
+    expect(latencyGauge(Number.NaN)).toEqual({ percent: 0, slow: false });
+    expect(latencyGauge(Number.POSITIVE_INFINITY)).toEqual({ percent: 0, slow: false });
+  });
+});
+
+describe('buildInboxStats', () => {
+  it('aggregates totals, kev count, and source health in one pass', () => {
+    const stats = buildInboxStats({
+      items: [item({ id: 'a', kev: true }), item({ id: 'b' }), item({ id: 'c', kev: true })],
+      sources: [
+        {
+          sourceId: 's1',
+          name: 'S1',
+          kind: 'rss',
+          category: 'vuln',
+          ok: true,
+          itemCount: 2,
+          ms: 10,
+        },
+        {
+          sourceId: 's2',
+          name: 'S2',
+          kind: 'atom',
+          category: 'paper',
+          ok: false,
+          itemCount: 0,
+          error: 'x',
+          ms: 1,
+        },
+      ],
+    });
+    expect(stats).toEqual({ total: 3, kevCount: 2, okSources: 1, totalSources: 2 });
+  });
+
+  it('reports zeros for an empty snapshot', () => {
+    expect(buildInboxStats({ items: [], sources: [] })).toEqual({
+      total: 0,
+      kevCount: 0,
+      okSources: 0,
+      totalSources: 0,
+    });
   });
 });
 

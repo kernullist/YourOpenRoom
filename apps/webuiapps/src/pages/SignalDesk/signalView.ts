@@ -122,6 +122,58 @@ export function summarizeOutcomes(sources: SignalSourceOutcome[]): OutcomeSummar
   };
 }
 
+export interface LatencyGauge {
+  /** Fill width, clamped to [0, 100]. Non-finite or negative input reads as 0. */
+  percent: number;
+  slow: boolean;
+}
+
+const LATENCY_GAUGE_FULL_MS = 2000;
+const LATENCY_SLOW_MS = 1200;
+
+/**
+ * Source-row latency bar geometry. Clamped so a broken measurement (negative
+ * from a clock step, NaN from a foreign server) renders as an empty bar, never
+ * as a full "worst latency" one — an invalid inline width would be discarded
+ * by CSS and the block-level fill would default to the track's full width.
+ */
+export function latencyGauge(ms: number): LatencyGauge {
+  if (!Number.isFinite(ms) || ms <= 0) {
+    return { percent: 0, slow: false };
+  }
+  return {
+    percent: Math.min(100, Math.round((ms / LATENCY_GAUGE_FULL_MS) * 100)),
+    slow: ms > LATENCY_SLOW_MS,
+  };
+}
+
+export interface InboxStats {
+  total: number;
+  kevCount: number;
+  okSources: number;
+  totalSources: number;
+}
+
+/** Headline numbers for the inbox stat band, aggregated in one pass. */
+export function buildInboxStats(data: {
+  items: SignalItem[];
+  sources: SignalSourceOutcome[];
+}): InboxStats {
+  let kevCount = 0;
+  for (const item of data.items) {
+    if (item.kev) {
+      kevCount += 1;
+    }
+  }
+  const outcomes = summarizeOutcomes(data.sources);
+  return {
+    total: data.items.length,
+    kevCount,
+    okSources: outcomes.okCount,
+    totalSources: outcomes.total,
+  };
+}
+
 /** The research request carries everything AoiResearch needs to run alone. */
 export function composeResearchRequest(item: SignalItem): string {
   const lines = [`Deep dive: ${item.title}`, `원문: ${item.url}`];
