@@ -702,6 +702,52 @@ function parseCustomHeaders(raw?: string): Record<string, string> {
   return headers;
 }
 
+/**
+ * A UTF-16 code-unit cut anywhere upstream (history summary lines, tool-result
+ * caps, persisted history) can leave a lone surrogate half in a string.
+ * JSON.stringify serializes it as a dangling \uD8xx escape, and strict
+ * server-side JSON parsers reject the whole request with
+ * "unexpected end of hex escape" — the model never sees the turn.
+ * High half without a low follower, or low half without a high leader.
+ */
+const LONE_SURROGATE_PROBE =
+  /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+const LONE_SURROGATE_ALL = new RegExp(LONE_SURROGATE_PROBE.source, 'g');
+
+export function scrubLoneSurrogates(value: string): string {
+  if (!LONE_SURROGATE_PROBE.test(value)) {
+    return value;
+  }
+  return value.replace(LONE_SURROGATE_ALL, '�');
+}
+
+/**
+ * The one choke point every provider route shares. Scrubbing here also heals
+ * sessions whose persisted history already carries a lone surrogate — fixing
+ * only the producers would keep such a session failing on every turn until
+ * the corrupt message scrolls out of the recent-history window.
+ */
+export function sanitizeMessagesForWire(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map((message) => ({
+    ...message,
+    content: scrubLoneSurrogates(message.content ?? ''),
+    ...(message.reasoning_content !== undefined
+      ? { reasoning_content: scrubLoneSurrogates(message.reasoning_content) }
+      : {}),
+    ...(message.tool_calls
+      ? {
+          tool_calls: message.tool_calls.map((call) => ({
+            ...call,
+            function: {
+              ...call.function,
+              arguments: scrubLoneSurrogates(call.function.arguments ?? ''),
+            },
+          })),
+        }
+      : {}),
+  }));
+}
+
 export async function chat(
   messages: ChatMessage[],
   tools: ToolDef[],
@@ -709,10 +755,11 @@ export async function chat(
   options: ChatRequestOptions = {},
 ): Promise<LLMResponse> {
   ensureImageInputSupport(messages, config);
+  const wireMessages = sanitizeMessagesForWire(messages);
   console.info('[LLM] chat() start', {
     provider: config.provider,
     model: config.model,
-    messageCount: messages.length,
+    messageCount: wireMessages.length,
     toolCount: tools.length,
   });
   logger.info(
@@ -722,34 +769,34 @@ export async function chat(
     'model:',
     config.model,
     'messages:',
-    messages.length,
+    wireMessages.length,
   );
   if (config.provider === 'codex-cli') {
-    return chatCodexCli(messages, tools, config, options);
+    return chatCodexCli(wireMessages, tools, config, options);
   }
   if (config.provider === 'codex-auth') {
-    return chatCodexAuth(messages, tools, config, options);
+    return chatCodexAuth(wireMessages, tools, config, options);
   }
   if (config.provider === 'claude-cli') {
-    return chatClaudeCli(messages, tools, config, options);
+    return chatClaudeCli(wireMessages, tools, config, options);
   }
   if (isOpenCodeProvider(config.provider)) {
     const apiStyle = resolveOpenCodeApiStyle(config);
     if (apiStyle === 'openai-responses') {
-      return chatOpenAIResponses(messages, tools, config, options);
+      return chatOpenAIResponses(wireMessages, tools, config, options);
     }
     if (apiStyle === 'anthropic-messages') {
-      return chatAnthropic(messages, tools, config, options);
+      return chatAnthropic(wireMessages, tools, config, options);
     }
-    return chatOpenAI(messages, tools, config, options);
+    return chatOpenAI(wireMessages, tools, config, options);
   }
   if (config.provider === 'anthropic' || config.provider === 'minimax') {
-    return chatAnthropic(messages, tools, config, options);
+    return chatAnthropic(wireMessages, tools, config, options);
   }
   if (shouldUseOpenAIResponses(config)) {
-    return chatOpenAIResponses(messages, tools, config, options);
+    return chatOpenAIResponses(wireMessages, tools, config, options);
   }
-  return chatOpenAI(messages, tools, config, options);
+  return chatOpenAI(wireMessages, tools, config, options);
 }
 
 async function chatClaudeCli(

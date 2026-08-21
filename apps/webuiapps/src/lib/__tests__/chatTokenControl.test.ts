@@ -839,6 +839,21 @@ describe('truncateForTokenBudget()', () => {
     expect(truncateForTokenBudget('short', 20)).toBe('short');
     expect(truncateForTokenBudget('x'.repeat(100), 20)).toContain('truncated for token budget');
   });
+
+  // Regression for the "unexpected end of hex escape" 400: a code-unit cut
+  // through an emoji/math-bold surrogate pair left a lone high surrogate, which
+  // JSON.stringify sends as a dangling \uD8xx escape the API parser rejects.
+  it('never leaves a lone high surrogate at the cut point', () => {
+    // budget = 4 - 1 = 3 cuts through the middle of the fire emoji pair.
+    const cutMidPair = truncateForTokenBudget('ab\u{1F525}xy', 4, '…');
+    expect(cutMidPair).toBe('ab…');
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/u.test(cutMidPair)).toBe(false);
+  });
+
+  it('keeps a surrogate pair that fits entirely inside the budget', () => {
+    // budget = 5 - 1 = 4 lands exactly after the pair, so it survives whole.
+    expect(truncateForTokenBudget('ab\u{1F525}xy', 5, '…')).toBe('ab\u{1F525}…');
+  });
 });
 
 // Regression for the routing half of the "Aoi said it played something and

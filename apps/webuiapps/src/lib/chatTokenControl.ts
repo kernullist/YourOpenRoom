@@ -35,7 +35,15 @@ export function truncateForTokenBudget(
 ): string {
   if (value.length <= maxChars) return value;
   const budget = Math.max(0, maxChars - suffix.length);
-  return `${value.slice(0, budget).trimEnd()}${suffix}`;
+  let cut = value.slice(0, budget);
+  // A code-unit cut can land mid-surrogate-pair (emoji, math-bold titles). The
+  // dangling high half would reach the wire as a lone \uD8xx escape, which
+  // strict server-side JSON parsers reject ("unexpected end of hex escape").
+  const lastCode = cut.charCodeAt(cut.length - 1);
+  if (lastCode >= 0xd800 && lastCode <= 0xdbff) {
+    cut = cut.slice(0, -1);
+  }
+  return `${cut.trimEnd()}${suffix}`;
 }
 
 function summarizeHistoryLine(message: ChatMessage): string {

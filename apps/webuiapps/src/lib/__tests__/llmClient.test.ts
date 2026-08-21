@@ -18,6 +18,8 @@ import {
   checkClaudeCliConnection,
   fetchCurrentModelUsage,
   getCodexAuthDeviceLoginStatus,
+  sanitizeMessagesForWire,
+  scrubLoneSurrogates,
   startCodexAuthDeviceLogin,
   type ChatImageAttachment,
   type ChatMessage,
@@ -2343,5 +2345,105 @@ respond_to_user
       expect(headers['x-custom-valid']).toBe('value');
       expect(headers['x-custom-nocolon']).toBeUndefined();
     });
+  });
+});
+
+// ─── Lone-surrogate scrubbing (wire-format safety) ────────────────────────────
+//
+// Regression for "LLM API error 400: Failed to parse the request body as JSON:
+// messages[N].content: unexpected end of hex escape". A UTF-16 code-unit cut
+// upstream (history summary lines, tool-result caps, persisted history) left a
+// lone surrogate half; JSON.stringify sent it as a dangling \uD8xx escape and
+// the provider's JSON parser rejected the whole request.
+
+describe('scrubLoneSurrogates()', () => {
+  it('returns clean strings by reference and keeps valid pairs intact', () => {
+    const clean = 'KPOP \u{1F525} PLAYLIST \u{1D477}';
+    expect(scrubLoneSurrogates(clean)).toBe(clean);
+  });
+
+  it('replaces orphan high and low halves with U+FFFD', () => {
+    expect(scrubLoneSurrogates('ab\uD83Dcd')).toBe('ab�cd');
+    expect(scrubLoneSurrogates('ab\uDD25cd')).toBe('ab�cd');
+    expect(scrubLoneSurrogates('tail\uD83D')).toBe('tail�');
+  });
+
+  it('keeps a valid pair that sits right after an orphan high half', () => {
+    expect(scrubLoneSurrogates('\uD83D\u{1F525}')).toBe('�\u{1F525}');
+  });
+});
+
+describe('sanitizeMessagesForWire()', () => {
+  it('scrubs content, reasoning_content, and tool_call arguments without mutating input', () => {
+    const messages: ChatMessage[] = [
+      { role: 'user', content: 'cut\uD83D' },
+      {
+        role: 'assistant',
+        content: '',
+        reasoning_content: 'think\uD83D',
+        tool_calls: [
+          {
+            id: 'call-1',
+            type: 'function',
+            function: { name: 'play_music', arguments: '{"q":"title\uD83D"}' },
+          },
+        ],
+      },
+    ];
+
+    const [user, assistant] = sanitizeMessagesForWire(messages);
+
+    expect(user.content).toBe('cut�');
+    expect(assistant.reasoning_content).toBe('think�');
+    expect(assistant.tool_calls?.[0].function.arguments).toBe('{"q":"title�"}');
+    expect(messages[0].content).toBe('cut\uD83D');
+    expect(messages[1].tool_calls?.[0].function.arguments).toBe('{"q":"title\uD83D"}');
+  });
+});
+
+describe('chat() lone-surrogate wire safety', () => {
+  it('never sends a dangling high-surrogate escape on the Anthropic route', async () => {
+    const mockFetch = vi.fn().mockResolvedValueOnce(makeAnthropicResponse('ok'));
+    globalThis.fetch = mockFetch;
+
+    const corrupted: ChatMessage[] = [
+      { role: 'user', content: 'first' },
+      // Persisted history whose title was cut mid-emoji by an old code-unit slice.
+      { role: 'assistant', content: 'KPOP PLAYLIST \uD83D' },
+      { role: 'user', content: 'play it' },
+    ];
+    await chat(corrupted, [], MOCK_ANTHROPIC_CONFIG);
+
+    const rawBody = mockFetch.mock.calls[0][1].body as string;
+    expect(rawBody).not.toMatch(/\\u[dD][89abAB]/);
+    const body = JSON.parse(rawBody);
+    expect(body.messages[1].content).toBe('KPOP PLAYLIST �');
+  });
+
+  it('scrubs tool_result content on the Anthropic route', async () => {
+    const mockFetch = vi.fn().mockResolvedValueOnce(makeAnthropicResponse('ok'));
+    globalThis.fetch = mockFetch;
+
+    const messages: ChatMessage[] = [
+      { role: 'user', content: 'play' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          { id: 'call-1', type: 'function', function: { name: 'app_action', arguments: '{}' } },
+        ],
+      },
+      { role: 'tool', content: 'result title cut\uD83D', tool_call_id: 'call-1' },
+    ];
+    await chat(messages, [], MOCK_ANTHROPIC_CONFIG);
+
+    const rawBody = mockFetch.mock.calls[0][1].body as string;
+    expect(rawBody).not.toMatch(/\\u[dD][89abAB]/);
+    const body = JSON.parse(rawBody);
+    const toolResultMessage = body.messages.find(
+      (message: { content?: Array<{ type?: string }> }) =>
+        Array.isArray(message.content) && message.content[0]?.type === 'tool_result',
+    );
+    expect(toolResultMessage.content[0].content).toBe('result title cut�');
   });
 });
