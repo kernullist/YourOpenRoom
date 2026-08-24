@@ -8390,7 +8390,15 @@ const ChatPanel: React.FC<{
       });
 
       if (response.toolCalls.length === 0) {
-        // No tool calls — fallback plain text (shouldn't happen with respond_to_user requirement)
+        // Plain text instead of respond_to_user. Measured on the configured model
+        // (deepseek-v4-flash), this is the COMMON path, not the exception: 9 of 10
+        // real chat turns in the run ledger landed here. It cannot be forced away
+        // -- tool_choice:'required' is rejected outright in thinking mode
+        // ("Thinking mode does not support this tool_choice"), and with thinking
+        // disabled the model still answers conversational turns in prose, or
+        // satisfies the forced call with finish_target. The content itself is a
+        // normal reply, not a tool call the parser missed, so it is delivered as
+        // written.
         const fallbackContent = response.content.trim()
           ? response.content
           : pendingResearchStartAck;
@@ -8413,6 +8421,11 @@ const ChatPanel: React.FC<{
             });
             continue;
           }
+          // No options: handleSend already cleared the suggested replies for this
+          // send, so there are no stale chips to drop, and there is no emotion to
+          // apply. What this path genuinely cannot deliver is the reply chips and
+          // the expression for the turn -- both ride on respond_to_user, so on this
+          // model most turns go without them.
           emitAssistantMessage({
             id: String(Date.now()),
             role: 'assistant',
