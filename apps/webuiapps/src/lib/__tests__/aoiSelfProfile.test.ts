@@ -221,15 +221,60 @@ describe('selectAoiSelfInquiryToShare', () => {
         excludeTopicKeys: ['newest-topic', 'older-topic'],
       }),
     ).toBeNull();
-    // Opt-in repeat for surfaces that prefer "say something" over silence.
+    // Opt-in repeat for surfaces that prefer "say something" over silence. The
+    // exclusion list is most-recently-spoken first, so the repeat is the topic
+    // that has waited longest -- not the newest, which would pin the rotation.
     expect(
       selectAoiSelfInquiryToShare(profile, {
         excludeTopicKeys: ['newest-topic', 'older-topic'],
         allowRepeatFallback: true,
       })?.label,
+    ).toBe('Older topic');
+    expect(
+      selectAoiSelfInquiryToShare(profile, {
+        excludeTopicKeys: ['older-topic', 'newest-topic'],
+        allowRepeatFallback: true,
+      })?.label,
     ).toBe('Newest topic');
     expect(selectAoiSelfInquiryToShare(null)).toBeNull();
     expect(selectAoiSelfInquiryToShare(buildAoiSelfProfile({ now: NOW }))).toBeNull();
+  });
+
+  // Regression: with a one-slot exclusion the rotation alternated between the
+  // two newest topics forever and the third was never spoken. Driving the
+  // selector with a growing most-recent-first history must visit every topic.
+  it('cycles the whole pool instead of ping-ponging the newest two', () => {
+    const profile = buildAoiSelfProfile({
+      now: NOW,
+      sources: [
+        source({ id: 'a', label: 'Topic A', exploredAt: NOW }),
+        source({ id: 'b', label: 'Topic B', exploredAt: NOW - HOUR }),
+        source({ id: 'c', label: 'Topic C', exploredAt: NOW - 2 * HOUR }),
+      ],
+    });
+
+    const spoken: string[] = [];
+    let history: string[] = [];
+    for (let turn = 0; turn < 7; turn += 1) {
+      const picked = selectAoiSelfInquiryToShare(profile, {
+        excludeTopicKeys: history,
+        allowRepeatFallback: true,
+      });
+      expect(picked).not.toBeNull();
+      spoken.push(picked?.label ?? '');
+      history = [picked?.topicKey ?? '', ...history.filter((key) => key !== picked?.topicKey)];
+    }
+
+    expect(spoken).toEqual([
+      'Topic A',
+      'Topic B',
+      'Topic C',
+      'Topic A',
+      'Topic B',
+      'Topic C',
+      'Topic A',
+    ]);
+    expect(new Set(spoken).size).toBe(3);
   });
 });
 

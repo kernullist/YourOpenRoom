@@ -5,6 +5,7 @@ import {
   DEFAULT_SELF_OBSERVATION_SPACING_MS,
   normalizeAoiSelfObservationState,
   recordAoiSelfObservationOffered,
+  MAX_AOI_SELF_OBSERVATION_TOPIC_HISTORY,
   shouldSubstituteAoiSelfObservation,
 } from '../aoiSelfObservationNudge';
 
@@ -141,6 +142,73 @@ describe('aoiSelfObservationNudge state', () => {
         lastTopicKey: '  privacy-metadata  ',
       }).lastTopicKey,
     ).toBe('privacy-metadata');
+  });
+
+  it('remembers a rotation window, not just the last topic', () => {
+    // Regression: a one-slot memory let a three-topic pool alternate between its
+    // two newest entries forever.
+    let state = recordAoiSelfObservationOffered(null, NOW, { topicKey: 'topic-a' });
+    state = recordAoiSelfObservationOffered(state, NOW + 1, { topicKey: 'topic-b' });
+    state = recordAoiSelfObservationOffered(state, NOW + 2, { topicKey: 'topic-c' });
+    expect(state.recentTopicKeys).toEqual(['topic-c', 'topic-b', 'topic-a']);
+    expect(state.offeredCount).toBe(3);
+
+    // Re-voicing moves the topic to the head instead of duplicating it.
+    state = recordAoiSelfObservationOffered(state, NOW + 3, { topicKey: 'topic-a' });
+    expect(state.recentTopicKeys).toEqual(['topic-a', 'topic-c', 'topic-b']);
+    expect(state.offeredCount).toBe(4);
+
+    // An offer with no topic key still counts, and leaves the window intact.
+    state = recordAoiSelfObservationOffered(state, NOW + 4);
+    expect(state.recentTopicKeys).toEqual(['topic-a', 'topic-c', 'topic-b']);
+    expect(state.offeredCount).toBe(5);
+  });
+
+  it('caps the rotation window', () => {
+    let state = recordAoiSelfObservationOffered(null, NOW, { topicKey: 'seed' });
+    for (let index = 0; index < MAX_AOI_SELF_OBSERVATION_TOPIC_HISTORY + 5; index += 1) {
+      state = recordAoiSelfObservationOffered(state, NOW + index + 1, {
+        topicKey: `topic-${index}`,
+      });
+    }
+    expect(state.recentTopicKeys).toHaveLength(MAX_AOI_SELF_OBSERVATION_TOPIC_HISTORY);
+    expect(state.recentTopicKeys?.[0]).toBe(`topic-${MAX_AOI_SELF_OBSERVATION_TOPIC_HISTORY + 4}`);
+    expect(state.recentTopicKeys).not.toContain('seed');
+  });
+
+  it('migrates a pre-history record and rejects junk entries', () => {
+    // Older records only carry lastTopicKey; it is by definition the newest.
+    expect(
+      normalizeAoiSelfObservationState({
+        version: 1,
+        lastSelfObservationAt: NOW,
+        lastTopicKey: 'privacy-metadata',
+      }).recentTopicKeys,
+    ).toEqual(['privacy-metadata']);
+    // offeredCount is unknown for those records, so it starts at history depth.
+    expect(
+      normalizeAoiSelfObservationState({
+        version: 1,
+        lastSelfObservationAt: NOW,
+        lastTopicKey: 'privacy-metadata',
+      }).offeredCount,
+    ).toBe(1);
+    const normalized = normalizeAoiSelfObservationState({
+      version: 1,
+      lastSelfObservationAt: NOW,
+      lastTopicKey: 'topic-a',
+      recentTopicKeys: ['topic-a', '  topic-b  ', '', 42, null, 'topic-b'],
+      offeredCount: -3,
+    });
+    expect(normalized.recentTopicKeys).toEqual(['topic-a', 'topic-b']);
+    expect(normalized.offeredCount).toBe(2);
+    expect(
+      normalizeAoiSelfObservationState({
+        version: 1,
+        lastSelfObservationAt: NOW,
+        recentTopicKeys: 'not-an-array',
+      }).recentTopicKeys,
+    ).toEqual([]);
   });
 
   it('does not mutate the state passed in', () => {

@@ -457,9 +457,95 @@ export function buildAoiCompanionSharedInterestNote(
   return `I went and looked into ${topic} on my own too.`;
 }
 
+export type AoiCompanionInquiryRecency = 'fresh' | 'recent' | 'distant';
+
+// "Lately" is a factual claim. Research that landed five weeks ago spoken as
+// "recently" is a small lie, and stale framing is part of what made the repeated
+// line read as canned. Age buckets keep it honest; an unknown timestamp stays in
+// the fresh bucket because the caller asserted nothing either way.
+const INQUIRY_FRESH_MAX_MS = 7 * 24 * 60 * 60 * 1000;
+const INQUIRY_RECENT_MAX_MS = 30 * 24 * 60 * 60 * 1000;
+
+export function resolveAoiCompanionInquiryRecency(params: {
+  exploredAt?: number;
+  now?: number;
+}): AoiCompanionInquiryRecency {
+  const exploredAt = params.exploredAt;
+  const now = params.now;
+  if (
+    typeof exploredAt !== 'number' ||
+    !Number.isFinite(exploredAt) ||
+    exploredAt <= 0 ||
+    typeof now !== 'number' ||
+    !Number.isFinite(now)
+  ) {
+    return 'fresh';
+  }
+  // A future stamp is clock skew, not an age worth claiming; it lands in fresh.
+  const ageMs = now - exploredAt;
+  if (ageMs <= INQUIRY_FRESH_MAX_MS) {
+    return 'fresh';
+  }
+  if (ageMs <= INQUIRY_RECENT_MAX_MS) {
+    return 'recent';
+  }
+  return 'distant';
+}
+
 export interface AoiCompanionSelfInquiryParams {
   topicLabel: string;
+  // When the inquiry actually happened, and the clock to age it against. Both
+  // optional; omitting them keeps the original present-tense framing.
+  exploredAt?: number;
+  now?: number;
+  // Rotates the sentence frame so a re-voiced topic does not arrive verbatim.
+  // Caller passes a monotonic count (aoiSelfObservationNudge offeredCount).
+  variantSeed?: number;
 }
+
+interface SelfInquiryCopyVariant {
+  ko: (topic: string) => string;
+  en: (topic: string) => string;
+}
+
+// Phrasings per recency bucket. Index 0 of `fresh` is the original line, so a
+// caller that passes neither timing nor seed keeps its existing copy verbatim.
+const SELF_INQUIRY_COPY: Record<AoiCompanionInquiryRecency, SelfInquiryCopyVariant[]> = {
+  fresh: [
+    {
+      ko: (topic) => `나 요즘 ${topic} 쪽 혼자 좀 들여다봤어.`,
+      en: (topic) => `I have been poking at ${topic} on my own lately.`,
+    },
+    {
+      ko: (topic) => `요즘 ${topic} 쪽을 혼자 파고 있어.`,
+      en: (topic) => `I have been digging into ${topic} by myself these days.`,
+    },
+    {
+      ko: (topic) => `${topic} 쪽, 요즘 혼자 붙잡고 있는 거야.`,
+      en: (topic) => `${topic} is what I have been chewing on alone lately.`,
+    },
+  ],
+  recent: [
+    {
+      ko: (topic) => `얼마 전에 ${topic} 쪽 혼자 좀 파봤어.`,
+      en: (topic) => `I went and looked into ${topic} on my own a little while back.`,
+    },
+    {
+      ko: (topic) => `${topic} 쪽은 얼마 전에 따로 들여다본 적 있어.`,
+      en: (topic) => `I dug through ${topic} by myself not long ago.`,
+    },
+  ],
+  distant: [
+    {
+      ko: (topic) => `${topic} 쪽은 예전에 혼자 좀 파본 적 있어.`,
+      en: (topic) => `I looked into ${topic} on my own a while back.`,
+    },
+    {
+      ko: (topic) => `한참 전이지만 ${topic} 쪽 혼자 들여다본 적 있어.`,
+      en: (topic) => `It has been a while, but I did dig into ${topic} myself.`,
+    },
+  ],
+};
 
 // What Aoi dug into on her own, unprompted. Sourced from real research runs and
 // agent-scope memories, never from an invented curiosity.
@@ -471,10 +557,14 @@ export function buildAoiCompanionSelfInquiryNote(
   if (!topic) {
     return '';
   }
-  if (voice.lang === 'ko') {
-    return `나 요즘 ${topic} 쪽 혼자 좀 들여다봤어.`;
-  }
-  return `I have been poking at ${topic} on my own lately.`;
+  const recency = resolveAoiCompanionInquiryRecency(params);
+  const variants = SELF_INQUIRY_COPY[recency];
+  const seed =
+    typeof params.variantSeed === 'number' && Number.isFinite(params.variantSeed)
+      ? Math.abs(Math.floor(params.variantSeed))
+      : 0;
+  const variant = variants[seed % variants.length];
+  return voice.lang === 'ko' ? variant.ko(topic) : variant.en(topic);
 }
 
 export interface AoiCompanionRetrospectiveParams {

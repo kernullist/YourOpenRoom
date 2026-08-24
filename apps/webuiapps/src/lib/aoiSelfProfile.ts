@@ -487,9 +487,16 @@ export function findAoiSharedInterests(
 // The most recent thing Aoi looked into on her own, for a "here is what I dug
 // into" remark. Null when nothing qualifies.
 //
+// excludeTopicKeys is ordered MOST RECENTLY SPOKEN FIRST. That order is load
+// bearing: once the whole pool has been voiced, the fallback re-voices the
+// LEAST recently spoken topic, which makes the sequence a true round-robin.
+// Repeating the newest instead (the previous behaviour) pinned the rotation to
+// one topic forever, because that topic then sat at the head of the exclusion
+// list on every subsequent turn.
+//
 // Default is hard silence when every inquiry is excluded (preserves the pure
-// selector contract). Callers that want "repeat the newest rather than go
-// quiet forever" must opt in with allowRepeatFallback: true (ChatPanel does).
+// selector contract). Callers that want "say something rather than go quiet
+// forever" must opt in with allowRepeatFallback: true (ChatPanel does).
 export function selectAoiSelfInquiryToShare(
   profile: AoiSelfProfile | null,
   options?: { excludeTopicKeys?: string[]; allowRepeatFallback?: boolean },
@@ -497,15 +504,33 @@ export function selectAoiSelfInquiryToShare(
   if (!profile || profile.inquiries.length === 0) {
     return null;
   }
-  const excluded = new Set(options?.excludeTopicKeys ?? []);
+  const excludeOrder = (options?.excludeTopicKeys ?? []).filter(
+    (key): key is string => typeof key === 'string' && key.trim().length > 0,
+  );
+  const excluded = new Set(excludeOrder);
+  // Newest inquiry that has not been voiced within the rotation window.
   const preferred = profile.inquiries.find((inquiry) => !excluded.has(inquiry.topicKey)) ?? null;
   if (preferred) {
     return preferred;
   }
-  if (options?.allowRepeatFallback === true) {
-    return profile.inquiries[0] ?? null;
+  if (options?.allowRepeatFallback !== true) {
+    return null;
   }
-  return null;
+  // Everything is excluded: pick the one that has waited longest. A topic absent
+  // from the order list cannot reach here (it would have been preferred above),
+  // so a missing index only happens on a malformed caller -- treat it as maximally
+  // stale rather than silently preferring the newest again.
+  let stalest = profile.inquiries[0] ?? null;
+  let stalestRank = -1;
+  for (const inquiry of profile.inquiries) {
+    const index = excludeOrder.indexOf(inquiry.topicKey);
+    const rank = index < 0 ? Number.MAX_SAFE_INTEGER : index;
+    if (rank > stalestRank) {
+      stalest = inquiry;
+      stalestRank = rank;
+    }
+  }
+  return stalest;
 }
 
 // Prompt block giving Aoi her own side to speak from. Read-path injection (the

@@ -9,6 +9,7 @@ import {
   buildAoiCompanionMoodNote,
   buildAoiCompanionRetrospectiveNote,
   buildAoiCompanionSelfInquiryNote,
+  resolveAoiCompanionInquiryRecency,
   buildAoiCompanionSharedInterestNote,
   buildAoiCompanionStanceReason,
   buildAoiCompanionResumeGreeting,
@@ -370,6 +371,122 @@ describe('aoiCompanionVoice resume copy', () => {
     // No usable topic means no claim at all.
     expect(buildAoiCompanionSharedInterestNote(KO, { topicLabel: '  ' })).toBe('');
     expect(buildAoiCompanionSelfInquiryNote(EN, { topicLabel: '' })).toBe('');
+  });
+
+  it('ages the self-inquiry claim and rotates the sentence frame', () => {
+    const NOW_MS = 1_700_000_000_000;
+    const DAY = 24 * 60 * 60 * 1000;
+
+    // No timing given: the caller asserted nothing, so the present-tense line stands.
+    expect(buildAoiCompanionSelfInquiryNote(KO, { topicLabel: 'TPM' })).toBe(
+      '나 요즘 TPM 쪽 혼자 좀 들여다봤어.',
+    );
+
+    // Five-week-old research must not be spoken as something happening now.
+    const distant = buildAoiCompanionSelfInquiryNote(KO, {
+      topicLabel: '커널 텔레메트리',
+      exploredAt: NOW_MS - 38 * DAY,
+      now: NOW_MS,
+    });
+    expect(distant).not.toContain('요즘');
+    expect(distant).toContain('커널 텔레메트리');
+    expect(
+      buildAoiCompanionSelfInquiryNote(EN, {
+        topicLabel: 'kernel telemetry',
+        exploredAt: NOW_MS - 38 * DAY,
+        now: NOW_MS,
+      }),
+    ).not.toContain('lately');
+
+    // Mid-range work reads as done, not ongoing.
+    expect(
+      buildAoiCompanionSelfInquiryNote(KO, {
+        topicLabel: '커널 텔레메트리',
+        exploredAt: NOW_MS - 20 * DAY,
+        now: NOW_MS,
+      }),
+    ).not.toContain('요즘');
+    // Fresh work keeps the present-tense framing.
+    expect(
+      buildAoiCompanionSelfInquiryNote(KO, {
+        topicLabel: '커널 텔레메트리',
+        exploredAt: NOW_MS - 2 * DAY,
+        now: NOW_MS,
+      }),
+    ).toContain('요즘');
+    // A skewed future stamp is not aged.
+    expect(
+      buildAoiCompanionSelfInquiryNote(KO, {
+        topicLabel: 'TPM',
+        exploredAt: NOW_MS + DAY,
+        now: NOW_MS,
+      }),
+    ).toBe('나 요즘 TPM 쪽 혼자 좀 들여다봤어.');
+
+    // Same topic, different offer counts: the frame must not repeat verbatim.
+    const frames = new Set(
+      [0, 1, 2].map((seed) =>
+        buildAoiCompanionSelfInquiryNote(KO, { topicLabel: 'TPM', variantSeed: seed }),
+      ),
+    );
+    expect(frames.size).toBeGreaterThan(1);
+    // Seeds wrap rather than falling off the table.
+    expect(buildAoiCompanionSelfInquiryNote(KO, { topicLabel: 'TPM', variantSeed: 99 })).not.toBe(
+      '',
+    );
+    expect(
+      buildAoiCompanionSelfInquiryNote(KO, { topicLabel: 'TPM', variantSeed: Number.NaN }),
+    ).toBe('나 요즘 TPM 쪽 혼자 좀 들여다봤어.');
+    // An unusable topic is still silence, whatever the timing or seed.
+    expect(
+      buildAoiCompanionSelfInquiryNote(KO, {
+        topicLabel: '  ',
+        exploredAt: NOW_MS - 38 * DAY,
+        now: NOW_MS,
+        variantSeed: 3,
+      }),
+    ).toBe('');
+  });
+
+  it('has every recency variant reachable in both languages', () => {
+    const NOW_MS = 1_700_000_000_000;
+    const DAY = 24 * 60 * 60 * 1000;
+    const at = (ageDays: number, seed: number, voice: typeof KO) =>
+      buildAoiCompanionSelfInquiryNote(voice, {
+        topicLabel: 'TPM',
+        exploredAt: NOW_MS - ageDays * DAY,
+        now: NOW_MS,
+        variantSeed: seed,
+      });
+
+    // fresh: 3 frames, recent: 2, distant: 2 -- all distinct, none empty.
+    const fresh = [0, 1, 2].flatMap((seed) => [at(1, seed, KO), at(1, seed, EN)]);
+    const recent = [0, 1].flatMap((seed) => [at(20, seed, KO), at(20, seed, EN)]);
+    const distant = [0, 1].flatMap((seed) => [at(60, seed, KO), at(60, seed, EN)]);
+    const all = [...fresh, ...recent, ...distant];
+    expect(all.every((line) => line.includes('TPM'))).toBe(true);
+    expect(new Set(all).size).toBe(all.length);
+    // Only the fresh bucket may claim the inquiry is ongoing.
+    expect(recent.concat(distant).some((line) => line.includes('요즘'))).toBe(false);
+    expect(recent.concat(distant).some((line) => line.includes('lately'))).toBe(false);
+    // Seed wraps within each bucket rather than indexing past the table.
+    expect(at(20, 2, KO)).toBe(at(20, 0, KO));
+    expect(at(60, 3, EN)).toBe(at(60, 1, EN));
+    // Recency resolution is exported so callers can reason about the bucket.
+    expect(resolveAoiCompanionInquiryRecency({ exploredAt: NOW_MS - DAY, now: NOW_MS })).toBe(
+      'fresh',
+    );
+    expect(resolveAoiCompanionInquiryRecency({ exploredAt: NOW_MS - 20 * DAY, now: NOW_MS })).toBe(
+      'recent',
+    );
+    expect(resolveAoiCompanionInquiryRecency({ exploredAt: NOW_MS - 60 * DAY, now: NOW_MS })).toBe(
+      'distant',
+    );
+    expect(resolveAoiCompanionInquiryRecency({})).toBe('fresh');
+    expect(resolveAoiCompanionInquiryRecency({ exploredAt: 0, now: NOW_MS })).toBe('fresh');
+    expect(resolveAoiCompanionInquiryRecency({ exploredAt: NOW_MS, now: Number.NaN })).toBe(
+      'fresh',
+    );
   });
 
   it('offers the week as counts rather than retelling it', () => {

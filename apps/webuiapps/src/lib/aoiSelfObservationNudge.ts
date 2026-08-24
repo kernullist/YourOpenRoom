@@ -52,18 +52,59 @@ export function shouldSubstituteAoiSelfObservation(
   return input.lastSelfObservationAt <= 0 || input.now - input.lastSelfObservationAt >= spacingMs;
 }
 
+// How many recently voiced topics are remembered. A one-slot memory was the
+// repetition bug: excluding only the LAST topic makes a pool of N alternate
+// between its two newest entries forever, so the third-newest inquiry was never
+// spoken and the user heard the same two lines on repeat. The window has to be
+// at least as deep as a realistic inquiry pool for rotation to actually rotate.
+export const MAX_AOI_SELF_OBSERVATION_TOPIC_HISTORY = 12;
+
 export interface AoiSelfObservationState {
   version: 1;
   lastSelfObservationAt: number;
-  // Topic key of the most recently voiced self-inquiry. Used so the next offer
-  // prefers a different inquiry when more than one exists.
+  // Topic key of the most recently voiced self-inquiry. Kept as the head of
+  // recentTopicKeys for older records that predate the history field.
   lastTopicKey?: string;
+  // Topic keys already voiced, MOST RECENT FIRST. The selector excludes all of
+  // them, so the pool is spoken round-robin rather than ping-ponging.
+  recentTopicKeys?: string[];
+  // Monotonic count of voiced self-observations. Drives phrasing rotation, so
+  // even a repeated topic does not arrive in the identical sentence frame.
+  offeredCount?: number;
 }
 
 export const DEFAULT_AOI_SELF_OBSERVATION_STATE: AoiSelfObservationState = {
   version: 1,
   lastSelfObservationAt: 0,
+  recentTopicKeys: [],
+  offeredCount: 0,
 };
+
+// Dedup + cap, preserving most-recent-first order.
+function normalizeTopicHistory(raw: unknown, fallbackHead: string): string[] {
+  const seen = new Set<string>();
+  const history: string[] = [];
+  const push = (value: unknown): void => {
+    if (typeof value !== 'string') {
+      return;
+    }
+    const key = value.trim();
+    if (!key || seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    history.push(key);
+  };
+  // Migration: a record written before this field only has lastTopicKey, and it
+  // is by definition the most recent entry.
+  push(fallbackHead);
+  if (Array.isArray(raw)) {
+    for (const entry of raw) {
+      push(entry);
+    }
+  }
+  return history.slice(0, MAX_AOI_SELF_OBSERVATION_TOPIC_HISTORY);
+}
 
 export function normalizeAoiSelfObservationState(raw: unknown): AoiSelfObservationState {
   const value = raw as Partial<AoiSelfObservationState> | null;
@@ -71,6 +112,7 @@ export function normalizeAoiSelfObservationState(raw: unknown): AoiSelfObservati
     return { ...DEFAULT_AOI_SELF_OBSERVATION_STATE };
   }
   const lastTopicKey = typeof value.lastTopicKey === 'string' ? value.lastTopicKey.trim() : '';
+  const recentTopicKeys = normalizeTopicHistory(value.recentTopicKeys, lastTopicKey);
   return {
     version: 1,
     lastSelfObservationAt:
@@ -80,6 +122,15 @@ export function normalizeAoiSelfObservationState(raw: unknown): AoiSelfObservati
         ? value.lastSelfObservationAt
         : 0,
     ...(lastTopicKey ? { lastTopicKey } : {}),
+    recentTopicKeys,
+    // A record that predates the counter starts from its known history depth, so
+    // phrasing rotation does not restart at the same variant for every user.
+    offeredCount:
+      typeof value.offeredCount === 'number' &&
+      Number.isFinite(value.offeredCount) &&
+      value.offeredCount >= 0
+        ? Math.floor(value.offeredCount)
+        : recentTopicKeys.length,
   };
 }
 
@@ -93,6 +144,15 @@ export function recordAoiSelfObservationOffered(
     return base;
   }
   const topicKey = typeof options?.topicKey === 'string' ? options.topicKey.trim() : '';
+  const previous = base.recentTopicKeys ?? [];
+  // Re-voicing a topic moves it back to the head rather than adding a duplicate,
+  // so the window always holds MAX distinct topics worth of rotation.
+  const recentTopicKeys = topicKey
+    ? [topicKey, ...previous.filter((key) => key !== topicKey)].slice(
+        0,
+        MAX_AOI_SELF_OBSERVATION_TOPIC_HISTORY,
+      )
+    : previous;
   return {
     ...base,
     lastSelfObservationAt: now,
@@ -101,5 +161,7 @@ export function recordAoiSelfObservationOffered(
       : base.lastTopicKey
         ? { lastTopicKey: base.lastTopicKey }
         : {}),
+    recentTopicKeys,
+    offeredCount: (base.offeredCount ?? 0) + 1,
   };
 }

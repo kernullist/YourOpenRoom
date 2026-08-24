@@ -11104,16 +11104,22 @@ const ChatPanel: React.FC<{
           // observation about Aoi's own work instead of a headline. Substituting
           // rather than adding keeps the interruption count unchanged, which the
           // no-new-interruption-class constraint requires.
-          const lastSharedTopicKey = selfObservationStateRef.current.lastTopicKey?.trim() || '';
+          // Whole rotation window, most recent first. Excluding only the LAST
+          // topic made a three-topic pool alternate between its two newest
+          // entries forever, which is what the user heard as one canned line.
+          const spokenTopicKeys = (selfObservationStateRef.current.recentTopicKeys ?? [])
+            .map((key) => key.trim())
+            .filter(Boolean);
           const selfInquiry = selectAoiSelfInquiryToShare(
             buildAoiSelfProfile({
               now: stamp,
               sources: buildAoiSelfInquirySourcesFromMemories(aoiMemoriesRef.current ?? []),
             }),
             {
-              // Prefer a different inquiry than the last spoken one when more
-              // than one exists; still allow repeat when that is the only topic.
-              excludeTopicKeys: lastSharedTopicKey ? [lastSharedTopicKey] : [],
+              excludeTopicKeys: spokenTopicKeys,
+              // Once every topic has been voiced the selector re-voices the
+              // least recently spoken one, so the pool keeps cycling instead of
+              // pinning to the newest inquiry.
               allowRepeatFallback: true,
             },
           );
@@ -11131,7 +11137,16 @@ const ChatPanel: React.FC<{
           ) {
             const note = buildAoiCompanionSelfInquiryNote(
               { lang: aoiCardLangRef.current },
-              { topicLabel: selfInquiry.label },
+              {
+                topicLabel: selfInquiry.label,
+                // Age the claim: research from five weeks ago must not be
+                // spoken as something she is looking at right now.
+                exploredAt: selfInquiry.lastExploredAt,
+                now: stamp,
+                // Rotate the sentence frame independently of the topic, so a
+                // second lap through the pool does not repeat verbatim.
+                variantSeed: selfObservationStateRef.current.offeredCount ?? 0,
+              },
             );
             // Empty note means humanization refused the label (audit residue /
             // unusable topic). Fall through to the host news nudge rather than
