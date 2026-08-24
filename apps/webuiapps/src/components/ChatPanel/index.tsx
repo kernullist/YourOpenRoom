@@ -2271,6 +2271,21 @@ function isPlaceholderAssistantResponse(content: string, replies: string[]): boo
 // Tool definitions for character system
 // ---------------------------------------------------------------------------
 
+// Measured (Phase 0): the full app toolset costs ~16k input tokens per turn --
+// 30 tool schemas (17.4k chars) plus a 15k-char policy block that is mostly
+// file-path, guide.md and IDE rules. Acting on "play this" never needed any of
+// that: it needs list_apps to resolve the numeric app id and app_action to run
+// the action. Those two schemas are 1,138 chars (~285 tokens), so they ride
+// EVERY tool-capable turn instead of being gated, and shouldEnableAppTools now
+// only decides whether the heavyweight file/IDE/workspace set comes along.
+//
+// Before this, 11 of 12 real chat turns in the run ledger shipped with no way to
+// act at all, which is why a confirmed playback request could only be answered
+// with a promise for a later turn.
+function getMinimalAppToolDefinitions() {
+  return [getListAppsToolDefinition(), getAppActionToolDefinition()];
+}
+
 function getRespondToUserToolDef() {
   return {
     type: 'function' as const,
@@ -2511,19 +2526,23 @@ Music follow-up rule:
 
 When you receive "[User performed action in ... (appName: xxx)]", the appName is already provided. Read its meta.yaml to understand available actions, then respond accordingly. For games, respond with your own move — think strategically.`;
     } else {
-      // Nothing in the prompt mentioned app control on these turns, and the
-      // model filled the gap with the wording of the web-search block below: ask
-      // the user to confirm, the next turn will carry the tool. Applied to
-      // playback that becomes "다음 턴에 틀어줄게" -- a promise it cannot keep,
-      // because whether the next turn carries app tools is decided by what the
-      // user says, not by waiting. It then repeated the promise every turn.
+      // These turns carry list_apps + app_action but not the file/IDE/workspace
+      // set, so the policy has to be stated at that exact scope. Nothing used to
+      // be said here at all, and the model filled the gap with the wording of the
+      // web-search block below -- ask the user to confirm, the next turn will
+      // carry the tool. Applied to playback that became "다음 턴에 틀어줄게", a
+      // promise it could not keep (what the next turn carries is decided by what
+      // the user types, not by waiting), so it repeated the promise every turn.
       prompt += `
 
-App control availability:
-- App control IS available to you in general. It is only absent from this particular turn's tools.
-- Do NOT say you played, opened, started, or lined anything up. Nothing was dispatched on this turn.
-- NEVER promise an action for "the next turn", and never ask the user to wait for one. You cannot schedule a turn.
-- If the user wants something played or opened, ask them to name it with the action in one message (e.g. "aespa KISS N TELL 틀어줘"), which runs immediately.`;
+App control (minimal set this turn):
+- You CAN operate apps right now: call list_apps for the numeric app_id, then app_action with the real action.
+- Only do that when the user actually asked for something to happen. These tools ride every turn, so most turns are ordinary conversation and must stay that way — do not open or play anything unprompted.
+- For playback that is the YouTube app, action OPEN_SEARCH, with params query (the exact artist + title) and autoplay="1".
+- If the user is confirming or referring to a pick you named earlier, take the exact search query from your own earlier message. Never search a bare fragment of their reply.
+- File, IDE, workspace and command tools are NOT in this turn's tools. Do not describe reading or writing files.
+- NEVER promise an action for "the next turn", and never ask the user to wait for one. You cannot schedule a turn. Either call app_action now, or say plainly that you have not done it.
+- Never write that you played, opened, started, or lined anything up unless app_action actually succeeded this turn.`;
     }
 
     // Always: respond_to_user and generate_image are in the tools array on every
@@ -7565,14 +7584,16 @@ const ChatPanel: React.FC<{
     // reply may not claim it happened unless an app_action actually succeeded.
     // Skipped entirely without structured tool calls -- that provider cannot
     // dispatch and the system prompt already tells it not to claim tool actions.
-    // includeAppTools is carried into the contract rather than switching it off,
-    // because a claim made on a turn without app tools is still false; only the
-    // correction changes, from "go do it" to "do not say you did".
+    // app_action now rides every tool-capable turn (getMinimalAppToolDefinitions),
+    // so the contract's "you cannot perform it here" branch no longer applies to
+    // a tool-capable turn: the correction is always "go do it". The flag stays in
+    // the contract because a provider without structured tool calls still has no
+    // way to act, and a claim made there is still false.
     const appActionClaimContract = toolCallRuntimeAvailable
       ? resolveAoiAppActionClaimContract({
           latestUserMessage,
           knownAppNames: knownInRoomAppNames,
-          appToolsAvailable: includeAppTools,
+          appToolsAvailable: toolCallRuntimeAvailable,
         })
       : null;
     // Whether search_web is actually in this turn's tools array. hasTavily only
@@ -7597,7 +7618,7 @@ const ChatPanel: React.FC<{
 
     const tools = toolCallRuntimeAvailable
       ? useDialogModel
-        ? [getRespondToUserToolDef(), getFinishTargetToolDef()]
+        ? [getRespondToUserToolDef(), getFinishTargetToolDef(), ...getMinimalAppToolDefinitions()]
         : [
             getRespondToUserToolDef(),
             getFinishTargetToolDef(),
@@ -7635,7 +7656,7 @@ const ChatPanel: React.FC<{
                   ...getUndoToolDefinitions(),
                   ...getBackgroundWatchToolDefinitions(),
                 ]
-              : []),
+              : getMinimalAppToolDefinitions()),
           ]
       : [];
     const selectedToolNames = tools.map((tool) => tool.function.name);
