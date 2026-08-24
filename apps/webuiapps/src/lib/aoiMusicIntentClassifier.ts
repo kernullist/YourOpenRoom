@@ -50,6 +50,8 @@ const MAX_QUERY_CHARS = 120;
 // would be a summary rather than a classification. Those turns belong to the
 // normal conversation path.
 const MAX_CLASSIFIABLE_CHARS = 80;
+// Enough for the one tool call the classifier is allowed to make.
+const MAX_CLASSIFIER_OUTPUT_TOKENS = 96;
 
 export function getMusicIntentToolDefinition(): ToolDef {
   return {
@@ -278,7 +280,16 @@ export async function classifyMusicIntent(
       buildMusicIntentMessages(text, candidates),
       [getMusicIntentToolDefinition()],
       config,
-      { signal: options.signal },
+      {
+        signal: options.signal,
+        // A slot that changes between identical inputs is a bug, not personality.
+        // Skipped for reasoning models, whose endpoints reject temperature -- a
+        // rejected request would silently cost the whole classification.
+        ...(config.reasoningEffort ? {} : { temperature: 0 }),
+        // One tool call and nothing else. The prose is never shown to anyone, so
+        // paying for room to write it is waste.
+        maxOutputTokens: MAX_CLASSIFIER_OUTPUT_TOKENS,
+      },
     );
     const call = response.toolCalls.find((entry) => entry.function.name === MUSIC_INTENT_TOOL_NAME);
     if (!call) {

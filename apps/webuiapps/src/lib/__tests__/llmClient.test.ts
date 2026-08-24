@@ -1086,6 +1086,60 @@ describe('chat()', () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
+  describe('sampling overrides', () => {
+    // Added for the music intent classifier: it fills a typed slot, so an answer
+    // that changes between identical inputs is a bug. Every other caller must
+    // keep the body it sent before, which is what the last two cases pin.
+    it('sends temperature and a capped max_tokens when the caller asks', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce(makeOpenAIResponse('ok'));
+      globalThis.fetch = mockFetch;
+
+      await chat(MOCK_MESSAGES, [], MOCK_OPENAI_CONFIG, {
+        temperature: 0,
+        maxOutputTokens: 96,
+      });
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(body.temperature).toBe(0);
+      expect(body.max_tokens).toBe(96);
+    });
+
+    it('never raises max_tokens above the module ceiling', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce(makeOpenAIResponse('ok'));
+      globalThis.fetch = mockFetch;
+
+      await chat(MOCK_MESSAGES, [], MOCK_OPENAI_CONFIG, { maxOutputTokens: 1_000_000 });
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(body.max_tokens).toBe(8192);
+    });
+
+    it('leaves the body untouched without the options', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce(makeOpenAIResponse('ok'));
+      globalThis.fetch = mockFetch;
+
+      await chat(MOCK_MESSAGES, [], MOCK_OPENAI_CONFIG);
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(body).not.toHaveProperty('temperature');
+      expect(body.max_tokens).toBe(8192);
+    });
+
+    it('ignores values that are not usable numbers', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce(makeOpenAIResponse('ok'));
+      globalThis.fetch = mockFetch;
+
+      await chat(MOCK_MESSAGES, [], MOCK_OPENAI_CONFIG, {
+        temperature: Number.NaN,
+        maxOutputTokens: 0,
+      });
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(body).not.toHaveProperty('temperature');
+      expect(body.max_tokens).toBe(8192);
+    });
+  });
+
   describe('OpenAI provider', () => {
     it('calls /api/llm-proxy and returns content', async () => {
       const mockFetch = vi.fn().mockResolvedValueOnce(makeOpenAIResponse('Hello!'));

@@ -382,6 +382,49 @@ export function extractLlmUsageTotalTokens(raw: unknown): number | undefined {
 
 export interface ChatRequestOptions {
   signal?: AbortSignal;
+  /**
+   * Sampling overrides for callers that need a DETERMINISTIC answer rather than a
+   * conversational one -- the music intent classifier being the first: it fills a
+   * typed slot, and a slot that changes between identical inputs is a bug, not
+   * personality.
+   *
+   * Both are omitted by default, so every existing call keeps exactly the body it
+   * sent before. They apply only on the HTTP paths (OpenAI-compatible chat,
+   * OpenAI Responses, Anthropic); the CLI-backed providers have no wire body to
+   * carry them and ignore both.
+   *
+   * Callers must not send temperature to a model that rejects it (the gpt-5 and
+   * o-series reasoning endpoints do). Leave it unset when the config declares a
+   * reasoning effort.
+   */
+  temperature?: number;
+  maxOutputTokens?: number;
+}
+
+/**
+ * Apply the caller's sampling overrides to a wire body.
+ *
+ * Called after the provider-specific fields are in place, so an explicit request
+ * from the caller wins over the module default -- but only for the fields the
+ * caller actually set.
+ */
+function applySamplingOverrides(
+  body: Record<string, unknown>,
+  options: ChatRequestOptions,
+  maxTokensField: 'max_tokens' | 'max_output_tokens',
+): void {
+  if (typeof options.temperature === 'number' && Number.isFinite(options.temperature)) {
+    body.temperature = options.temperature;
+  }
+  if (
+    typeof options.maxOutputTokens === 'number' &&
+    Number.isFinite(options.maxOutputTokens) &&
+    options.maxOutputTokens > 0
+  ) {
+    // Never above the module ceiling: a caller asking for more than the app is
+    // willing to pay for is a mistake, not an override.
+    body[maxTokensField] = Math.min(Math.floor(options.maxOutputTokens), LLM_MAX_OUTPUT_TOKENS);
+  }
 }
 
 interface InlineToolParseResult {
@@ -1056,6 +1099,7 @@ async function chatOpenAI(
     body.reasoning = { enabled: false };
   }
   applyDeepSeekChatRuntimeOptions(body, config);
+  applySamplingOverrides(body, options, 'max_tokens');
   if (tools.length > 0) {
     body.tools = tools;
   }
@@ -1192,6 +1236,7 @@ async function chatOpenAIResponses(
     max_output_tokens: LLM_MAX_OUTPUT_TOKENS,
     stream: false,
   };
+  applySamplingOverrides(body, options, 'max_output_tokens');
   if (instructions) body.instructions = instructions;
   if (tools.length > 0) {
     body.tools = tools.map((tool) => ({
@@ -1433,6 +1478,7 @@ async function chatAnthropic(
     max_tokens: LLM_MAX_OUTPUT_TOKENS,
     messages: anthropicMessages,
   };
+  applySamplingOverrides(body, options, 'max_tokens');
   const systemField = buildAnthropicSystemField(systemMsg, foldedOperatorContext, nativeFeatures);
   if (systemField !== undefined) body.system = systemField;
   if (anthropicTools.length > 0) body.tools = anthropicTools;

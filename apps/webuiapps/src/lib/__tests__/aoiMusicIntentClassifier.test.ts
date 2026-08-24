@@ -265,6 +265,27 @@ describe('classifyMusicIntent', () => {
     expect(tools).toEqual([getMusicIntentToolDefinition()]);
   });
 
+  it('asks for a deterministic answer, and skips temperature on reasoning models', async () => {
+    chatMock.mockResolvedValue(toolResponse({ action: 'none', confidence: 'high' }) as never);
+
+    await classifyMusicIntent('그거 부탁', CANDIDATES, CONFIG);
+    const [, , , options] = chatMock.mock.calls[0];
+    // A slot that changes between identical inputs is a bug, not personality.
+    expect(options).toMatchObject({ temperature: 0 });
+    expect((options as { maxOutputTokens?: number }).maxOutputTokens).toBeGreaterThan(0);
+
+    // gpt-5 / o-series endpoints reject temperature, and a rejected request would
+    // silently cost the whole classification -- so it is left off there.
+    chatMock.mockClear();
+    await classifyMusicIntent('그거 부탁', CANDIDATES, {
+      ...(CONFIG as object),
+      reasoningEffort: 'medium',
+    } as typeof CONFIG);
+    const [, , , reasoningOptions] = chatMock.mock.calls[0];
+    expect(reasoningOptions).not.toHaveProperty('temperature');
+    expect((reasoningOptions as { maxOutputTokens?: number }).maxOutputTokens).toBeGreaterThan(0);
+  });
+
   it('never calls the provider when the gate says no', async () => {
     await expect(classifyMusicIntent('그거', [], CONFIG)).resolves.toBeNull();
     expect(chatMock).not.toHaveBeenCalled();
