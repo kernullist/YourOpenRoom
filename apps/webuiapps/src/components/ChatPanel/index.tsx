@@ -56,11 +56,14 @@ import {
   isAoiMusicPlayChip,
   isDeferredMusicPlaybackIntent,
   isDirectPlaylistPlaybackIntent,
+  collectMusicPickCandidates,
   isFailedAgentActionResult,
   parseDirectMusicIntent,
+  type DirectMusicIntent,
   parseStartedVideo,
   type StartedVideo,
 } from '@/lib/chatDirectActions';
+import { classifyMusicIntent, shouldClassifyMusicIntent } from '@/lib/aoiMusicIntentClassifier';
 import {
   IDLE_MUSIC_MOOD_LINES,
   identifyPendingNudgeCard,
@@ -7145,33 +7148,37 @@ const ChatPanel: React.FC<{
         }
       }
 
-      const directMusicIntent = parseDirectMusicIntent(text, chatHistory);
-      if (!hasImageAttachments && directMusicIntent) {
+      // Dispatch + ack for a resolved music intent, from either resolver below.
+      // The ack is built from the DISPATCH RESULT, never from whatever decided the
+      // query -- that separation is the whole reason a classifier is allowed to
+      // read intent at all.
+      const playResolvedMusicIntent = async (
+        intent: DirectMusicIntent,
+        toolCallLabel: string,
+      ): Promise<boolean> => {
         try {
           const result = await dispatchAgentAction({
             app_id: YOUTUBE_APP_ID,
             action_type: 'OPEN_SEARCH',
             params: {
-              query: directMusicIntent.query,
+              query: intent.query,
               autoplay: '1',
               // Rejected picks ("달플리 말고 ...") ride along so the app can
               // minus-operator and filter them instead of replaying them.
-              ...(directMusicIntent.exclude?.length
-                ? { exclude: directMusicIntent.exclude.join('\n') }
-                : {}),
+              ...(intent.exclude?.length ? { exclude: intent.exclude.join('\n') } : {}),
             },
           });
           if (isFailedAgentActionResult(result)) {
-            console.error('[ChatPanel] Direct music intent dispatch failed', result);
+            console.error('[ChatPanel] Music intent dispatch failed', result);
             emitAssistantMessage({
               id: String(Date.now()),
               role: 'assistant',
               content: buildIdleMusicErrorAck(resolveNudgeLang()),
             });
-            return;
+            return true;
           }
           const ack = buildMusicPlaybackAck({
-            query: directMusicIntent.query,
+            query: intent.query,
             started: parseStartedVideo(result),
             lang: detectPreferredLanguage(
               text,
@@ -7196,13 +7203,70 @@ const ChatPanel: React.FC<{
           recordAoiMemoryTurn({
             userMessage: text,
             assistantMessage: ack,
-            toolCalls: ['direct:play_music'],
+            toolCalls: [toolCallLabel],
             source: 'direct_action',
             llmConfig: selectedConfig,
           });
-          return;
+          return true;
         } catch (err) {
-          console.error('[ChatPanel] Direct music intent dispatch failed', err);
+          console.error('[ChatPanel] Music intent dispatch failed', err);
+          return false;
+        }
+      };
+
+      const directMusicIntent = parseDirectMusicIntent(text, chatHistory);
+      if (!hasImageAttachments && directMusicIntent) {
+        if (await playResolvedMusicIntent(directMusicIntent, 'direct:play_music')) {
+          return;
+        }
+      }
+
+      // Phase 1: the phrasings the patterns above do NOT cover.
+      //
+      // Korean has more ways to say "play that one" than a pattern list can hold,
+      // and every miss used to arrive at the LLM as prose -- which is how a
+      // confirmed request became "다음 턴에 틀어줄게". A tiny classifier reads the
+      // intent into a typed slot instead; it can only choose among picks this code
+      // extracted, or a query whose every word is already in the conversation, so
+      // it cannot invent something to play. The dispatch and the ack above stay
+      // exactly where they were.
+      //
+      // Gated structurally, not by keywords (keyword gating is what failed): there
+      // has to be a pick on the table and the reply has to be short enough to be
+      // an answer about it. Anything else goes to the normal path, which now
+      // carries app_action.
+      if (!hasImageAttachments && !directMusicIntent) {
+        const musicPickCandidates = collectMusicPickCandidates(chatHistory);
+        if (shouldClassifyMusicIntent(text, musicPickCandidates)) {
+          const classification = await classifyMusicIntent(
+            text,
+            musicPickCandidates,
+            selectedConfig,
+          );
+          // 'low' confidence is left to the conversation on purpose: a coin-flip
+          // between two picks is better asked than guessed.
+          if (
+            classification &&
+            classification.query &&
+            classification.confidence === 'high' &&
+            (classification.action === 'play_candidate' || classification.action === 'search')
+          ) {
+            logger.info('ChatPanel', 'music intent classified', {
+              action: classification.action,
+              candidateCount: musicPickCandidates.length,
+            });
+            if (
+              await playResolvedMusicIntent(
+                {
+                  query: classification.query,
+                  ...(classification.exclude ? { exclude: classification.exclude } : {}),
+                },
+                `classified:play_music:${classification.action}`,
+              )
+            ) {
+              return;
+            }
+          }
         }
       }
 
