@@ -2510,6 +2510,20 @@ Music follow-up rule:
 - When recommending, include an explicit line: YouTube 검색어: \`exact query\` so play-follow-ups can open the same query.
 
 When you receive "[User performed action in ... (appName: xxx)]", the appName is already provided. Read its meta.yaml to understand available actions, then respond accordingly. For games, respond with your own move — think strategically.`;
+    } else {
+      // Nothing in the prompt mentioned app control on these turns, and the
+      // model filled the gap with the wording of the web-search block below: ask
+      // the user to confirm, the next turn will carry the tool. Applied to
+      // playback that becomes "다음 턴에 틀어줄게" -- a promise it cannot keep,
+      // because whether the next turn carries app tools is decided by what the
+      // user says, not by waiting. It then repeated the promise every turn.
+      prompt += `
+
+App control availability:
+- App control IS available to you in general. It is only absent from this particular turn's tools.
+- Do NOT say you played, opened, started, or lined anything up. Nothing was dispatched on this turn.
+- NEVER promise an action for "the next turn", and never ask the user to wait for one. You cannot schedule a turn.
+- If the user wants something played or opened, ask them to name it with the action in one message (e.g. "aespa KISS N TELL 틀어줘"), which runs immediately.`;
     }
 
     // Always: respond_to_user and generate_image are in the tools array on every

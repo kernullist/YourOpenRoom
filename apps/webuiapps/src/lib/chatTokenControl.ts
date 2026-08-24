@@ -807,6 +807,12 @@ function isShortAffirmativeFollowUp(text: string): boolean {
     /^(?:yes|yep|yeah|sure|ok|okay|sounds good)[,\s]+(?:go ahead|do it|please do|let'?s do it|make it so|apply it|use that|run it|ship it|proceed|continue)$/i,
     /^(응|어|엉|ㅇㅇ|ㅇㅋ|오케이|오키|그래|좋아|좋음|가자|해줘|해보자|진행해|진행해줘|진행하자|응 해줘|좋아 해줘|그렇게 해줘|그대로 해줘|그걸로 해줘|그걸로 가자|이걸로 해줘|이걸로 가자|바로 해줘|바로 진행해|바로 진행해줘|적용해줘|맞춰줘|한번 해봐|시작해|시작하자)[.!?\s]*$/u,
     /^(?:응|어|엉|ㅇㅇ|ㅇㅋ|오케이|오키|그래|좋아)[,\s]*(?:그렇게|그대로|그걸로|이걸로|추천한\s*대로|바로)?\s*(?:해줘|해보자|진행해|진행해줘|진행하자|적용해줘|맞춰줘|시작해|시작하자|가자)[.!?\s]*$/u,
+    // Confirming what Aoi just asked to confirm ("응 맞아", "그거 맞아", "맞지").
+    // These carry no verb at all, so none of the patterns above saw them, and the
+    // confirmation turn ran with no app tools -- leaving the model able only to
+    // promise the action for a later turn, which it then did on every turn.
+    /^(?:응|어|엉|웅|네|넵|그래|그거|바로\s*그거)?[,\s]*(?:맞아|맞아요|맞지|맞음|맞습니다|그거야)[.!?~\s]*$/u,
+    /^(?:yes|yeah|yep|yup|sure)?[,\s]*(?:that'?s\s+(?:right|it|the\s+one)|correct|exactly|confirmed)[.!?\s]*$/i,
   ].some((pattern) => pattern.test(normalized));
 }
 
@@ -910,6 +916,21 @@ export function shouldEnableAppTools(
   if (
     hasPlaybackIntent(latestUserMessage) &&
     (MUSIC_SUBJECT_PATTERN.test(latestUserMessage) || MUSIC_SUBJECT_PATTERN.test(recentContext))
+  ) {
+    return true;
+  }
+
+  // A bare confirmation of a playback offer ("응 맞아" after "그거 맞지? 확인만
+  // 해줘") names neither the action nor the music: both live in the turn above,
+  // and that turn describes playback without ever using an imperative verb, so
+  // hasDirectOperationalIntent does not see it either. That combination is why
+  // the confirmation turn ran with no app tools at all -- the model could not
+  // have played anything, so it promised playback for the next turn, and kept
+  // promising it.
+  if (
+    isShortAffirmativeFollowUp(latestUserMessage) &&
+    hasPlaybackIntent(recentContext) &&
+    MUSIC_SUBJECT_PATTERN.test(recentContext)
   ) {
     return true;
   }

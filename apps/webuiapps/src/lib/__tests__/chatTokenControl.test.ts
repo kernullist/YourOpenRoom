@@ -914,3 +914,27 @@ describe('playback turns that only point back at the previous one', () => {
     expect(shouldEnableAppTools('다시 말해줘', unrelated)).toBe(false);
   });
 });
+
+describe('bare confirmation of a playback offer', () => {
+  // Reported case: Aoi asked "그거 맞는 거지? 확인만 해줘", the user answered
+  // "응 맞아", and the turn ran with no app tools -- so the model could only
+  // promise playback for a later turn, which it then did every turn.
+  const CONFIRM_ASK = {
+    role: 'assistant' as const,
+    content:
+      '아, 그거! "KISS N TELL" 맞지? 지금 이 타이밍엔 재생 버튼이 내 손에 안 잡혀서 바로 못 틀었어. ' +
+      '다음 턴에 YouTube 검색으로 바로 열어줄게. 그거 맞는 거지? 확인만 해줘.',
+  };
+
+  it('confirm ask carries app tools onto the confirming turn', () => {
+    for (const text of ['응 맞아', '맞아', '어 맞아', "yes that's right", '맞지']) {
+      expect(shouldEnableAppTools(text, [CONFIRM_ASK]), text).toBe(true);
+      expect(shouldUseDialogModel(text, [CONFIRM_ASK]), text).toBe(false);
+    }
+  });
+
+  it('does not arm on a confirmation with no playback context', () => {
+    const unrelated = [{ role: 'assistant' as const, content: '어제 회의 정리해서 올렸어. 맞지?' }];
+    expect(shouldEnableAppTools('응 맞아', unrelated)).toBe(false);
+  });
+});

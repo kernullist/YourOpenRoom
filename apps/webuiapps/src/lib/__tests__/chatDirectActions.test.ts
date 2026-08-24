@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   isAoiMusicPlayChip,
   isDeferredMusicPlaybackIntent,
+  isMusicPickConfirmationIntent,
   isDirectPlaylistPlaybackIntent,
   isFailedAgentActionResult,
   parseDirectMusicIntent,
@@ -459,5 +460,228 @@ describe('isAoiMusicPlayChip', () => {
     for (const text of negatives) {
       expect(isAoiMusicPlayChip(text), text).toBe(false);
     }
+  });
+});
+
+// The transcript this was reported from, turn by turn. Aoi recommended aespa
+// "KISS N TELL" with its exact search query, and every follow-up went wrong in a
+// different way: the named selection searched the bare artist word and played an
+// unrelated variety-show episode, the correction that named her own pick was not
+// recognized at all, and the confirmation of her own "그거 맞지?" resolved to
+// nothing -- so that turn reached the LLM with no app tools and it promised
+// playback for the next turn, then promised it again.
+const AESPA_OFFER_QUERY = "aespa 에스파 'KISS N TELL' MV - SMTOWN and aespa";
+const AESPA_OFFER_CARD = {
+  role: 'assistant' as const,
+  content: [
+    '좋아, 그럼 내가 네 취향에 딱 맞는 거 하나 집어줄게. 에스파 "KISS N TELL" 어때?',
+    '',
+    `YouTube 검색어: \`${AESPA_OFFER_QUERY}\``,
+    '',
+    '이거 틀어줄까? 아니면 프로미스나인 쪽으로 갈까?',
+  ].join('\n'),
+};
+const AESPA_CONFIRM_ASK = {
+  role: 'assistant' as const,
+  content:
+    '아, 그거! "KISS N TELL" 맞지? 근데 지금 이 타이밍엔 재생 버튼이 내 손에 안 잡혀서 바로 못 틀었어. ' +
+    "다음 턴에 YouTube 검색으로 `aespa 에스파 'KISS N TELL' MV` 바로 열어줄게. 그거 맞는 거지? 확인만 해줘.",
+};
+
+describe('parseDirectMusicIntent offer selection', () => {
+  it('answers a named selection with the offer’s exact query', () => {
+    // "에스파로 가자" selects the offer above. Searching "에스파" alone is what
+    // played "[EP.07] 아우디즈의 찾아서 투어" instead of the MV.
+    for (const text of ['에스파로 가자', 'aespa로 가자', 'KISS N TELL 틀어줘', '에스파 들려줘']) {
+      expect(parseDirectMusicIntent(text, [AESPA_OFFER_CARD]), text).toEqual({
+        query: AESPA_OFFER_QUERY,
+      });
+    }
+  });
+
+  it('leaves a request the offer does not cover as a real search', () => {
+    // The alternative Aoi named in the same breath, a different artist, and a
+    // different song by the offered artist are all genuinely new searches. Only
+    // the recovered query is compared, so the card text mentioning 프로미스나인
+    // cannot pull it in.
+    const cases: [string, string][] = [
+      ['프로미스나인으로 가자', '프로미스나인'],
+      ['뉴진스 틀어줘', '뉴진스'],
+      ['에스파 신곡 틀어줘', '에스파 신곡'],
+    ];
+    for (const [text, query] of cases) {
+      expect(parseDirectMusicIntent(text, [AESPA_OFFER_CARD]), text).toEqual({ query });
+    }
+  });
+
+  it('never upgrades a request that rejected the offer', () => {
+    expect(parseDirectMusicIntent('에스파 말고 뉴진스로 가자', [AESPA_OFFER_CARD])).toEqual({
+      query: '뉴진스',
+      exclude: ['에스파'],
+    });
+    // A rejection with only a pronoun left must stay unresolved: recovering the
+    // pick would replay exactly what was refused.
+    expect(parseDirectMusicIntent('그거 말고 다시 틀어줘', [AESPA_OFFER_CARD])).toBeNull();
+  });
+
+  it('needs an offer to upgrade against', () => {
+    expect(parseDirectMusicIntent('에스파로 가자', [])).toEqual({ query: '에스파' });
+  });
+
+  // The query Aoi prints is the real upload title, and that title is often in a
+  // different script than the one she just spoke: the pick stored for this very
+  // case is "aespa エスパ 'KISS N TELL' MV - SMTOWN and aespa" while the card says
+  // 에스파. Comparing against the query alone left the reported bug live for
+  // every mixed-script pick -- "에스파로 가자" went back to searching "에스파".
+  const KATAKANA_OFFER_QUERY = "aespa エスパ 'KISS N TELL' MV - SMTOWN and aespa";
+  const KATAKANA_OFFER_CARD = {
+    role: 'assistant' as const,
+    content: [
+      '좋아, 네 취향에 딱 맞는 거 하나. 에스파 "KISS N TELL" 어때?',
+      `YouTube 검색어: \`${KATAKANA_OFFER_QUERY}\``,
+      '이거 틀어줄까? 아니면 프로미스나인 쪽으로 갈까?',
+    ].join('\n'),
+  };
+
+  it('resolves a selection named in a different script than the query', () => {
+    for (const text of ['에스파로 가자', 'aespa로 가자', 'KISS N TELL 틀어줘', '에스파 들려줘']) {
+      expect(parseDirectMusicIntent(text, [KATAKANA_OFFER_CARD]), text).toEqual({
+        query: KATAKANA_OFFER_QUERY,
+      });
+    }
+  });
+
+  it('still refuses the alternative named in the same card', () => {
+    // The card's prose is only trusted up to the first alternative marker, so
+    // 프로미스나인 -- which Aoi offers after "아니면" -- can never resolve to the
+    // pick the user just passed over.
+    const cases: [string, string][] = [
+      ['프로미스나인으로 가자', '프로미스나인'],
+      ['뉴진스 틀어줘', '뉴진스'],
+      ['에스파 신곡 틀어줘', '에스파 신곡'],
+    ];
+    for (const [text, query] of cases) {
+      expect(parseDirectMusicIntent(text, [KATAKANA_OFFER_CARD]), text).toEqual({ query });
+    }
+    expect(parseDirectMusicIntent('에스파 말고 뉴진스로 가자', [KATAKANA_OFFER_CARD])).toEqual({
+      query: '뉴진스',
+      exclude: ['에스파'],
+    });
+  });
+});
+
+describe('parseDirectMusicIntent pick references', () => {
+  it('resolves a reference to Aoi’s own pick that carries no playback verb', () => {
+    for (const text of [
+      '아니, 너가 추천한 에스파 노래 말야',
+      '너가 추천한 곡 말야',
+      '아니 네가 말한 그 노래 말이야',
+      'no, i meant the song you recommended',
+    ]) {
+      expect(parseDirectMusicIntent(text, [AESPA_OFFER_CARD]), text).toEqual({
+        query: AESPA_OFFER_QUERY,
+      });
+      expect(isDeferredMusicPlaybackIntent(text), text).toBe(true);
+    }
+  });
+
+  it('does not read an opinion or a question as a play request', () => {
+    for (const text of [
+      '너가 추천한 노래 별로였어',
+      '너가 추천한 노래 뭐였지?',
+      '너가 추천한 노래',
+      '아까 추천한 곡 가사 알려줘',
+    ]) {
+      expect(isDeferredMusicPlaybackIntent(text), text).toBe(false);
+    }
+  });
+});
+
+describe('isMusicPickConfirmationIntent', () => {
+  it('reads a bare yes to Aoi’s own confirm ask as consent to play', () => {
+    for (const text of ['응 맞아', '맞아', '어 그거', '응', 'yes', "yeah that's right"]) {
+      expect(isMusicPickConfirmationIntent(text, [AESPA_CONFIRM_ASK]), text).toBe(true);
+    }
+    expect(parseDirectMusicIntent('응 맞아', [AESPA_OFFER_CARD, AESPA_CONFIRM_ASK])).toEqual({
+      // The backticked query in the confirm ask is the pick, verbatim.
+      query: "aespa 에스파 'KISS N TELL' MV",
+    });
+  });
+
+  it('stays out of every other context', () => {
+    const notMusic = [{ role: 'assistant' as const, content: '커밋 3개 밀었어. 이거 맞지?' }];
+    expect(isMusicPickConfirmationIntent('응 맞아', notMusic)).toBe(false);
+
+    // Music was discussed, but nothing was asked -- consent needs a question.
+    const noAsk = [{ role: 'assistant' as const, content: '"KISS N TELL" 틀었어.' }];
+    expect(isMusicPickConfirmationIntent('응 맞아', noAsk)).toBe(false);
+
+    // Says something past "yes", so it is not a bare confirmation.
+    for (const text of ['응 근데 좀 이따가', '맞아 그런데 다른 곡으로', '아니 틀렸어']) {
+      expect(isMusicPickConfirmationIntent(text, [AESPA_CONFIRM_ASK]), text).toBe(false);
+    }
+    expect(isMusicPickConfirmationIntent('응 맞아', [])).toBe(false);
+  });
+});
+
+describe('parseDirectMusicIntent lead-in and placeholders', () => {
+  it('drops conversational lead-in instead of searching it', () => {
+    // The suffix patterns anchor on the verb at the end, so the filler in front
+    // rode along inside the query: "응 그런데 다른거로 해줘" was searched verbatim.
+    expect(parseDirectMusicIntent('응 그런데 에스파로 가자', [AESPA_OFFER_CARD])).toEqual({
+      query: AESPA_OFFER_QUERY,
+    });
+    for (const text of ['그래 틀어줘', '응 틀어줘', '응 그거 틀어줘']) {
+      expect(parseDirectMusicIntent(text, [AESPA_OFFER_CARD]), text).toEqual({
+        query: AESPA_OFFER_QUERY,
+      });
+    }
+    // Titles that merely start with the same syllables must survive whole.
+    expect(parseDirectMusicIntent('어디에도 틀어줘', [])).toEqual({ query: '어디에도' });
+    expect(parseDirectMusicIntent('네가 좋아 틀어줘', [])).toEqual({ query: '네가 좋아' });
+  });
+
+  it('asks the conversation for a new pick instead of searching a placeholder', () => {
+    // "다른거" names nothing, and recovering the last pick would replay the very
+    // thing being refused.
+    for (const text of [
+      '응 그런데 다른거로 해줘',
+      '다른거로 해줘',
+      '다른 노래 틀어줘',
+      '딴거 틀어줘',
+      '아무거나 틀어줘',
+      'play something else',
+    ]) {
+      expect(parseDirectMusicIntent(text, [AESPA_OFFER_CARD]), text).toBeNull();
+    }
+  });
+});
+
+describe('recommended-pick recovery', () => {
+  it('recovers a backticked query from a playback message', () => {
+    const backtickOnly = [
+      {
+        role: 'assistant' as const,
+        content:
+          '오케이, 그걸로 확정. 근데 지금은 바로 못 틀었어. ' +
+          '다음 턴에 `aespa 에스파 Whiplash MV` 검색으로 바로 열어줄게.',
+      },
+    ];
+    expect(parseDirectMusicIntent('다시 틀어줘', backtickOnly)).toEqual({
+      query: 'aespa 에스파 Whiplash MV',
+    });
+  });
+
+  it('never recovers backticked code as a pick', () => {
+    // Aoi backticks paths and commands constantly, and a message can mention
+    // playback in the same breath. Searching YouTube for a filename is worse
+    // than not recovering anything.
+    const codeTalk = [
+      {
+        role: 'assistant' as const,
+        content: '재생 로직은 `src/lib/playerUtils.ts` 에 있어. 고치고 `pnpm test` 돌렸어.',
+      },
+    ];
+    expect(parseDirectMusicIntent('다시 틀어줘', codeTalk)).toBeNull();
   });
 });
