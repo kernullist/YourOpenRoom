@@ -2637,19 +2637,46 @@ Length and scope:
   // skill set is trigger-matched against it. Concatenated into one string, those
   // three put per-turn bytes inside the cacheable prefix, which meant the prefix
   // differed on every turn and the prompt cache could never be read across
-  // turns. The blocks keep their order and, on the OpenAI routes, their position;
-  // chatAnthropic moves them to the tail of the conversation, where they also
-  // read as newer than the recalled history.
+  // turns. On the OpenAI routes this message keeps its position; chatAnthropic
+  // moves it to the tail of the conversation, where it also reads as newer than
+  // the recalled history.
+  //
+  // The split kept the blocks in their original order. They are grouped below
+  // instead, for the reason the split existed in the first place.
+
+  // Ordered stable-first, because the prompt cache can only read a prefix. The
+  // split above took the per-turn bytes out of the session-scoped message, but
+  // inside THIS message they were interleaved: measured on a real session, the
+  // block is 8,472 chars of which 7,834 are byte-identical between consecutive
+  // turns, yet only the first 33 were readable as a prefix -- runGoalPrompt leads
+  // with the user's message verbatim, so one interpolated line invalidated
+  // everything behind it. Cacheable prefix 55.2% of the turn, 2,561 tokens
+  // miss-priced.
+  //
+  // Moving runGoalPrompt alone recovered 156 tokens: governorPrompt sits right
+  // behind it and also changes. Grouped by how often each block actually varies
+  // instead -- 69.6% prefix, 1,734 tokens miss-priced, and 75.8% on the turns
+  // where the governor ceiling holds.
+  //
+  // Order within each group is unchanged. The volatile group stays last for a
+  // second reason: it is the turn's own subject matter -- the goal, what was
+  // recalled for it, the ceiling that applies -- and reads as the newest thing
+  // said, which is where an instruction belongs.
   const perTurn =
-    runGoalPrompt +
+    // Stable while the session is: rebuilt every send, but from state the send
+    // itself does not change.
     missionPrompt +
-    contextPrompt +
-    governorPrompt +
-    skillsPrompt +
     mcpPluginPrompt +
     capabilityPrompt +
+    aoiMusicTastePrompt +
+    // Keyed on the latest user message, so they change as the topic does.
+    contextPrompt +
+    skillsPrompt +
+    governorPrompt +
+    // Changes on every send by construction: recall is scored against this
+    // message, and the goal quotes it.
     aoiMemoryPrompt +
-    aoiMusicTastePrompt;
+    runGoalPrompt;
 
   // The legacy per-session memory block used to be appended here. It shadowed
   // the memory-v2 block with a recency-only copy of the same facts, was loaded
