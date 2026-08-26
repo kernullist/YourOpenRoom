@@ -26,6 +26,7 @@
 import type { ChatMessage, ToolDef } from './llmClient';
 import type { LLMConfig } from './llmModels';
 import { chat } from './llmClient';
+import { normalizeReasoningEffort } from './llmModels';
 import type { MusicPickCandidate } from './chatDirectActions';
 
 export type MusicIntentAction = 'play_candidate' | 'search' | 'reject_and_repick' | 'none';
@@ -53,8 +54,14 @@ const MIN_QUERY_CHARS = 2;
 // would be a summary rather than a classification. Those turns belong to the
 // normal conversation path.
 const MAX_CLASSIFIABLE_CHARS = 80;
-// Enough for the one tool call the classifier is allowed to make.
-const MAX_CLASSIFIER_OUTPUT_TOKENS = 96;
+// Enough for the one tool call PLUS the reasoning that precedes it, because
+// reasoning tokens count against this cap. Sized from measurement on
+// qwen3.7-flash: 412 output tokens mean over ten Korean cases, 1,065 on the worst.
+// At 96 the answer was cut off before the call every time -- verified against the
+// live provider, finish_reason=length and zero tool calls -- so the classifier
+// returned null on every turn and the whole path was dead on the recommended
+// model. Raising it costs nothing: it is a ceiling, not a spend.
+const MAX_CLASSIFIER_OUTPUT_TOKENS = 2048;
 
 export function getMusicIntentToolDefinition(): ToolDef {
   return {
@@ -268,6 +275,29 @@ export function parseMusicIntentToolCall(
   return null;
 }
 
+// Nonzero on purpose. Reasoning is what tells "named an alternative" apart from
+// "refused, pick again": measured on qwen3.7-flash against this exact prompt,
+// turning it off dropped accuracy from 9/10 to 6/9 and bought no speed (1,488ms
+// mean against 540ms). One tool call with a tiny schema looks like the obvious
+// place to save tokens, which is exactly why the decision is pinned here rather
+// than left to whatever the chat model happens to be set to.
+const CLASSIFIER_MIN_REASONING_EFFORT = 'medium';
+
+/**
+ * The config to classify with, never carrying a global "no reasoning" setting.
+ *
+ * Only 'none' is replaced. A lower-but-nonzero effort stays the operator's
+ * choice, and providers that ignore reasoningEffort are unaffected either way.
+ * Substituting rather than clearing keeps the field truthy, which is what the
+ * caller below keys its temperature decision on.
+ */
+function withReasoningKept(config: LLMConfig): LLMConfig {
+  if (normalizeReasoningEffort(config.reasoningEffort) !== 'none') {
+    return config;
+  }
+  return { ...config, reasoningEffort: CLASSIFIER_MIN_REASONING_EFFORT };
+}
+
 /**
  * Run the classifier for one turn. Returns null on anything unusual -- no
  * candidates, a provider error, a refused tool call, a value that failed
@@ -286,7 +316,7 @@ export async function classifyMusicIntent(
     const response = await chat(
       buildMusicIntentMessages(text, candidates),
       [getMusicIntentToolDefinition()],
-      config,
+      withReasoningKept(config),
       {
         signal: options.signal,
         // A slot that changes between identical inputs is a bug, not personality.

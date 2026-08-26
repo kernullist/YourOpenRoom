@@ -307,6 +307,40 @@ describe('classifyMusicIntent', () => {
     expect((reasoningOptions as { maxOutputTokens?: number }).maxOutputTokens).toBeGreaterThan(0);
   });
 
+  it('classifies with reasoning even when the chat model has it turned off', async () => {
+    // Measured: reasoning off costs accuracy here (9/10 -> 6/9) and buys no speed,
+    // so a global 'none' must not reach this call.
+    chatMock.mockResolvedValue(toolResponse({ action: 'none', confidence: 'high' }) as never);
+    await classifyMusicIntent('그거 부탁', CANDIDATES, {
+      ...(CONFIG as object),
+      reasoningEffort: 'none',
+    } as never);
+    const [, , usedConfig] = chatMock.mock.calls[0];
+    expect((usedConfig as { reasoningEffort?: string }).reasoningEffort).not.toBe('none');
+    // Substituted rather than cleared: the caller keys its temperature decision on
+    // this field being set.
+    expect((usedConfig as { reasoningEffort?: string }).reasoningEffort).toBeTruthy();
+  });
+
+  it('leaves any other reasoning effort as the operator set it', async () => {
+    chatMock.mockResolvedValue(toolResponse({ action: 'none', confidence: 'high' }) as never);
+    await classifyMusicIntent('그거 부탁', CANDIDATES, {
+      ...(CONFIG as object),
+      reasoningEffort: 'low',
+    } as never);
+    const [, , usedConfig] = chatMock.mock.calls[0];
+    expect((usedConfig as { reasoningEffort?: string }).reasoningEffort).toBe('low');
+  });
+
+  it('leaves room for the reasoning that precedes the tool call', async () => {
+    // At 96 the live provider cut the answer off before the call every time, so
+    // the classifier returned null on every turn.
+    chatMock.mockResolvedValue(toolResponse({ action: 'none', confidence: 'high' }) as never);
+    await classifyMusicIntent('그거 부탁', CANDIDATES, CONFIG);
+    const [, , , opts] = chatMock.mock.calls[0];
+    expect((opts as { maxOutputTokens?: number }).maxOutputTokens).toBeGreaterThan(1065);
+  });
+
   it('never calls the provider when the gate says no', async () => {
     await expect(classifyMusicIntent('그거', [], CONFIG)).resolves.toBeNull();
     expect(chatMock).not.toHaveBeenCalled();
