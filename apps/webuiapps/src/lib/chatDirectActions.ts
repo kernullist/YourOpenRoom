@@ -411,9 +411,18 @@ export function collectMusicPickCandidates(
   const candidates: MusicPickCandidate[] = [];
   const seen = new Set<string>();
   for (const content of recentAssistantMessages(history, messageLimit)) {
-    for (const query of collectMusicPicksFromMessage(content)) {
+    const picks = collectMusicPicksFromMessage(content);
+    for (const query of picks) {
       const key = query.toLowerCase();
       if (seen.has(key)) {
+        continue;
+      }
+      // One card names one pick in several shapes: the exact search query behind
+      // "YouTube 검색어:" AND the bare title quoted in the prose. Offering both let
+      // the classifier answer with the weaker one -- measured, it chose the bare
+      // title over the query that carried the artist and "MV". A shape contained
+      // in another shape from the SAME message is the same pick, said shorter.
+      if (picks.some((other) => other !== query && other.toLowerCase().includes(key))) {
         continue;
       }
       seen.add(key);

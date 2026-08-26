@@ -298,6 +298,28 @@ the same inputs, expecting null with the reason written next to them. Two e2e sp
 parser resolved this with zero model calls" to "the classifier resolved it and code dispatched its
 exact query"; what they assert about the _outcome_ is unchanged, which is the point.
 
+## 5.2 The one known regression, and a failed attempt at it
+
+Handing the phrasing space to the classifier lost the one case the repaired parser handled:
+`그래서 그대는 틀어줘`, a title that opens with a word that also works as filler, gets absorbed into
+the offer (§2.5, all three reasoning variants).
+
+**Tried and reverted:** a prompt rule telling the classifier that a title can open with filler and
+to judge by whether the subject appears in any candidate. It did not fix the target case and cost
+four that already worked — 6/11 against a 9/10 baseline, including two turns that produced no tool
+call at all. Recorded so the same edit is not attempted twice: this is not a wording problem.
+
+**Fixed instead, and it was a real defect underneath:** one card names its pick twice — the exact
+query behind `YouTube 검색어:` and the bare title quoted in the prose — and
+`collectMusicPickCandidates` offered both as separate candidates. Measured, the classifier answered
+with the weaker one (`KISS N TELL` instead of the query carrying the artist and `MV`). A shape
+contained in another shape from the same message is the same pick said shorter, so only the longest
+survives. That removed the ambiguity without touching the prompt.
+
+The filler-opening-title case remains open. It needs a candidate a user actually asks for while a
+card is on screen, and its failure mode is playing the offered pick — which the ack names, so it is
+visible and recoverable.
+
 ## 6. Open items
 
 - The classifier's `그래서 그대는` miss (§2.5) is unexplained; it may be the candidate list crowding

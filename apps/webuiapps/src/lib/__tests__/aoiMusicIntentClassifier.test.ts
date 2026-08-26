@@ -68,6 +68,27 @@ describe('collectMusicPickCandidates', () => {
     expect(collectMusicPickCandidates(repeated, { max: 1 })).toHaveLength(1);
   });
 
+  it('offers one candidate per pick, not one per shape it was written in', () => {
+    // A card names the same pick twice: the exact query behind "YouTube 검색어:"
+    // and the bare title quoted in the prose. Offering both let the classifier
+    // answer with the weaker one -- measured, it chose "KISS N TELL" over the
+    // query carrying the artist and "MV".
+    const queries = CANDIDATES.map((candidate) => candidate.query);
+    expect(queries).toEqual([OFFER_QUERY]);
+  });
+
+  it('keeps picks that are genuinely different', () => {
+    const two = collectMusicPickCandidates([
+      { role: 'assistant', content: 'YouTube 검색어: `aespa Whiplash MV`' },
+      { role: 'assistant', content: 'YouTube 검색어: `fromis_9 Vitamin ME MV`' },
+    ]);
+    // Newest first, which is the order the classifier should weigh them in.
+    expect(two.map((candidate) => candidate.query)).toEqual([
+      'fromis_9 Vitamin ME MV',
+      'aespa Whiplash MV',
+    ]);
+  });
+
   it('is empty with no assistant picks', () => {
     expect(collectMusicPickCandidates([{ role: 'user', content: '뭐 듣지' }])).toEqual([]);
     expect(collectMusicPickCandidates([])).toEqual([]);
