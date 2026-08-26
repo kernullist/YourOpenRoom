@@ -365,6 +365,13 @@ function collectMusicPicksFromMessage(content: string): string[] {
   return picks;
 }
 
+// One lookback window for every pick lookup. They were 3 and 2, which read as a
+// detail and behaved as a bug: a tapped chip recovered a pick three messages back
+// while the equivalent typed request ("다시 틀어줘") saw zero candidates, fell past
+// the classifier, and got answered with "미안, 못 찾겠어" -- about a pick the chip
+// on the same history resolves fine.
+const MUSIC_PICK_LOOKBACK_MESSAGES = 3;
+
 function recentAssistantMessages(
   history: Pick<ChatMessage, 'role' | 'content'>[],
   limit: number,
@@ -379,7 +386,7 @@ function recentAssistantMessages(
 function findRecommendedMusicPick(
   history: Pick<ChatMessage, 'role' | 'content'>[],
 ): RecommendedMusicPick | null {
-  for (const content of recentAssistantMessages(history, 3)) {
+  for (const content of recentAssistantMessages(history, MUSIC_PICK_LOOKBACK_MESSAGES)) {
     const pick = collectMusicPicksFromMessage(content)[0];
     if (pick) {
       return { query: pick, source: content };
@@ -406,7 +413,10 @@ export interface MusicPickCandidate {
 
 export function collectMusicPickCandidates(
   history: Pick<ChatMessage, 'role' | 'content'>[],
-  { messageLimit = 2, max = 4 }: { messageLimit?: number; max?: number } = {},
+  {
+    messageLimit = MUSIC_PICK_LOOKBACK_MESSAGES,
+    max = 4,
+  }: { messageLimit?: number; max?: number } = {},
 ): MusicPickCandidate[] {
   const candidates: MusicPickCandidate[] = [];
   const seen = new Set<string>();

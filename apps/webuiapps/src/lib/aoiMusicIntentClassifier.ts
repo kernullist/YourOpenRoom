@@ -312,17 +312,20 @@ export async function classifyMusicIntent(
   if (!shouldClassifyMusicIntent(text, candidates)) {
     return null;
   }
+  const classifierConfig = withReasoningKept(config);
   try {
     const response = await chat(
       buildMusicIntentMessages(text, candidates),
       [getMusicIntentToolDefinition()],
-      withReasoningKept(config),
+      classifierConfig,
       {
         signal: options.signal,
         // A slot that changes between identical inputs is a bug, not personality.
-        // Skipped for reasoning models, whose endpoints reject temperature -- a
-        // rejected request would silently cost the whole classification.
-        ...(config.reasoningEffort ? {} : { temperature: 0 }),
+        // Read off the SAME config the request is sent with -- reading the caller's
+        // instead meant these two could disagree about whether reasoning is on.
+        // (Measured: qwen through OpenRouter accepts temperature either way, so
+        // this is about the two lines agreeing, not about a rejection.)
+        ...(classifierConfig.reasoningEffort ? {} : { temperature: 0 }),
         // One tool call and nothing else. The prose is never shown to anyone, so
         // paying for room to write it is waste.
         maxOutputTokens: MAX_CLASSIFIER_OUTPUT_TOKENS,

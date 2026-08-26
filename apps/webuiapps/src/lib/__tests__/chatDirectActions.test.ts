@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  collectMusicPickCandidates,
   isAoiMusicPlayChip,
   isDeferredMusicPlaybackIntent,
   isDirectPlaylistPlaybackIntent,
@@ -550,6 +551,25 @@ describe('parseDirectMusicIntent: the three branches', () => {
     for (const text of ['다른거로 해줘', '아무거나 틀어줘', '다시 틀어줘', '노래 틀어줘']) {
       expect(parseDirectMusicIntent(text, []), text).toBeNull();
     }
+  });
+
+  it('looks back the same number of messages however the pick is asked for', () => {
+    // These used to disagree -- 3 messages for the chip, 2 for the candidate list.
+    // A pick three back meant a tapped chip resolved it while the equivalent typed
+    // request saw no candidate, fell past the classifier, and was answered with
+    // "미안, 못 찾겠어" about a pick the chip on the same history finds.
+    const threeBack = [
+      { role: 'assistant' as const, content: 'YouTube 검색어: `aespa Whiplash MV`' },
+      { role: 'user' as const, content: '고마워' },
+      { role: 'assistant' as const, content: '응 뭐 필요하면 말해.' },
+      { role: 'user' as const, content: '커널 얘기 좀' },
+      { role: 'assistant' as const, content: '커널은 말이지...' },
+    ];
+    expect(parseDirectMusicIntent('▶ 재생', threeBack)).toEqual({ query: 'aespa Whiplash MV' });
+    // Same history, typed instead of tapped: deferred to the classifier, which is
+    // what the honest "cannot find it" ack keys off NOT happening.
+    expect(parseDirectMusicIntent('다시 틀어줘', threeBack)).toBeNull();
+    expect(collectMusicPickCandidates(threeBack)).toHaveLength(1);
   });
 
   it('3. still splits an explicit "A 말고 B"', () => {
