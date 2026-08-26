@@ -120,4 +120,5 @@ docs/*
 !docs/aoi-host-access-design.md
 !docs/kira-codex-grade-worker-reviewer-plan.md
 !docs/kira-remaining-work-items.md
+!docs/aoi-music-intent-design.md
 .worktrees/
