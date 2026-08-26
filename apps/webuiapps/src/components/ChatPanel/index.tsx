@@ -7278,9 +7278,15 @@ const ChatPanel: React.FC<{
       // transcript. Answer here rather than letting the LLM improvise: it has
       // repeatedly reported "I lined it up in YouTube" for a search that never
       // ran.
+      //
+      // Gated on there being no candidate at all. The parser no longer resolves
+      // these itself -- when a pick IS on the table it defers to the classifier
+      // below -- so without this gate every "그거 틀어줘" would be answered with
+      // "I cannot find it" while the pick sat right there in the transcript.
       if (
         !hasImageAttachments &&
-        (isAoiMusicPlayChip(text) || isDeferredMusicPlaybackIntent(text))
+        (isAoiMusicPlayChip(text) || isDeferredMusicPlaybackIntent(text)) &&
+        collectMusicPickCandidates(chatHistory).length === 0
       ) {
         const ack = buildIdleMusicUnresolvedAck(resolveNudgeLang());
         emitAssistantMessage({

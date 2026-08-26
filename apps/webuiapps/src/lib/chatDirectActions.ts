@@ -275,43 +275,19 @@ function extractExclusionTerms(rejected: string): string[] {
  * NOT pass through here -- a real title can contain " 말고 " ("너 말고 니 언니")
  * or end in 을/를, and stripping those would corrupt it.
  */
-function cleanRequestedMusicQuery(value: string): {
-  query: string;
-  exclude: string[];
-  // True when the message refused a pick, whether or not the refused terms
-  // survived cleaning. exclude.length alone cannot say that -- extractExclusion
-  // Terms drops needles too short or too deictic to filter by -- and the callers
-  // must not resolve a refusal against the very pick that was refused.
-  rejected: boolean;
-} {
+function cleanRequestedMusicQuery(value: string): { query: string; exclude: string[] } {
   const exclusionMatch = value.match(MUSIC_EXCLUSION_PREFIX_PATTERN);
   const request = exclusionMatch ? value.slice(exclusionMatch[0].length).trim() : value.trim();
   if (!request || MUSIC_DANGLING_EXCLUSION_PATTERN.test(request)) {
     // A rejection with no replacement named. An empty query drops the direct
     // path entirely so the conversation resolves it, instead of literally
     // searching YouTube for the rejection words.
-    return { query: '', exclude: [], rejected: true };
+    return { query: '', exclude: [] };
   }
   return {
     query: cleanMusicQuery(request.replace(MUSIC_TRAILING_OBJECT_PARTICLE_PATTERN, '')),
     exclude: exclusionMatch ? extractExclusionTerms(exclusionMatch.groups?.rejected ?? '') : [],
-    rejected: Boolean(exclusionMatch),
   };
-}
-
-function enrichMusicQueryFromHistory(
-  query: string,
-  history: Pick<ChatMessage, 'role' | 'content'>[],
-): string {
-  const normalized = query.trim();
-  if (!/^(?:걸그룹|girl\s*group)$/i.test(normalized)) {
-    return normalized;
-  }
-
-  const recentAssistant = [...history].reverse().find((message) => message.role === 'assistant');
-  const content = recentAssistant?.content ?? '';
-  const datedGirlGroup = content.match(/([0-9]{1,2}월\s*걸그룹|june\s+girl\s*group)/i)?.[1];
-  return datedGirlGroup?.trim() || normalized;
 }
 
 interface RecommendedMusicPick {
@@ -456,249 +432,6 @@ function extractRecommendedMusicQuery(
   return findRecommendedMusicPick(history)?.query ?? null;
 }
 
-// Words that are nothing but "yes". They rank as consent ONLY on a turn that
-// answers Aoi asking to confirm a pick (see isMusicPickConfirmationIntent) --
-// on their own they name no music at all.
-const MUSIC_CONFIRMATION_WORDS = new Set([
-  '응',
-  '어',
-  '엉',
-  '웅',
-  'ㅇㅇ',
-  'ㅇㅋ',
-  '넵',
-  '넹',
-  '네',
-  '예',
-  '맞아',
-  '맞아요',
-  '맞지',
-  '맞음',
-  '그래',
-  '그럼',
-  '그렇지',
-  '좋아',
-  '좋지',
-  '오케이',
-  '오키',
-  '콜',
-  '굿',
-  '그거',
-  '그거야',
-  '그걸로',
-  'ok',
-  'okay',
-  'yes',
-  'yeah',
-  'yep',
-  'yup',
-  'sure',
-  'right',
-  'correct',
-  'exactly',
-  'it',
-  'that',
-]);
-
-// At most two of those words. A third word means the message says something
-// past "yes", and consent must not be read out of a sentence we did not parse.
-const MAX_CONFIRMATION_WORDS = 2;
-
-// English says yes in several words at once. Collapsed to one before the count
-// above, so "yeah that's right" is still a bare confirmation while "yeah but
-// later" is not.
-const CONFIRMATION_PHRASE_PATTERN = /\bthat(?:'?s|\s+is)\s+(?:right|it|correct|the\s+one)\b/i;
-
-function isBareConfirmation(text: string): boolean {
-  const normalized = text
-    .trim()
-    .replace(/[.!?~ㅋㅎ]+$/u, '')
-    .replace(CONFIRMATION_PHRASE_PATTERN, 'right')
-    .trim();
-  if (!normalized || normalized.length > 24) {
-    return false;
-  }
-  const words = normalized.split(/[\s,]+/u).filter(Boolean);
-  if (words.length === 0 || words.length > MAX_CONFIRMATION_WORDS) {
-    return false;
-  }
-  return words.every((word) => MUSIC_CONFIRMATION_WORDS.has(word.toLowerCase()));
-}
-
-// Aoi asking the user to confirm before playing: "이거 틀어줄까?", "그거 맞는
-// 거지? 확인만 해줘", and the deferral wording this was reported for ("다음 턴에
-// ... 열어줄게"). A bare "응" means play only when it answers one of these.
-const MUSIC_CONFIRM_ASK_PATTERNS: readonly RegExp[] = [
-  /(?:틀어줄까|틀까|틀어도\s*될까|틀어도\s*돼|재생할까|재생해줄까|열어줄까|들려줄까|플레이할까|이걸로\s*갈까|그걸로\s*갈까)/u,
-  /(?:맞지|맞는\s*거\s*지|맞나|맞아\?|맞는지|확인만|확인해\s*줘)/u,
-  /다음\s*턴/u,
-  /\b(?:want\s+me\s+to\s+play|should\s+i\s+play|shall\s+i\s+play|is\s+that\s+(?:right|the\s+one)|confirm)\b/i,
-];
-
-// The ask has to be about music. A confirm question about anything else must
-// never be answered by starting playback.
-const MUSIC_CONFIRM_TOPIC_PATTERN =
-  /(?:유튜브|youtube|노래|음악|곡|플레이리스트|틀어|틀었|재생|플레이|\btrack\b|\bsong\b|\bmusic\b|\bplay(?:ing|ed|s)?\b)/i;
-
-/**
- * True when the user is confirming the pick Aoi asked them to confirm.
- *
- * This is the turn the reported loop died on: Aoi asked "그거 맞는 거지? 확인만
- * 해줘", the user answered "응 맞아", nothing matched, and the turn reached the
- * LLM with no app tools -- which promised playback for the next turn again, and
- * again. Consent is only read when the PREVIOUS assistant turn both asked for it
- * and carries a pick that resolves, so a bare "응" anywhere else is still left to
- * the conversation.
- */
-export function isMusicPickConfirmationIntent(
-  text: string,
-  history: Pick<ChatMessage, 'role' | 'content'>[] = [],
-): boolean {
-  if (!isBareConfirmation(text)) {
-    return false;
-  }
-  const content = [...history].reverse().find((message) => message.role === 'assistant')?.content;
-  if (!content || !MUSIC_CONFIRM_TOPIC_PATTERN.test(content)) {
-    return false;
-  }
-  if (!MUSIC_CONFIRM_ASK_PATTERNS.some((pattern) => pattern.test(content))) {
-    return false;
-  }
-  // Only the immediately preceding turn counts: a confirmation answers the
-  // question that was just asked, not a pick from three turns back.
-  return extractRecommendedMusicQuery([{ role: 'assistant', content }]) !== null;
-}
-
-// Words of a query, for the offer-selection check below. Quotes, brackets and
-// punctuation are dropped so a typed "KISS N TELL" and the offer's
-// "aespa 'KISS N TELL' MV" compare on words alone.
-function musicQueryWords(value: string): string[] {
-  return value
-    .toLowerCase()
-    .replace(/[`'"“”‘’()[\]{}<>|.,!?~\-–—:;/]+/gu, ' ')
-    .split(/\s+/u)
-    .filter(Boolean);
-}
-
-// Below this, a typed fragment is too weak to prove it selects the offer.
-const MIN_OFFER_SELECTION_CHARS = 3;
-
-// How many words before the quoted title count as naming it. The card writes the
-// artist directly in front of the title it quotes ("에스파 \"KISS N TELL\""), so a
-// short window is enough to alias across scripts.
-//
-// It has to be short. Taking the whole message up to the first alternative marker
-// let a card that mentions another artist in passing -- "뉴진스도 좋지만 오늘은
-// 에스파 \"KISS N TELL\" 어때?" -- resolve "뉴진스로 가자" to the aespa query,
-// which is the exact substitution this function exists to prevent. Sentence
-// splitting does not help either: both artists are in the same sentence there.
-// Two, not more: the card writes the artist immediately in front of the title, and
-// every extra word widens the window back into preamble that can name someone
-// else. Two still covers the "에스파의 신곡 \"...\"" shape. Anything inside the
-// window CAN resolve -- that is the design, not a defect -- so the window is kept
-// as small as the phrasings allow.
-const MUSIC_ALIAS_WORDS_BEFORE_TITLE = 2;
-
-/**
- * Resolve a typed fragment that NAMES part of the pick Aoi just offered back to
- * that offer's exact query.
- *
- * "에스파로 가자", right after Aoi offered 에스파 "KISS N TELL" together with its
- * search query, selects that offer -- it is not a new search. Searching the
- * fragment alone is what played an unrelated variety-show episode: a bare artist
- * name ranks whatever YouTube favors that day, while the offer already carried
- * "aespa 에스파 'KISS N TELL' MV".
- *
- * Only the recovered query is compared, never the whole card, so the alternative
- * Aoi names in the same breath ("아니면 프로미스나인 쪽으로 갈까?") cannot be
- * upgraded into the pick the user just passed over.
- */
-function resolveOfferSelectionQuery(
-  query: string,
-  history: Pick<ChatMessage, 'role' | 'content'>[],
-): string {
-  const typed = musicQueryWords(query);
-  if (typed.length === 0 || typed.join('').length < MIN_OFFER_SELECTION_CHARS) {
-    return query;
-  }
-
-  const pick = findRecommendedMusicPick(history);
-  const offerWords = pick ? musicQueryWords(pick.query) : [];
-  if (!pick || offerWords.length <= typed.length) {
-    // Nothing to gain when there is no offer, or the user already typed as much
-    // as it holds.
-    return query;
-  }
-
-  // EVERY typed word has to appear in the offer. "에스파 신곡" asks for something
-  // other than the offered "KISS N TELL", so it stays a real search; "에스파"
-  // alone is that offer, narrowed.
-  if (matchesEveryWord(typed, offerWords.join(' '))) {
-    return pick.query;
-  }
-
-  // The query Aoi prints is the real upload title, which is often in a different
-  // script than the one she just spoke: the stored pick for this very case is
-  // "aespa エスパ 'KISS N TELL' MV" while the card says 에스파. Typing 에스파 then
-  // matches nothing above, which is the reported bug still live for every
-  // mixed-script pick.
-  //
-  // The card's own prose is the alias table -- it names the pick in the script the
-  // user is reading, immediately before the title it quotes -- so only those few
-  // words are consulted.
-  const alias = offerAliasWords(pick.source);
-  return alias.length > 0 && matchesEveryWord(typed, alias.join(' ')) ? pick.query : query;
-}
-
-/**
- * The words Aoi used directly in front of the title she quoted.
- *
- * This is where the card names the pick in the reader's own script, which is what
- * makes a cross-script selection resolvable. Everything earlier in the message is
- * preamble and may name a different artist entirely, so it is left out.
- */
-function offerAliasWords(source: string): string[] {
-  const quoted = source.search(/["“`]/u);
-  if (quoted <= 0) {
-    return [];
-  }
-  return musicQueryWords(source.slice(0, quoted)).slice(-MUSIC_ALIAS_WORDS_BEFORE_TITLE);
-}
-
-function matchesEveryWord(typed: readonly string[], haystack: string): boolean {
-  return typed.every((word) => haystack.includes(word));
-}
-
-// Conversational lead-in the extraction patterns hand over INSIDE the query,
-// because the pattern only anchors on the playback verb at the end: "응 그런데
-// 다른거로 해줘" yields "응 그런데 다른거", which was searched on YouTube verbatim.
-//
-// Split into two classes, because dropping them all unconditionally cut the first
-// word off real titles -- "그래서 그대는" became "그대는", "네 생각" became "생각".
-// Pure interjections never open a title and always go. The rest can, so they are
-// only dropped when they follow an interjection ("응 그런데 에스파로 가자") or when
-// nothing searchable is left behind them ("그래 틀어줘", "근데 다른거로 해줘").
-const MUSIC_INTERJECTION_LEAD_INS = new Set([
-  '응',
-  '어',
-  '엉',
-  '웅',
-  'ㅇㅇ',
-  'ㅇㅋ',
-  '넵',
-  '오케이',
-  '오키',
-  // "아니" opens a refusal, not a title. Leaving it ambiguous meant "아니 아니
-  // 틀어줘" kept both words and searched for them.
-  '아니',
-  '아니야',
-]);
-const MUSIC_AMBIGUOUS_LEAD_INS = new Set(['네', '그래', '그럼', '그래서', '근데', '그런데']);
-// Each has to be followed by a separator or end the fragment, so a title that
-// merely starts with the same syllables ("어디에도", "네가 좋아") is left alone.
-const MUSIC_LEAD_IN_WORD_PATTERN = /^(\S+?)(?:[\s,]+|$)/u;
-const MAX_LEAD_IN_WORDS = 3;
-
 // Asks for SOMETHING ELSE instead of naming it. Searching these literally is how
 // "다른거로 해줘" became a YouTube search for "다른거"; recovering the last pick
 // instead would replay the very thing being refused, so both are wrong and the
@@ -707,91 +440,26 @@ const MUSIC_PLACEHOLDER_REQUEST_PATTERN =
   /^(?:다른\s*(?:거|것|걸|곡|노래|음악)?|딴\s*(?:거|것|걸|곡|노래)?|아무\s*(?:거나|것|노래|곡)?|뭐(?:든|든지)?|알아서|추천(?:해줘|해)?|something\s+else|another\s+(?:one|song|track)|anything)$/u;
 
 // Nothing a search can be run against: a pronoun pointing back at something
-// already said, or a request for "something else" that names nothing.
+// already said, or a request for "something else" that names nothing. Refusing is
+// safe -- the conversation picks it up -- while searching the word is not.
 function isUnsearchableRequest(value: string): boolean {
   return (
     MUSIC_DEFERRAL_PRONOUN_PATTERN.test(value) || MUSIC_PLACEHOLDER_REQUEST_PATTERN.test(value)
   );
 }
 
-function stripMusicQueryLeadIn(value: string, { force = false } = {}): string {
-  let rest = value.trim();
-  let afterInterjection = false;
-  for (let dropped = 0; dropped < MAX_LEAD_IN_WORDS && rest; dropped += 1) {
-    const match = rest.match(MUSIC_LEAD_IN_WORD_PATTERN);
-    const word = match?.[1];
-    if (!match || !word) {
-      break;
-    }
-    const isInterjection = MUSIC_INTERJECTION_LEAD_INS.has(word);
-    if (!isInterjection && !MUSIC_AMBIGUOUS_LEAD_INS.has(word)) {
-      break;
-    }
-    const remainder = rest.slice(match[0].length).trim();
-    // An ambiguous word standing at the front of something searchable IS the
-    // title's first word, not filler -- unless the caller is retrying on the
-    // assumption that it was filler after all (see buildDirectMusicIntent).
-    if (
-      !force &&
-      !isInterjection &&
-      !afterInterjection &&
-      remainder &&
-      !isUnsearchableRequest(remainder)
-    ) {
-      break;
-    }
-    afterInterjection = afterInterjection || isInterjection;
-    rest = remainder;
-  }
-  return rest;
-}
-
-function buildDirectMusicIntent(
-  rawQuery: string,
-  exclude: string[],
-  rejected: boolean,
-  history: Pick<ChatMessage, 'role' | 'content'>[],
-): DirectMusicIntent | null {
-  const named = stripMusicQueryLeadIn(rawQuery);
-  if (!named || MUSIC_DEFERRAL_PRONOUN_PATTERN.test(named)) {
-    // Playback was asked for, but nothing was named ("그래 틀어줘", "그거 틀어
-    // 줘"). Resolve against the pick Aoi already named -- except after a
-    // rejection ("그거 말고 다시 틀어줘"), where recovering that pick would replay
-    // exactly what was refused.
-    if (rejected) {
-      return null;
-    }
-    const recovered = extractRecommendedMusicQuery(history);
-    return recovered ? { query: recovered } : null;
-  }
-  if (MUSIC_PLACEHOLDER_REQUEST_PATTERN.test(named)) {
+// The verbatim path. Whatever the pattern captured is the query, minus the
+// explicit "A 말고 B" split and a dangling object particle. No inference is left
+// here on purpose: every guess this function used to make -- stripping
+// conversational lead-in, upgrading a fragment to an offer, aliasing across
+// scripts -- is the classifier's now, and all seven defects found reviewing this
+// file lived in those guesses.
+function buildDirectMusicIntent(rawQuery: string, exclude: string[]): DirectMusicIntent | null {
+  const named = rawQuery.trim();
+  if (!named || isUnsearchableRequest(named)) {
     return null;
   }
-  const enriched = enrichMusicQueryFromHistory(named, history);
-  // A rejection steers AWAY from the last card, so that card's query must not be
-  // pulled back in as the "selection".
-  if (rejected) {
-    return { query: enriched, ...(exclude.length > 0 ? { exclude } : {}) };
-  }
-  const resolved = resolveOfferSelectionQuery(enriched, history);
-  if (resolved !== enriched) {
-    return { query: resolved, ...(exclude.length > 0 ? { exclude } : {}) };
-  }
-
-  // The conservative strip above keeps an ambiguous lead-in whenever something
-  // searchable follows it, which is right for "그래서 그대는" and wrong for
-  // "그래 에스파" -- there the kept word is what stopped the offer from resolving.
-  // Retry once with it dropped, and prefer that ONLY if it resolves to a pick. A
-  // miss changes nothing, so a real title never loses its first word.
-  const forced = stripMusicQueryLeadIn(rawQuery, { force: true });
-  if (forced && forced !== named && !isUnsearchableRequest(forced)) {
-    const forcedEnriched = enrichMusicQueryFromHistory(forced, history);
-    const forcedResolved = resolveOfferSelectionQuery(forcedEnriched, history);
-    if (forcedResolved !== forcedEnriched) {
-      return { query: forcedResolved, ...(exclude.length > 0 ? { exclude } : {}) };
-    }
-  }
-  return { query: enriched, ...(exclude.length > 0 ? { exclude } : {}) };
+  return { query: named, ...(exclude.length > 0 ? { exclude } : {}) };
 }
 
 export function parseDirectMusicIntent(
@@ -801,39 +469,35 @@ export function parseDirectMusicIntent(
   const trimmed = text.trim();
   if (!trimmed) return null;
 
-  // Saved in-app playlist playback is handled by PLAY_LAST_PLAYLIST. Never
-  // collapse those phrases into a YouTube search for "내 플레이 리스트".
+  // Saved in-app playlist playback is a different action (PLAY_LAST_PLAYLIST), so
+  // never collapse those phrases into a YouTube search for "내 플레이 리스트".
   if (isDirectPlaylistPlaybackIntent(trimmed)) {
     return null;
   }
 
-  // A tapped play chip resolves against the recommendation still visible in the
-  // transcript. Without this the symbol-only chip is rejected by cleanMusicQuery
-  // below and falls through to the LLM, which answers "I lined it up in YouTube"
-  // without any search ever running.
+  // A tapped chip is not language. It means "the pick in the card above", and the
+  // card printed that pick verbatim, so this resolves with no model call at all.
   if (isAoiMusicPlayChip(trimmed)) {
     const chipQuery = extractRecommendedMusicQuery(history);
     return chipQuery ? { query: chipQuery } : null;
   }
 
-  // Deferral phrases ("play that one / you pick") must resolve against the
-  // recommendation in recent context BEFORE the generic suffix patterns run:
-  // "그걸로 가자" otherwise matches the `...로 가자` pattern and literally
-  // searches YouTube for "그걸". With no recommendation to resolve, return null
-  // so the conversation handles it instead of searching the pronoun.
-  // A bare "응 / 맞아" answering Aoi's own "그거 맞지?" resolves the same way: it
-  // consents to a pick already named in the turn above, so the query comes from
-  // there, not from the word "응".
-  if (
-    /^(?:네가|니가|너가)\s*골라[줘]?$/u.test(trimmed) ||
-    /^(?:그걸로|이걸로|추천대로)\s*(?:가자|해줘|하자)?$/u.test(trimmed) ||
-    isDeferredMusicPlaybackIntent(trimmed) ||
-    isMusicPickConfirmationIntent(trimmed, history)
-  ) {
-    const query = extractRecommendedMusicQuery(history);
-    return query ? { query } : null;
+  // A pick is already on the table, so WHICH pick the user means is a question
+  // about language -- and that belongs to the classifier, which answers with a
+  // candidate id rather than a string it composed. Everything this function used
+  // to infer at this point (selecting an offer by name, confirming one, referring
+  // to one, filler in front of a request) is where all seven defects found
+  // reviewing this file lived.
+  //
+  // Measured tradeoff: one classifier call, ~540ms. The parser answered instantly
+  // and answered wrongly often enough to reintroduce the bug it was written for.
+  if (collectMusicPickCandidates(history).length > 0) {
+    return null;
   }
 
+  // Nothing on the table. An explicit playback verb with a subject is taken
+  // verbatim -- there is no history to misread, so nothing here can substitute one
+  // pick for another.
   const suffixPatterns = [
     /^(?<query>.+?)\s*(?:듣자|들어보자|틀어줘|재생해줘|재생해|들려줘|틀어|재생하자|재생)$/,
     /^(?<query>.+?)\s*(?:듣고 싶어|듣고싶어|듣고싶다|듣고 싶다)$/,
@@ -845,9 +509,9 @@ export function parseDirectMusicIntent(
 
   for (const pattern of suffixPatterns) {
     const match = trimmed.match(pattern);
-    const { query, exclude, rejected } = cleanRequestedMusicQuery(match?.groups?.query ?? '');
+    const { query, exclude } = cleanRequestedMusicQuery(match?.groups?.query ?? '');
     if (query) {
-      return buildDirectMusicIntent(query, exclude, rejected, history);
+      return buildDirectMusicIntent(query, exclude);
     }
   }
 
@@ -860,9 +524,9 @@ export function parseDirectMusicIntent(
 
   for (const pattern of prefixPatterns) {
     const match = trimmed.match(pattern);
-    const { query, exclude, rejected } = cleanRequestedMusicQuery(match?.groups?.query ?? '');
+    const { query, exclude } = cleanRequestedMusicQuery(match?.groups?.query ?? '');
     if (query) {
-      return buildDirectMusicIntent(query, exclude, rejected, history);
+      return buildDirectMusicIntent(query, exclude);
     }
   }
 

@@ -13,6 +13,12 @@ import { test, expect, type Page } from '@playwright/test';
 // The search backend is stubbed PER QUERY: only a query naming the offered song
 // returns the MV, every other query returns the decoy alone. A passing test
 // therefore proves the dispatched query was the offer's, not the typed fragment.
+//
+// The parser no longer resolves these itself. With a pick on the table, which pick
+// the user means is a question about language, so the turn goes to the intent
+// classifier -- which answers with a candidate id, and code dispatches its exact
+// query. What is asserted is unchanged: the offered query runs, and no
+// conversation turn is needed to make that happen.
 
 const YOUTUBE_APP_ID = 3;
 const CONFIG_KEY = 'webuiapps-llm-config';
@@ -88,11 +94,21 @@ async function stubTranscript(page: Page, ...assistantMessages: string[]): Promi
 }
 
 test.describe('answering Aoi’s own music recommendation', () => {
-  let llmCallCount = 0;
+  let conversationCalls = 0;
+  let classifierCalls = 0;
+  // What the stubbed classifier answers. Set per test, because these turns differ
+  // only in what the classifier concludes.
+  let classifierAnswer: Record<string, unknown> = {
+    action: 'play_candidate',
+    candidate_id: 1,
+    confidence: 'high',
+  };
   let searchQueries: string[] = [];
 
   test.beforeEach(async ({ page }) => {
-    llmCallCount = 0;
+    conversationCalls = 0;
+    classifierCalls = 0;
+    classifierAnswer = { action: 'play_candidate', candidate_id: 1, confidence: 'high' };
     searchQueries = [];
     // A usable model config is required to reach the direct-action paths, but no
     // request may actually be made -- every call is counted and asserted zero.
@@ -109,9 +125,38 @@ test.describe('answering Aoi’s own music recommendation', () => {
       );
     }, CONFIG_KEY);
     await page.route('**/api/llm-proxy', async (route) => {
-      llmCallCount += 1;
+      const body = route.request().postDataJSON() as {
+        tools?: Array<{ function: { name: string } }>;
+      };
+      const toolNames = (body?.tools ?? []).map((tool) => tool.function.name);
+      if (toolNames.includes('resolve_music_intent')) {
+        classifierCalls += 1;
+        await route.fulfill({
+          json: {
+            choices: [
+              {
+                message: {
+                  content: null,
+                  tool_calls: [
+                    {
+                      id: 'call_intent',
+                      type: 'function',
+                      function: {
+                        name: 'resolve_music_intent',
+                        arguments: JSON.stringify(classifierAnswer),
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        });
+        return;
+      }
+      conversationCalls += 1;
       await route.fulfill({
-        json: { choices: [{ message: { content: 'LLM MUST NOT BE CALLED' } }] },
+        json: { choices: [{ message: { content: 'CONVERSATION PATH RAN' } }] },
       });
     });
     await page.route('**/api/youtube-search**', async (route) => {
@@ -140,9 +185,11 @@ test.describe('answering Aoi’s own music recommendation', () => {
     await expect(page.getByTestId(`app-window-${YOUTUBE_APP_ID}`)).toBeVisible({ timeout: 30_000 });
     await expect(page.getByTestId('yt-player-title')).toHaveText(OFFER_TITLE, { timeout: 30_000 });
     await expect(page.getByTestId('yt-search-input')).toHaveValue(OFFER_QUERY);
-    // The whole flow has to be deterministic: a model turn here is the
-    // "다음 턴에 틀어줄게" regression coming back.
-    expect(llmCallCount).toBe(0);
+    // One classifier call resolved it, and the dispatch plus the ack came from
+    // code. A conversation turn here is the "다음 턴에 틀어줄게" regression coming
+    // back.
+    expect(classifierCalls).toBe(1);
+    expect(conversationCalls).toBe(0);
   }
 
   test('a named selection opens the offer, not the artist word', async ({ page }) => {
@@ -176,6 +223,8 @@ test.describe('answering Aoi’s own music recommendation', () => {
 
   test('asking for a different pick never replays the one being refused', async ({ page }) => {
     await stubTranscript(page, OFFER_CARD);
+    // The classifier reads this as a refusal, which dispatches nothing.
+    classifierAnswer = { action: 'reject_and_repick', confidence: 'high' };
     await page.goto('/');
     await send(page, '응 그런데 다른거로 해줘');
 

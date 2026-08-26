@@ -186,6 +186,40 @@ test.describe('Aoi nudge chips after the pending offer is lost', () => {
       );
     }, CONFIG_KEY);
     await page.route('**/api/llm-proxy', async (route) => {
+      const body = route.request().postDataJSON() as {
+        tools?: Array<{ function: { name: string } }>;
+      };
+      // The intent classifier is a separate, tiny call and is NOT what these
+      // tests forbid. What they forbid is a conversation turn inventing an
+      // answer, so only those are counted.
+      if ((body?.tools ?? []).some((tool) => tool.function.name === 'resolve_music_intent')) {
+        await route.fulfill({
+          json: {
+            choices: [
+              {
+                message: {
+                  content: null,
+                  tool_calls: [
+                    {
+                      id: 'call_intent',
+                      type: 'function',
+                      function: {
+                        name: 'resolve_music_intent',
+                        arguments: JSON.stringify({
+                          action: 'play_candidate',
+                          candidate_id: 1,
+                          confidence: 'high',
+                        }),
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        });
+        return;
+      }
       llmCallCount += 1;
       await route.fulfill({
         json: { choices: [{ message: { content: 'LLM MUST NOT BE CALLED' } }] },

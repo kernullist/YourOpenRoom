@@ -275,6 +275,29 @@ space and returns a candidate id rather than a string it composed:
 
 ---
 
+## 5.1 What shipped
+
+The parser went from 770 lines to 534. `parseDirectMusicIntent` is three branches:
+
+1. `isDirectPlaylistPlaybackIntent` → null, because saved-playlist playback is a different action.
+2. A tapped chip → the card's own printed pick, zero model calls.
+3. **A pick on the table → null.** The classifier owns it.
+4. Nothing on the table → an explicit playback verb with a subject, taken verbatim, with the
+   `A 말고 B` split and the unsearchable-word guard kept.
+
+Deleted: the offer-selection upgrade and its alias window, lead-in stripping and its two word
+classes, the bare-confirmation path, pick-reference-to-query resolution, and history enrichment.
+Those were the six mechanisms behind the seven review defects.
+
+Kept and re-gated: the honest "I cannot find it" ack now requires there to be **no candidate at
+all**. Without that gate the parser's new deference would have turned every "그거 틀어줘" into
+"미안, 못 찾겠어" while the pick sat in the transcript.
+
+Test contract moved with it. 25 unit tests asserted the old behaviour and now assert the new one —
+the same inputs, expecting null with the reason written next to them. Two e2e specs moved from "the
+parser resolved this with zero model calls" to "the classifier resolved it and code dispatched its
+exact query"; what they assert about the _outcome_ is unchanged, which is the point.
+
 ## 6. Open items
 
 - The classifier's `그래서 그대는` miss (§2.5) is unexplained; it may be the candidate list crowding
