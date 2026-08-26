@@ -298,6 +298,41 @@ the same inputs, expecting null with the reason written next to them. Two e2e sp
 parser resolved this with zero model calls" to "the classifier resolved it and code dispatched its
 exact query"; what they assert about the _outcome_ is unchanged, which is the point.
 
+## 4.2 z-ai/glm-5.3-flash, measured 2026-08-27 and not adopted
+
+Released the same day and reported by the operator as noticeably better to talk to. Measured on both
+suites, and the two disagree, so it is recorded rather than adopted.
+
+|                     | qwen3.7-flash (shipped) | glm-5.3-flash |
+| ------------------- | ----------------------- | ------------- |
+| respond_to_user     | 9/12 (75%)              | 7/10 (70%)    |
+| chips / emotion     | 75% / 67%               | 60% / 70%     |
+| classifier accuracy | **9/10**                | 8/10          |
+| classifier latency  | **434-540 ms**          | **5,572 ms**  |
+| cache observed      | 0%                      | **64-92%**    |
+| $/turn (chat)       | $0.00048                | **$0.000436** |
+| 429s during probing | 4 of 7 in a burst       | none          |
+
+glm wins on cost, on cache — it actually caches, where qwen reported 0% — and on rate-limit
+resilience. It loses on one axis that outweighs those here: the classifier sits in the user's wait
+path, and 5.5 s against 0.5 s is the same objection that rejected removing the parser entirely
+(§2.4).
+
+The latency is not a network artifact. Back to back, same moment, same prompt and tools: glm 5,549 /
+5,731 / 5,436 ms against qwen 382 / 507 / 412 ms. Output was 100-600 tokens, so it is not compute,
+and the spread is under +-150 ms. A model released hours earlier may simply be under-provisioned,
+which is a reason to re-measure rather than to conclude.
+
+Its compliance misses were all `list_apps` first, including on "오늘 좀 피곤하다" — harmless but a
+wasted round trip.
+
+What the probes do not measure: conversation quality, which is the axis the operator judged it on
+and the one they are better placed to judge. If the latency improves, the split worth building is
+glm for the conversation and qwen for the classifier, which needs a classifier-model override the
+code does not have yet (the classifier inherits the chat config today).
+
+**Decision: no change. Re-measure the classifier latency in a few days.**
+
 ## 5.2 The one known regression, and a failed attempt at it
 
 Handing the phrasing space to the classifier lost the one case the repaired parser handled:
