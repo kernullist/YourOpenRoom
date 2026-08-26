@@ -685,3 +685,129 @@ describe('recommended-pick recovery', () => {
     expect(parseDirectMusicIntent('다시 틀어줘', codeTalk)).toBeNull();
   });
 });
+
+// Found by reviewing this file's own additions adversarially. Each of these was a
+// real defect at the time it was written, so they are pinned rather than described.
+describe('offer selection, adversarially', () => {
+  // The card names a DIFFERENT artist in passing, with no alternative marker in
+  // front of it and in the same sentence as the pick. Comparing against the whole
+  // prose window resolved "뉴진스로 가자" to the aespa query -- the exact
+  // substitution the offer resolution exists to prevent.
+  const PASSING_MENTION_QUERY = 'aespa エスパ KISS N TELL MV';
+  const PASSING_MENTION_CARD = {
+    role: 'assistant' as const,
+    content: [
+      '뉴진스도 좋지만 오늘은 에스파 "KISS N TELL" 어때?',
+      `YouTube 검색어: \`${PASSING_MENTION_QUERY}\``,
+      '이거 틀어줄까?',
+    ].join('\n'),
+  };
+
+  it('does not resolve an artist the card only mentioned in passing', () => {
+    expect(parseDirectMusicIntent('뉴진스로 가자', [PASSING_MENTION_CARD])).toEqual({
+      query: '뉴진스',
+    });
+  });
+
+  it('still resolves the artist named right before the quoted title', () => {
+    // Only the few words in front of the quote are trusted, which is where the
+    // card writes the pick in the script the reader sees.
+    expect(parseDirectMusicIntent('에스파로 가자', [PASSING_MENTION_CARD])).toEqual({
+      query: PASSING_MENTION_QUERY,
+    });
+  });
+
+  it('reaches only the words immediately before the title', () => {
+    const wordy = {
+      role: 'assistant' as const,
+      content: [
+        '좋아, 네 취향에 딱 맞는 하나 집어줄게. 에스파 "KISS N TELL" 어때?',
+        `YouTube 검색어: \`${PASSING_MENTION_QUERY}\``,
+      ].join('\n'),
+    };
+    // Inside the window resolves -- that is what makes a cross-script pick work,
+    // and it is the design rather than a defect.
+    expect(parseDirectMusicIntent('에스파로 가자', [wordy])).toEqual({
+      query: PASSING_MENTION_QUERY,
+    });
+    // Outside it does not, which is what keeps a neighbouring name from winning.
+    expect(parseDirectMusicIntent('취향에로 가자', [wordy])?.query).not.toBe(PASSING_MENTION_QUERY);
+    expect(parseDirectMusicIntent('맞는거로 가자', [wordy])?.query).not.toBe(PASSING_MENTION_QUERY);
+  });
+});
+
+describe('conversational lead-in, adversarially', () => {
+  it('keeps a title whose first word doubles as a lead-in', () => {
+    // Dropping every lead-in unconditionally cut these down to their second word.
+    const cases: [string, string][] = [
+      ['그래서 그대는 틀어줘', '그래서 그대는'],
+      ['네 생각 틀어줘', '네 생각'],
+      ['그런데 그런 밤 틀어줘', '그런데 그런 밤'],
+    ];
+    for (const [text, query] of cases) {
+      expect(parseDirectMusicIntent(text, []), text).toEqual({ query });
+    }
+  });
+
+  it('still drops lead-in that leaves nothing searchable behind it', () => {
+    const card = {
+      role: 'assistant' as const,
+      content: '에스파 "KISS N TELL" 어때?\nYouTube 검색어: `aespa KISS N TELL MV`',
+    };
+    // Nothing but the filler: resolve against the pick instead of searching it.
+    expect(parseDirectMusicIntent('그래 틀어줘', [card])).toEqual({
+      query: 'aespa KISS N TELL MV',
+    });
+    // Filler in front of a placeholder: refuse, rather than replay the refused pick.
+    expect(parseDirectMusicIntent('근데 다른거로 해줘', [card])).toBeNull();
+    expect(parseDirectMusicIntent('아니 아니 틀어줘', [])).toBeNull();
+    // An interjection in front of a real request still gets dropped.
+    expect(parseDirectMusicIntent('응 그런데 뉴진스로 가자', [card])).toEqual({ query: '뉴진스' });
+  });
+});
+
+describe('lead-in that blocked the offer from resolving', () => {
+  const OFFER = 'aespa エスパ KISS N TELL MV';
+  const CARD = {
+    role: 'assistant' as const,
+    content: ['에스파 "KISS N TELL" 어때?', 'YouTube 검색어: `' + OFFER + '`'].join('\n'),
+  };
+
+  it('retries once with the lead-in dropped when the offer would resolve without it', () => {
+    // The conservative strip keeps an ambiguous lead-in whenever something
+    // searchable follows, which is right for a title and wrong here: "그래" is
+    // what stopped "에스파" from resolving to the offer.
+    expect(parseDirectMusicIntent('그래 에스파 틀어줘', [CARD])).toEqual({ query: OFFER });
+  });
+
+  it('leaves a real title alone when the retry does not resolve', () => {
+    // The retry is only taken when it lands on a pick, so a miss cannot cost a
+    // title its first word.
+    expect(parseDirectMusicIntent('그래서 그대는 틀어줘', [CARD])).toEqual({
+      query: '그래서 그대는',
+    });
+    expect(parseDirectMusicIntent('네 생각 틀어줘', [CARD])).toEqual({ query: '네 생각' });
+  });
+
+  it('accepted limit: filler in front of an unrelated artist keeps the filler', () => {
+    // Nothing distinguishes "그래 뉴진스" from a two-word title here, and the
+    // retry has no pick to land on. The cost is a slightly noisier query, not a
+    // wrong action, which is the better side of the trade.
+    expect(parseDirectMusicIntent('그래 뉴진스 틀어줘', [CARD])).toEqual({ query: '그래 뉴진스' });
+  });
+});
+
+describe('pick references that are questions', () => {
+  it('does not answer a question about the pick by playing it', () => {
+    // "맞지?" asks whether the user has it right. Starting playback is not an
+    // answer to that.
+    for (const text of ['너가 추천한 노래 맞지?', '너가 추천한 곡 맞아?', '아까 추천한 거 맞지']) {
+      expect(isDeferredMusicPlaybackIntent(text), text).toBe(false);
+    }
+  });
+
+  it('still resolves a correction that names the pick', () => {
+    expect(isDeferredMusicPlaybackIntent('아니, 너가 추천한 에스파 노래')).toBe(true);
+    expect(isDeferredMusicPlaybackIntent('너가 추천한 곡 말야')).toBe(true);
+  });
+});

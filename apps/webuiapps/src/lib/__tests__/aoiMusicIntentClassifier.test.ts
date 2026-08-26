@@ -176,6 +176,27 @@ describe('parseMusicIntentToolCall', () => {
     ).toBeNull();
   });
 
+  it('refuses a query too short to be a search', () => {
+    // Grounding alone does not catch this: a single character is a substring of
+    // almost any conversation, so it passed the guard and reached YouTube.
+    expect(isGroundedQuery('a', '그거', CANDIDATES)).toBe(true);
+    expect(
+      parseMusicIntentToolCall(
+        { action: 'search', query: 'a', confidence: 'high' },
+        '그거',
+        CANDIDATES,
+      ),
+    ).toBeNull();
+    // Two characters is the shortest thing still treated as a query.
+    expect(
+      parseMusicIntentToolCall(
+        { action: 'search', query: '에스', confidence: 'high' },
+        '에스파',
+        CANDIDATES,
+      ),
+    ).toEqual({ action: 'search', query: '에스', confidence: 'high' });
+  });
+
   it('passes through the no-action outcomes and the refusal', () => {
     expect(
       parseMusicIntentToolCall({ action: 'none', confidence: 'high' }, '배고파', CANDIDATES),

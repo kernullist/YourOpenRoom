@@ -132,7 +132,12 @@ const MUSIC_PICK_REFERENCE_CORE = String.raw`(?:아까|방금|좀\s*전에)?\s*(
 // correction ("아니, ..."). Without one of those a bare noun phrase is just as
 // likely to start an opinion ("너가 추천한 노래 별로였어"), and playing something
 // unasked is worse than falling through to the conversation.
-const MUSIC_PICK_REFERENCE_TAIL = String.raw`(?:말(?:이)?야|말이지|말이라고|얘기야|이야|이라고|맞아|맞지)`;
+//
+// 맞아/맞지 are deliberately NOT here. "너가 추천한 노래 맞지?" is the user asking
+// whether they have it right, and answering a question by starting playback is
+// presumptuous. A bare "맞아" replying to Aoi's own confirm ask is already handled
+// by isMusicPickConfirmationIntent.
+const MUSIC_PICK_REFERENCE_TAIL = String.raw`(?:말(?:이)?야|말이지|말이라고|얘기야|이야|이라고)`;
 const MUSIC_PICK_REFERENCE_PATTERNS: readonly RegExp[] = [
   new RegExp(
     String.raw`^${MUSIC_PICK_REFERENCE_CORE}\s*${MUSIC_PICK_REFERENCE_TAIL}[.!?~\s]*$`,
@@ -578,11 +583,21 @@ function musicQueryWords(value: string): string[] {
 // Below this, a typed fragment is too weak to prove it selects the offer.
 const MIN_OFFER_SELECTION_CHARS = 3;
 
-// Where an offer stops naming its pick and starts naming something else. Only
-// the text BEFORE the first of these is treated as describing the pick, so
-// "아니면 프로미스나인 쪽으로 갈까?" can never resolve to the pick the user just
-// passed over.
-const MUSIC_OFFER_ALTERNATIVE_MARKER = /(?:아니면|혹은|또는|말고|대신|\bor\b)/u;
+// How many words before the quoted title count as naming it. The card writes the
+// artist directly in front of the title it quotes ("에스파 \"KISS N TELL\""), so a
+// short window is enough to alias across scripts.
+//
+// It has to be short. Taking the whole message up to the first alternative marker
+// let a card that mentions another artist in passing -- "뉴진스도 좋지만 오늘은
+// 에스파 \"KISS N TELL\" 어때?" -- resolve "뉴진스로 가자" to the aespa query,
+// which is the exact substitution this function exists to prevent. Sentence
+// splitting does not help either: both artists are in the same sentence there.
+// Two, not more: the card writes the artist immediately in front of the title, and
+// every extra word widens the window back into preamble that can name someone
+// else. Two still covers the "에스파의 신곡 \"...\"" shape. Anything inside the
+// window CAN resolve -- that is the design, not a defect -- so the window is kept
+// as small as the phrasings allow.
+const MUSIC_ALIAS_WORDS_BEFORE_TITLE = 2;
 
 /**
  * Resolve a typed fragment that NAMES part of the pick Aoi just offered back to
@@ -628,11 +643,26 @@ function resolveOfferSelectionQuery(
   // matches nothing above, which is the reported bug still live for every
   // mixed-script pick.
   //
-  // The card's own prose is the alias table -- it names the pick in the script
-  // the user is reading, right next to the query -- so it is consulted second,
-  // truncated at the first alternative marker.
-  const pickProse = pick.source.split(MUSIC_OFFER_ALTERNATIVE_MARKER)[0];
-  return matchesEveryWord(typed, musicQueryWords(pickProse).join(' ')) ? pick.query : query;
+  // The card's own prose is the alias table -- it names the pick in the script the
+  // user is reading, immediately before the title it quotes -- so only those few
+  // words are consulted.
+  const alias = offerAliasWords(pick.source);
+  return alias.length > 0 && matchesEveryWord(typed, alias.join(' ')) ? pick.query : query;
+}
+
+/**
+ * The words Aoi used directly in front of the title she quoted.
+ *
+ * This is where the card names the pick in the reader's own script, which is what
+ * makes a cross-script selection resolvable. Everything earlier in the message is
+ * preamble and may name a different artist entirely, so it is left out.
+ */
+function offerAliasWords(source: string): string[] {
+  const quoted = source.search(/["“`]/u);
+  if (quoted <= 0) {
+    return [];
+  }
+  return musicQueryWords(source.slice(0, quoted)).slice(-MUSIC_ALIAS_WORDS_BEFORE_TITLE);
 }
 
 function matchesEveryWord(typed: readonly string[], haystack: string): boolean {
@@ -642,11 +672,32 @@ function matchesEveryWord(typed: readonly string[], haystack: string): boolean {
 // Conversational lead-in the extraction patterns hand over INSIDE the query,
 // because the pattern only anchors on the playback verb at the end: "응 그런데
 // 다른거로 해줘" yields "응 그런데 다른거", which was searched on YouTube verbatim.
-// None of these words ever names music. Each has to be followed by a separator
-// or end the fragment, so a title that merely starts with the same syllables
-// ("어디에도", "네가 좋아") is left alone.
-const MUSIC_QUERY_LEAD_IN_PATTERN =
-  /^(?:(?:응|어|엉|웅|ㅇㅇ|네|넵|그래|그럼|오케이|오키|아니|아니야|근데|그런데|그래서)(?:[\s,]+|$)){1,3}/u;
+//
+// Split into two classes, because dropping them all unconditionally cut the first
+// word off real titles -- "그래서 그대는" became "그대는", "네 생각" became "생각".
+// Pure interjections never open a title and always go. The rest can, so they are
+// only dropped when they follow an interjection ("응 그런데 에스파로 가자") or when
+// nothing searchable is left behind them ("그래 틀어줘", "근데 다른거로 해줘").
+const MUSIC_INTERJECTION_LEAD_INS = new Set([
+  '응',
+  '어',
+  '엉',
+  '웅',
+  'ㅇㅇ',
+  'ㅇㅋ',
+  '넵',
+  '오케이',
+  '오키',
+  // "아니" opens a refusal, not a title. Leaving it ambiguous meant "아니 아니
+  // 틀어줘" kept both words and searched for them.
+  '아니',
+  '아니야',
+]);
+const MUSIC_AMBIGUOUS_LEAD_INS = new Set(['네', '그래', '그럼', '그래서', '근데', '그런데']);
+// Each has to be followed by a separator or end the fragment, so a title that
+// merely starts with the same syllables ("어디에도", "네가 좋아") is left alone.
+const MUSIC_LEAD_IN_WORD_PATTERN = /^(\S+?)(?:[\s,]+|$)/u;
+const MAX_LEAD_IN_WORDS = 3;
 
 // Asks for SOMETHING ELSE instead of naming it. Searching these literally is how
 // "다른거로 해줘" became a YouTube search for "다른거"; recovering the last pick
@@ -655,13 +706,53 @@ const MUSIC_QUERY_LEAD_IN_PATTERN =
 const MUSIC_PLACEHOLDER_REQUEST_PATTERN =
   /^(?:다른\s*(?:거|것|걸|곡|노래|음악)?|딴\s*(?:거|것|걸|곡|노래)?|아무\s*(?:거나|것|노래|곡)?|뭐(?:든|든지)?|알아서|추천(?:해줘|해)?|something\s+else|another\s+(?:one|song|track)|anything)$/u;
 
+// Nothing a search can be run against: a pronoun pointing back at something
+// already said, or a request for "something else" that names nothing.
+function isUnsearchableRequest(value: string): boolean {
+  return (
+    MUSIC_DEFERRAL_PRONOUN_PATTERN.test(value) || MUSIC_PLACEHOLDER_REQUEST_PATTERN.test(value)
+  );
+}
+
+function stripMusicQueryLeadIn(value: string, { force = false } = {}): string {
+  let rest = value.trim();
+  let afterInterjection = false;
+  for (let dropped = 0; dropped < MAX_LEAD_IN_WORDS && rest; dropped += 1) {
+    const match = rest.match(MUSIC_LEAD_IN_WORD_PATTERN);
+    const word = match?.[1];
+    if (!match || !word) {
+      break;
+    }
+    const isInterjection = MUSIC_INTERJECTION_LEAD_INS.has(word);
+    if (!isInterjection && !MUSIC_AMBIGUOUS_LEAD_INS.has(word)) {
+      break;
+    }
+    const remainder = rest.slice(match[0].length).trim();
+    // An ambiguous word standing at the front of something searchable IS the
+    // title's first word, not filler -- unless the caller is retrying on the
+    // assumption that it was filler after all (see buildDirectMusicIntent).
+    if (
+      !force &&
+      !isInterjection &&
+      !afterInterjection &&
+      remainder &&
+      !isUnsearchableRequest(remainder)
+    ) {
+      break;
+    }
+    afterInterjection = afterInterjection || isInterjection;
+    rest = remainder;
+  }
+  return rest;
+}
+
 function buildDirectMusicIntent(
   rawQuery: string,
   exclude: string[],
   rejected: boolean,
   history: Pick<ChatMessage, 'role' | 'content'>[],
 ): DirectMusicIntent | null {
-  const named = rawQuery.replace(MUSIC_QUERY_LEAD_IN_PATTERN, '').trim();
+  const named = stripMusicQueryLeadIn(rawQuery);
   if (!named || MUSIC_DEFERRAL_PRONOUN_PATTERN.test(named)) {
     // Playback was asked for, but nothing was named ("그래 틀어줘", "그거 틀어
     // 줘"). Resolve against the pick Aoi already named -- except after a
@@ -679,8 +770,28 @@ function buildDirectMusicIntent(
   const enriched = enrichMusicQueryFromHistory(named, history);
   // A rejection steers AWAY from the last card, so that card's query must not be
   // pulled back in as the "selection".
-  const query = rejected ? enriched : resolveOfferSelectionQuery(enriched, history);
-  return { query, ...(exclude.length > 0 ? { exclude } : {}) };
+  if (rejected) {
+    return { query: enriched, ...(exclude.length > 0 ? { exclude } : {}) };
+  }
+  const resolved = resolveOfferSelectionQuery(enriched, history);
+  if (resolved !== enriched) {
+    return { query: resolved, ...(exclude.length > 0 ? { exclude } : {}) };
+  }
+
+  // The conservative strip above keeps an ambiguous lead-in whenever something
+  // searchable follows it, which is right for "그래서 그대는" and wrong for
+  // "그래 에스파" -- there the kept word is what stopped the offer from resolving.
+  // Retry once with it dropped, and prefer that ONLY if it resolves to a pick. A
+  // miss changes nothing, so a real title never loses its first word.
+  const forced = stripMusicQueryLeadIn(rawQuery, { force: true });
+  if (forced && forced !== named && !isUnsearchableRequest(forced)) {
+    const forcedEnriched = enrichMusicQueryFromHistory(forced, history);
+    const forcedResolved = resolveOfferSelectionQuery(forcedEnriched, history);
+    if (forcedResolved !== forcedEnriched) {
+      return { query: forcedResolved, ...(exclude.length > 0 ? { exclude } : {}) };
+    }
+  }
+  return { query: enriched, ...(exclude.length > 0 ? { exclude } : {}) };
 }
 
 export function parseDirectMusicIntent(

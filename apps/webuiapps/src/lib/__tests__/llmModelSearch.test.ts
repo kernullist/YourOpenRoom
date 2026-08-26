@@ -134,6 +134,18 @@ describe('filterModelIds', () => {
   });
 });
 
+describe('a query left over from another provider', () => {
+  it('is ignored by passing an empty query, not by filtering to nothing', () => {
+    // The caller hides the search box once a list is short, but the query stays in
+    // state. Applying it anyway left the dropdown showing a single entry with
+    // nothing on screen explaining why, so the caller passes '' instead.
+    const shortList = ['deepseek/deepseek-v4-flash', 'deepseek/deepseek-v4-pro'];
+    expect(filterModelIds(shortList, '', { keep: shortList[0] })).toEqual(shortList);
+    // What it would have done with the stale query still applied:
+    expect(filterModelIds(shortList, 'qwen', { keep: shortList[0] })).toEqual([shortList[0]]);
+  });
+});
+
 describe('MODEL_SEARCH_MIN_OPTIONS', () => {
   it('is high enough that the curated per-provider lists stay unchanged', () => {
     // Those lists are a handful of entries each; only the fetched OpenRouter list

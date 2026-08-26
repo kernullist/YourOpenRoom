@@ -7251,55 +7251,6 @@ const ChatPanel: React.FC<{
         }
       }
 
-      // Phase 1: the phrasings the patterns above do NOT cover.
-      //
-      // Korean has more ways to say "play that one" than a pattern list can hold,
-      // and every miss used to arrive at the LLM as prose -- which is how a
-      // confirmed request became "다음 턴에 틀어줄게". A tiny classifier reads the
-      // intent into a typed slot instead; it can only choose among picks this code
-      // extracted, or a query whose every word is already in the conversation, so
-      // it cannot invent something to play. The dispatch and the ack above stay
-      // exactly where they were.
-      //
-      // Gated structurally, not by keywords (keyword gating is what failed): there
-      // has to be a pick on the table and the reply has to be short enough to be
-      // an answer about it. Anything else goes to the normal path, which now
-      // carries app_action.
-      if (!hasImageAttachments && !directMusicIntent) {
-        const musicPickCandidates = collectMusicPickCandidates(chatHistory);
-        if (shouldClassifyMusicIntent(text, musicPickCandidates)) {
-          const classification = await classifyMusicIntent(
-            text,
-            musicPickCandidates,
-            selectedConfig,
-          );
-          // 'low' confidence is left to the conversation on purpose: a coin-flip
-          // between two picks is better asked than guessed.
-          if (
-            classification &&
-            classification.query &&
-            classification.confidence === 'high' &&
-            (classification.action === 'play_candidate' || classification.action === 'search')
-          ) {
-            logger.info('ChatPanel', 'music intent classified', {
-              action: classification.action,
-              candidateCount: musicPickCandidates.length,
-            });
-            if (
-              await playResolvedMusicIntent(
-                {
-                  query: classification.query,
-                  ...(classification.exclude ? { exclude: classification.exclude } : {}),
-                },
-                `classified:play_music:${classification.action}`,
-              )
-            ) {
-              return;
-            }
-          }
-        }
-      }
-
       // Same rule for the news card's "interested" chip: no pending offer, and
       // the headline could not be matched back to an article on disk. Answering
       // here keeps a chip that promises an action from producing a claim that
@@ -7345,6 +7296,70 @@ const ChatPanel: React.FC<{
           llmConfig: selectedConfig,
         });
         return;
+      }
+
+      // Phase 1: the phrasings the patterns above do NOT cover.
+      //
+      // Korean has more ways to say "play that one" than a pattern list can hold,
+      // and every miss used to arrive at the LLM as prose -- which is how a
+      // confirmed request became "다음 턴에 틀어줄게". A tiny classifier reads the
+      // intent into a typed slot instead; it can only choose among picks this code
+      // extracted, or a query whose every word is already in the conversation, so
+      // it cannot invent something to play. The dispatch and the ack above stay
+      // exactly where they were.
+      //
+      // Deliberately placed AFTER the chip handlers. Ordered before them, a tapped
+      // "📰 관심 있어" was short enough and arrived with a music pick still in
+      // context, so it reached the classifier -- which could answer play_candidate
+      // and start music from a news chip.
+      //
+      // Gated structurally, not by keywords (keyword gating is what failed): there
+      // has to be a pick on the table and the reply has to be short enough to be
+      // an answer about it. Anything else goes to the normal path, which now
+      // carries app_action.
+      if (!hasImageAttachments) {
+        const musicPickCandidates = collectMusicPickCandidates(chatHistory);
+        if (shouldClassifyMusicIntent(text, musicPickCandidates)) {
+          // This is a network round trip, and nothing else has started the
+          // spinner yet -- beginChatLoading does not run until the model turn far
+          // below. Without this the app sat silent for the length of the call and
+          // read as frozen right after Send.
+          const classifyRunId = beginChatLoading('Reading what to play', {
+            cancellable: false,
+            provider: selectedConfig.provider,
+            model: selectedConfig.model,
+          });
+          let classification: Awaited<ReturnType<typeof classifyMusicIntent>> = null;
+          try {
+            classification = await classifyMusicIntent(text, musicPickCandidates, selectedConfig);
+          } finally {
+            finishChatLoading(classifyRunId);
+          }
+          // 'low' confidence is left to the conversation on purpose: a coin-flip
+          // between two picks is better asked than guessed.
+          if (
+            classification &&
+            classification.query &&
+            classification.confidence === 'high' &&
+            (classification.action === 'play_candidate' || classification.action === 'search')
+          ) {
+            logger.info('ChatPanel', 'music intent classified', {
+              action: classification.action,
+              candidateCount: musicPickCandidates.length,
+            });
+            if (
+              await playResolvedMusicIntent(
+                {
+                  query: classification.query,
+                  ...(classification.exclude ? { exclude: classification.exclude } : {}),
+                },
+                `classified:play_music:${classification.action}`,
+              )
+            ) {
+              return;
+            }
+          }
+        }
       }
 
       // Genre/lane chip after a preference ask (e.g. "케이팝") becomes a personal
@@ -13919,13 +13934,19 @@ const SettingsModal: React.FC<{
   );
   // What the dropdowns actually render. The full list stays in *ModelOptions so
   // the search box's own visibility does not flicker as the query narrows.
+  //
+  // The query is ignored unless the box is actually shown. Switching provider from
+  // OpenRouter to a short curated list hid the box while leaving the old query in
+  // state, and the filter kept applying -- the dropdown showed one entry with
+  // nothing on screen explaining why.
+  const modelSearchShown = modelOptions.length >= MODEL_SEARCH_MIN_OPTIONS;
   const visibleModelOptions = useMemo(
     () =>
-      filterModelIds(modelOptions, modelSearch, {
+      filterModelIds(modelOptions, modelSearchShown ? modelSearch : '', {
         labelOf: (id) => formatModelLabel(provider, id),
         keep: model,
       }),
-    [modelOptions, modelSearch, formatModelLabel, provider, model],
+    [modelOptions, modelSearchShown, modelSearch, formatModelLabel, provider, model],
   );
   const openRouterStatusHint =
     openRouterModelsStatus === 'loading'
@@ -14304,13 +14325,21 @@ const SettingsModal: React.FC<{
   };
 
   const dialogModelOptions = getProviderModelOptions(dialogProvider, runtimeModels);
+  const dialogModelSearchShown = dialogModelOptions.length >= MODEL_SEARCH_MIN_OPTIONS;
   const visibleDialogModelOptions = useMemo(
     () =>
-      filterModelIds(dialogModelOptions, dialogModelSearch, {
+      filterModelIds(dialogModelOptions, dialogModelSearchShown ? dialogModelSearch : '', {
         labelOf: (id) => formatModelLabel(dialogProvider, id),
         keep: dialogModel,
       }),
-    [dialogModelOptions, dialogModelSearch, formatModelLabel, dialogProvider, dialogModel],
+    [
+      dialogModelOptions,
+      dialogModelSearchShown,
+      dialogModelSearch,
+      formatModelLabel,
+      dialogProvider,
+      dialogModel,
+    ],
   );
   const isPresetDialogModel = dialogModelOptions.includes(dialogModel);
   const showDialogDropdown = !dialogManualModelMode && dialogModelOptions.length > 0;
@@ -15174,7 +15203,7 @@ const SettingsModal: React.FC<{
 
                 <div className={styles.field}>
                   <label className={styles.label}>Model</label>
-                  {showDropdown && modelOptions.length >= MODEL_SEARCH_MIN_OPTIONS ? (
+                  {showDropdown && modelSearchShown ? (
                     <input
                       type="search"
                       className={`${styles.fieldInput} ${styles.modelSearchInput}`}
@@ -15482,8 +15511,7 @@ const SettingsModal: React.FC<{
 
                     <div className={styles.field}>
                       <label className={styles.label}>Model</label>
-                      {showDialogDropdown &&
-                      dialogModelOptions.length >= MODEL_SEARCH_MIN_OPTIONS ? (
+                      {showDialogDropdown && dialogModelSearchShown ? (
                         <input
                           type="search"
                           className={`${styles.fieldInput} ${styles.modelSearchInput}`}

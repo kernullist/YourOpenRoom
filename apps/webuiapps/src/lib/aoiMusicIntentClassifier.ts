@@ -46,6 +46,9 @@ export const MUSIC_INTENT_TOOL_NAME = 'resolve_music_intent';
 export const MUSIC_INTENT_CONTEXT_CHARS = 320;
 const MAX_EXCLUDE_TERMS = 4;
 const MAX_QUERY_CHARS = 120;
+// A single character is not a search. Grounding alone does not rule it out -- one
+// letter is a substring of almost any conversation -- so the length is checked too.
+const MIN_QUERY_CHARS = 2;
 // Above this the message is saying more than "play this", and a one-slot answer
 // would be a summary rather than a classification. Those turns belong to the
 // normal conversation path.
@@ -253,7 +256,11 @@ export function parseMusicIntentToolCall(
   }
   if (action === 'search') {
     const query = typeof parsed.query === 'string' ? parsed.query.trim() : '';
-    if (!query || query.length > MAX_QUERY_CHARS || !isGroundedQuery(query, text, candidates)) {
+    if (
+      query.length < MIN_QUERY_CHARS ||
+      query.length > MAX_QUERY_CHARS ||
+      !isGroundedQuery(query, text, candidates)
+    ) {
       return null;
     }
     return { action: 'search', query, confidence, ...(exclude.length ? { exclude } : {}) };
