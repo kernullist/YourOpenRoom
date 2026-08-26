@@ -762,3 +762,65 @@ export function applyDeepSeekChatRuntimeOptions(
     body.reasoning_effort = mappedEffort;
   }
 }
+
+/**
+ * Model ids in alphabetical order, vendor prefix first.
+ *
+ * Only the fetched lists need this. The curated PROVIDER_MODELS entries are
+ * deliberately grouped flagship-first, but the live OpenRouter list arrives in the
+ * API's own order -- neither alphabetical nor grouped -- and it runs to hundreds of
+ * entries, so finding a model meant scrolling the whole dropdown. Sorting by id
+ * keeps each vendor together ("anthropic/...", then "qwen/..."), which is the axis
+ * the list is actually scanned by.
+ *
+ * numeric so qwen3.7 sorts before qwen3.10 instead of after it, and a leading "~"
+ * is ignored: OpenRouter marks its auto-updating aliases that way, and sorting on
+ * the raw id put all twelve of them in a block above the letters, twenty-odd rows
+ * from the vendor they alias. Ignoring it lands "~anthropic/claude-haiku-latest"
+ * among the other anthropic entries, which is where someone scanning for it looks.
+ */
+export function sortModelIds(ids: readonly string[]): string[] {
+  const key = (id: string) => id.replace(/^~/, '');
+  return [...ids].sort((a, b) => {
+    const compared = key(a).localeCompare(key(b), 'en', { numeric: true, sensitivity: 'base' });
+    // Same name apart from the marker: keep a stable, predictable side for it.
+    return compared !== 0 ? compared : a.localeCompare(b, 'en');
+  });
+}
+
+/**
+ * The ids matching a search box, by id AND by display label.
+ *
+ * The label is searched too because a model's marketing name and its slug differ:
+ * "haiku" has to find `anthropic/claude-haiku-4.5`, and "gemini flash" has to find
+ * the id whose label reads "Gemini 2.5 Flash Lite". Every whitespace-separated
+ * term must match, so a second word narrows the list instead of widening it.
+ *
+ * `keep` is always retained even when it does not match. Dropping it would leave
+ * the <select> holding a value that is not among its options, which renders as a
+ * different model than the one actually configured.
+ */
+export function filterModelIds(
+  ids: readonly string[],
+  query: string,
+  options: { labelOf?: (id: string) => string; keep?: string } = {},
+): string[] {
+  const terms = query.toLowerCase().split(/\s+/u).filter(Boolean);
+  if (terms.length === 0) {
+    return [...ids];
+  }
+  const matched = ids.filter((id) => {
+    const haystack = `${id} ${options.labelOf?.(id) ?? ''}`.toLowerCase();
+    return terms.every((term) => haystack.includes(term));
+  });
+  const keep = options.keep?.trim();
+  if (keep && ids.includes(keep) && !matched.includes(keep)) {
+    return [keep, ...matched];
+  }
+  return matched;
+}
+
+// Below this a dropdown is short enough to read at a glance, and a search box
+// would only add a control to skip past. The fetched OpenRouter list is the only
+// one that goes past it.
+export const MODEL_SEARCH_MIN_OPTIONS = 12;

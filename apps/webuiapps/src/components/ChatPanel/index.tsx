@@ -154,11 +154,14 @@ import {
   LLM_REASONING_EFFORTS,
   LLM_REASONING_SUMMARIES,
   LLM_VERBOSITIES,
+  MODEL_SEARCH_MIN_OPTIONS,
   PROVIDER_MODELS,
+  filterModelIds,
   getDefaultProviderConfig,
   getModelInfo,
   getProviderDisplayName,
   getSupportedReasoningEfforts,
+  sortModelIds,
   isDeepSeekProvider,
   type LLMApiStyle,
   type LLMConfig,
@@ -12609,7 +12612,9 @@ function getProviderModelOptions(
   runtimeModels: Partial<Record<LLMProvider, RuntimeModelOption[]>> = {},
 ): string[] {
   const liveModels = runtimeModels[provider];
-  if (liveModels?.length) return liveModels.map((modelInfo) => modelInfo.id);
+  // Sorted only here: the fetched list has no useful order of its own, while the
+  // curated PROVIDER_MODELS lists are grouped flagship-first on purpose.
+  if (liveModels?.length) return sortModelIds(liveModels.map((modelInfo) => modelInfo.id));
   return PROVIDER_MODELS[provider] ?? [];
 }
 
@@ -13178,6 +13183,7 @@ const SettingsModal: React.FC<{
     parallelToolCallsToOption(config?.parallelToolCalls),
   );
   const [manualModelMode, setManualModelMode] = useState(false);
+  const [modelSearch, setModelSearch] = useState('');
   const [preferredName, setPreferredName] = useState(userProfile?.displayName || '');
   const [responseLanguageMode, setResponseLanguageMode] = useState<ResponseLanguageMode>(
     normalizeResponseLanguageMode(conversationPreferences?.responseLanguageMode),
@@ -13316,6 +13322,7 @@ const SettingsModal: React.FC<{
     parallelToolCallsToOption(dialogConfig?.parallelToolCalls),
   );
   const [dialogManualModelMode, setDialogManualModelMode] = useState(false);
+  const [dialogModelSearch, setDialogModelSearch] = useState('');
   const [idaPeMode, setIdaPeMode] = useState<'prescan-only' | 'mcp-http'>(
     idaPeConfig?.mode || 'prescan-only',
   );
@@ -13910,6 +13917,16 @@ const SettingsModal: React.FC<{
       formatProviderModelLabel(modelProvider, modelId, runtimeModelLabels),
     [runtimeModelLabels],
   );
+  // What the dropdowns actually render. The full list stays in *ModelOptions so
+  // the search box's own visibility does not flicker as the query narrows.
+  const visibleModelOptions = useMemo(
+    () =>
+      filterModelIds(modelOptions, modelSearch, {
+        labelOf: (id) => formatModelLabel(provider, id),
+        keep: model,
+      }),
+    [modelOptions, modelSearch, formatModelLabel, provider, model],
+  );
   const openRouterStatusHint =
     openRouterModelsStatus === 'loading'
       ? 'Loading live OpenRouter model catalog...'
@@ -14287,6 +14304,14 @@ const SettingsModal: React.FC<{
   };
 
   const dialogModelOptions = getProviderModelOptions(dialogProvider, runtimeModels);
+  const visibleDialogModelOptions = useMemo(
+    () =>
+      filterModelIds(dialogModelOptions, dialogModelSearch, {
+        labelOf: (id) => formatModelLabel(dialogProvider, id),
+        keep: dialogModel,
+      }),
+    [dialogModelOptions, dialogModelSearch, formatModelLabel, dialogProvider, dialogModel],
+  );
   const isPresetDialogModel = dialogModelOptions.includes(dialogModel);
   const showDialogDropdown = !dialogManualModelMode && dialogModelOptions.length > 0;
   const ttsLastWarmLabel = ttsStatusSnapshot.lastWarmAt
@@ -15149,6 +15174,16 @@ const SettingsModal: React.FC<{
 
                 <div className={styles.field}>
                   <label className={styles.label}>Model</label>
+                  {showDropdown && modelOptions.length >= MODEL_SEARCH_MIN_OPTIONS ? (
+                    <input
+                      type="search"
+                      className={`${styles.fieldInput} ${styles.modelSearchInput}`}
+                      value={modelSearch}
+                      onChange={(e) => setModelSearch(e.target.value)}
+                      placeholder={`Search ${modelOptions.length} models`}
+                      data-testid="model-search"
+                    />
+                  ) : null}
                   <div className={styles.modelSelectorWrapper}>
                     {showDropdown ? (
                       <>
@@ -15156,12 +15191,13 @@ const SettingsModal: React.FC<{
                           className={styles.select}
                           value={model}
                           onChange={(e) => handleModelChange(e.target.value)}
+                          data-testid="model-select"
                         >
                           {!model.trim() ? <option value="">Select a model</option> : null}
                           {model.trim() && !isPresetModel ? (
                             <option value={model}>{model} (custom)</option>
                           ) : null}
-                          {modelOptions.map((m) => (
+                          {visibleModelOptions.map((m) => (
                             <option key={m} value={m}>
                               {formatModelLabel(provider, m)}
                             </option>
@@ -15446,6 +15482,17 @@ const SettingsModal: React.FC<{
 
                     <div className={styles.field}>
                       <label className={styles.label}>Model</label>
+                      {showDialogDropdown &&
+                      dialogModelOptions.length >= MODEL_SEARCH_MIN_OPTIONS ? (
+                        <input
+                          type="search"
+                          className={`${styles.fieldInput} ${styles.modelSearchInput}`}
+                          value={dialogModelSearch}
+                          onChange={(e) => setDialogModelSearch(e.target.value)}
+                          placeholder={`Search ${dialogModelOptions.length} models`}
+                          data-testid="dialog-model-search"
+                        />
+                      ) : null}
                       <div className={styles.modelSelectorWrapper}>
                         {showDialogDropdown ? (
                           <>
@@ -15456,6 +15503,7 @@ const SettingsModal: React.FC<{
                                 setDialogModel(e.target.value);
                                 setDialogManualModelMode(false);
                               }}
+                              data-testid="dialog-model-select"
                             >
                               {!dialogModel.trim() ? (
                                 <option value="">Select a model</option>
@@ -15463,7 +15511,7 @@ const SettingsModal: React.FC<{
                               {dialogModel.trim() && !isPresetDialogModel ? (
                                 <option value={dialogModel}>{dialogModel} (custom)</option>
                               ) : null}
-                              {dialogModelOptions.map((m) => (
+                              {visibleDialogModelOptions.map((m) => (
                                 <option key={m} value={m}>
                                   {formatModelLabel(dialogProvider, m)}
                                 </option>
