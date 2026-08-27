@@ -1,0 +1,63 @@
+app_id: 31
+app_name: idalab
+app_display_name: IDA Lab
+version: '1.0.0'
+description: >
+  IDA Lab drives native IDA Pro on the real machine and queries the resulting database with SQL
+  through IDASQL. Pick a binary from a registered root, start analysis (headless idalib, or the real
+  IDA window), then query funcs / xrefs / strings / pseudocode over the idasql HTTP server. Session
+  start runs through propose -> operator approval -> execute; a mutating statement needs its own
+  approval showing the exact SQL.
+displayDesc: >
+  Analyze a binary with IDA and query it in SQL, without leaving the room.
+
+# Navigate and read only, on purpose.
+#
+# Aoi already has first-class tools for the effectful paths (ida_analyze_start, ida_sql_query), and
+# those go through preview -> operator approval -> execute. An app action that started a session,
+# ran a write, approved a pending action, edited the configured paths, or minted a standing grant
+# would be a second door into the same effects that skips the popup -- and the popup IS the control.
+# Enforced by src/pages/IdaLab/__tests__/actionSafety.test.ts.
+actions:
+  - type: SELECT_IDA_SESSION
+    name: Select IDA Session
+    description: Focus one open analysis session in the workbench.
+    params:
+      - name: session_id
+        type: string
+        description: Session id from the sessions list.
+        required: true
+
+  - type: SET_IDA_SQL_DRAFT
+    name: Set SQL Draft
+    description: >
+      Put SQL in the editor without running it. Useful for handing the operator a query to review
+      and run themselves.
+    params:
+      - name: sql
+        type: string
+        description: SQL text. Empty clears the editor.
+        required: false
+
+  - type: BROWSE_IDA_BINARIES
+    name: Browse Binaries
+    description: Show the contents of one folder inside a registered binary root.
+    params:
+      - name: path
+        type: string
+        description: Absolute folder path inside a root. Empty lists the roots themselves.
+        required: false
+
+  - type: REFRESH_IDA_LAB
+    name: Refresh IDA Lab
+    description: Re-read health, sessions, and standing grants.
+    params: []
+
+  - type: SYNC_STATE
+    name: Sync State
+    description: Re-read apps/idalab/data/state.json and apply its fields defensively.
+    params: []
+
+storage:
+  - path: apps/idalab/data/state.json
+    description: SQL draft, last selected binary path, and the preferred session mode.

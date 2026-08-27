@@ -30,6 +30,7 @@ const HabitGarden = lazy(() => import('@/pages/HabitGarden'));
 const DriveConsole = lazy(() => import('@/pages/DriveConsole'));
 const HostSentinel = lazy(() => import('@/pages/HostSentinel'));
 const SignalDesk = lazy(() => import('@/pages/SignalDesk'));
+const IdaLab = lazy(() => import('@/pages/IdaLab'));
 
 // All sub-pages should use lazy loading
 const routerList: RouteObject[] = [
@@ -246,6 +247,14 @@ const routerList: RouteObject[] = [
     element: (
       <React.Suspense>
         <SignalDesk />
+      </React.Suspense>
+    ),
+  },
+  {
+    path: '/ida-lab',
+    element: (
+      <React.Suspense>
+        <IdaLab />
       </React.Suspense>
     ),
   },

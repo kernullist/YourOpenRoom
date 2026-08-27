@@ -104,6 +104,21 @@ const CAPABILITIES: { key: string; label: string; hint: string }[] = [
     hint: 'Terminate a process (protected list enforced)',
   },
   { key: 'os_file_delete', label: 'Delete files', hint: 'Send a file to the Recycle Bin' },
+  {
+    key: 'os_ida_analysis',
+    label: 'IDA Lab: analyze binaries',
+    hint: 'Off by default. Lets Aoi search the folders you registered in the IDA Lab app, start IDA on a binary there (headless idalib, or your real IDA window), and query the database with read-only SQL through IDASQL. Starting a session needs an Approve & Run click unless a standing grant covers it (the switch below). Reach is limited to the registered binary roots, and the check is re-run when you click, not only when Aoi asks.',
+  },
+  {
+    key: 'os_ida_write',
+    label: 'IDA Lab: write to the IDA database',
+    hint: 'HIGH RISK, off by default. Allows mutating SQL (renames, comments, type changes) in a session started with -w, so changes persist to the .i64. Each mutating statement needs its own Approve & Run click showing the exact SQL. The guarantee that does not depend on reading SQL: a session started WITHOUT -w discards changes on exit whatever the query does, so leave this off and explore in a read-only session unless you are making a change. Also needs the write toggle inside IDA Lab settings.',
+  },
+  {
+    key: 'os_ida_auto_session',
+    label: 'IDA Lab: autonomous session start',
+    hint: 'HIGH RISK, off by default. While ON, a standing grant you created for a binary root would let an unattended caller start IDA on files in that root WITHOUT a click, up to the grant TTL and session quota. Write queries are never covered by a grant, and panic or this switch stop it instantly. NOTE: nothing can use this yet - like every other host capability, the IDA tools are reachable only from chat in the browser, and the autonomous loop has no client for them. Leaving this off costs you nothing today.',
+  },
 ];
 
 interface RootDraft {

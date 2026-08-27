@@ -290,6 +290,94 @@ const AOI_CAPABILITY_REGISTRY = {
     policyNotes:
       'Consumes Host Bridge Approvals entry for the exact spawn fingerprint. Fail-closed without approval.',
   },
+  ida_find_binary: {
+    name: 'ida_find_binary',
+    label: 'IDA Lab binary search',
+    kind: 'tool',
+    surface: 'automation',
+    risk: 'medium',
+    description:
+      'List or search filenames inside the folders registered as IDA Lab binary roots (names and sizes only; no file content).',
+    access: ['read'],
+    sandboxEligible: false,
+    approval: 'policy-gated',
+    promptVisible: true,
+    policyNotes:
+      'Requires the os_ida_analysis capability. Reach is limited to the registered binary roots, re-checked after symlink resolution.',
+  },
+  ida_session_list: {
+    name: 'ida_session_list',
+    label: 'IDA Lab session list',
+    kind: 'tool',
+    surface: 'automation',
+    risk: 'low',
+    description:
+      'List open IDA/IDASQL analysis sessions on the operator PC plus the IDA Lab configuration state.',
+    access: ['read'],
+    sandboxEligible: false,
+    approval: 'policy-gated',
+    promptVisible: true,
+    policyNotes: 'Requires the os_ida_analysis capability.',
+  },
+  ida_analyze_start: {
+    name: 'ida_analyze_start',
+    label: 'IDA Lab analysis start',
+    kind: 'tool',
+    surface: 'automation',
+    risk: 'high',
+    description:
+      'Propose starting IDA (headless idalib or the real GUI) on a binary; records a pending operator approval and starts nothing by itself.',
+    access: ['execute'],
+    sandboxEligible: false,
+    approval: 'user-confirmation',
+    promptVisible: true,
+    policyNotes:
+      'Requires os_ida_analysis + the binary inside a registered root. Starts a real process only after an Approve & Run click, or a live os_ida_auto_session standing grant for that root.',
+  },
+  ida_sql_query: {
+    name: 'ida_sql_query',
+    label: 'IDA Lab SQL query',
+    kind: 'tool',
+    surface: 'automation',
+    risk: 'high',
+    description:
+      'Run SQL against an open IDA database through IDASQL. Reads run immediately; a mutating statement records an approval instead of running.',
+    access: ['read', 'execute'],
+    sandboxEligible: false,
+    approval: 'user-confirmation',
+    promptVisible: true,
+    policyNotes:
+      'Requires os_ida_analysis; a write also requires os_ida_write, a -w session, and its own content-addressed approval. ATTACH / writefile() / load_extension / filesystem dot-commands are refused outright.',
+  },
+  ida_gui_attach: {
+    name: 'ida_gui_attach',
+    label: 'IDA Lab GUI attach',
+    kind: 'tool',
+    surface: 'automation',
+    risk: 'medium',
+    description:
+      'Attach to the IDASQL HTTP server exposed by a running IDA GUI window (probes 8100-8199 and verifies the responder looks like idasql).',
+    access: ['read'],
+    sandboxEligible: false,
+    approval: 'policy-gated',
+    promptVisible: true,
+    policyNotes:
+      'Requires os_ida_analysis. The operator must have started the server with `.http start` inside IDA; the IDA process is never killed by IDA Lab.',
+  },
+  ida_session_stop: {
+    name: 'ida_session_stop',
+    label: 'IDA Lab session stop',
+    kind: 'tool',
+    surface: 'automation',
+    risk: 'low',
+    description:
+      'Close an IDA Lab session: shut down a headless idasql process, or detach from a GUI session without closing the operator window.',
+    access: ['execute'],
+    sandboxEligible: false,
+    approval: 'policy-gated',
+    promptVisible: true,
+    policyNotes: 'Requires os_ida_analysis. Only processes IDA Lab started are terminated.',
+  },
   host_browser_read: {
     name: 'host_browser_read',
     label: 'Host headless browser read',

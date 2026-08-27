@@ -1,5 +1,6 @@
 import type { ChatMessage } from './llmClient';
 import { getAppRecognitionEntries } from './appRegistry';
+import { shouldEnableIdaSqlTools } from './aoiIdaSqlTools';
 
 const MAX_RECENT_HISTORY_MESSAGES = 12;
 const MAX_SUMMARIZED_HISTORY_ITEMS = 8;
@@ -991,6 +992,13 @@ export function shouldUseDialogModel(
   // withheld because the route had already been downgraded -- which is exactly
   // how a playback request reached the model with nothing to play it.
   if (shouldEnableAppTools(latestUserMessage, history)) return false;
+  // And the same again for IDA Lab, which was missing while browser and app
+  // tools each had their own escape. A short reversing question ("ntoskrnl 함수
+  // 목록 보여줘") is under every length and keyword bar above, so it routed to
+  // the dialog model -- whose tool array is respond_to_user + finish_target --
+  // and Aoi answered that it cannot analyze binaries, while a real session sat
+  // open on the operator's PC.
+  if (shouldEnableIdaSqlTools(latestUserMessage, history)) return false;
 
   const recentContext = normalizeWhitespace(
     history

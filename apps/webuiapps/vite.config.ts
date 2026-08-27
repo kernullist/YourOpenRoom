@@ -24,6 +24,7 @@ import { generateLogFileName, createLogMiddleware } from './src/lib/logPlugin';
 import { appGeneratorPlugin } from './src/lib/appGeneratorPlugin';
 import { gmailPlugin } from './src/lib/gmailPlugin';
 import { idaPePlugin } from './src/lib/idaPePlugin';
+import { idaSqlPlugin } from './src/lib/idaSqlPlugin';
 import {
   getProjectProfilePath,
   loadProjectIntelligenceProfile,
@@ -4234,6 +4235,10 @@ const config = ({ mode }: ConfigEnv): UserConfigExport => {
     idaPePlugin({
       configFile: LLM_CONFIG_FILE,
       cacheRoot: resolve(os.homedir(), '.openroom', 'cache'),
+    }),
+    idaSqlPlugin({
+      configFile: LLM_CONFIG_FILE,
+      sessionsDir: SESSIONS_DIR,
     }),
     albumFolderPlugin(),
     kiraConfigPlugin(),

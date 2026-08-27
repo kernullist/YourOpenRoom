@@ -303,6 +303,16 @@ import {
   isHostProcessTool,
   parseHostSpawnApprovalRequired,
 } from '@/lib/aoiHostProcessTools';
+import {
+  executeIdaSqlTool,
+  getIdaSqlToolDefinitions,
+  getIdaSqlToolPendingSummary,
+  isIdaSqlTool,
+  parseIdaSqlApprovalRequired,
+  shouldEnableIdaSqlTools,
+  type IdaSqlApprovalRequest,
+} from '@/lib/aoiIdaSqlTools';
+import { runIdaSqlApproval } from '@/lib/idaSqlClient';
 
 import {
   executeHostBrowserTool,
@@ -3337,6 +3347,13 @@ const ChatPanel: React.FC<{
   } | null>(null);
   const [hostSpawnApprovalBusy, setHostSpawnApprovalBusy] = useState(false);
   const [hostSpawnApprovalError, setHostSpawnApprovalError] = useState('');
+  // In-chat operator confirmation for IDA Lab: starting IDA on a binary, or
+  // running a mutating SQL statement against the database. Separate from the
+  // spawn popup because the thing being approved is different -- a program and
+  // its args there, a binary or the exact SQL here.
+  const [idaApproval, setIdaApproval] = useState<IdaSqlApprovalRequest | null>(null);
+  const [idaApprovalBusy, setIdaApprovalBusy] = useState(false);
+  const [idaApprovalError, setIdaApprovalError] = useState('');
   const [showCharacterPanel, setShowCharacterPanel] = useState(false);
   const [showModPanel, setShowModPanel] = useState(false);
   const [initialEditModId, setInitialEditModId] = useState<string | undefined>();
@@ -5819,6 +5836,74 @@ const ChatPanel: React.FC<{
     }
   }, [emitAssistantMessage, hostSpawnApproval, hostSpawnApprovalBusy]);
 
+  const presentIdaApproval = useCallback((result: string) => {
+    const approval = parseIdaSqlApprovalRequired(result);
+    if (!approval) {
+      return;
+    }
+    setIdaApprovalError('');
+    setIdaApproval(approval);
+  }, []);
+
+  const denyIdaApproval = useCallback(() => {
+    setIdaApproval(null);
+    setIdaApprovalBusy(false);
+    setIdaApprovalError('');
+    emitAssistantMessage({
+      id: String(Date.now()),
+      role: 'assistant',
+      content: '알겠어, 안 할게. 다시 필요하면 말해줘.',
+    });
+  }, [emitAssistantMessage]);
+
+  const confirmIdaApproval = useCallback(async () => {
+    if (!idaApproval || idaApprovalBusy) {
+      return;
+    }
+    setIdaApprovalBusy(true);
+    setIdaApprovalError('');
+    try {
+      const result = await runIdaSqlApproval(idaApproval.approvalFingerprint);
+      const wasWrite = idaApproval.kind === 'write';
+      setIdaApproval(null);
+      setIdaApprovalBusy(false);
+      // Say what actually happened. A headless session comes back 'starting'
+      // because idalib is still analyzing, and reporting that as done would be a
+      // claim the run did not earn.
+      // No promises the code does not keep: nothing here queues a follow-up, so
+      // this must not say "I'll query when it finishes".
+      const content = wasWrite
+        ? result.query && !result.query.engineError
+          ? '승인 확인. SQL 실행했어.'
+          : `승인 확인. 다만 엔진이 거부했어: ${result.query?.engineError || 'unknown error'}`
+        : result.session
+          ? result.session.state === 'ready'
+            ? `승인 확인. ${result.session.binaryName} 세션 준비됐어.`
+            : `승인 확인. ${result.session.binaryName} 자동 분석 시작했어. 큰 바이너리면 몇 분 걸려 — 세션이 ready로 바뀌면 쿼리하자.`
+          : result.guiStartCommand
+            ? // GUI mode ends with something the OPERATOR has to do, so the line
+              // they must type gets its own fenced block instead of being buried
+              // in prose -- the token is 64 characters and picking it out of a
+              // paragraph is not a reasonable ask. Naming the port and token here
+              // also gives the model something parseable to pass to
+              // ida_gui_attach later.
+              [
+                `승인 확인. IDA 띄웠어 (PID ${result.launchedPid ?? '?'}).`,
+                '창이 이 창 뒤나 다른 모니터에 열려. 작업표시줄에서 깜빡일 거야 — Windows가 백그라운드 실행기에 포커스를 안 줘서 알아서 앞으로 오진 않아.',
+                '데이터베이스가 로드되면 IDA의 idasql CLI 창에 이걸 그대로 입력해:',
+                '```',
+                result.guiStartCommand,
+                '```',
+                `그다음 IDA Lab에서 attach하거나, 나한테 "attach해줘"라고 하면 포트 ${result.guiSuggestedPort}로 붙일게.`,
+              ].join('\n')
+            : `승인 확인. ${result.detail || 'IDA 실행했어.'}`;
+      emitAssistantMessage({ id: String(Date.now()), role: 'assistant', content });
+    } catch (error) {
+      setIdaApprovalBusy(false);
+      setIdaApprovalError(error instanceof Error ? error.message : String(error));
+    }
+  }, [emitAssistantMessage, idaApproval, idaApprovalBusy]);
+
   useEffect(() => {
     if (conversationPreferences?.ttsEnabled) return;
     stopAoiTtsPlayback();
@@ -7718,6 +7803,12 @@ const ChatPanel: React.FC<{
     // procedure the model was not given.
     const hasWebSearchTool = toolCallRuntimeAvailable && !useDialogModel && hasTavily;
     const hasResearchTools = toolCallRuntimeAvailable && !useDialogModel && hasTavily;
+    // Six IDA tools on every turn is real prompt cost, so they ride only when the
+    // turn looks like reversing work or a session has already been touched.
+    const hasIdaSqlTools =
+      toolCallRuntimeAvailable &&
+      !useDialogModel &&
+      shouldEnableIdaSqlTools(latestUserMessage, history);
     const confirmedResearchRequest = resolveAoiResearchConfirmationRequest(
       latestUserMessage,
       history,
@@ -7743,6 +7834,7 @@ const ChatPanel: React.FC<{
             ...(hasResearchTools ? getAoiResearchToolDefinitions() : []),
             ...(hasImageGen ? getImageGenToolDefinitions() : []),
             ...getHostProcessToolDefinitions(),
+            ...(hasIdaSqlTools ? getIdaSqlToolDefinitions() : []),
             ...getHostBrowserToolDefinitions(),
             ...getBrowserDriveToolDefinitions(),
             ...getBrowserDriveActToolDefinitions(),
@@ -8686,6 +8778,16 @@ const ChatPanel: React.FC<{
                   ...params,
                   __toolName: tc.function.name,
                 }),
+                summarizedResult: summarizeToolResultForModel(tc.function.name, result),
+              };
+            }
+
+            if (isIdaSqlTool(tc.function.name)) {
+              const result = await executeIdaSqlTool(tc.function.name, params);
+              presentIdaApproval(result);
+              return {
+                toolCallId: tc.id,
+                pendingSummary: getIdaSqlToolPendingSummary(tc.function.name, params),
                 summarizedResult: summarizeToolResultForModel(tc.function.name, result),
               };
             }
@@ -9681,6 +9783,32 @@ const ChatPanel: React.FC<{
               tool: tc.function.name,
               err,
             });
+            currentMessages = [
+              ...currentMessages,
+              {
+                role: 'tool',
+                content: `error: ${err instanceof Error ? err.message : String(err)}`,
+                tool_call_id: tc.id,
+              },
+            ];
+          }
+          continue;
+        }
+
+        if (isIdaSqlTool(tc.function.name)) {
+          pendingToolCallsRef.current.push(getIdaSqlToolPendingSummary(tc.function.name, params));
+          try {
+            const result = await executeIdaSqlTool(tc.function.name, params);
+            // Session start and any mutating SQL come back as approval_required;
+            // raising the popup here is what makes the operator click real.
+            presentIdaApproval(result);
+            const summarizedResult = summarizeToolResultForModel(tc.function.name, result);
+            currentMessages = [
+              ...currentMessages,
+              { role: 'tool', content: summarizedResult, tool_call_id: tc.id },
+            ];
+          } catch (err) {
+            console.error('[ChatPanel] ida tool failed', { tool: tc.function.name, err });
             currentMessages = [
               ...currentMessages,
               {
@@ -12155,6 +12283,80 @@ const ChatPanel: React.FC<{
                     data-testid="host-spawn-approval-confirm"
                   >
                     {hostSpawnApprovalBusy ? 'Starting…' : 'Approve & Run'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {idaApproval ? (
+        <div className={styles.overlay} data-testid="ida-approval-overlay">
+          <div
+            className={`${styles.settingsModal} ${styles.settingsModalCompact}`}
+            data-testid="ida-approval-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ida-approval-title"
+          >
+            <div className={styles.settingsHeader}>
+              <div className={styles.settingsHeading}>
+                <div className={styles.settingsTitle} id="ida-approval-title">
+                  {idaApproval.kind === 'write' ? 'IDA database write' : 'IDA analysis start'}
+                </div>
+                <div className={styles.settingsSubtitle}>
+                  {idaApproval.kind === 'write'
+                    ? 'This SQL changes the IDA database on disk. Read it before approving.'
+                    : 'Aoi wants to start IDA on this binary on your PC. Approve only if you asked for it.'}
+                </div>
+              </div>
+              <button
+                type="button"
+                className={styles.cancelBtn}
+                onClick={denyIdaApproval}
+                disabled={idaApprovalBusy}
+              >
+                Close
+              </button>
+            </div>
+            <div className={styles.settingsBody}>
+              <div className={styles.settingsSection}>
+                <div className={styles.modelHint}>
+                  <strong>{idaApproval.targetSummary || 'IDA Lab'}</strong>
+                </div>
+                <pre
+                  className={styles.modelHint}
+                  style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', margin: 0 }}
+                  data-testid="ida-approval-detail"
+                >
+                  {idaApproval.detail}
+                </pre>
+                <div className={styles.modelHint}>capability: {idaApproval.capability}</div>
+                {idaApprovalError ? (
+                  <div className={styles.aoiAutonomyError}>{idaApprovalError}</div>
+                ) : null}
+                <div
+                  className={styles.settingsActions}
+                  style={{ borderTop: 'none', paddingTop: 8 }}
+                >
+                  <button
+                    type="button"
+                    className={styles.cancelBtn}
+                    onClick={denyIdaApproval}
+                    disabled={idaApprovalBusy}
+                    data-testid="ida-approval-deny"
+                  >
+                    Deny
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.saveBtn}
+                    onClick={() => void confirmIdaApproval()}
+                    disabled={idaApprovalBusy}
+                    data-testid="ida-approval-confirm"
+                  >
+                    {idaApprovalBusy ? 'Running…' : 'Approve & Run'}
                   </button>
                 </div>
               </div>

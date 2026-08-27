@@ -21,6 +21,7 @@ import type { AoiAutonomyBackgroundRunnerHandle } from './aoiAutonomyBackgroundR
 import type { AoiMemoryEmbedSweepHandle } from './aoiMemoryEmbedSweep';
 import { createAoiResearchMiddleware, type AoiResearchMiddleware } from './aoiResearchPlugin';
 import { createAoiHostBridgeMiddleware, type AoiHostBridgeMiddleware } from './aoiHostBridgePlugin';
+import { createIdaSqlMiddleware, type IdaSqlMiddleware } from './idaSqlPlugin';
 import { ensureAoiHostBridgeToken } from './aoiHostBridgeAuth';
 import { createSessionDataMiddleware, type SessionDataMiddleware } from './sessionDataServer';
 import {
@@ -164,6 +165,17 @@ export async function startAoiDaemon(options: AoiDaemonOptions): Promise<AoiDaem
     openroomHome,
   });
 
+  // IDA Lab (/api/ida-sql/*). Mounted here so the autonomous loop can reach the
+  // same session registry the browser does -- with the same kill-switch,
+  // containment and approval gates. Note the sessions themselves are
+  // process-scoped: a session the daemon started is not visible to the dev
+  // server and vice versa.
+  const idaSqlMiddleware: IdaSqlMiddleware = createIdaSqlMiddleware({
+    configFile: pluginOptions.configFile,
+    sessionsDir: pluginOptions.sessionsDir,
+    openroomHome,
+  });
+
   // Observability: the health tracker reads loop-running via a thunk so it can be
   // created here (before the post-listen loop start) without a boot-ordering dance.
   const bootAt = Date.now();
@@ -197,13 +209,16 @@ export async function startAoiDaemon(options: AoiDaemonOptions): Promise<AoiDaem
       return;
     }
     // Native http has no next(); chain the shared middlewares (autonomy first,
-    // then host-bridge, research, and session-data) and turn anything none owns
-    // into a 404. The host-bridge routes are token-authenticated internally.
+    // then host-bridge, IDA Lab, research, and session-data) and turn anything
+    // none owns into a 404. The host-bridge and IDA Lab routes are
+    // token-authenticated internally.
     autonomyMiddleware(req, res, () => {
       hostBridgeMiddleware(req, res, () => {
-        researchMiddleware(req, res, () => {
-          sessionDataMiddleware(req, res, () => {
-            writeNotFound(res);
+        idaSqlMiddleware(req, res, () => {
+          researchMiddleware(req, res, () => {
+            sessionDataMiddleware(req, res, () => {
+              writeNotFound(res);
+            });
           });
         });
       });

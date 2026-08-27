@@ -1,0 +1,601 @@
+.root {
+  /* Design tokens (.claude/rules/design-tokens.md), self-defined at the app
+     root: neither the shell nor any global stylesheet implements the token spec,
+     so without these every var() resolves empty and the color system collapses
+     to inherited colors. Scoped here, they work the same in an iframe and inline
+     on the shell desktop. */
+  --bg-1: #121214;
+  --bg-2: #1c1d20;
+  --bg-3: #282a2a;
+  --grouped-4: #333333;
+  --color-blue: #6083ff;
+  --color-yellow: #faea5f;
+  --color-yellow-10: rgba(250, 234, 95, 0.1);
+  --color-red: #ff3f4d;
+  --color-cyan: #2ea7ff;
+  --color-purple: #7660ff;
+  --fill-white-20: rgba(255, 255, 255, 0.2);
+  --fill-white-15: rgba(255, 255, 255, 0.15);
+  --fill-white-10: rgba(255, 255, 255, 0.1);
+  --fill-white-6: rgba(255, 255, 255, 0.06);
+  --fill-white-4: rgba(255, 255, 255, 0.04);
+  --text-primary: rgba(255, 255, 255, 0.9);
+  --text-secondary: rgba(255, 255, 255, 0.75);
+  --text-tertiary: rgba(255, 255, 255, 0.6);
+  --text-quaternary: rgba(255, 255, 255, 0.5);
+  --text-placeholder: rgba(255, 255, 255, 0.35);
+  --text-btn-primary: #121214;
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 12px;
+  --spacing-lg: 16px;
+
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-1);
+  color: var(--text-primary);
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    sans-serif;
+  font-size: 13px;
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  flex-wrap: wrap;
+  padding: var(--spacing-sm) var(--spacing-lg);
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--fill-white-10);
+  flex-shrink: 0;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  font-weight: 600;
+  color: var(--color-purple);
+}
+
+.statusRow {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  flex: 1;
+  min-width: 0;
+}
+
+.statusChip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  border: 1px solid var(--fill-white-10);
+  background: var(--fill-white-4);
+  white-space: nowrap;
+}
+
+.tone_ok {
+  color: var(--color-cyan);
+  border-color: rgba(46, 167, 255, 0.4);
+}
+
+.tone_warn {
+  color: var(--color-yellow);
+  border-color: rgba(250, 234, 95, 0.4);
+}
+
+.tone_error {
+  color: var(--color-red);
+  border-color: rgba(255, 63, 77, 0.45);
+}
+
+.tone_idle {
+  color: var(--text-quaternary);
+}
+
+.statusAction {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.headerActions {
+  display: flex;
+  gap: var(--spacing-sm);
+  flex-shrink: 0;
+}
+
+.ghostBtn,
+.primaryBtn,
+.dangerBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  border: 1px solid var(--fill-white-10);
+  background: var(--bg-3);
+  color: var(--text-secondary);
+
+  &:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+}
+
+.primaryBtn {
+  background: var(--color-yellow);
+  border-color: var(--color-yellow);
+  color: var(--text-btn-primary);
+  font-weight: 600;
+}
+
+.dangerBtn {
+  color: var(--color-red);
+  border-color: rgba(255, 63, 77, 0.35);
+}
+
+.spin {
+  animation: idaLabSpin 1s linear infinite;
+}
+
+@keyframes idaLabSpin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.noteOk,
+.noteError {
+  padding: var(--spacing-sm) var(--spacing-lg);
+  font-size: 12px;
+  border-bottom: 1px solid var(--fill-white-10);
+}
+
+.noteOk {
+  color: var(--color-cyan);
+  background: rgba(46, 167, 255, 0.08);
+}
+
+.noteError {
+  color: var(--color-red);
+  background: rgba(255, 63, 77, 0.08);
+}
+
+.workbench {
+  display: grid;
+  grid-template-columns: minmax(260px, 340px) 1fr;
+  gap: 1px;
+  flex: 1;
+  min-height: 0;
+  background: var(--fill-white-10);
+}
+
+.browser,
+.console {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  padding: var(--spacing-md);
+  /* The shell's floating bottom bar sits over the bottom ~68px of a maximized
+     window, and both panels put controls at their end (Analyze, Run). Without
+     this the last control is unclickable rather than merely half-hidden. */
+  padding-bottom: 80px;
+  gap: var(--spacing-sm);
+  background: var(--bg-1);
+  overflow-y: auto;
+}
+
+.panelHead {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-quaternary);
+}
+
+.classChip {
+  margin-left: auto;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--fill-white-10);
+  font-size: 10px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-tertiary);
+}
+
+.inlineForm {
+  display: flex;
+  gap: var(--spacing-xs);
+  flex-wrap: wrap;
+}
+
+.input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--bg-3);
+  border: 1px solid var(--fill-white-10);
+  border-radius: 6px;
+
+  &::placeholder {
+    color: var(--text-placeholder);
+  }
+}
+
+.crumbs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.crumbGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.crumb {
+  padding: 1px 4px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+
+  &:hover {
+    background: var(--fill-white-6);
+  }
+}
+
+.entries,
+.sessions,
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.entries {
+  flex: 1;
+  min-height: 120px;
+  overflow-y: auto;
+}
+
+.entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+  width: 100%;
+  padding: 5px 7px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+
+  &:hover {
+    background: var(--fill-white-4);
+  }
+}
+
+.entrySelected {
+  border-color: var(--color-purple);
+  background: var(--fill-white-6);
+  color: var(--text-primary);
+}
+
+.entryName {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.entryMeta {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-quaternary);
+}
+
+.analyzeBox {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-sm);
+  border: 1px solid var(--fill-white-10);
+  border-radius: 8px;
+  background: var(--bg-2);
+}
+
+.rowActions {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  flex-wrap: wrap;
+}
+
+.checkboxRow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  font-size: 11px;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.confirmBox {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-sm);
+  border: 1px solid rgba(250, 234, 95, 0.4);
+  border-radius: 8px;
+  background: var(--color-yellow-10);
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.sessions {
+  gap: var(--spacing-xs);
+
+  li {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+  }
+}
+
+.sessionRow {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--fill-white-10);
+  border-radius: 6px;
+  background: var(--bg-2);
+  color: var(--text-secondary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.sessionSelected {
+  border-color: var(--color-purple);
+  color: var(--text-primary);
+}
+
+.sessionName {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.sessionMeta {
+  font-size: 10px;
+  color: var(--text-quaternary);
+}
+
+.snippets {
+  display: flex;
+  gap: var(--spacing-xs);
+  flex-wrap: wrap;
+}
+
+.sqlInput {
+  min-height: 110px;
+  padding: var(--spacing-sm);
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  background: var(--bg-3);
+  border: 1px solid var(--fill-white-10);
+  border-radius: 8px;
+  resize: vertical;
+}
+
+.results {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  min-width: 0;
+}
+
+.tableWrap {
+  /* Wide result sets scroll inside the panel; the page itself never does. */
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--fill-white-10);
+  border-radius: 8px;
+}
+
+.table {
+  border-collapse: collapse;
+  width: 100%;
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 11px;
+
+  th,
+  td {
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--fill-white-6);
+    text-align: left;
+    white-space: nowrap;
+  }
+
+  th {
+    position: sticky;
+    top: 0;
+    background: var(--bg-3);
+    color: var(--text-tertiary);
+    font-weight: 600;
+  }
+
+  td {
+    color: var(--text-secondary);
+  }
+}
+
+.pre {
+  margin: 0;
+  padding: var(--spacing-sm);
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: var(--fill-black-10, rgba(0, 0, 0, 0.15));
+  border-radius: 6px;
+}
+
+.setup {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: var(--spacing-md);
+  padding: var(--spacing-md);
+  /* Same reason as the workbench panels: the shell bar covers the bottom edge. */
+  padding-bottom: 80px;
+  overflow-y: auto;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-md);
+  border: 1px solid var(--fill-white-10);
+  border-radius: 10px;
+  background: var(--bg-2);
+  min-width: 0;
+}
+
+.panelTitle {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.hint {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-quaternary);
+}
+
+.mono {
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  overflow-wrap: anywhere;
+}
+
+.listRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-sm);
+  border: 1px solid var(--fill-white-6);
+  border-radius: 8px;
+  background: var(--bg-3);
+}
+
+.listMain {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.listActions {
+  display: flex;
+  gap: var(--spacing-xs);
+  flex-shrink: 0;
+}
+
+.empty {
+  padding: var(--spacing-sm);
+  font-size: 11px;
+  color: var(--text-placeholder);
+}
+
+.diag {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px var(--spacing-sm);
+  margin: 0;
+  font-size: 11px;
+
+  dt {
+    color: var(--text-quaternary);
+  }
+
+  dd {
+    margin: 0;
+    color: var(--text-secondary);
+  }
+}
+
+.problems {
+  margin: 0;
+  padding-left: var(--spacing-lg);
+  font-size: 11px;
+  color: var(--color-yellow);
+  line-height: 1.6;
+}
+
+@media (max-width: 900px) {
+  .workbench {
+    grid-template-columns: 1fr;
+  }
+}

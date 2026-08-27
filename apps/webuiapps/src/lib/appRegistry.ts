@@ -426,6 +426,31 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
     color: '#2ea7ff',
     defaultSize: { width: 1240, height: 800 },
   },
+  {
+    appId: 31,
+    appName: 'idalab',
+    route: '/ida-lab',
+    displayName: 'IDA Lab',
+    aliases: [
+      'ida',
+      'idasql',
+      'ida pro',
+      'reverse engineering',
+      'disassembler',
+      'decompiler',
+      'binary analysis',
+      'IDA 랩',
+      '아이다',
+      '리버싱',
+      '역분석',
+      '디컴파일러',
+      '바이너리 분석',
+    ],
+    sourceDir: 'IdaLab',
+    icon: 'Binary',
+    color: '#a855f7',
+    defaultSize: { width: 1360, height: 860 },
+  },
 ];
 
 // OS actions are built-in system actions, not from meta.yaml
