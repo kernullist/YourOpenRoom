@@ -37,6 +37,21 @@ export interface PendingNewsOffer {
   articleId: string;
   category: AoiNewsCategory;
   title: string;
+  // When the card was emitted. The article behind a news chip lives in a
+  // rotating ten-item live feed that CyberNews prunes on every sync, so an
+  // offer can outlive the file it points at. Without an age the chip stayed
+  // armed forever: a tap four days later dispatched VIEW_ARTICLE for an
+  // article that had been deleted and answered with a generic open failure.
+  offeredAt: number;
+}
+
+// How long a news chip stays tappable. The live feed refreshes every 30 min and
+// keeps only ten items, so six hours is about the outer edge of "the article is
+// probably still on disk" while still covering an ordinary away-from-desk gap.
+export const NEWS_OFFER_TTL_MS = 6 * 60 * 60 * 1000;
+
+export function isNewsOfferExpired(offer: PendingNewsOffer, now: number = Date.now()): boolean {
+  return now - offer.offeredAt > NEWS_OFFER_TTL_MS;
 }
 
 const PENDING_MUSIC_OFFER_STORAGE_KEY = 'aoi-pending-idle-music-offer-v1';
@@ -96,7 +111,7 @@ export function savePendingIdleMusicOffer(offer: PendingIdleMusicOffer | null): 
   writeJson(PENDING_MUSIC_OFFER_STORAGE_KEY, offer);
 }
 
-export function loadPendingNewsOffer(): PendingNewsOffer | null {
+export function loadPendingNewsOffer(now: number = Date.now()): PendingNewsOffer | null {
   const parsed = readJson(PENDING_NEWS_OFFER_STORAGE_KEY) as Partial<PendingNewsOffer> | null;
   if (
     parsed &&
@@ -105,15 +120,23 @@ export function loadPendingNewsOffer(): PendingNewsOffer | null {
     isNonEmptyString(parsed.articleId) &&
     isNonEmptyString(parsed.title) &&
     isNonEmptyString(parsed.category) &&
-    (AOI_NEWS_CATEGORIES as readonly string[]).includes(parsed.category)
+    (AOI_NEWS_CATEGORIES as readonly string[]).includes(parsed.category) &&
+    // An entry written before offers carried an age cannot be dated, and an
+    // offer that cannot be dated must not be re-armed: it is at least as old as
+    // the deploy that added the field.
+    typeof parsed.offeredAt === 'number' &&
+    Number.isFinite(parsed.offeredAt) &&
+    parsed.offeredAt > 0
   ) {
-    return {
+    const offer: PendingNewsOffer = {
       playPrompt: parsed.playPrompt,
       dismissPrompt: parsed.dismissPrompt,
       articleId: parsed.articleId,
       category: parsed.category as AoiNewsCategory,
       title: parsed.title,
+      offeredAt: parsed.offeredAt,
     };
+    return isNewsOfferExpired(offer, now) ? null : offer;
   }
   return null;
 }

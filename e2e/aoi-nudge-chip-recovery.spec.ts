@@ -91,11 +91,20 @@ const MUSIC_CARD: CardFixture = {
   suggestedReplies: [PLAY_CHIP, MUSIC_DISMISS_CHIP],
 };
 
-const NEWS_CARD: CardFixture = {
-  id: 'aoi-news-e2e',
-  content: `📰 새 사이버보안 뉴스가 눈에 띄네: "${NEWS_HEADLINE}". 자세히 볼래?`,
-  suggestedReplies: [NEWS_CHIP, '지금은 됐어'],
-};
+// News cards are emitted as `aoi-news-<epoch ms>`. Once localStorage is out of
+// the picture that stamp is the only record of when the offer was made, and the
+// app ages the restored offer by it, so the fixture carries a real one.
+function newsCard(offeredAt: number): CardFixture {
+  return {
+    id: `aoi-news-${offeredAt}`,
+    content: `📰 새 사이버보안 뉴스가 눈에 띄네: "${NEWS_HEADLINE}". 자세히 볼래?`,
+    suggestedReplies: [NEWS_CHIP, '지금은 됐어'],
+  };
+}
+
+// The gap in the reported incident: the card sat in the transcript for close to
+// four days before the chip was tapped.
+const STALE_NEWS_CARD_AGE_MS = 91 * 60 * 60 * 1000;
 
 const PREFERENCE_CARD: CardFixture = {
   id: 'aoi-preference-poll-e2e',
@@ -343,7 +352,7 @@ test.describe('Aoi nudge chips after the pending offer is lost', () => {
   });
 
   test('the news chip recovers its article and opens it in CyberNews', async ({ page }) => {
-    await stubSessionData(page, NEWS_CARD);
+    await stubSessionData(page, newsCard(Date.now()));
     await page.goto('/');
     await tapChip(page, '관심 있어');
 
@@ -389,13 +398,45 @@ test.describe('Aoi nudge chips after the pending offer is lost', () => {
         },
       }),
     );
-    await stubSessionData(page, NEWS_CARD, '2020-01-01T00:00:00.000Z');
+    await stubSessionData(page, newsCard(Date.now()), '2020-01-01T00:00:00.000Z');
     await page.goto('/');
     await tapChip(page, '관심 있어');
 
-    await expect(page.getByTestId('chat-messages')).toContainText('문제가 있었어', {
+    // Says the article rolled off the feed, and backs the offer to pick another
+    // one by actually putting CyberNews on the current list.
+    await expect(page.getByTestId('chat-messages')).toContainText('피드에서 내려갔어', {
       timeout: 30_000,
     });
+    await expect(page.getByTestId(`app-window-${CYBERNEWS_APP_ID}`)).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.getByTestId('chat-messages')).not.toContainText('CyberNews에서 "');
+    expect(llmCallCount).toBe(0);
+  });
+
+  // The reported failure: a card tapped days later. The article had long since
+  // been pruned, but the chip was still armed, so the tap dispatched
+  // VIEW_ARTICLE for a deleted file and answered with a generic open error that
+  // told the user to go look in an app where the article no longer was.
+  test('a news chip older than the offer TTL never dispatches a doomed open', async ({ page }) => {
+    // The article is present and fresh on disk: only the offer's age disarms
+    // the chip, so this cannot pass by the article being missing.
+    await stubSessionData(page, newsCard(Date.now() - STALE_NEWS_CARD_AGE_MS));
+    await page.goto('/');
+    await tapChip(page, '관심 있어');
+
+    await expect(page.getByTestId('chat-messages')).toContainText('피드에서 내려갔어', {
+      timeout: 30_000,
+    });
+    await expect(page.getByTestId(`app-window-${CYBERNEWS_APP_ID}`)).toBeVisible({
+      timeout: 30_000,
+    });
+    // The list view, not the article detail. Had the chip still dispatched
+    // VIEW_ARTICLE it would have succeeded here -- the article is on disk -- and
+    // both the body and the "CyberNews에서" open ack would be showing.
+    await expect(page.getByTestId(`app-window-${CYBERNEWS_APP_ID}`)).not.toContainText(
+      NEWS_ARTICLE_BODY,
+    );
     await expect(page.getByTestId('chat-messages')).not.toContainText('CyberNews에서 "');
     expect(llmCallCount).toBe(0);
   });

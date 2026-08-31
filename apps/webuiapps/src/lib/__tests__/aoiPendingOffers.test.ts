@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   loadPendingIdleMusicOffer,
+  isNewsOfferExpired,
   loadPendingNewsOffer,
+  NEWS_OFFER_TTL_MS,
   loadPendingPreferencePoll,
   loadPendingTastePoll,
   savePendingIdleMusicOffer,
@@ -24,12 +26,15 @@ const musicOffer: PendingIdleMusicOffer = {
   mood: 'chill',
 };
 
+const NOW = 1788140769921;
+
 const newsOffer: PendingNewsOffer = {
   playPrompt: '📰 관심 있어',
   dismissPrompt: '다음에',
   articleId: 'article-1',
   category: 'breaking',
   title: 'Agentic AI used to conduct ransomware attack',
+  offeredAt: NOW,
 };
 
 describe('aoiPendingOffers', () => {
@@ -75,11 +80,41 @@ describe('aoiPendingOffers', () => {
   describe('pending news offer', () => {
     it('round-trips an offer across save and load (reload survival)', () => {
       savePendingNewsOffer(newsOffer);
-      expect(loadPendingNewsOffer()).toEqual(newsOffer);
+      expect(loadPendingNewsOffer(NOW)).toEqual(newsOffer);
     });
 
     it('returns null when nothing is stored', () => {
-      expect(loadPendingNewsOffer()).toBeNull();
+      expect(loadPendingNewsOffer(NOW)).toBeNull();
+    });
+
+    // The article a chip points at lives in a rotating ten-item feed CyberNews
+    // prunes on every sync. An offer that outlives the window can only produce
+    // an open that fails, so it must stop being an offer.
+    it('keeps an offer inside the TTL and drops it past the TTL', () => {
+      savePendingNewsOffer(newsOffer);
+      expect(loadPendingNewsOffer(NOW + NEWS_OFFER_TTL_MS)).toEqual(newsOffer);
+      expect(loadPendingNewsOffer(NOW + NEWS_OFFER_TTL_MS + 1)).toBeNull();
+    });
+
+    it('rejects an entry written before offers carried an age', () => {
+      const legacy: Record<string, unknown> = { ...newsOffer };
+      delete legacy.offeredAt;
+      localStorage.setItem(NEWS_KEY, JSON.stringify(legacy));
+      expect(loadPendingNewsOffer(NOW)).toBeNull();
+    });
+
+    it('rejects an unusable offeredAt rather than treating it as fresh', () => {
+      for (const offeredAt of [0, -1, Number.NaN, 'yesterday']) {
+        localStorage.setItem(NEWS_KEY, JSON.stringify({ ...newsOffer, offeredAt }));
+        expect(loadPendingNewsOffer(NOW), String(offeredAt)).toBeNull();
+      }
+    });
+
+    it('reports expiry against the offer age', () => {
+      expect(isNewsOfferExpired(newsOffer, NOW + NEWS_OFFER_TTL_MS)).toBe(false);
+      expect(isNewsOfferExpired(newsOffer, NOW + NEWS_OFFER_TTL_MS + 1)).toBe(true);
+      // The four-day-old tap this guard was written for.
+      expect(isNewsOfferExpired(newsOffer, NOW + 91 * 60 * 60 * 1000)).toBe(true);
     });
 
     it('clears the stored offer when saving null (offer consumed)', () => {
@@ -91,12 +126,12 @@ describe('aoiPendingOffers', () => {
 
     it('rejects an unknown category', () => {
       localStorage.setItem(NEWS_KEY, JSON.stringify({ ...newsOffer, category: 'gossip' }));
-      expect(loadPendingNewsOffer()).toBeNull();
+      expect(loadPendingNewsOffer(NOW)).toBeNull();
     });
 
     it('rejects a payload with a missing articleId', () => {
       localStorage.setItem(NEWS_KEY, JSON.stringify({ ...newsOffer, articleId: '' }));
-      expect(loadPendingNewsOffer()).toBeNull();
+      expect(loadPendingNewsOffer(NOW)).toBeNull();
     });
   });
 

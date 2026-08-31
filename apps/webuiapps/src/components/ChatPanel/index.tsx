@@ -58,6 +58,7 @@ import {
   isDirectPlaylistPlaybackIntent,
   collectMusicPickCandidates,
   isFailedAgentActionResult,
+  isMissingTargetActionResult,
   parseDirectMusicIntent,
   type DirectMusicIntent,
   parseStartedVideo,
@@ -75,6 +76,7 @@ import {
   recoverTastePoll,
 } from '@/lib/aoiPendingOfferRecovery';
 import {
+  isNewsOfferExpired,
   loadPendingIdleMusicOffer,
   loadPendingNewsOffer,
   loadPendingPreferencePoll,
@@ -1854,6 +1856,24 @@ function buildNewsDismissAck(lang: NudgeLang): string {
       return '好的，感兴趣了随时说。';
     default:
       return 'No problem. Say the word if something catches your interest.';
+  }
+}
+
+// The article a chip points at is gone from the local store: the live feed
+// rotated past it and CyberNews pruned the file. Distinct from buildNewsErrorAck
+// on purpose -- that one reads as a transient glitch and sends the user to the
+// app to look for an article that is not there. This says what happened and is
+// only used once CyberNews is actually showing the current list.
+function buildNewsAgedOutAck(lang: NudgeLang): string {
+  switch (lang) {
+    case 'ko':
+      return '미안, 그 기사는 이미 피드에서 내려갔어. CyberNews에 최신 목록 띄워뒀으니까 거기서 골라줄래?';
+    case 'ja':
+      return 'ごめん、その記事はもうフィードから外れてたよ。CyberNewsに最新の一覧を出しておいたから、そこから選んでくれる?';
+    case 'zh':
+      return '抱歉，那条新闻已经从信息流里滚下去了。我把 CyberNews 的最新列表打开了，你从里面挑一条吧?';
+    default:
+      return 'Sorry, that article already rolled off the feed. I opened CyberNews on the current list -- pick one from there?';
   }
 }
 
@@ -6357,7 +6377,13 @@ const ChatPanel: React.FC<{
       pendingIdleMusicOfferRef.current = loadPendingIdleMusicOffer();
     }
     if (!pendingNewsOfferRef.current) {
+      // Returns null for an offer past its TTL. Clear the entry as well, so the
+      // transcript-recovery pass below cannot fall back to what was just aged
+      // out of memory.
       pendingNewsOfferRef.current = loadPendingNewsOffer();
+      if (!pendingNewsOfferRef.current) {
+        savePendingNewsOffer(null);
+      }
     }
     if (!pendingTastePollRef.current) {
       pendingTastePollRef.current = loadPendingTastePoll();
@@ -6448,10 +6474,26 @@ const ChatPanel: React.FC<{
           fileApi: cyberNewsFileApi,
           allowNetwork: false,
         });
-        const recovered = recoverNewsOffer(card, candidates) ?? pendingNewsOfferRef.current;
-        if (recovered && stillWanted()) {
+        // The stored offer is only a valid fallback while the article it names
+        // is still on disk. Keeping it unconditionally is what left a four-day-
+        // old chip armed: recovery could not match the headline against any
+        // current article, fell back to the stale offer anyway, and the tap
+        // dispatched VIEW_ARTICLE for a file CyberNews had long since pruned.
+        const stored = pendingNewsOfferRef.current;
+        const storedStillOnDisk =
+          stored && candidates.some((candidate) => candidate.id === stored.articleId)
+            ? stored
+            : null;
+        const recovered = recoverNewsOffer(card, candidates) ?? storedStillOnDisk;
+        if (!stillWanted()) {
+          return;
+        }
+        if (recovered && !isNewsOfferExpired(recovered)) {
           pendingNewsOfferRef.current = recovered;
           savePendingNewsOffer(recovered);
+        } else {
+          pendingNewsOfferRef.current = null;
+          savePendingNewsOffer(null);
         }
       } catch (error) {
         console.warn('[ChatPanel] Pending news offer recovery failed', error);
@@ -7128,6 +7170,41 @@ const ChatPanel: React.FC<{
         recordIdleMusicMoodOutcome(pendingIdleMusicOffer, false);
       }
 
+      // A tapped news chip whose article is no longer in the local store --
+      // the live feed rotated past it and CyberNews pruned the file, or the
+      // offer outlived its TTL. Opens CyberNews on the current list and says
+      // what happened, and only claims the app opened when the dispatch really
+      // succeeded; otherwise it falls back to the ack that claims nothing.
+      const answerStaleNewsChip = async (chipText: string): Promise<void> => {
+        const lang = resolveNudgeLang();
+        let opened = false;
+        try {
+          // FILTER_NEWS with no category: cheap, forces the article list, and
+          // dispatchAgentAction opens the window when it is closed. VIEW_ARTICLE
+          // is what just failed, and REFRESH_ARTICLES would re-sync the live feed
+          // over the network inside the dispatch timeout.
+          const result = await dispatchAgentAction({
+            app_id: CYBERNEWS_APP_ID,
+            action_type: 'FILTER_NEWS',
+          });
+          opened = !isFailedAgentActionResult(result);
+          if (!opened) {
+            console.error('[ChatPanel] Stale news chip: CyberNews open failed', result);
+          }
+        } catch (err) {
+          console.error('[ChatPanel] Stale news chip: CyberNews open failed', err);
+        }
+        const ack = opened ? buildNewsAgedOutAck(lang) : buildNewsUnresolvedAck(lang);
+        emitAssistantMessage({ id: String(Date.now()), role: 'assistant', content: ack });
+        recordAoiMemoryTurn({
+          userMessage: chipText,
+          assistantMessage: ack,
+          toolCalls: [opened ? 'direct:aoi_news_aged_out' : 'direct:news_open_unresolved'],
+          source: 'direct_action',
+          llmConfig: selectedConfig,
+        });
+      };
+
       // Aoi cyber-news nudge: answer a pending "interesting news?" offer here.
       // Interested -> open the exact article in CyberNews (VIEW_ARTICLE, which
       // refreshes if needed); dismiss / anything-else folds an accept(+)/skip(-)
@@ -7143,6 +7220,14 @@ const ChatPanel: React.FC<{
           });
           saveAoiNewsState(newsStateRef.current);
           const lang = resolveNudgeLang();
+          // The tap proves interest even when the article is gone, so the accept
+          // signal above still counts -- only the open cannot happen. Dispatching
+          // anyway would just make CyberNews re-sync the feed and answer "not
+          // found" a few seconds later.
+          if (isNewsOfferExpired(pendingNewsOffer)) {
+            await answerStaleNewsChip(messageText);
+            return;
+          }
           try {
             const result = await dispatchAgentAction({
               app_id: CYBERNEWS_APP_ID,
@@ -7151,6 +7236,12 @@ const ChatPanel: React.FC<{
             });
             if (isFailedAgentActionResult(result)) {
               console.error('[ChatPanel] Idle news open dispatch failed', result);
+              // Within the TTL the article can still have been pruned early (a
+              // busy feed day). "Not found" is not a glitch to retry.
+              if (isMissingTargetActionResult(result)) {
+                await answerStaleNewsChip(messageText);
+                return;
+              }
               emitAssistantMessage({
                 id: String(Date.now()),
                 role: 'assistant',
@@ -7337,23 +7428,12 @@ const ChatPanel: React.FC<{
       }
 
       // Same rule for the news card's "interested" chip: no pending offer, and
-      // the headline could not be matched back to an article on disk. Answering
-      // here keeps a chip that promises an action from producing a claim that
-      // one happened.
+      // the headline could not be matched back to an article on disk -- the
+      // offer aged out, or its article did. Answering here keeps a chip that
+      // promises an action from producing a claim that one happened; the tap is
+      // still honoured, by opening CyberNews on the articles that do exist.
       if (!hasImageAttachments && isAoiNewsPlayChip(text)) {
-        const ack = buildNewsUnresolvedAck(resolveNudgeLang());
-        emitAssistantMessage({
-          id: String(Date.now()),
-          role: 'assistant',
-          content: ack,
-        });
-        recordAoiMemoryTurn({
-          userMessage: text,
-          assistantMessage: ack,
-          toolCalls: ['direct:news_open_unresolved'],
-          source: 'direct_action',
-          llmConfig: selectedConfig,
-        });
+        await answerStaleNewsChip(text);
         return;
       }
 
@@ -11477,6 +11557,7 @@ const ChatPanel: React.FC<{
             articleId: article.id,
             category: article.category,
             title: article.title,
+            offeredAt: stamp,
           };
           savePendingNewsOffer(pendingNewsOfferRef.current);
           newsStateRef.current = recordNewsOffered(newsStateRef.current, {

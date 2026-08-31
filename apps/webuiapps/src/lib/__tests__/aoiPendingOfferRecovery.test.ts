@@ -10,6 +10,7 @@ import {
   extractCardNewsTitle,
   identifyPendingNudgeCard,
   isAoiNewsPlayChip,
+  parseNudgeCardStamp,
   recoverIdleMusicOffer,
   recoverNewsOffer,
   recoverPreferencePoll,
@@ -241,7 +242,25 @@ describe('recoverNewsOffer', () => {
       articleId: 'a-9',
       category: 'corporate',
       title: HEADLINE,
+      offeredAt: 1786440518362,
     });
+  });
+
+  // The card id carries the emit time, and it is the only record of the offer's
+  // age once localStorage is out of the picture. An offer that cannot be dated
+  // cannot be aged out, so it must not be rebuilt at all.
+  it('dates the offer from the card id and refuses a card without a stamp', () => {
+    const stamped = identifyPendingNudgeCard([newsCard()])!;
+    expect(recoverNewsOffer(stamped, [newsCandidate()])?.offeredAt).toBe(1786440518362);
+    const unstamped = identifyPendingNudgeCard([{ ...newsCard(), id: 'aoi-news-card' }])!;
+    expect(recoverNewsOffer(unstamped, [newsCandidate()])).toBeNull();
+  });
+
+  it('parses the stamp out of a card id, or reports it as unknown', () => {
+    expect(parseNudgeCardStamp('aoi-news-1786440518362')).toBe(1786440518362);
+    expect(parseNudgeCardStamp('aoi-idle-music-1786440518362')).toBe(1786440518362);
+    expect(parseNudgeCardStamp('aoi-news-card')).toBeNull();
+    expect(parseNudgeCardStamp('aoi-news-42')).toBeNull();
   });
 
   it('keeps a headline that itself contains quotes intact', () => {

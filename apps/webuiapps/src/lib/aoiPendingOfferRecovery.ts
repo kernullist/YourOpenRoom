@@ -238,6 +238,17 @@ export function reconcileRecoveredIdleMusicOffer(
 // The headline as the news card prints it: the intro, a colon, the quoted
 // title, then the closing question. Greedy between the first and last quote so
 // a headline containing quotes survives; intro and question never contain any.
+/**
+ * The emit timestamp encoded in a nudge card's message id (`<kind>-<epoch ms>`).
+ *
+ * Null when the id carries no stamp. Callers that need the offer's age must
+ * treat that as "unknown", never as "just now".
+ */
+export function parseNudgeCardStamp(id: string): number | null {
+  const stamp = Number(id.match(/-(\d{10,})$/)?.[1]);
+  return Number.isFinite(stamp) && stamp > 0 ? stamp : null;
+}
+
 export function extractCardNewsTitle(content: string): string | null {
   const quoted = content.match(/["“]([\s\S]+)["”]/u)?.[1];
   return quoted?.trim() || null;
@@ -254,6 +265,15 @@ export function recoverNewsOffer(
   candidates: readonly AoiNewsCandidate[],
 ): PendingNewsOffer | null {
   if (card.kind !== 'news') {
+    return null;
+  }
+  // The card id is the only record of when the offer was made once
+  // localStorage is out of the picture, and a news offer has to be dateable:
+  // the article behind it ages out of the live feed. Ageing is left to the
+  // caller -- this stays a pure rebuilder -- but an undateable card cannot be
+  // rebuilt at all.
+  const offeredAt = parseNudgeCardStamp(card.id);
+  if (offeredAt === null) {
     return null;
   }
   const title = extractCardNewsTitle(card.content);
@@ -278,6 +298,7 @@ export function recoverNewsOffer(
     articleId: article.id,
     category: article.category,
     title: article.title,
+    offeredAt,
   };
 }
 

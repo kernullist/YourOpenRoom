@@ -63,6 +63,20 @@ export function isFailedAgentActionResult(result: string | null | undefined): bo
   return normalized === '' || normalized.startsWith('error:') || normalized.startsWith('timeout:');
 }
 
+/**
+ * True when a failed action result says the TARGET is gone, not that the
+ * dispatch broke.
+ *
+ * CyberNews answers VIEW_ARTICLE for a pruned article with "error: article not
+ * found after refresh": the live feed rotated past it and the file was deleted.
+ * That deserves a different answer than a timeout or a dead listener -- retrying
+ * or sending the user to the app will never surface an article that no longer
+ * exists. Only meaningful once isFailedAgentActionResult is already true.
+ */
+export function isMissingTargetActionResult(result: string | null | undefined): boolean {
+  return /not found/i.test((result ?? '').trim());
+}
+
 export interface StartedVideo {
   title: string;
   // False when the query did not name this video and the top hit was taken

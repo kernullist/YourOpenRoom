@@ -5,6 +5,7 @@ import {
   isDeferredMusicPlaybackIntent,
   isDirectPlaylistPlaybackIntent,
   isFailedAgentActionResult,
+  isMissingTargetActionResult,
   parseDirectMusicIntent,
   parseStartedVideo,
 } from '../chatDirectActions';
@@ -227,6 +228,19 @@ describe('parseDirectMusicIntent', () => {
   it('returns null for a play chip with no recoverable recommendation', () => {
     // ChatPanel answers this case honestly; it must never become a search for the marker.
     expect(parseDirectMusicIntent('▶ 재생', [{ role: 'assistant', content: '안녕!' }])).toBeNull();
+  });
+});
+
+describe('isMissingTargetActionResult', () => {
+  it('separates a vanished target from a broken dispatch', () => {
+    // CyberNews prunes live articles the feed has rotated past; the chip that
+    // named one must not be answered as though the open could be retried.
+    expect(isMissingTargetActionResult('error: article not found after refresh')).toBe(true);
+    expect(isMissingTargetActionResult('error: case not found after refresh')).toBe(true);
+    expect(isMissingTargetActionResult('timeout: no response from app')).toBe(false);
+    expect(isMissingTargetActionResult('error: missing articleId')).toBe(false);
+    expect(isMissingTargetActionResult('')).toBe(false);
+    expect(isMissingTargetActionResult(null)).toBe(false);
   });
 });
 
