@@ -147,6 +147,19 @@ const TREND_CARD: CardFixture = {
   suggestedReplies: [TREND_SOURCES_CHIP, '나중에'],
 };
 
+// An agenda card. Its chips are backed the same way the trend card's are, and
+// were lost the same way; the follow-up answer is built entirely from the stored
+// nudge, so a restored context is the only thing that can produce it.
+const AGENDA_APPROVAL_CHIP = 'Review the approval gate';
+const AGENDA_EVIDENCE_REF = 'agenda-proposal-7-evidence';
+const AGENDA_FOLLOW_UP_STORAGE_KEY = 'aoi-agenda-follow-up-contexts-v1';
+
+const AGENDA_CARD: CardFixture = {
+  id: 'aoi-agenda-direct-e2e-proposal-7',
+  content: '승인 대기 중인 제안이 하나 있어. 지금 볼래?',
+  suggestedReplies: [AGENDA_APPROVAL_CHIP, '나중에'],
+};
+
 const PREFERENCE_CARD: CardFixture = {
   id: 'aoi-preference-poll-e2e',
   content: PREFERENCE_PROMPT,
@@ -599,6 +612,58 @@ test.describe('Aoi nudge chips after the pending offer is lost', () => {
       timeout: 30_000,
     });
     await expect(page.getByTestId('chat-messages')).toContainText(TREND_TITLE);
+    expect(llmCallCount).toBe(0);
+  });
+
+  test('an agenda follow-up chip still knows its proposal after a reload', async ({ page }) => {
+    await stubSessionData(page, AGENDA_CARD);
+    await page.goto('/');
+    await expect(
+      page.getByTestId('suggested-reply').filter({ hasText: AGENDA_APPROVAL_CHIP }),
+    ).toBeVisible({ timeout: 30_000 });
+    expect(observedSessionPath).not.toBe('');
+
+    await page.addInitScript(
+      ([storageKey, sessionPath, prompt, evidenceRef]) => {
+        localStorage.setItem(
+          storageKey,
+          JSON.stringify({
+            version: 1,
+            sessionPath,
+            contexts: [
+              {
+                prompt,
+                nudge: {
+                  dedupeKey: 'proposal-7:approval_waiting',
+                  reason: 'approval_waiting',
+                  proposalId: 'proposal-7',
+                  chatText: '승인 대기 중인 제안이 하나 있어.',
+                  suggestedReplies: [prompt, '나중에'],
+                  evidenceRefs: [evidenceRef],
+                },
+                createdAt: Date.now(),
+              },
+            ],
+          }),
+        );
+      },
+      [
+        AGENDA_FOLLOW_UP_STORAGE_KEY,
+        observedSessionPath,
+        AGENDA_APPROVAL_CHIP,
+        AGENDA_EVIDENCE_REF,
+      ],
+    );
+    await page.reload();
+    await tapChip(page, AGENDA_APPROVAL_CHIP);
+
+    // The approval-gate answer is assembled from the stored nudge, so it can
+    // only exist if the context came back. The evidence ref is the half that
+    // could not have come from a fallback: it was in the seeded nudge alone.
+    await expect(page.getByTestId('chat-messages')).toContainText('Approval gate:', {
+      timeout: 30_000,
+    });
+    await expect(page.getByTestId('chat-messages')).toContainText(AGENDA_EVIDENCE_REF);
     expect(llmCallCount).toBe(0);
   });
 
