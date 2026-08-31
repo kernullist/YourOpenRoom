@@ -7222,6 +7222,7 @@ const ChatPanel: React.FC<{
               tasteMoodBias: taste.moodBias,
               personalQueries: taste.personalQueries,
               preferPersonal: true,
+              lang: resolveNudgeLang(),
             });
             const lang = resolveNudgeLang() as AoiTasteLang;
             const copy = buildAoiMusicTasteRecommendCopy({
@@ -7261,9 +7262,13 @@ const ChatPanel: React.FC<{
           });
           return;
         }
-        // Implicit skip: the user moved on to something else. Record the signal
-        // and fall through so their actual message is handled normally.
-        recordIdleMusicMoodOutcome(pendingIdleMusicOffer, false);
+        // Implicit skip: the user moved on to something else. That is NOT a
+        // verdict on the mood -- it used to be scored as one, and since only a
+        // tapped play chip ever scored +1, every mood Aoi offered ratcheted down
+        // to the floor while the one it had never offered won by default. The
+        // card is simply dropped; the offer cooldown already bounds how often it
+        // comes back. Falls through so the real message is handled normally.
+        void pendingIdleMusicOffer;
       }
 
       // A tapped news chip whose article is no longer in the local store --
@@ -7650,6 +7655,7 @@ const ChatPanel: React.FC<{
             tasteMoodBias: taste.moodBias,
             personalQueries: taste.personalQueries,
             preferPersonal: true,
+            lang: resolveNudgeLang(),
           });
           const lang = resolveNudgeLang() as AoiTasteLang;
           const copy = buildAoiMusicTasteRecommendCopy({
@@ -7732,6 +7738,7 @@ const ChatPanel: React.FC<{
           tasteMoodBias: taste.moodBias,
           personalQueries: taste.personalQueries,
           preferPersonal: true,
+          lang: resolveNudgeLang(),
         });
         const copy = buildAoiMusicTasteRecommendCopy({
           query: recommendation.query,
@@ -11354,6 +11361,7 @@ const ChatPanel: React.FC<{
         tasteMoodBias: taste.moodBias,
         personalQueries: taste.personalQueries,
         preferPersonal: true,
+        lang: resolveNudgeLang(),
       });
       const copy = buildIdleMusicCardCopy(
         recommendation.dayPhase,

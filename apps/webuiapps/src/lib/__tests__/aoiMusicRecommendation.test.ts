@@ -3,6 +3,7 @@ import {
   AOI_MUSIC_MOODS,
   buildAoiMusicRecommendation,
   chooseAoiMusicMood,
+  composeAoiMusicQuery,
   dayPhaseForHour,
   type AoiMusicMood,
 } from '../aoiMusicRecommendation';
@@ -208,6 +209,38 @@ describe('buildAoiMusicRecommendation', () => {
   });
 });
 
+describe('composeAoiMusicQuery', () => {
+  it('folds the mood into the seed, in the conversation language', () => {
+    expect(composeAoiMusicQuery('에스파', 'upbeat', 'ko')).toBe('에스파 신나는 노래 모음');
+    expect(composeAoiMusicQuery('에스파', 'ambient', 'ko')).toBe('에스파 은은한 앰비언트 믹스');
+    expect(composeAoiMusicQuery('IVE', 'focus', 'en')).toBe('IVE focus playlist');
+    expect(composeAoiMusicQuery('IVE', 'chill', 'en')).toBe('IVE chill mix');
+  });
+
+  it('does not bolt a second noun onto a seed that already names a playlist', () => {
+    expect(composeAoiMusicQuery('2026년 8월 여돌 노래모음', 'upbeat', 'ko')).toBe(
+      '신나는 2026년 8월 여돌 노래모음',
+    );
+    expect(composeAoiMusicQuery('city pop mix', 'chill', 'en')).toBe('chill city pop mix');
+    expect(composeAoiMusicQuery('kpop hits playlist', 'focus', 'en')).toBe(
+      'focus kpop hits playlist',
+    );
+  });
+
+  it('falls back to English for a language it has no terms for', () => {
+    expect(composeAoiMusicQuery('IVE', 'upbeat', 'de' as never)).toBe('IVE upbeat mix');
+  });
+
+  it('defaults to English when no language is given', () => {
+    expect(composeAoiMusicQuery('IVE', 'upbeat')).toBe('IVE upbeat mix');
+  });
+
+  it('returns nothing for an empty seed and collapses whitespace', () => {
+    expect(composeAoiMusicQuery('   ', 'upbeat', 'en')).toBe('');
+    expect(composeAoiMusicQuery('  IVE   I  AM ', 'focus', 'en')).toBe('IVE I AM focus playlist');
+  });
+});
+
 describe('buildAoiMusicRecommendation — personal taste signals', () => {
   const NOW = 1_700_000_000_000;
   const FOCUS_POOL = [
@@ -217,26 +250,57 @@ describe('buildAoiMusicRecommendation — personal taste signals', () => {
     'programming ambient focus mix',
   ];
 
-  it('prefers a fresh personal query over the pool and labels its source', () => {
+  // A personal candidate is a SEED, not a finished query. Handing one back
+  // verbatim is what made a search the user typed ("에스파") come back as a
+  // recommendation, and it left the mood reaching only the card's opening line.
+  it('composes the mood into a personal seed instead of echoing it back', () => {
     const rec = buildAoiMusicRecommendation({
       now: NOW,
       hourOfDay: 14,
       personalQueries: ['IVE I AM'],
     });
-    expect(rec.query).toBe('IVE I AM');
+    expect(rec.query).toBe('IVE I AM focus playlist');
     expect(rec.source).toBe('personal');
-    expect(rec.cooldownKey).toBe('music:focus:IVE-I-AM');
+    expect(rec.cooldownKey).toBe('music:focus:IVE-I-AM-focus-playlist');
+  });
+
+  // Two seeds can compose to the same query (a bare artist and the same artist
+  // written with padding), and an unusable seed composes to nothing. Neither may
+  // take up a candidate slot.
+  it('drops duplicate and unusable seeds after composing', () => {
+    const rec = buildAoiMusicRecommendation({
+      now: NOW,
+      hourOfDay: 14,
+      personalQueries: ['IVE', '  IVE  ', '   ', 'city pop'],
+      preferPersonal: true,
+      recentQueries: ['IVE focus playlist'],
+    });
+    // The duplicate did not become a second candidate, so the next seed is used.
+    expect(rec.query).toBe('city pop focus playlist');
+    expect(rec.source).toBe('personal');
+  });
+
+  it('gives the same seed a different query per mood', () => {
+    const queries = new Set(
+      ([2, 8, 14, 20] as const).map(
+        (hourOfDay) =>
+          buildAoiMusicRecommendation({ now: NOW, hourOfDay, personalQueries: ['IVE I AM'] }).query,
+      ),
+    );
+    // Four moods, four distinct queries: one seed is no longer spent on the
+    // first card that used it.
+    expect(queries.size).toBe(4);
   });
 
   it('keeps preferring personal after a personal pick (no forced pool mix)', () => {
     const rec = buildAoiMusicRecommendation({
       now: NOW,
       hourOfDay: 14,
-      personalQueries: ['IVE I AM', 'city pop mix'],
-      recentQueries: ['IVE I AM'],
+      personalQueries: ['IVE I AM', 'city pop'],
+      recentQueries: ['IVE I AM focus playlist'],
       preferPersonal: true,
     });
-    expect(rec.query).toBe('city pop mix');
+    expect(rec.query).toBe('city pop focus playlist');
     expect(rec.source).toBe('personal');
   });
 
@@ -244,37 +308,39 @@ describe('buildAoiMusicRecommendation — personal taste signals', () => {
     const rec = buildAoiMusicRecommendation({
       now: NOW,
       hourOfDay: 14,
-      personalQueries: ['IVE I AM', 'city pop mix'],
-      recentQueries: ['IVE I AM'],
+      personalQueries: ['IVE I AM', 'city pop'],
+      recentQueries: ['IVE I AM focus playlist'],
       preferPersonal: false,
     });
     expect(rec.query).toBe(FOCUS_POOL[0]);
     expect(rec.source).toBe('pool');
   });
 
-  it('recycles personal history instead of falling to the mood pool', () => {
+  // Changed deliberately: strict personal mode used to recycle its handful
+  // forever and never reach the pool, so a user with a few seeds saw the same
+  // picks for good. The pool is only reached once every seed is spent.
+  it('falls to the pool once every personal seed has been offered for this mood', () => {
     const rec = buildAoiMusicRecommendation({
       now: NOW,
       hourOfDay: 14,
       personalQueries: ['IVE I AM'],
       preferPersonal: true,
-      recentQueries: [FOCUS_POOL[0], 'IVE I AM'],
+      recentQueries: ['IVE I AM focus playlist'],
     });
-    // Prefer-personal must never invent a generic pool mix when any personal exists.
-    expect(rec.query).toBe('IVE I AM');
-    expect(rec.source).toBe('personal');
+    expect(rec.query).toBe(FOCUS_POOL[0]);
+    expect(rec.source).toBe('pool');
   });
 
-  it('cycles the least-recently-offered personal query when all personals are recent', () => {
+  it('cycles the least-recently-offered personal query when the pool is spent too', () => {
     const rec = buildAoiMusicRecommendation({
       now: NOW,
       hourOfDay: 14,
-      personalQueries: ['IVE I AM', 'city pop mix'],
+      personalQueries: ['IVE I AM', 'city pop'],
       preferPersonal: true,
-      recentQueries: ['city pop mix', 'IVE I AM'],
+      recentQueries: ['city pop focus playlist', 'IVE I AM focus playlist', ...FOCUS_POOL],
     });
     // Oldest personal offer wins (higher recency rank).
-    expect(rec.query).toBe('IVE I AM');
+    expect(rec.query).toBe('IVE I AM focus playlist');
     expect(rec.source).toBe('personal');
   });
 
@@ -285,9 +351,9 @@ describe('buildAoiMusicRecommendation — personal taste signals', () => {
       hourOfDay: 14,
       personalQueries: personals,
       preferPersonal: true,
-      recentQueries: ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8'],
+      recentQueries: personals.slice(0, 8).map((seed) => `${seed} focus playlist`),
     });
-    expect(rec.query).toBe('p9');
+    expect(rec.query).toBe('p9 focus playlist');
     expect(rec.source).toBe('personal');
   });
 

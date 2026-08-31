@@ -132,6 +132,58 @@ export function recordYouTubePlay(
   };
 }
 
+// Decoration a video title carries that a taste seed must not.
+const TITLE_DECORATION_PATTERN =
+  /(?:\bm\/?v\b|\bofficial\b|\bmusic\s+video\b|\blyrics?\b|\baudio\b|\blive\b|\bperformance\b|\bstage\b|\bteaser\b|\bhighlight\b|\b4k\b|\bhd\b|\bver(?:sion)?\b)/gi;
+
+// Where the song title starts. Everything from here on names one specific
+// track; what comes before it is the reusable part.
+const TITLE_QUOTE_PATTERN = /['"‘’“”「『]/u;
+
+const MAX_TASTE_SEED_LENGTH = 40;
+
+/**
+ * Reduce a played video label to something worth searching for again.
+ *
+ * A play is recorded as "Title - Channel" and both halves used to become
+ * recommendation queries verbatim. Neither is one. The channel half is not
+ * music at all -- "SMTOWN" and a playlist channel's name were really offered as
+ * picks -- and the title half names a single video the user has already
+ * watched. What is reusable is the part in front of the song title: the artist,
+ * or the theme of a playlist. Null when nothing usable survives.
+ */
+export function extractTasteSeed(label: string): string | null {
+  let value = label.trim();
+  // Non-greedy: the FIRST " - " is the title/channel split.
+  const dashSplit = value.match(/^(.+?)\s+[-–—]\s+.+$/u);
+  if (dashSplit) {
+    value = dashSplit[1];
+  }
+  // Playlist titles pile the theme, a separator, and a shouty label together.
+  const pipeIndex = value.indexOf('|');
+  if (pipeIndex > 0) {
+    value = value.slice(0, pipeIndex);
+  }
+  const quoteIndex = value.search(TITLE_QUOTE_PATTERN);
+  if (quoteIndex > 0) {
+    value = value.slice(0, quoteIndex);
+  }
+  value = value
+    .replace(/[([（［].*?[)\]）］]/gu, ' ')
+    // Underscores are left alone: they are part of artist names (fromis_9).
+    .replace(TITLE_DECORATION_PATTERN, ' ')
+    // Quote marks only survive on a label that IS a quoted title (no artist in
+    // front of it); the title is a usable seed, the punctuation is not.
+    .replace(/['"‘’“”「」『』]+/gu, ' ')
+    .replace(/[|\-–—·•]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (value.length < 2 || value.length > MAX_TASTE_SEED_LENGTH) {
+    return null;
+  }
+  return value;
+}
+
 // --- Taste poll question bank -------------------------------------------------
 
 export interface TastePollOption {
@@ -457,20 +509,13 @@ export function deriveTasteProfile(state: AoiMusicTasteState | null | undefined)
   for (const search of base.recentSearches) {
     push(search);
   }
+  // Plays contribute the artist / theme, not the video title and never the
+  // channel: the recommender composes a query from the seed, so handing it a
+  // whole title would only ever re-offer a video the user already watched.
   for (const play of base.recentPlays) {
-    push(play);
-    // Expand "Title - Channel" plays into searchable title / artist fragments so
-    // recommendations stay in the same lane instead of falling to the mood pool.
-    const dash = play.match(/^(.+?)\s+[-–—]\s+(.+)$/u);
-    if (dash) {
-      const left = dash[1].trim();
-      const right = dash[2].trim();
-      if (left.length >= 2) {
-        push(left);
-      }
-      if (right.length >= 2 && right.length <= 40) {
-        push(right);
-      }
+    const seed = extractTasteSeed(play);
+    if (seed) {
+      push(seed);
     }
   }
 

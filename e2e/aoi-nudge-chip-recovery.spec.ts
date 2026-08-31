@@ -140,6 +140,7 @@ const TREND_SOURCES_CHIP = '출처 보여줘';
 const TREND_TITLE = 'A NEW ANTI-TAMPER BYPASS IS CIRCULATING';
 const TREND_SOURCE_URL = 'https://example.test/advisory';
 const TREND_FOLLOW_UP_STORAGE_KEY = 'aoi-trend-follow-up-contexts-v1';
+const TASTE_STATE_STORAGE_KEY = 'aoi-music-taste-v1';
 
 const TREND_CARD: CardFixture = {
   id: 'aoi-trend-direct-e2e-snapshot',
@@ -664,6 +665,45 @@ test.describe('Aoi nudge chips after the pending offer is lost', () => {
       timeout: 30_000,
     });
     await expect(page.getByTestId('chat-messages')).toContainText(AGENDA_EVIDENCE_REF);
+    expect(llmCallCount).toBe(0);
+  });
+
+  // The music recommender, on the flow a user can actually reach by typing.
+  // 꿀보's stored taste is the fixture: every one of these labels used to be
+  // handed back as a "recommendation" verbatim -- a channel name, a search term
+  // they typed -- and the mood never reached the music at all.
+  test('a taste-backed recommendation composes a query instead of echoing a play back', async ({
+    page,
+  }) => {
+    // The e2e home is shared across specs and runs, and its config.json carries
+    // whatever taste earlier runs left there. Cut the cloud copy out so the
+    // fixture below is the only taste this test can see -- and so this test does
+    // not write its own into the shared home either.
+    await page.route('**/api/llm-config**', (route) => route.fulfill({ json: {} }));
+    await page.addInitScript((tasteKey) => {
+      localStorage.setItem(
+        tasteKey,
+        JSON.stringify({
+          version: 1,
+          answers: { vibe: 'energetic_pop' },
+          recentSearches: [],
+          recentPlays: ["aespa エスパ 'KISS N TELL' MV - SMTOWN"],
+          lastAskedAt: 0,
+        }),
+      );
+    }, TASTE_STATE_STORAGE_KEY);
+    await stubSessionData(page, TREND_CARD);
+    await page.goto('/');
+    await page.getByTestId('chat-input').fill('노래 추천해줘');
+    await page.getByTestId('chat-input').press('Enter');
+
+    const messages = page.getByTestId('chat-messages');
+    // The artist survives; the channel and the one video's title do not.
+    await expect(messages).toContainText('aespa', { timeout: 30_000 });
+    await expect(messages).not.toContainText('SMTOWN');
+    await expect(messages).not.toContainText('KISS N TELL');
+    // The mood reached the query, which is the whole point of composing it.
+    await expect(messages).toContainText('신나는 노래 모음');
     expect(llmCallCount).toBe(0);
   });
 

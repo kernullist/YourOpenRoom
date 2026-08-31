@@ -47,6 +47,9 @@ export interface AoiMusicRecommendationInput {
   // Test / caller override for the local hour (0-23). When absent it is derived
   // from `now` so the module stays pure and deterministic under test.
   hourOfDay?: number;
+  // Language the composed query is written in. The query is shown to the user
+  // and searched on YouTube, so it follows the conversation, not the seed.
+  lang?: AoiMusicQueryLang;
 }
 
 // Curated query pools per mood. Ordered by preference; the picker walks them to
@@ -151,6 +154,68 @@ export function chooseAoiMusicMood(
   return bestMood;
 }
 
+export type AoiMusicQueryLang = 'ko' | 'ja' | 'zh' | 'en';
+
+// What a taste seed is being asked FOR, per mood, split so a seed that already
+// names a playlist does not get a second noun bolted onto it.
+const MOOD_QUERY_TERMS: Record<
+  AoiMusicQueryLang,
+  Record<AoiMusicMood, { adjective: string; noun: string }>
+> = {
+  ko: {
+    focus: { adjective: '집중되는', noun: '플레이리스트' },
+    chill: { adjective: '잔잔한', noun: '노래 모음' },
+    upbeat: { adjective: '신나는', noun: '노래 모음' },
+    ambient: { adjective: '은은한', noun: '앰비언트 믹스' },
+  },
+  ja: {
+    focus: { adjective: '集中できる', noun: 'プレイリスト' },
+    chill: { adjective: 'ゆったりした', noun: '曲 まとめ' },
+    upbeat: { adjective: 'ノリのいい', noun: '曲 まとめ' },
+    ambient: { adjective: '控えめな', noun: 'アンビエント ミックス' },
+  },
+  zh: {
+    focus: { adjective: '专注', noun: '歌单' },
+    chill: { adjective: '轻松', noun: '歌单' },
+    upbeat: { adjective: '带感', noun: '歌单' },
+    ambient: { adjective: '氛围', noun: '混音' },
+  },
+  en: {
+    focus: { adjective: 'focus', noun: 'playlist' },
+    chill: { adjective: 'chill', noun: 'mix' },
+    upbeat: { adjective: 'upbeat', noun: 'mix' },
+    ambient: { adjective: 'ambient', noun: 'mix' },
+  },
+};
+
+// A seed that already says "playlist" / "mix" / "노래모음" only needs the mood word.
+const PLAYLIST_NOUN_PATTERN =
+  /(?:노래\s*모음|모음집|플레이리스트|플리|playlist|mix|믹스|歌单|プレイリスト|ミックス|まとめ)/iu;
+
+/**
+ * Turn a taste seed into a query that carries the mood.
+ *
+ * Personal candidates used to be handed to the app verbatim, which is why a
+ * search the user typed came back as a "recommendation" ("에스파"), why a channel
+ * name did ("SMTOWN"), and why the mood reached only the card's opening line
+ * and never the music. Composing here means one seed serves every mood instead
+ * of being spent on the first card that used it.
+ */
+export function composeAoiMusicQuery(
+  seed: string,
+  mood: AoiMusicMood,
+  lang: AoiMusicQueryLang = 'en',
+): string {
+  const base = seed.trim().replace(/\s+/g, ' ');
+  if (!base) {
+    return '';
+  }
+  const terms = (MOOD_QUERY_TERMS[lang] ?? MOOD_QUERY_TERMS.en)[mood];
+  return PLAYLIST_NOUN_PATTERN.test(base)
+    ? `${terms.adjective} ${base}`
+    : `${base} ${terms.adjective} ${terms.noun}`;
+}
+
 // Cap personal candidates per pick (aligned with taste play history size).
 const MAX_PERSONAL_CANDIDATES = 16;
 
@@ -190,12 +255,22 @@ function pickQuery(
   recentQueries: readonly string[],
   personalQueries: readonly string[] = [],
   preferPersonal = true,
+  lang: AoiMusicQueryLang = 'en',
 ): { query: string; source: AoiMusicQuerySource } {
   const pool = MOOD_QUERIES[mood];
-  const personal = personalQueries
-    .map((query) => query.trim())
-    .filter((query) => query.length > 0)
-    .slice(0, MAX_PERSONAL_CANDIDATES);
+  // Personal candidates are SEEDS, not finished queries. Composing the mood in
+  // here is what makes the mood reach the music at all in strict personal mode,
+  // which never reads the pool below.
+  const composed = new Set<string>();
+  const personal: string[] = [];
+  for (const seed of personalQueries.slice(0, MAX_PERSONAL_CANDIDATES)) {
+    const query = composeAoiMusicQuery(seed, mood, lang);
+    const key = query.toLowerCase();
+    if (query && !composed.has(key)) {
+      composed.add(key);
+      personal.push(query);
+    }
+  }
 
   const recencyRank = new Map<string, number>();
   recentQueries.forEach((query, index) => {
@@ -205,11 +280,19 @@ function pickQuery(
     }
   });
 
-  // Strict personal mode: recycle the user's own searches/plays only.
+  // Strict personal mode: stay in the user's own lane while anything there is
+  // still unused.
   if (preferPersonal && personal.length > 0) {
     const freshPersonal = personal.find((query) => !recencyRank.has(query.toLowerCase()));
     if (freshPersonal) {
       return { query: freshPersonal, source: 'personal' };
+    }
+    // Every seed has been offered for this mood. The curated pool is a better
+    // answer than replaying the least stale one: strict mode used to recycle the
+    // same handful forever and never reach the pool at all.
+    const freshPool = pool.find((query) => !recencyRank.has(query.toLowerCase()));
+    if (freshPool) {
+      return { query: freshPool, source: 'pool' };
     }
     return pickLeastRecent(personal, recencyRank, 'personal', {
       query: personal[0],
@@ -278,7 +361,13 @@ export function buildAoiMusicRecommendation(
     typeof input.preferPersonal === 'boolean'
       ? input.preferPersonal
       : personalQueries.some((query) => query.trim().length > 0);
-  const picked = pickQuery(mood, input.recentQueries ?? [], personalQueries, preferPersonal);
+  const picked = pickQuery(
+    mood,
+    input.recentQueries ?? [],
+    personalQueries,
+    preferPersonal,
+    input.lang ?? 'en',
+  );
   return {
     mood,
     dayPhase,

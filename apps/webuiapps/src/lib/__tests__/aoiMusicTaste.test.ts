@@ -22,6 +22,7 @@ import {
   recordTasteAnswer,
   recordTasteQuestionAsked,
   recordYouTubePlay,
+  extractTasteSeed,
   recordYouTubeSearch,
   resolveTastePollAnswer,
   sanitizeTasteSearchQuery,
@@ -338,13 +339,48 @@ describe('deriveTasteProfile', () => {
     const profile = deriveTasteProfile(state);
     expect(profile.moodBias).toEqual({ focus: 2, ambient: 1 });
     expect(profile.personalQueries[0]).toBe('IVE I AM');
-    expect(profile.personalQueries[1]).toBe('I AM - IVE');
-    // Title / channel fragments expand searchability without leaving the lane.
-    expect(profile.personalQueries).toContain('I AM');
-    expect(profile.personalQueries).toContain('IVE');
+    // A play contributes its seed, not the recorded "Title - Channel" label and
+    // never the channel on its own: the channel is not music, and the full label
+    // only ever re-offers a video already watched.
+    expect(profile.personalQueries[1]).toBe('I AM');
+    expect(profile.personalQueries).not.toContain('I AM - IVE');
+    expect(profile.personalQueries).not.toContain('IVE');
     expect(profile.personalQueries).toContain('deep focus instrumental mix');
     expect(profile.personalQueries).toContain('game ost focus mix');
     expect(profile.hasTasteSignal).toBe(true);
+  });
+
+  // The labels 꿀보's store actually held. Every one of these produced a
+  // recommendation verbatim before: a channel name, a channel-name fragment, and
+  // a video the user had already watched.
+  it('reduces real play labels to a reusable seed', () => {
+    expect(extractTasteSeed("aespa エスパ 'KISS N TELL' MV - SMTOWN")).toBe('aespa エスパ');
+    expect(extractTasteSeed('2026년 8월 여돌 노래모음 | 🔥 KPOP PLAYLIST - 달플리 𝑷𝒍𝒂𝒚𝒍𝒊𝒔𝒕')).toBe(
+      '2026년 8월 여돌 노래모음',
+    );
+    // Underscores survive: they are part of the artist name.
+    expect(extractTasteSeed("fromis_9 (프로미스나인) 'Vitamin ME' MV")).toBe('fromis_9');
+    // A malformed channel half changes nothing about the seed.
+    expect(extractTasteSeed("aespa エスパ 'KISS N TELL' MV - SMTOWN and aespa")).toBe(
+      'aespa エスパ',
+    );
+  });
+
+  it('refuses a label with nothing reusable left', () => {
+    expect(extractTasteSeed('')).toBeNull();
+    expect(extractTasteSeed('   ')).toBeNull();
+    expect(extractTasteSeed('MV')).toBeNull();
+    // A label that IS a quoted title has no artist in front of it, so the title
+    // itself is the seed -- with the punctuation dropped.
+    expect(extractTasteSeed("'Only A Quoted Title'")).toBe('Only A Quoted Title');
+    expect(extractTasteSeed(`${'x'.repeat(41)} - Channel`)).toBeNull();
+  });
+
+  it('drops a play whose label yields no seed instead of keeping the raw label', () => {
+    const state = recordYouTubePlay(DEFAULT_AOI_MUSIC_TASTE_STATE, { title: 'MV' });
+    const profile = deriveTasteProfile(state);
+    expect(profile.recentPlays).toEqual(['MV']);
+    expect(profile.personalQueries).toEqual([]);
   });
 
   it('dedupes a search that matches an answer seed case-insensitively', () => {
