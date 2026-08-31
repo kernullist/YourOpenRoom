@@ -4,7 +4,9 @@ import { TASTE_POLL_QUESTIONS } from '../aoiMusicTaste';
 import type { AoiNewsCandidate } from '../aoiNewsNudge';
 import { PREFERENCE_POLL_QUESTIONS } from '../aoiPreferencePoll';
 import {
-  IDLE_MUSIC_MOOD_LINES,
+  IDLE_MUSIC_MOOD_OFFERS,
+  IDLE_MUSIC_TIME_LINES,
+  buildIdleMusicCardLine,
   extractCardMusicMood,
   extractCardMusicQuery,
   extractCardNewsTitle,
@@ -22,14 +24,18 @@ import {
 const QUERY = '2026년 8월 여돌 노래모음 | 🔥 KPOP PLAYLIST';
 const HEADLINE = 'BDTHEMES SUPPLY CHAIN ATTACK POISONS JSON TO CREATE ROGUE WORDPRESS ADMINS';
 
-// Mirrors buildIdleMusicCardCopy in ChatPanel.
+const MUSIC_CARD_STAMP = 1786728972470;
+
+// Mirrors buildIdleMusicCardCopy in ChatPanel. The clock half and the mood half
+// vary independently, which is the whole point of the split.
 function idleMusicCard(
   mood: 'focus' | 'chill' | 'upbeat' | 'ambient' = 'ambient',
+  dayPhase: 'morning' | 'working' | 'evening' | 'late' = 'late',
 ): NudgeCardMessage {
   return {
-    id: 'aoi-idle-music-1786728972470',
+    id: `aoi-idle-music-${MUSIC_CARD_STAMP}`,
     role: 'assistant',
-    content: `${IDLE_MUSIC_MOOD_LINES.ko[mood]}\n🎵 추천 (네 취향 반영): "${QUERY}"`,
+    content: `${buildIdleMusicCardLine(dayPhase, mood, 'ko')}\n🎵 추천 (네 취향 반영): "${QUERY}"`,
     suggestedReplies: ['▶ 재생', '다음에'],
   };
 }
@@ -148,13 +154,38 @@ describe('recoverIdleMusicOffer', () => {
       dismissPrompt: '다음에',
       query: QUERY,
       mood: 'ambient',
+      offeredAt: MUSIC_CARD_STAMP,
     });
   });
 
-  it('recovers the mood for every language and mood the card is emitted in', () => {
+  // The bug this split fixes: an upbeat taste bias outvotes the working-hours
+  // default, and the card then opened with "just starting your day" at 3pm.
+  // The clock half must not move when the mood does, and vice versa.
+  it('states the clock and the mood independently', () => {
+    const afternoonUpbeat = buildIdleMusicCardLine('working', 'upbeat', 'ko');
+    expect(afternoonUpbeat).toContain(IDLE_MUSIC_TIME_LINES.ko.working);
+    expect(afternoonUpbeat).toContain(IDLE_MUSIC_MOOD_OFFERS.ko.upbeat);
+    expect(afternoonUpbeat).not.toContain(IDLE_MUSIC_TIME_LINES.ko.morning);
+    // ...and the mood is still what comes back out.
+    expect(extractCardMusicMood(afternoonUpbeat)).toBe('upbeat');
+  });
+
+  // Cards written before the split hold the old one-sentence form. They are
+  // still in transcripts, and their chips must still resolve.
+  it('recovers the mood from a card written before the line was split', () => {
+    const legacy = '이제 하루 시작하는 참이네. 기분 올릴 만한 곡 틀어줄까?';
+    expect(legacy).toBe(buildIdleMusicCardLine('morning', 'upbeat', 'ko'));
+    expect(extractCardMusicMood(legacy)).toBe('upbeat');
+  });
+
+  it('recovers the mood for every language, mood and day phase', () => {
     for (const lang of ['ko', 'ja', 'zh', 'en'] as const) {
       for (const mood of ['focus', 'chill', 'upbeat', 'ambient'] as const) {
-        const content = `${IDLE_MUSIC_MOOD_LINES[lang][mood]}\n🎵 Pick: "${QUERY}"`;
+        for (const phase of ['morning', 'working', 'evening', 'late'] as const) {
+          const line = buildIdleMusicCardLine(phase, mood, lang);
+          expect(extractCardMusicMood(line), `${lang}/${mood}/${phase}`).toBe(mood);
+        }
+        const content = `${buildIdleMusicCardLine('late', mood, lang)}\n🎵 Pick: "${QUERY}"`;
         expect(extractCardMusicMood(content), `${lang}/${mood}`).toBe(mood);
       }
     }
@@ -167,7 +198,13 @@ describe('recoverIdleMusicOffer', () => {
       dismissPrompt: '다른 거',
       query: QUERY,
       mood: null,
+      offeredAt: 1786728999999,
     });
+  });
+
+  it('leaves an undateable card stale rather than dating it now', () => {
+    const card = identifyPendingNudgeCard([{ ...idleMusicCard(), id: 'aoi-idle-music-card' }])!;
+    expect(recoverIdleMusicOffer(card)?.offeredAt).toBe(0);
   });
 
   it('prefers the explicit search-query line over the quoted pick', () => {
@@ -183,7 +220,7 @@ describe('recoverIdleMusicOffer', () => {
 
   it('returns null when no query is recoverable', () => {
     const card = identifyPendingNudgeCard([
-      { ...idleMusicCard(), content: IDLE_MUSIC_MOOD_LINES.ko.ambient },
+      { ...idleMusicCard(), content: buildIdleMusicCardLine('late', 'ambient', 'ko') },
     ])!;
     expect(recoverIdleMusicOffer(card)).toBeNull();
   });
@@ -195,11 +232,23 @@ describe('reconcileRecoveredIdleMusicOffer', () => {
     dismissPrompt: '다음에',
     query: 'stored pick',
     mood: 'focus' as const,
+    offeredAt: MUSIC_CARD_STAMP,
   };
+  const cardNaming = (query: string) => `늦은 시간이라 조용하네. 은은한 사운드 하나 깔아줄까?
+🎵 추천: "${query}"`;
 
-  it('falls back to storage when the card yields nothing', () => {
-    expect(reconcileRecoveredIdleMusicOffer(null, stored)).toBe(stored);
-    expect(reconcileRecoveredIdleMusicOffer(null, null)).toBeNull();
+  it('falls back to storage only when the card names the stored pick', () => {
+    expect(reconcileRecoveredIdleMusicOffer(null, stored, cardNaming('stored pick'))).toBe(stored);
+    expect(reconcileRecoveredIdleMusicOffer(null, null, cardNaming('stored pick'))).toBeNull();
+  });
+
+  // Trusting storage blind is how a chip plays a pick the card never named --
+  // the same unconditional fallback that kept a dead news offer armed.
+  it('refuses a stored pick the card on screen does not mention', () => {
+    expect(
+      reconcileRecoveredIdleMusicOffer(null, stored, cardNaming('a different pick')),
+    ).toBeNull();
+    expect(reconcileRecoveredIdleMusicOffer(null, stored, '')).toBeNull();
   });
 
   it('lets the card on screen win over a stored offer for a different pick', () => {
@@ -207,7 +256,9 @@ describe('reconcileRecoveredIdleMusicOffer', () => {
     // offer while the shared transcript has moved on to a newer card. The chips
     // are identical, so trusting storage would play the previous pick.
     const recovered = { ...stored, query: 'card pick', mood: 'ambient' as const };
-    expect(reconcileRecoveredIdleMusicOffer(recovered, stored)).toEqual(recovered);
+    expect(reconcileRecoveredIdleMusicOffer(recovered, stored, cardNaming('card pick'))).toEqual(
+      recovered,
+    );
   });
 
   it('merges the same offer: card chip labels, stored mood', () => {
@@ -218,18 +269,22 @@ describe('reconcileRecoveredIdleMusicOffer', () => {
       dismissPrompt: 'Not now',
       query: 'stored pick',
       mood: null,
+      offeredAt: MUSIC_CARD_STAMP,
     };
-    expect(reconcileRecoveredIdleMusicOffer(recovered, stored)).toEqual({
+    expect(reconcileRecoveredIdleMusicOffer(recovered, stored, cardNaming('stored pick'))).toEqual({
       playPrompt: '▶ Play',
       dismissPrompt: 'Not now',
       query: 'stored pick',
       mood: 'focus',
+      offeredAt: MUSIC_CARD_STAMP,
     });
   });
 
   it('keeps the mood the card itself states', () => {
     const recovered = { ...stored, mood: 'upbeat' as const };
-    expect(reconcileRecoveredIdleMusicOffer(recovered, stored)?.mood).toBe('upbeat');
+    expect(
+      reconcileRecoveredIdleMusicOffer(recovered, stored, cardNaming('stored pick'))?.mood,
+    ).toBe('upbeat');
   });
 });
 

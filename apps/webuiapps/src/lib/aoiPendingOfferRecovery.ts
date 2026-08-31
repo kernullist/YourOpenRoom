@@ -19,7 +19,7 @@
 // breaking recovery. Everything else is matched across ALL languages: the user
 // may have switched language between the card and the tap.
 
-import type { AoiMusicMood } from './aoiMusicRecommendation';
+import type { AoiDayPhase, AoiMusicMood } from './aoiMusicRecommendation';
 import { AOI_MUSIC_MOODS } from './aoiMusicRecommendation';
 import type { AoiNewsCandidate } from './aoiNewsNudge';
 import type {
@@ -35,35 +35,85 @@ export type NudgeCardLang = 'ko' | 'ja' | 'zh' | 'en';
 
 export const NUDGE_CARD_LANGS: readonly NudgeCardLang[] = ['ko', 'ja', 'zh', 'en'];
 
-// The idle-music card's opening line, per language and mood. Shared with the
-// card builder in ChatPanel so the reverse lookup below can never drift from
-// the copy the user actually saw -- there is exactly one table.
-export const IDLE_MUSIC_MOOD_LINES: Record<NudgeCardLang, Record<AoiMusicMood, string>> = {
+// The idle-music card's opening line, in two halves.
+//
+// It used to be one mood-keyed sentence, which quietly made the card lie about
+// the clock: the mood is only NUDGED by the time of day (+1) and an upbeat
+// taste bias outvotes it, so a 3pm card opened with "just starting your day".
+// The observation half is keyed by the real day phase and the offer half by the
+// mood, so each states only what it actually knows.
+//
+// Shared with the card builder in ChatPanel so the reverse lookup below can
+// never drift from the copy the user saw -- there is exactly one table of each.
+// The halves concatenate to the exact sentence the old table held for the
+// matching phase, so cards already in a transcript still read the same and
+// still resolve.
+export const IDLE_MUSIC_TIME_LINES: Record<NudgeCardLang, Record<AoiDayPhase, string>> = {
   ko: {
-    focus: '한참 집중하고 있었네. 작업하는 동안 집중용 음악 틀어줄까?',
-    chill: '잠깐 여유로운 시간이네. 잔잔한 곡 하나 배경으로 깔아줄까?',
-    upbeat: '이제 하루 시작하는 참이네. 기분 올릴 만한 곡 틀어줄까?',
-    ambient: '늦은 시간이라 조용하네. 은은한 사운드 하나 깔아줄까?',
+    morning: '이제 하루 시작하는 참이네.',
+    working: '한참 집중하고 있었네.',
+    evening: '잠깐 여유로운 시간이네.',
+    late: '늦은 시간이라 조용하네.',
   },
   ja: {
-    focus: 'ずっと集中してたね。作業の間、集中できる音楽をかけようか?',
-    chill: '少し落ち着いた時間だね。ゆったりした曲を流そうか?',
-    upbeat: '一日の始まりだね。気分が上がる曲をかけようか?',
-    ambient: '夜も遅くて静かだね。控えめなアンビエントを流そうか?',
+    morning: '一日の始まりだね。',
+    working: 'ずっと集中してたね。',
+    evening: '少し落ち着いた時間だね。',
+    late: '夜も遅くて静かだね。',
   },
   zh: {
-    focus: '你已经专注很久了。要不要放点专注音乐陪你工作?',
-    chill: '看起来是个放松的时刻。要不要放个轻松的背景音乐?',
-    upbeat: '正是开始一天的时候。要来点带劲的音乐吗?',
-    ambient: '夜深人静。要不要放点氛围音乐垫在下面?',
+    morning: '正是开始一天的时候。',
+    working: '你已经专注很久了。',
+    evening: '看起来是个放松的时刻。',
+    late: '夜深人静。',
   },
   en: {
-    focus: 'You have been heads-down for a while. Want some focus music while you work?',
-    chill: 'Looks like a quieter moment. Want a chill mix in the background?',
-    upbeat: 'Starting up for the day. Want something upbeat to get going?',
-    ambient: 'Late and quiet. Want some ambient sound to sit under the work?',
+    morning: 'Starting up for the day.',
+    working: 'You have been heads-down for a while.',
+    evening: 'Looks like a quieter moment.',
+    late: 'Late and quiet.',
   },
 };
+
+// The offer half, keyed by mood. Also the reverse-lookup key: it is the only
+// part of the line the mood decides, and it survived the split unchanged, so it
+// matches legacy cards too.
+export const IDLE_MUSIC_MOOD_OFFERS: Record<NudgeCardLang, Record<AoiMusicMood, string>> = {
+  ko: {
+    focus: '작업하는 동안 집중용 음악 틀어줄까?',
+    chill: '잔잔한 곡 하나 배경으로 깔아줄까?',
+    upbeat: '기분 올릴 만한 곡 틀어줄까?',
+    ambient: '은은한 사운드 하나 깔아줄까?',
+  },
+  ja: {
+    focus: '作業の間、集中できる音楽をかけようか?',
+    chill: 'ゆったりした曲を流そうか?',
+    upbeat: '気分が上がる曲をかけようか?',
+    ambient: '控えめなアンビエントを流そうか?',
+  },
+  zh: {
+    focus: '要不要放点专注音乐陪你工作?',
+    chill: '要不要放个轻松的背景音乐?',
+    upbeat: '要来点带劲的音乐吗?',
+    ambient: '要不要放点氛围音乐垫在下面?',
+  },
+  en: {
+    focus: 'Want some focus music while you work?',
+    chill: 'Want a chill mix in the background?',
+    upbeat: 'Want something upbeat to get going?',
+    ambient: 'Want some ambient sound to sit under the work?',
+  },
+};
+
+// One idle-music card opening line: what the clock says, then what the mood
+// offers. The only place the two halves are joined.
+export function buildIdleMusicCardLine(
+  dayPhase: AoiDayPhase,
+  mood: AoiMusicMood,
+  lang: NudgeCardLang,
+): string {
+  return `${IDLE_MUSIC_TIME_LINES[lang][dayPhase]} ${IDLE_MUSIC_MOOD_OFFERS[lang][mood]}`;
+}
 
 // Emoji vs text presentation selectors: invisible, and a chip label may or may
 // not carry one depending on where it was rendered.
@@ -180,9 +230,13 @@ export function extractCardMusicMood(content: string): AoiMusicMood | null {
   if (!firstLine) {
     return null;
   }
+  // Containment, not equality: the observation half in front of the offer is
+  // chosen by the clock, so it varies independently of the mood -- and a card
+  // written before the split carries the old one-sentence form, which ends in
+  // the same offer clause.
   for (const lang of NUDGE_CARD_LANGS) {
     for (const mood of AOI_MUSIC_MOODS) {
-      if (IDLE_MUSIC_MOOD_LINES[lang][mood] === firstLine) {
+      if (firstLine.includes(IDLE_MUSIC_MOOD_OFFERS[lang][mood])) {
         return mood;
       }
     }
@@ -203,6 +257,9 @@ export function recoverIdleMusicOffer(card: PendingNudgeCard): PendingIdleMusicO
     dismissPrompt: card.suggestedReplies[1],
     query,
     mood: extractCardMusicMood(card.content),
+    // A card id with no stamp leaves the offer undateable, which reads as
+    // stale: it still plays, it just stops counting as mood feedback.
+    offeredAt: parseNudgeCardStamp(card.id) ?? 0,
   };
 }
 
@@ -225,9 +282,14 @@ export function recoverIdleMusicOffer(card: PendingNudgeCard): PendingIdleMusicO
 export function reconcileRecoveredIdleMusicOffer(
   recovered: PendingIdleMusicOffer | null,
   stored: PendingIdleMusicOffer | null,
+  cardContent: string,
 ): PendingIdleMusicOffer | null {
   if (!recovered) {
-    return stored;
+    // Nothing could be read off the card, so the stored offer is only usable if
+    // it describes what the user is looking at. Trusting it blind is how a chip
+    // would play a pick the card never named -- the same unconditional fallback
+    // that kept a dead news offer armed.
+    return stored && cardContent.includes(stored.query) ? stored : null;
   }
   if (!stored || stored.query !== recovered.query) {
     return recovered;

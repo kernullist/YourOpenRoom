@@ -85,8 +85,10 @@ interface CardFixture {
   suggestedReplies: string[];
 }
 
+// Stamped like a real card: the id is how a restored offer is dated, and an
+// undateable music offer still plays but stops counting as mood feedback.
 const MUSIC_CARD: CardFixture = {
-  id: 'aoi-idle-music-e2e',
+  id: `aoi-idle-music-${Date.now()}`,
   content: `늦은 시간이라 조용하네. 은은한 사운드 하나 깔아줄까?\n🎵 추천 (네 취향 반영): "${RECOMMENDED_QUERY}"`,
   suggestedReplies: [PLAY_CHIP, MUSIC_DISMISS_CHIP],
 };

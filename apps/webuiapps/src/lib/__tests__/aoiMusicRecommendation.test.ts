@@ -3,6 +3,7 @@ import {
   AOI_MUSIC_MOODS,
   buildAoiMusicRecommendation,
   chooseAoiMusicMood,
+  dayPhaseForHour,
   type AoiMusicMood,
 } from '../aoiMusicRecommendation';
 import {
@@ -22,6 +23,39 @@ describe('chooseAoiMusicMood — time-of-day default', () => {
     expect(chooseAoiMusicMood(10)).toBe('focus');
     expect(chooseAoiMusicMood(18)).toBe('chill');
     expect(chooseAoiMusicMood(23)).toBe('ambient');
+  });
+});
+
+describe('dayPhaseForHour — the clock, kept apart from the mood', () => {
+  it('buckets the hour on the same boundaries as the time-of-day default', () => {
+    expect(dayPhaseForHour(6)).toBe('morning');
+    expect(dayPhaseForHour(9)).toBe('morning');
+    expect(dayPhaseForHour(10)).toBe('working');
+    expect(dayPhaseForHour(17)).toBe('working');
+    expect(dayPhaseForHour(18)).toBe('evening');
+    expect(dayPhaseForHour(22)).toBe('evening');
+    expect(dayPhaseForHour(23)).toBe('late');
+    expect(dayPhaseForHour(5)).toBe('late');
+  });
+
+  // The reported card: an upbeat taste bias outvoted the working-hours default,
+  // so the mood became upbeat -- and the card, keyed only on mood, announced
+  // "just starting your day" at 3pm. The phase must not follow the mood.
+  it('reports the real phase even when taste flips the mood away from it', () => {
+    const recommendation = buildAoiMusicRecommendation({
+      now: 0,
+      hourOfDay: 15,
+      moodFeedback: { chill: -1, upbeat: -1, focus: -2 },
+      tasteMoodBias: { upbeat: 2 },
+    });
+    expect(recommendation.mood).toBe('upbeat');
+    expect(recommendation.dayPhase).toBe('working');
+  });
+
+  it('reports the phase the hour is in when nothing outvotes the default', () => {
+    const recommendation = buildAoiMusicRecommendation({ now: 0, hourOfDay: 8 });
+    expect(recommendation.mood).toBe('upbeat');
+    expect(recommendation.dayPhase).toBe('morning');
   });
 });
 

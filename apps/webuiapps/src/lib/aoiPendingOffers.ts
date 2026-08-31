@@ -29,6 +29,27 @@ export interface PendingIdleMusicOffer {
   // accept/skip learning is skipped, because inventing a mood would teach the
   // recommender a preference the user never expressed.
   mood: AoiMusicMood | null;
+  // When the card was emitted, or 0 when that cannot be established (an entry
+  // written before offers carried an age, a card id with no stamp).
+  //
+  // Unlike a news offer this never disarms the chip: the payload is a YouTube
+  // search query, which does not perish the way an article id does, so a tap
+  // days later still plays. What does perish is the ARGUMENT -- the card
+  // pitched a mood for that moment -- so the age gates the mood feedback only.
+  // Unknown age counts as stale: an offer that cannot be dated is no evidence.
+  offeredAt: number;
+}
+
+// How long a tapped music chip still counts as feedback on the mood it pitched.
+// Longer than the news TTL because nothing here can fail: this gates learning,
+// never the play.
+export const IDLE_MUSIC_FEEDBACK_TTL_MS = 12 * 60 * 60 * 1000;
+
+export function isIdleMusicOfferStale(
+  offer: PendingIdleMusicOffer,
+  now: number = Date.now(),
+): boolean {
+  return offer.offeredAt <= 0 || now - offer.offeredAt > IDLE_MUSIC_FEEDBACK_TTL_MS;
 }
 
 export interface PendingNewsOffer {
@@ -102,6 +123,15 @@ export function loadPendingIdleMusicOffer(): PendingIdleMusicOffer | null {
       dismissPrompt: parsed.dismissPrompt,
       query: parsed.query,
       mood: (parsed.mood as AoiMusicMood | null) ?? null,
+      // An unusable age is kept as 0 rather than rejecting the offer: the chip
+      // must still play. isIdleMusicOfferStale reads 0 as stale, so the one
+      // thing an undateable offer cannot do is teach the mood model.
+      offeredAt:
+        typeof parsed.offeredAt === 'number' &&
+        Number.isFinite(parsed.offeredAt) &&
+        parsed.offeredAt > 0
+          ? parsed.offeredAt
+          : 0,
     };
   }
   return null;

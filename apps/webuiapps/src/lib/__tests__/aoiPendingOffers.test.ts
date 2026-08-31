@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   loadPendingIdleMusicOffer,
+  IDLE_MUSIC_FEEDBACK_TTL_MS,
+  isIdleMusicOfferStale,
   isNewsOfferExpired,
   loadPendingNewsOffer,
   NEWS_OFFER_TTL_MS,
@@ -19,11 +21,14 @@ import {
 const MUSIC_KEY = 'aoi-pending-idle-music-offer-v1';
 const NEWS_KEY = 'aoi-pending-news-offer-v1';
 
+const MUSIC_NOW = 1788140769921;
+
 const musicOffer: PendingIdleMusicOffer = {
   playPrompt: '▶ 재생',
   dismissPrompt: '다음에',
   query: 'chill lofi evening mix',
   mood: 'chill',
+  offeredAt: 1788140769921,
 };
 
 const NOW = 1788140769921;
@@ -50,6 +55,32 @@ describe('aoiPendingOffers', () => {
 
     it('returns null when nothing is stored', () => {
       expect(loadPendingIdleMusicOffer()).toBeNull();
+    });
+
+    // A music offer never disarms on age: the payload is a search query, which
+    // does not perish the way an article id does. Only the mood feedback goes
+    // stale, so an undateable offer is loaded and marked stale, not dropped.
+    it('keeps an undateable offer playable but treats it as stale', () => {
+      const undateable: Record<string, unknown> = { ...musicOffer };
+      delete undateable.offeredAt;
+      localStorage.setItem(MUSIC_KEY, JSON.stringify(undateable));
+      const loaded = loadPendingIdleMusicOffer();
+      expect(loaded?.query).toBe(musicOffer.query);
+      expect(loaded?.offeredAt).toBe(0);
+      expect(isIdleMusicOfferStale(loaded!, MUSIC_NOW)).toBe(true);
+
+      for (const offeredAt of [0, -1, Number.NaN, 'this morning']) {
+        localStorage.setItem(MUSIC_KEY, JSON.stringify({ ...musicOffer, offeredAt }));
+        expect(loadPendingIdleMusicOffer()?.offeredAt, String(offeredAt)).toBe(0);
+      }
+    });
+
+    it('counts a tap as mood feedback only inside the offer shelf life', () => {
+      expect(isIdleMusicOfferStale(musicOffer, MUSIC_NOW)).toBe(false);
+      expect(isIdleMusicOfferStale(musicOffer, MUSIC_NOW + IDLE_MUSIC_FEEDBACK_TTL_MS)).toBe(false);
+      expect(isIdleMusicOfferStale(musicOffer, MUSIC_NOW + IDLE_MUSIC_FEEDBACK_TTL_MS + 1)).toBe(
+        true,
+      );
     });
 
     it('clears the stored offer when saving null (offer consumed)', () => {

@@ -66,7 +66,7 @@ import {
 } from '@/lib/chatDirectActions';
 import { classifyMusicIntent, shouldClassifyMusicIntent } from '@/lib/aoiMusicIntentClassifier';
 import {
-  IDLE_MUSIC_MOOD_LINES,
+  buildIdleMusicCardLine,
   identifyPendingNudgeCard,
   isAoiNewsPlayChip,
   recoverIdleMusicOffer,
@@ -76,6 +76,7 @@ import {
   recoverTastePoll,
 } from '@/lib/aoiPendingOfferRecovery';
 import {
+  isIdleMusicOfferStale,
   isNewsOfferExpired,
   loadPendingIdleMusicOffer,
   loadPendingNewsOffer,
@@ -92,6 +93,7 @@ import {
 } from '@/lib/aoiPendingOffers';
 import {
   buildAoiMusicRecommendation,
+  type AoiDayPhase,
   type AoiMusicMood,
   type AoiMusicQuerySource,
 } from '@/lib/aoiMusicRecommendation';
@@ -1617,6 +1619,7 @@ type NudgeLang = 'ko' | 'ja' | 'zh' | 'en';
 // Card body + chip labels for the "want some music?" nudge, per mood and
 // language. English mood lines mirror aoiMusicRecommendation's why text.
 function buildIdleMusicCardCopy(
+  dayPhase: AoiDayPhase,
   mood: AoiMusicMood,
   lang: NudgeLang,
   query: string,
@@ -1639,10 +1642,12 @@ function buildIdleMusicCardCopy(
           en: 'Pick (from your taste)',
         }[lang]
       : { ko: '추천', ja: 'おすすめ', zh: '推荐', en: 'Pick' }[lang];
-  const lines = IDLE_MUSIC_MOOD_LINES;
+  // The opening line is two halves: the observation comes from the clock, the
+  // offer from the mood. As one mood-keyed sentence it said "just starting your
+  // day" at 3pm whenever a taste bias outvoted the working-hours default.
   const recommendation = query.trim() ? `\n🎵 ${recLabel}: "${query.trim()}"` : '';
   return {
-    text: `${lines[lang][mood]}${recommendation}`,
+    text: `${buildIdleMusicCardLine(dayPhase, mood, lang)}${recommendation}`,
     playPrompt: `▶ ${chips.play}`,
     dismissPrompt: chips.dismiss,
   };
@@ -6439,6 +6444,7 @@ const ChatPanel: React.FC<{
         const recovered = reconcileRecoveredIdleMusicOffer(
           recoverIdleMusicOffer(card),
           pendingIdleMusicOfferRef.current,
+          card.content,
         );
         if (recovered && stillWanted()) {
           pendingIdleMusicOfferRef.current = recovered;
@@ -7054,6 +7060,13 @@ const ChatPanel: React.FC<{
         if (!offer.mood) {
           return;
         }
+        // A stale offer still plays -- a search query does not perish -- but it
+        // is no longer evidence about the mood it argued for. Crediting a
+        // morning upbeat pitch tapped that night teaches the recommender about
+        // a moment that has passed.
+        if (isIdleMusicOfferStale(offer)) {
+          return;
+        }
         idleMusicStateRef.current = recordIdleMusicOutcome(idleMusicStateRef.current, {
           mood: offer.mood,
           accepted,
@@ -7145,6 +7158,7 @@ const ChatPanel: React.FC<{
               dismissPrompt: copy.dismissPrompt,
               query: recommendation.query,
               mood: recommendation.mood,
+              offeredAt: now,
             };
             savePendingIdleMusicOffer(pendingIdleMusicOfferRef.current);
             emitAssistantMessage(
@@ -7572,6 +7586,7 @@ const ChatPanel: React.FC<{
             dismissPrompt: copy.dismissPrompt,
             query: recommendation.query,
             mood: recommendation.mood,
+            offeredAt: now,
           };
           savePendingIdleMusicOffer(pendingIdleMusicOfferRef.current);
           emitAssistantMessage(
@@ -7686,6 +7701,7 @@ const ChatPanel: React.FC<{
           dismissPrompt: copy.dismissPrompt,
           query: recommendation.query,
           mood: recommendation.mood,
+          offeredAt: now,
         };
         savePendingIdleMusicOffer(pendingIdleMusicOfferRef.current);
         emitAssistantMessage(
@@ -11254,6 +11270,7 @@ const ChatPanel: React.FC<{
         preferPersonal: true,
       });
       const copy = buildIdleMusicCardCopy(
+        recommendation.dayPhase,
         recommendation.mood,
         resolveNudgeLang(),
         recommendation.query,
@@ -11264,6 +11281,7 @@ const ChatPanel: React.FC<{
         dismissPrompt: copy.dismissPrompt,
         query: recommendation.query,
         mood: recommendation.mood,
+        offeredAt: now,
       };
       savePendingIdleMusicOffer(pendingIdleMusicOfferRef.current);
       idleMusicStateRef.current = recordIdleMusicOffered(state, {

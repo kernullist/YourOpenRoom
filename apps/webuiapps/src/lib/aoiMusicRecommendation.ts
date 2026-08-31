@@ -13,6 +13,9 @@ export type AoiMusicQuerySource = 'personal' | 'pool';
 
 export interface AoiMusicRecommendation {
   mood: AoiMusicMood;
+  // Where the clock is, independent of the mood. Anything that states the time
+  // of day to the user must key off this, never off mood.
+  dayPhase: AoiDayPhase;
   // A YouTube search query the music app can run directly (OPEN_SEARCH params.query).
   query: string;
   // One human-facing line for the suggestion card.
@@ -89,19 +92,38 @@ function localHourFromNow(now: number): number {
   return new Date(now).getHours();
 }
 
-// Time-of-day default mood. Tuned for a developer's day: mornings lean upbeat,
-// working hours lean focus, evenings wind down to chill, late night to ambient.
-function defaultMoodForHour(hourOfDay: number): AoiMusicMood {
+// Where the clock actually is. Separate from the mood because the two came
+// apart: the mood is only nudged by the time of day and can be outvoted by
+// taste and learned feedback, so anything that SAYS what time it is -- the
+// nudge card's opening line -- has to read the phase, not the mood. Keeping
+// both off one bucket table is what let a 3pm card open with "just starting
+// your day" whenever an upbeat taste bias outscored the working-hours default.
+export type AoiDayPhase = 'morning' | 'working' | 'evening' | 'late';
+
+export function dayPhaseForHour(hourOfDay: number): AoiDayPhase {
   if (hourOfDay >= 6 && hourOfDay < 10) {
-    return 'upbeat';
+    return 'morning';
   }
   if (hourOfDay >= 10 && hourOfDay < 18) {
-    return 'focus';
+    return 'working';
   }
   if (hourOfDay >= 18 && hourOfDay < 23) {
-    return 'chill';
+    return 'evening';
   }
-  return 'ambient';
+  return 'late';
+}
+
+// Time-of-day default mood. Tuned for a developer's day: mornings lean upbeat,
+// working hours lean focus, evenings wind down to chill, late night to ambient.
+const MOOD_FOR_DAY_PHASE: Record<AoiDayPhase, AoiMusicMood> = {
+  morning: 'upbeat',
+  working: 'focus',
+  evening: 'chill',
+  late: 'ambient',
+};
+
+function defaultMoodForHour(hourOfDay: number): AoiMusicMood {
+  return MOOD_FOR_DAY_PHASE[dayPhaseForHour(hourOfDay)];
 }
 
 // Choose the mood: start from the time-of-day default (+1), add the learned
@@ -250,6 +272,7 @@ export function buildAoiMusicRecommendation(
       ? Math.min(23, Math.max(0, Math.trunc(input.hourOfDay)))
       : localHourFromNow(input.now);
   const mood = chooseAoiMusicMood(hourOfDay, input.moodFeedback, input.tasteMoodBias);
+  const dayPhase = dayPhaseForHour(hourOfDay);
   const personalQueries = input.personalQueries ?? [];
   const preferPersonal =
     typeof input.preferPersonal === 'boolean'
@@ -258,6 +281,7 @@ export function buildAoiMusicRecommendation(
   const picked = pickQuery(mood, input.recentQueries ?? [], personalQueries, preferPersonal);
   return {
     mood,
+    dayPhase,
     query: picked.query,
     why: MOOD_WHY[mood],
     cooldownKey: `music:${mood}:${picked.query.replace(/\s+/g, '-')}`,
