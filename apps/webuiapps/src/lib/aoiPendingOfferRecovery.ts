@@ -141,6 +141,11 @@ const CARD_ID_PREFIXES: ReadonlyArray<{ prefix: string; kind: NudgeCardKind }> =
   // The taste-backed re-roll card (the "another" chip, or a genre chip) is an
   // idle-music offer too: same chips, same consume path, different copy.
   { prefix: 'aoi-taste-music-', kind: 'idle-music' },
+  // Same card as the re-roll, emitted when a genre chip first seeds the taste
+  // profile. It sets a pending idle-music offer like the others, so leaving it
+  // out meant its chips came back unrecoverable in any browser that did not
+  // write the localStorage copy -- the exact case this module exists for.
+  { prefix: 'aoi-taste-seed-', kind: 'idle-music' },
   { prefix: 'aoi-news-', kind: 'news' },
   { prefix: 'aoi-taste-poll-', kind: 'taste-poll' },
   { prefix: 'aoi-preference-poll-', kind: 'preference-poll' },

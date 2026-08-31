@@ -41,9 +41,10 @@ function idleMusicCard(
 }
 
 // Mirrors buildAoiMusicTasteRecommendCopy (the re-roll card): no mood line.
-function tasteMusicCard(): NudgeCardMessage {
+// The genre-seed card is the same copy under a different id prefix.
+function tasteMusicCard(id = 'aoi-taste-music-1786728999999'): NudgeCardMessage {
   return {
-    id: 'aoi-taste-music-1786728999999',
+    id,
     role: 'assistant',
     content:
       '네 검색·재생 취향을 반영해서 이 곡/믹스 어때?\n' +
@@ -102,6 +103,10 @@ describe('identifyPendingNudgeCard', () => {
     const cases: Array<[NudgeCardMessage, string]> = [
       [idleMusicCard(), 'idle-music'],
       [tasteMusicCard(), 'idle-music'],
+      // The genre-seed card sets a pending idle-music offer like the others.
+      // Leaving its prefix out made it the one card whose chips could not be
+      // recovered from the transcript, which is what this module is for.
+      [tasteMusicCard('aoi-taste-seed-1786729111111'), 'idle-music'],
       [newsCard(), 'news'],
       [tastePollCard(), 'taste-poll'],
       [preferencePollCard(), 'preference-poll'],
@@ -199,6 +204,17 @@ describe('recoverIdleMusicOffer', () => {
       query: QUERY,
       mood: null,
       offeredAt: 1786728999999,
+    });
+  });
+
+  it('recovers the genre-seed card the same way as the re-roll card', () => {
+    const card = identifyPendingNudgeCard([tasteMusicCard('aoi-taste-seed-1786729111111')])!;
+    expect(recoverIdleMusicOffer(card)).toEqual({
+      playPrompt: '▶ 재생',
+      dismissPrompt: '다른 거',
+      query: QUERY,
+      mood: null,
+      offeredAt: 1786729111111,
     });
   });
 

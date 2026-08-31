@@ -110,7 +110,7 @@ import {
   parseAoiMusicTasteChatIntent,
   pickNextTasteQuestion,
   planIdleMusicNudge,
-  recordTasteAnswer,
+  resolveTastePollAnswer,
   recordTasteQuestionAsked,
   recordYouTubePlay,
   recordYouTubeSearch,
@@ -1760,7 +1760,9 @@ function buildPreferencePollAck(choiceLabel: string, lang: NudgeLang): string {
 
 // Honest ack when a tapped poll chip's question is no longer in the bank (it was
 // pruned between ask and answer): nothing was recorded, so never claim memory.
-function buildPreferencePollExpiredAck(lang: NudgeLang): string {
+// Shared by both polls -- the taste poll can be left holding a stale questionId
+// the same way, and the wording names neither bank.
+function buildPollExpiredAck(lang: NudgeLang): string {
   switch (lang) {
     case 'ko':
       return '미안, 그 질문은 이미 만료돼서 이번 답은 저장하지 못했어. 다음에 다시 물어볼게.';
@@ -6985,14 +6987,18 @@ const ChatPanel: React.FC<{
       if (pendingTastePoll) {
         pendingTastePollRef.current = null;
         savePendingTastePoll(null);
-        const chosen = pendingTastePoll.options.find((option) => option.label === messageText);
-        if (chosen) {
-          musicTasteStateRef.current = recordTasteAnswer(musicTasteStateRef.current, {
-            questionId: pendingTastePoll.questionId,
-            optionId: chosen.id,
-          });
+        const tasteLang = resolveNudgeLang();
+        // A chip whose question was pruned from the bank between ask and answer
+        // records nothing, so it gets the honest "expired" ack rather than a
+        // false "remembered" -- the same line the preference poll draws.
+        const resolution = resolveTastePollAnswer(pendingTastePoll, {
+          messageText,
+          state: musicTasteStateRef.current,
+        });
+        if (resolution.kind === 'recorded') {
+          musicTasteStateRef.current = resolution.nextState;
           saveAoiMusicTasteState(musicTasteStateRef.current);
-          const ack = buildTastePollAck(chosen.label, resolveNudgeLang());
+          const ack = buildTastePollAck(resolution.chosenLabel, tasteLang);
           emitAssistantMessage({ id: String(Date.now()), role: 'assistant', content: ack });
           recordAoiMemoryTurn({
             userMessage: messageText,
@@ -7000,6 +7006,14 @@ const ChatPanel: React.FC<{
             toolCalls: ['direct:aoi_taste_poll_answer'],
             source: 'direct_action',
             llmConfig: selectedConfig,
+          });
+          return;
+        }
+        if (resolution.kind === 'expired') {
+          emitAssistantMessage({
+            id: String(Date.now()),
+            role: 'assistant',
+            content: buildPollExpiredAck(tasteLang),
           });
           return;
         }
@@ -7043,7 +7057,7 @@ const ChatPanel: React.FC<{
           emitAssistantMessage({
             id: String(Date.now()),
             role: 'assistant',
-            content: buildPreferencePollExpiredAck(lang),
+            content: buildPollExpiredAck(lang),
           });
           return;
         }

@@ -108,6 +108,31 @@ function newsCard(offeredAt: number): CardFixture {
 // four days before the chip was tapped.
 const STALE_NEWS_CARD_AGE_MS = 91 * 60 * 60 * 1000;
 
+// The first taste-poll question, mirrored from the bank the app matches against.
+const TASTE_PROMPT = '음악 취향 하나만 물어볼게. 배경으로 깔 때 어떤 분위기가 제일 좋아?';
+const TASTE_CHIP = '잔잔한 로파이·칠';
+const TASTE_POLL_STORAGE_KEY = 'aoi-pending-taste-poll-v1';
+
+const TASTE_POLL_CARD: CardFixture = {
+  id: 'aoi-taste-poll-e2e',
+  content: TASTE_PROMPT,
+  suggestedReplies: [
+    TASTE_CHIP,
+    '신나는 팝·케이팝',
+    '집중용 앰비언트·인스트루멘털',
+    '그때그때 달라',
+  ],
+};
+
+// A card whose prompt is no longer in the bank -- what a deploy that reworded or
+// dropped a question leaves in an already-posted transcript. Recovery cannot
+// rebuild the poll from it, so the answer path has only the stored copy to go on.
+const STALE_TASTE_POLL_CARD: CardFixture = {
+  id: 'aoi-taste-poll-e2e-stale',
+  content: '예전에 쓰던, 지금은 뱅크에 없는 취향 질문이야. 어느 쪽이 좋아?',
+  suggestedReplies: [TASTE_CHIP, '신나는 팝·케이팝'],
+};
+
 const PREFERENCE_CARD: CardFixture = {
   id: 'aoi-preference-poll-e2e',
   content: PREFERENCE_PROMPT,
@@ -440,6 +465,51 @@ test.describe('Aoi nudge chips after the pending offer is lost', () => {
       NEWS_ARTICLE_BODY,
     );
     await expect(page.getByTestId('chat-messages')).not.toContainText('CyberNews에서 "');
+    expect(llmCallCount).toBe(0);
+  });
+
+  test('a taste poll chip is recorded as an answer instead of reaching the model', async ({
+    page,
+  }) => {
+    await stubSessionData(page, TASTE_POLL_CARD);
+    await page.goto('/');
+    await tapChip(page, TASTE_CHIP);
+
+    await expect(page.getByTestId('chat-messages')).toContainText(TASTE_CHIP);
+    await expect(page.getByTestId('chat-messages')).toContainText('다음 추천부터 반영할게');
+    expect(llmCallCount).toBe(0);
+  });
+
+  // The false claim this guard removes: recordTasteAnswer drops an answer whose
+  // question is no longer in the bank, and the ack said "I'll remember that"
+  // anyway. Nothing was written, so nothing may be claimed.
+  test('a taste poll chip whose question is gone says so instead of claiming memory', async ({
+    page,
+  }) => {
+    // Seeded after the beforeEach init script clears storage: a poll written by
+    // an earlier deploy, kept only as strings and never re-checked against the
+    // bank. Its labels match the card, so the tap is a real answer -- to a
+    // question that no longer exists.
+    await page.addInitScript(
+      ([key, label]) => {
+        localStorage.setItem(
+          key,
+          JSON.stringify({
+            questionId: 'vibe_removed_by_deploy',
+            options: [{ id: 'calm_lofi', label }],
+          }),
+        );
+      },
+      [TASTE_POLL_STORAGE_KEY, TASTE_CHIP],
+    );
+    await stubSessionData(page, STALE_TASTE_POLL_CARD);
+    await page.goto('/');
+    await tapChip(page, TASTE_CHIP);
+
+    await expect(page.getByTestId('chat-messages')).toContainText('저장하지 못했어', {
+      timeout: 30_000,
+    });
+    await expect(page.getByTestId('chat-messages')).not.toContainText('기억해둘게');
     expect(llmCallCount).toBe(0);
   });
 

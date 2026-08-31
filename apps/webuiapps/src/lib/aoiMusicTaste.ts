@@ -381,6 +381,48 @@ export function recordTasteAnswer(
   };
 }
 
+export interface TastePollAnswerPending {
+  questionId: string;
+  options: readonly { id: string; label: string }[];
+}
+
+export type TastePollAnswerResolution =
+  | { kind: 'ignored' }
+  | { kind: 'expired'; chosenLabel: string }
+  | { kind: 'recorded'; chosenLabel: string; nextState: AoiMusicTasteState };
+
+/**
+ * Resolve a tapped taste-poll chip: not an answer, an answer to a question that
+ * is gone, or an answer that actually landed.
+ *
+ * recordTasteAnswer silently drops an answer whose question or option is no
+ * longer in the bank, and a poll restored from localStorage carries only
+ * strings -- validated for shape, never against the bank -- so a deploy that
+ * renames an id leaves exactly that. The caller used to save the unchanged
+ * state and still say "I'll remember that": a claim about a write that never
+ * happened. Verifying the answer LANDED, rather than re-implementing the bank
+ * lookup here, keeps this from drifting out of step with recordTasteAnswer.
+ *
+ * Mirrors resolvePreferencePollAnswer, which already drew this line.
+ */
+export function resolveTastePollAnswer(
+  pending: TastePollAnswerPending,
+  params: { messageText: string; state: AoiMusicTasteState | null | undefined },
+): TastePollAnswerResolution {
+  const chosen = pending.options.find((option) => option.label === params.messageText);
+  if (!chosen) {
+    return { kind: 'ignored' };
+  }
+  const nextState = recordTasteAnswer(params.state, {
+    questionId: pending.questionId,
+    optionId: chosen.id,
+  });
+  if (nextState.answers[pending.questionId] !== chosen.id) {
+    return { kind: 'expired', chosenLabel: chosen.label };
+  }
+  return { kind: 'recorded', chosenLabel: chosen.label, nextState };
+}
+
 // --- Profile derivation ---------------------------------------------------------
 
 export interface AoiTasteProfile {

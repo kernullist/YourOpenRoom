@@ -23,6 +23,7 @@ import {
   recordTasteQuestionAsked,
   recordYouTubePlay,
   recordYouTubeSearch,
+  resolveTastePollAnswer,
   sanitizeTasteSearchQuery,
   saveAoiIdleMusicLearningState,
   saveAoiMusicTasteState,
@@ -224,6 +225,72 @@ describe('shouldAskTasteQuestion', () => {
     expect(shouldAskTasteQuestion(input)).toBe(true);
     expect(shouldAskTasteQuestion({ ...input, cooldownMs: 20_000 })).toBe(false);
     expect(shouldAskTasteQuestion({ ...input, minIdleMs: 10_000 })).toBe(false);
+  });
+});
+
+describe('resolveTastePollAnswer', () => {
+  const pending = {
+    questionId: 'vibe',
+    options: [
+      { id: 'calm_lofi', label: '잔잔한 로파이·칠' },
+      { id: 'energetic_pop', label: '신나는 팝·케이팝' },
+    ],
+  };
+
+  it('records an answer whose question and option are still in the bank', () => {
+    const resolution = resolveTastePollAnswer(pending, {
+      messageText: '신나는 팝·케이팝',
+      state: DEFAULT_AOI_MUSIC_TASTE_STATE,
+    });
+    expect(resolution.kind).toBe('recorded');
+    if (resolution.kind !== 'recorded') return;
+    expect(resolution.chosenLabel).toBe('신나는 팝·케이팝');
+    expect(resolution.nextState.answers).toEqual({ vibe: 'energetic_pop' });
+  });
+
+  it('ignores a message that is not one of the chips', () => {
+    expect(
+      resolveTastePollAnswer(pending, {
+        messageText: '아무 말',
+        state: DEFAULT_AOI_MUSIC_TASTE_STATE,
+      }).kind,
+    ).toBe('ignored');
+  });
+
+  // A poll restored from localStorage carries only strings, validated for shape
+  // and never against the bank. A deploy that renames a question or option id
+  // leaves exactly this, and recordTasteAnswer drops the answer in silence --
+  // which the caller used to follow with "I'll remember that".
+  it('reports a question pruned from the bank as expired, not as remembered', () => {
+    const stalePoll = {
+      questionId: 'vibe_v1_removed',
+      options: [{ id: 'calm_lofi', label: '잔잔한 로파이·칠' }],
+    };
+    const resolution = resolveTastePollAnswer(stalePoll, {
+      messageText: '잔잔한 로파이·칠',
+      state: DEFAULT_AOI_MUSIC_TASTE_STATE,
+    });
+    expect(resolution.kind).toBe('expired');
+    if (resolution.kind !== 'expired') return;
+    expect(resolution.chosenLabel).toBe('잔잔한 로파이·칠');
+  });
+
+  it('reports a pruned option the same way', () => {
+    const resolution = resolveTastePollAnswer(
+      { questionId: 'vibe', options: [{ id: 'renamed_option', label: '잔잔한 로파이·칠' }] },
+      { messageText: '잔잔한 로파이·칠', state: DEFAULT_AOI_MUSIC_TASTE_STATE },
+    );
+    expect(resolution.kind).toBe('expired');
+  });
+
+  it('accepts re-answering the same question with the same option', () => {
+    const answered = recordTasteAnswer(DEFAULT_AOI_MUSIC_TASTE_STATE, {
+      questionId: 'vibe',
+      optionId: 'calm_lofi',
+    });
+    expect(
+      resolveTastePollAnswer(pending, { messageText: '잔잔한 로파이·칠', state: answered }).kind,
+    ).toBe('recorded');
   });
 });
 
