@@ -191,6 +191,11 @@ function transcriptWith(card: CardFixture) {
 // has to use the path the app is really running under.
 let observedSessionPath = '';
 
+// Article reads served since the page loaded. Only the news offer is rebuilt
+// asynchronously -- every other card's recovery is a synchronous read of the
+// transcript and localStorage -- and this is how a test knows that read is done.
+let articleReadsServed = 0;
+
 async function stubSessionData(
   page: Page,
   card: CardFixture,
@@ -219,6 +224,7 @@ async function stubSessionData(
         contentType: 'application/json',
         body: JSON.stringify(newsArticle(articleFetchedAt)),
       });
+      articleReadsServed += 1;
       return;
     }
     if (url.includes(articlesDir) && url.includes('action=list')) {
@@ -242,6 +248,7 @@ test.describe('Aoi nudge chips after the pending offer is lost', () => {
   test.beforeEach(async ({ page }) => {
     llmCallCount = 0;
     observedSessionPath = '';
+    articleReadsServed = 0;
     // A usable model config is required to reach the direct-action paths, but no
     // request may actually be made -- every call is counted and asserted zero.
     await page.addInitScript((configKey) => {
@@ -315,6 +322,17 @@ test.describe('Aoi nudge chips after the pending offer is lost', () => {
     const chip = page.getByTestId('suggested-reply').filter({ hasText });
     await expect(chip).toBeVisible({ timeout: 30_000 });
     await chip.click();
+  }
+
+  // The news chip is the one whose offer is rebuilt from disk, and the chip
+  // becomes tappable when that rebuild STARTS -- both come from the same
+  // transcript restore. Tapping first is answered honestly ("I could not find
+  // that article"), which is correct behaviour and a false result for a test
+  // that means to exercise the rebuilt offer. Waiting on the article read makes
+  // the rebuild's decision, either way, the one under test.
+  async function tapNewsChipAfterRecovery(page: Page, hasText: string): Promise<void> {
+    await expect.poll(() => articleReadsServed, { timeout: 30_000 }).toBeGreaterThan(0);
+    await tapChip(page, hasText);
   }
 
   test('the music play chip recovers its pick and opens it in the YouTube app', async ({
@@ -416,7 +434,7 @@ test.describe('Aoi nudge chips after the pending offer is lost', () => {
   test('the news chip recovers its article and opens it in CyberNews', async ({ page }) => {
     await stubSessionData(page, newsCard(Date.now()));
     await page.goto('/');
-    await tapChip(page, '관심 있어');
+    await tapNewsChipAfterRecovery(page, '관심 있어');
 
     await expect(page.getByTestId(`app-window-${CYBERNEWS_APP_ID}`)).toBeVisible({
       timeout: 30_000,
@@ -462,7 +480,7 @@ test.describe('Aoi nudge chips after the pending offer is lost', () => {
     );
     await stubSessionData(page, newsCard(Date.now()), '2020-01-01T00:00:00.000Z');
     await page.goto('/');
-    await tapChip(page, '관심 있어');
+    await tapNewsChipAfterRecovery(page, '관심 있어');
 
     // Says the article rolled off the feed, and backs the offer to pick another
     // one by actually putting CyberNews on the current list.
@@ -485,7 +503,7 @@ test.describe('Aoi nudge chips after the pending offer is lost', () => {
     // the chip, so this cannot pass by the article being missing.
     await stubSessionData(page, newsCard(Date.now() - STALE_NEWS_CARD_AGE_MS));
     await page.goto('/');
-    await tapChip(page, '관심 있어');
+    await tapNewsChipAfterRecovery(page, '관심 있어');
 
     await expect(page.getByTestId('chat-messages')).toContainText('피드에서 내려갔어', {
       timeout: 30_000,
