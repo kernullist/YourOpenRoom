@@ -89,12 +89,19 @@ const EMPTY_TRANSCRIPT = {
   suggestedReplies: [],
 };
 
+// Research memories served to the page since the current visit started. The
+// self-inquiry pool is built from them, and the visit must not be fast-forwarded
+// before they land -- see visitAndWaitForObservation.
+let memoryReadsServed = 0;
+
 async function stubSessionData(page: Page): Promise<void> {
   const fetchedAt = new Date().toISOString();
   await page.route('**/api/session-data**', async (route) => {
     const request = route.request();
     if (request.method() !== 'GET') {
-      await route.continue();
+      // Every read this spec makes is stubbed below, so a write can only reach
+      // the shared e2e home and wait there for another spec to inherit it.
+      await route.fulfill({ json: { ok: true } });
       return;
     }
     const url = decodeURIComponent(request.url());
@@ -120,6 +127,7 @@ async function stubSessionData(page: Page): Promise<void> {
     );
     if (memoryIndex >= 0) {
       await route.fulfill({ json: memoryFixture(memoryIndex) });
+      memoryReadsServed += 1;
       return;
     }
     if (url.includes(`${ARTICLES_DIR}/${ARTICLE_ID}.json`)) {
@@ -189,8 +197,18 @@ async function stubAutonomy(page: Page): Promise<void> {
 // and a multi-hour jump would bring them due. Whichever of those fires first
 // parks a pending offer that suppresses this one.
 async function visitAndWaitForObservation(page: Page): Promise<string> {
+  memoryReadsServed = 0;
   await page.goto('/');
   await expect(page.getByTestId('chat-panel')).toBeVisible({ timeout: 30_000 });
+  // Four hours of fake clock fires the 60s nudge interval hundreds of times, and
+  // the first tick that clears the gates decides the visit. Fast-forwarding
+  // before the research memories land lets that tick find an empty self-inquiry
+  // pool, fall through to the host news nudge, and take the single offer slot --
+  // after which no later tick in this visit can produce an observation. That
+  // race is what made this spec fail in batches on a busy machine.
+  await expect
+    .poll(() => memoryReadsServed, { timeout: 30_000 })
+    .toBeGreaterThanOrEqual(RESEARCH_TOPICS.length);
   await page.clock.fastForward('04:00');
   const spoken = page
     .getByTestId('chat-message')
@@ -267,6 +285,20 @@ test.describe('Aoi self-observation rotation', () => {
         markerKey: SEED_MARKER_KEY,
         origin: Date.parse(CLOCK_ORIGIN),
       },
+    );
+    // The e2e home is shared by every spec and reused across runs, while this
+    // spec's entire setup is the seeding above: the sibling nudges parked on
+    // their cooldowns so a self-observation is the only thing the window can
+    // produce. Music state is re-imported from config.json on mount, which
+    // merged whatever an earlier spec had left in the home over that seeding --
+    // a taste signal from someone else's run reopened the taste-poll gate, that
+    // card took the one offer slot, and the observation never came. Cutting the
+    // config API both ways keeps the seeding authoritative, and keeps this spec
+    // from leaving its own state behind for the next one to inherit.
+    await page.route('**/api/llm-config**', (route) =>
+      route.request().method() === 'GET'
+        ? route.fulfill({ json: {} })
+        : route.fulfill({ json: { ok: true } }),
     );
     await page.route('**/api/llm-proxy', (route) =>
       route.fulfill({ json: { choices: [{ message: { content: 'LLM MUST NOT BE CALLED' } }] } }),
