@@ -76,6 +76,13 @@ import {
   recoverTastePoll,
 } from '@/lib/aoiPendingOfferRecovery';
 import {
+  MAX_FOLLOW_UP_CONTEXTS,
+  loadAgendaFollowUpContexts,
+  loadTrendFollowUpContexts,
+  saveAgendaFollowUpContexts,
+  saveTrendFollowUpContexts,
+} from '@/lib/aoiFollowUpContexts';
+import {
   isIdleMusicOfferStale,
   isNewsOfferExpired,
   loadPendingIdleMusicOffer,
@@ -1895,6 +1902,24 @@ function buildNewsErrorAck(lang: NudgeLang): string {
     default:
       return 'I could not open the article. Open the CyberNews app and try again.';
   }
+}
+
+// Every mutation of the follow-up context maps goes through one of these two,
+// so a reload can neither lose a live context nor resurrect one the session has
+// already dropped. Module level on purpose: no hook identity to thread through
+// the dependency arrays of the effects that clear them.
+function persistTrendFollowUpContexts(
+  map: Map<string, AoiProactiveTrendFollowUpContext>,
+  sessionPath: string,
+): void {
+  saveTrendFollowUpContexts(sessionPath, [...map.values()]);
+}
+
+function persistAgendaFollowUpContexts(
+  map: Map<string, AoiAgendaChatFollowUpContext>,
+  sessionPath: string,
+): void {
+  saveAgendaFollowUpContexts(sessionPath, [...map.values()]);
 }
 
 const AOI_NEWS_STORAGE_KEY = 'aoi:newsState:v1';
@@ -4047,7 +4072,18 @@ const ChatPanel: React.FC<{
     aoiDirectTrendChatIdsRef.current = new Set();
     aoiAgendaNudgeShownKeysRef.current = new Set();
     pendingAoiAgendaFollowUpRef.current = null;
-    aoiAgendaFollowUpContextsByPromptRef.current.clear();
+    pendingAoiTrendFollowUpRef.current = null;
+    // The follow-up chips come back with the transcript this effect is about to
+    // reload, so the context behind them is re-read for THIS session rather than
+    // just dropped -- otherwise a tapped chip reaches the model with no idea
+    // which trend or which proposal it is about. Stamped with the session, so
+    // switching sessions restores nothing rather than the wrong card's context.
+    aoiAgendaFollowUpContextsByPromptRef.current = new Map(
+      loadAgendaFollowUpContexts(sessionPath).map((context) => [context.prompt, context]),
+    );
+    aoiTrendFollowUpContextsByPromptRef.current = new Map(
+      loadTrendFollowUpContexts(sessionPath).map((context) => [context.prompt, context]),
+    );
     // Snapshot what is on screen when this load starts. If the user (or an e2e
     // spec) sends a message while the persisted transcript is still in flight,
     // the restore below must not clobber that live conversation.
@@ -5334,12 +5370,16 @@ const ChatPanel: React.FC<{
       }
       pendingAoiTrendFollowUpRef.current = context;
       aoiTrendFollowUpContextsByPromptRef.current.set(context.prompt, context);
-      if (aoiTrendFollowUpContextsByPromptRef.current.size > 24) {
+      if (aoiTrendFollowUpContextsByPromptRef.current.size > MAX_FOLLOW_UP_CONTEXTS) {
         const oldestKey = aoiTrendFollowUpContextsByPromptRef.current.keys().next().value;
         if (oldestKey) {
           aoiTrendFollowUpContextsByPromptRef.current.delete(oldestKey);
         }
       }
+      persistTrendFollowUpContexts(
+        aoiTrendFollowUpContextsByPromptRef.current,
+        sessionPathRef.current,
+      );
     },
     [],
   );
@@ -5352,13 +5392,17 @@ const ChatPanel: React.FC<{
           aoiTrendFollowUpContextsByPromptRef.current.set(context.prompt, context);
         }
       }
-      while (aoiTrendFollowUpContextsByPromptRef.current.size > 24) {
+      while (aoiTrendFollowUpContextsByPromptRef.current.size > MAX_FOLLOW_UP_CONTEXTS) {
         const oldestKey = aoiTrendFollowUpContextsByPromptRef.current.keys().next().value;
         if (!oldestKey) {
           break;
         }
         aoiTrendFollowUpContextsByPromptRef.current.delete(oldestKey);
       }
+      persistTrendFollowUpContexts(
+        aoiTrendFollowUpContextsByPromptRef.current,
+        sessionPathRef.current,
+      );
     },
     [],
   );
@@ -5368,6 +5412,10 @@ const ChatPanel: React.FC<{
     pendingAoiTrendFollowUpRef.current = null;
     if (pending?.prompt === messageText) {
       aoiTrendFollowUpContextsByPromptRef.current.delete(messageText);
+      persistTrendFollowUpContexts(
+        aoiTrendFollowUpContextsByPromptRef.current,
+        sessionPathRef.current,
+      );
       return pending;
     }
     return null;
@@ -5379,13 +5427,17 @@ const ChatPanel: React.FC<{
         const context = buildAoiAgendaChatFollowUpContext(nudge, prompt);
         aoiAgendaFollowUpContextsByPromptRef.current.set(context.prompt, context);
       }
-      while (aoiAgendaFollowUpContextsByPromptRef.current.size > 24) {
+      while (aoiAgendaFollowUpContextsByPromptRef.current.size > MAX_FOLLOW_UP_CONTEXTS) {
         const oldestKey = aoiAgendaFollowUpContextsByPromptRef.current.keys().next().value;
         if (!oldestKey) {
           break;
         }
         aoiAgendaFollowUpContextsByPromptRef.current.delete(oldestKey);
       }
+      persistAgendaFollowUpContexts(
+        aoiAgendaFollowUpContextsByPromptRef.current,
+        sessionPathRef.current,
+      );
     },
     [],
   );
@@ -5395,6 +5447,10 @@ const ChatPanel: React.FC<{
     pendingAoiAgendaFollowUpRef.current = null;
     if (pending?.prompt === messageText) {
       aoiAgendaFollowUpContextsByPromptRef.current.delete(messageText);
+      persistAgendaFollowUpContexts(
+        aoiAgendaFollowUpContextsByPromptRef.current,
+        sessionPathRef.current,
+      );
       return pending;
     }
     return null;
@@ -6700,9 +6756,21 @@ const ChatPanel: React.FC<{
         recordAoiTrendFollowUpPromptUse(aoiTrendFollowUpContext);
       } else if (aoiAgendaFollowUpContext) {
         aoiTrendFollowUpContextsByPromptRef.current.clear();
+        persistTrendFollowUpContexts(
+          aoiTrendFollowUpContextsByPromptRef.current,
+          sessionPathRef.current,
+        );
       } else {
         aoiTrendFollowUpContextsByPromptRef.current.clear();
         aoiAgendaFollowUpContextsByPromptRef.current.clear();
+        persistTrendFollowUpContexts(
+          aoiTrendFollowUpContextsByPromptRef.current,
+          sessionPathRef.current,
+        );
+        persistAgendaFollowUpContexts(
+          aoiAgendaFollowUpContextsByPromptRef.current,
+          sessionPathRef.current,
+        );
         // P1.1: the user sent an unrelated message while a direct-chat card was
         // offered -> record it as an implicit dismissal (once per card).
         const offeredDirectChatCard = aoiOfferedDirectChatCardRef.current;
@@ -11121,6 +11189,10 @@ const ChatPanel: React.FC<{
     const followUpPrompts = aoiAgendaChatNudge.suggestedReplies.slice(0, 3);
     pendingAoiTrendFollowUpRef.current = null;
     aoiTrendFollowUpContextsByPromptRef.current.clear();
+    persistTrendFollowUpContexts(
+      aoiTrendFollowUpContextsByPromptRef.current,
+      sessionPathRef.current,
+    );
     emitAssistantMessage(
       {
         id: messageId,
@@ -11640,6 +11712,10 @@ const ChatPanel: React.FC<{
     aoiDirectTrendChatIdsRef.current.add(messageId);
     pendingAoiAgendaFollowUpRef.current = null;
     aoiAgendaFollowUpContextsByPromptRef.current.clear();
+    persistAgendaFollowUpContexts(
+      aoiAgendaFollowUpContextsByPromptRef.current,
+      sessionPathRef.current,
+    );
     const followUpPrompts = directAoiTrendCard.followUpPrompts.slice(0, 4);
     const message: CharacterDisplayMessage = {
       id: messageId,

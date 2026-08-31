@@ -4226,6 +4226,88 @@ export function buildAoiAgendaChatFollowUpContext(
   };
 }
 
+const AOI_AGENDA_CHAT_NUDGE_REASONS: readonly AoiAgendaChatNudgeReason[] = [
+  'accepted_action_ready',
+  'approval_waiting',
+  'blocked_gate',
+  'high_signal_proposal',
+];
+
+function sanitizeAgendaReplyList(values: unknown, maxItems: number): string[] {
+  const result: string[] = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    if (typeof value !== 'string') {
+      continue;
+    }
+    const item = sanitizeAoiProposalDisplayText(value, 160);
+    if (item) {
+      result.push(item);
+    }
+    if (result.length >= maxItems) {
+      break;
+    }
+  }
+  return result;
+}
+
+/**
+ * Read an agenda follow-up context back from storage.
+ *
+ * The card and its chips come back from the server-side transcript after a
+ * reload, so the nudge behind them has to survive too, and what comes back is
+ * untrusted input. Re-sanitizes every text field rather than trusting the
+ * stored copy. Anything unusable is null; never throws.
+ */
+export function parseAoiAgendaChatFollowUpContext(
+  raw: unknown,
+): AoiAgendaChatFollowUpContext | null {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const stored = raw as Partial<AoiAgendaChatFollowUpContext>;
+  const nudge = stored.nudge as Partial<AoiAgendaChatNudge> | undefined;
+  if (!nudge || typeof nudge !== 'object') {
+    return null;
+  }
+  const createdAt =
+    typeof stored.createdAt === 'number' &&
+    Number.isFinite(stored.createdAt) &&
+    stored.createdAt > 0
+      ? stored.createdAt
+      : 0;
+  const prompt =
+    typeof stored.prompt === 'string' ? sanitizeAoiProposalDisplayText(stored.prompt, 160) : '';
+  const dedupeKey =
+    typeof nudge.dedupeKey === 'string' ? sanitizeAoiProposalDisplayText(nudge.dedupeKey, 200) : '';
+  const chatText =
+    typeof nudge.chatText === 'string' ? sanitizeAoiProposalDisplayText(nudge.chatText, 520) : '';
+  // Without the reason the follow-up cannot be classified, and without the text
+  // there is nothing to follow up on.
+  if (
+    !createdAt ||
+    !prompt ||
+    !dedupeKey ||
+    !chatText ||
+    !AOI_AGENDA_CHAT_NUDGE_REASONS.includes(nudge.reason as AoiAgendaChatNudgeReason)
+  ) {
+    return null;
+  }
+  return {
+    prompt,
+    nudge: {
+      dedupeKey,
+      reason: nudge.reason as AoiAgendaChatNudgeReason,
+      ...(typeof nudge.proposalId === 'string' && nudge.proposalId.trim()
+        ? { proposalId: sanitizeAoiProposalDisplayText(nudge.proposalId, 200) }
+        : {}),
+      chatText,
+      suggestedReplies: sanitizeAgendaReplyList(nudge.suggestedReplies, 6),
+      evidenceRefs: sanitizeAgendaReplyList(nudge.evidenceRefs, 12),
+    },
+    createdAt,
+  };
+}
+
 export function classifyAoiAgendaChatFollowUpPrompt(
   prompt: string,
   nudge?: AoiAgendaChatNudge | null,

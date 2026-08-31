@@ -133,6 +133,20 @@ const STALE_TASTE_POLL_CARD: CardFixture = {
   suggestedReplies: [TASTE_CHIP, '신나는 팝·케이팝'],
 };
 
+// A proactive trend card. Its follow-up chips are backed by a context object
+// that only ever lived in memory, so a reload left them pointing at nothing:
+// the tap reached the model as bare prose with no idea which trend it was about.
+const TREND_SOURCES_CHIP = '출처 보여줘';
+const TREND_TITLE = 'A NEW ANTI-TAMPER BYPASS IS CIRCULATING';
+const TREND_SOURCE_URL = 'https://example.test/advisory';
+const TREND_FOLLOW_UP_STORAGE_KEY = 'aoi-trend-follow-up-contexts-v1';
+
+const TREND_CARD: CardFixture = {
+  id: 'aoi-trend-direct-e2e-snapshot',
+  content: `요즘 보던 주제에서 이게 눈에 띄어: ${TREND_TITLE}`,
+  suggestedReplies: [TREND_SOURCES_CHIP, '나중에'],
+};
+
 const PREFERENCE_CARD: CardFixture = {
   id: 'aoi-preference-poll-e2e',
   content: PREFERENCE_PROMPT,
@@ -158,6 +172,11 @@ function transcriptWith(card: CardFixture) {
 // Serve the fixture transcript for the chat read, and the fixture article for
 // the CyberNews store. Every other session-data request (including saves)
 // passes through to the real isolated server.
+// Set by stubSessionData when the app asks for its transcript. Follow-up
+// contexts are stamped with the session they belong to, so a test that seeds one
+// has to use the path the app is really running under.
+let observedSessionPath = '';
+
 async function stubSessionData(
   page: Page,
   card: CardFixture,
@@ -171,6 +190,7 @@ async function stubSessionData(
       return;
     }
     if (url.includes('chat/chat.json')) {
+      observedSessionPath = url.match(/[?&]path=(.*)\/chat\/chat\.json/)?.[1] ?? '';
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -207,6 +227,7 @@ test.describe('Aoi nudge chips after the pending offer is lost', () => {
 
   test.beforeEach(async ({ page }) => {
     llmCallCount = 0;
+    observedSessionPath = '';
     // A usable model config is required to reach the direct-action paths, but no
     // request may actually be made -- every call is counted and asserted zero.
     await page.addInitScript((configKey) => {
@@ -510,6 +531,74 @@ test.describe('Aoi nudge chips after the pending offer is lost', () => {
       timeout: 30_000,
     });
     await expect(page.getByTestId('chat-messages')).not.toContainText('기억해둘게');
+    expect(llmCallCount).toBe(0);
+  });
+
+  test('a trend follow-up chip still knows its trend after a reload', async ({ page }) => {
+    await stubSessionData(page, TREND_CARD);
+    await page.goto('/');
+    // The chip proves the transcript is restored, which is also when the app has
+    // told us the session path the context has to be stamped with.
+    await expect(
+      page.getByTestId('suggested-reply').filter({ hasText: TREND_SOURCES_CHIP }),
+    ).toBeVisible({ timeout: 30_000 });
+    expect(observedSessionPath).not.toBe('');
+
+    // Seeded as an init script, not an evaluate: the beforeEach init script
+    // clears storage on every navigation, and this has to land after it on the
+    // reload below -- which is exactly the ordering a real page load has.
+    await page.addInitScript(
+      ([storageKey, sessionPath, prompt, title, url]) => {
+        localStorage.setItem(
+          storageKey,
+          JSON.stringify({
+            version: 1,
+            sessionPath,
+            contexts: [
+              {
+                version: 1,
+                prompt,
+                cardId: 'aoi-trend-direct-e2e-snapshot',
+                snapshotId: 'e2e-snapshot',
+                topicId: 'topic-kernel',
+                topicLabel: 'Windows kernel security',
+                title,
+                myTake: 'Worth reading before the next driver review.',
+                suggestedNextAction: 'Read the advisory.',
+                sourceHosts: ['example.test'],
+                sources: [
+                  {
+                    title: 'The advisory',
+                    url,
+                    host: 'example.test',
+                    snippet: 'Details of the bypass.',
+                  },
+                ],
+                evidenceRefs: ['e2e-snapshot#1'],
+                createdAt: Date.now(),
+              },
+            ],
+          }),
+        );
+      },
+      [
+        TREND_FOLLOW_UP_STORAGE_KEY,
+        observedSessionPath,
+        TREND_SOURCES_CHIP,
+        TREND_TITLE,
+        TREND_SOURCE_URL,
+      ],
+    );
+    await page.reload();
+    await tapChip(page, TREND_SOURCES_CHIP);
+
+    // The stored sources are listed deterministically, naming the trend the chip
+    // belongs to. Without the restored context this message cannot exist and the
+    // chip goes to the model instead.
+    await expect(page.getByTestId('chat-messages')).toContainText(TREND_SOURCE_URL, {
+      timeout: 30_000,
+    });
+    await expect(page.getByTestId('chat-messages')).toContainText(TREND_TITLE);
     expect(llmCallCount).toBe(0);
   });
 

@@ -37,10 +37,12 @@ function sanitizeText(value: unknown, maxLength: number): string {
   return value.replace(/\s+/g, ' ').trim().slice(0, maxLength);
 }
 
-function sanitizeList(values: readonly string[], maxItems: number, maxLength: number): string[] {
+// Takes unknown rather than string[]: the same sanitizers run over a context
+// read back from storage, which is untrusted input.
+function sanitizeList(values: unknown, maxItems: number, maxLength: number): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
-  for (const value of values) {
+  for (const value of Array.isArray(values) ? values : []) {
     const item = sanitizeText(value, maxLength);
     const key = item.toLowerCase();
     if (!item || seen.has(key)) {
@@ -71,12 +73,12 @@ function sanitizeUrl(value: unknown): string {
   }
 }
 
-function sanitizeSources(
-  sources: readonly AoiProactiveBriefSource[] | undefined,
-): AoiProactiveTrendFollowUpSource[] {
+function sanitizeSources(sources: unknown): AoiProactiveTrendFollowUpSource[] {
   const result: AoiProactiveTrendFollowUpSource[] = [];
   const seen = new Set<string>();
-  for (const source of sources ?? []) {
+  for (const source of (Array.isArray(sources)
+    ? sources
+    : []) as readonly AoiProactiveBriefSource[]) {
     const url = sanitizeUrl(source.url);
     const key = url.toLowerCase();
     if (!url || seen.has(key)) {
@@ -124,6 +126,45 @@ export function buildAoiProactiveTrendFollowUpContext(
     evidenceRefs: sanitizeList(card.evidenceRefs, 12, 180),
     createdAt: Number.isFinite(now) ? now : Date.now(),
   };
+}
+
+/**
+ * Read a follow-up context back from storage.
+ *
+ * The context behind a card's chips outlives the tab it was built in -- the
+ * card and its chips come back from the server-side transcript, so the context
+ * has to as well -- and what comes back is untrusted input. Rather than a
+ * second, hand-written validator that can drift from the shape the builder
+ * produces, this feeds the stored fields back through the builder's own
+ * sanitizers. Anything unusable is null; never throws.
+ */
+export function parseAoiProactiveTrendFollowUpContext(
+  raw: unknown,
+): AoiProactiveTrendFollowUpContext | null {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const stored = raw as Partial<AoiProactiveTrendFollowUpContext>;
+  if (stored.version !== 1) {
+    return null;
+  }
+  const createdAt =
+    typeof stored.createdAt === 'number' &&
+    Number.isFinite(stored.createdAt) &&
+    stored.createdAt > 0
+      ? stored.createdAt
+      : 0;
+  if (!createdAt) {
+    return null;
+  }
+  const context = buildAoiProactiveTrendFollowUpContext(
+    { ...stored, id: stored.cardId } as unknown as AoiProactiveTrendOpinionCard,
+    typeof stored.prompt === 'string' ? stored.prompt : '',
+    createdAt,
+  );
+  // A context with no snapshot cannot say what it is about, which is the only
+  // reason to restore one.
+  return context?.snapshotId ? context : null;
 }
 
 export function classifyAoiProactiveTrendFollowUpFeedback(
