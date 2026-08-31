@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 
 // E2E for the app-action claim postcondition.
 //
@@ -46,6 +46,45 @@ function respondToUser(content: string, performedActions: string[] = []) {
   };
 }
 
+const EMPTY_TRANSCRIPT = {
+  version: 1,
+  savedAt: 1,
+  messages: [],
+  chatHistory: [],
+  suggestedReplies: [],
+};
+
+// The e2e home is shared by every spec and reused across runs, and this spec
+// sends its message the moment the page loads. Whatever conversation the home
+// happens to hold is therefore what the direct-action parsers read: a music pick
+// an earlier spec left there is a pick this spec never wrote, and it is exactly
+// what these tests must not have -- the point is a claim with NOTHING behind it.
+// The turns sent here land in the home the same way, for the next spec to
+// inherit in turn.
+//
+// Reads of the conversation are answered empty and writes are swallowed. Every
+// other read the conversation loop makes still goes to the real server, where it
+// is read-only and cannot leak anything back out.
+async function isolateFromSharedHome(page: Page): Promise<void> {
+  await page.route('**/api/llm-config**', (route) =>
+    route.request().method() === 'GET'
+      ? route.fulfill({ json: {} })
+      : route.fulfill({ json: { ok: true } }),
+  );
+  await page.route('**/api/session-data**', async (route) => {
+    const request = route.request();
+    if (request.method() !== 'GET') {
+      await route.fulfill({ json: { ok: true } });
+      return;
+    }
+    if (decodeURIComponent(request.url()).includes('chat/chat.json')) {
+      await route.fulfill({ json: EMPTY_TRANSCRIPT });
+      return;
+    }
+    await route.continue();
+  });
+}
+
 test.describe('Aoi app-action claim postcondition', () => {
   test('rejects a playback claim with no dispatch and only shows the corrected answer', async ({
     page,
@@ -65,6 +104,7 @@ test.describe('Aoi app-action claim postcondition', () => {
         }),
       );
     }, CONFIG_KEY);
+    await isolateFromSharedHome(page);
     await page.route('**/api/aoi-autonomy/**', (route) => route.abort());
     await page.route('**/api/kira-automation/**', (route) => route.abort());
     await page.route('**/api/youtube-search**', (route) =>
@@ -131,6 +171,7 @@ test.describe('Aoi app-action claim postcondition', () => {
         }),
       );
     }, CONFIG_KEY);
+    await isolateFromSharedHome(page);
     await page.route('**/api/aoi-autonomy/**', (route) => route.abort());
     await page.route('**/api/kira-automation/**', (route) => route.abort());
     await page.route('**/api/llm-proxy', async (route) => {
@@ -180,6 +221,7 @@ test.describe('Aoi app-action claim postcondition', () => {
         }),
       );
     }, CONFIG_KEY);
+    await isolateFromSharedHome(page);
     await page.route('**/api/aoi-autonomy/**', (route) => route.abort());
     await page.route('**/api/kira-automation/**', (route) => route.abort());
     await page.route('**/api/llm-proxy', async (route) => {
