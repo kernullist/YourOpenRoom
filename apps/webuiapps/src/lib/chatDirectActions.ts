@@ -495,6 +495,74 @@ function buildDirectMusicIntent(rawQuery: string, exclude: string[]): DirectMusi
   return { query: named, ...(exclude.length > 0 ? { exclude } : {}) };
 }
 
+// Fold to bare words for comparing two picks: NFKC so styled unicode and
+// full-width forms collapse, punctuation to spaces so "'KISS N TELL'" and
+// "KISS N TELL" are the same three words.
+function normalizeForPickComparison(value: string): string {
+  return value
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+}
+
+/**
+ * True when the user just typed the pick that is already on the table AND added
+ * words it did not carry -- almost always the artist ("에스파 KISS N TELL 틀어줘"
+ * against a pick recorded as "KISS N TELL").
+ *
+ * This is the one case where handing the turn to the classifier loses
+ * information: play_candidate answers with the CANDIDATE's query verbatim, so
+ * the words the user added are dropped before the search runs. That is the
+ * reported failure -- the artist fell out, YouTube ranked on the bare title, and
+ * an unrelated upload with exactly that title played. The typed request is
+ * strictly more specific and is grounded by construction, so it wins over the
+ * weaker pick it names.
+ *
+ * Deliberately narrow: containment is checked on word boundaries and the typed
+ * query has to be strictly longer, so a shorter or merely overlapping request
+ * still defers to the classifier.
+ */
+function subsumesMusicPick(typedQuery: string, candidateQuery: string): boolean {
+  const typed = normalizeForPickComparison(typedQuery);
+  const candidate = normalizeForPickComparison(candidateQuery);
+  if (!typed || !candidate || typed === candidate || typed.length <= candidate.length) {
+    return false;
+  }
+  return ` ${typed} `.includes(` ${candidate} `);
+}
+
+// The verbatim path: an explicit playback verb with a subject, taken as typed
+// minus the "A 말고 B" split and a dangling object particle. No inference --
+// every guess this used to make is the classifier's now.
+function extractTypedMusicIntent(trimmed: string): DirectMusicIntent | null {
+  const suffixPatterns = [
+    /^(?<query>.+?)\s*(?:듣자|들어보자|틀어줘|재생해줘|재생해|들려줘|틀어|재생하자|재생)$/,
+    /^(?<query>.+?)\s*(?:듣고 싶어|듣고싶어|듣고싶다|듣고 싶다)$/,
+    /^(?<query>.+?)\s*(?:노래|음악|곡)?\s*(?:로|으로)\s*(?:가자|가줘|갈게|갈래|하자|해줘)$/,
+    /^(?:play|listen to|put on)\s+(?<query>.+)$/i,
+    /^(?:let'?s|lets)\s+listen(?:\s+to)?\s+(?<query>.+)$/i,
+    /^(?:we should|can we|could we)\s+listen(?:\s+to)?\s+(?<query>.+)$/i,
+  ];
+
+  const prefixPatterns = [
+    /^(?:틀어줘|재생해줘|재생해|들려줘|틀어)\s+(?<query>.+)$/,
+    /^(?:play|listen to|put on)\s+(?<query>.+)$/i,
+    /^(?:let'?s|lets)\s+listen(?:\s+to)?\s+(?<query>.+)$/i,
+    /^(?:we should|can we|could we)\s+listen(?:\s+to)?\s+(?<query>.+)$/i,
+  ];
+
+  for (const pattern of [...suffixPatterns, ...prefixPatterns]) {
+    const match = trimmed.match(pattern);
+    const { query, exclude } = cleanRequestedMusicQuery(match?.groups?.query ?? '');
+    if (query) {
+      return buildDirectMusicIntent(query, exclude);
+    }
+  }
+
+  return null;
+}
+
 export function parseDirectMusicIntent(
   text: string,
   history: Pick<ChatMessage, 'role' | 'content'>[] = [],
@@ -515,6 +583,8 @@ export function parseDirectMusicIntent(
     return chipQuery ? { query: chipQuery } : null;
   }
 
+  const typed = extractTypedMusicIntent(trimmed);
+
   // A pick is already on the table, so WHICH pick the user means is a question
   // about language -- and that belongs to the classifier, which answers with a
   // candidate id rather than a string it composed. Everything this function used
@@ -524,44 +594,20 @@ export function parseDirectMusicIntent(
   //
   // Measured tradeoff: one classifier call, ~540ms. The parser answered instantly
   // and answered wrongly often enough to reintroduce the bug it was written for.
-  if (collectMusicPickCandidates(history).length > 0) {
+  //
+  // The exception is a request that SUBSUMES a pick: the user named it themselves
+  // and added to it, so there is nothing left to disambiguate and deferring would
+  // throw the added words away (see subsumesMusicPick).
+  const candidates = collectMusicPickCandidates(history);
+  if (candidates.length > 0) {
+    if (typed && candidates.some((candidate) => subsumesMusicPick(typed.query, candidate.query))) {
+      return typed;
+    }
     return null;
   }
 
   // Nothing on the table. An explicit playback verb with a subject is taken
   // verbatim -- there is no history to misread, so nothing here can substitute one
   // pick for another.
-  const suffixPatterns = [
-    /^(?<query>.+?)\s*(?:듣자|들어보자|틀어줘|재생해줘|재생해|들려줘|틀어|재생하자|재생)$/,
-    /^(?<query>.+?)\s*(?:듣고 싶어|듣고싶어|듣고싶다|듣고 싶다)$/,
-    /^(?<query>.+?)\s*(?:노래|음악|곡)?\s*(?:로|으로)\s*(?:가자|가줘|갈게|갈래|하자|해줘)$/,
-    /^(?:play|listen to|put on)\s+(?<query>.+)$/i,
-    /^(?:let'?s|lets)\s+listen(?:\s+to)?\s+(?<query>.+)$/i,
-    /^(?:we should|can we|could we)\s+listen(?:\s+to)?\s+(?<query>.+)$/i,
-  ];
-
-  for (const pattern of suffixPatterns) {
-    const match = trimmed.match(pattern);
-    const { query, exclude } = cleanRequestedMusicQuery(match?.groups?.query ?? '');
-    if (query) {
-      return buildDirectMusicIntent(query, exclude);
-    }
-  }
-
-  const prefixPatterns = [
-    /^(?:틀어줘|재생해줘|재생해|들려줘|틀어)\s+(?<query>.+)$/,
-    /^(?:play|listen to|put on)\s+(?<query>.+)$/i,
-    /^(?:let'?s|lets)\s+listen(?:\s+to)?\s+(?<query>.+)$/i,
-    /^(?:we should|can we|could we)\s+listen(?:\s+to)?\s+(?<query>.+)$/i,
-  ];
-
-  for (const pattern of prefixPatterns) {
-    const match = trimmed.match(pattern);
-    const { query, exclude } = cleanRequestedMusicQuery(match?.groups?.query ?? '');
-    if (query) {
-      return buildDirectMusicIntent(query, exclude);
-    }
-  }
-
-  return null;
+  return typed;
 }

@@ -544,6 +544,38 @@ describe('parseDirectMusicIntent: the three branches', () => {
     }
   });
 
+  it('2. takes the typed request when it subsumes the pick on the table', () => {
+    // The reported failure. Aoi's own ack leaves a pick that carries no artist;
+    // deferring answered play_candidate with that bare pick, so 에스파 never
+    // reached YouTube and an unrelated upload titled exactly "KISS N TELL"
+    // played instead of the MV.
+    const ack = {
+      role: 'assistant' as const,
+      content: '"KISS N TELL" 유튜브에서 틀어볼게.',
+    };
+    expect(collectMusicPickCandidates([ack])).toEqual([
+      { id: 1, query: 'KISS N TELL', context: ack.content },
+    ]);
+    expect(parseDirectMusicIntent('에스파 KISS N TELL 틀어줘', [ack])).toEqual({
+      query: '에스파 KISS N TELL',
+    });
+  });
+
+  it('2. still defers when the typed request does not add to the pick', () => {
+    // Naming the pick exactly, naming less than it, or naming part of it is the
+    // ambiguity the classifier exists for -- only strictly-more-specific wins.
+    const ack = {
+      role: 'assistant' as const,
+      content: '"KISS N TELL" 유튜브에서 틀어볼게.',
+    };
+    for (const text of ['KISS N TELL 틀어줘', '에스파 틀어줘', 'kiss 틀어줘', '그거 틀어줘']) {
+      expect(parseDirectMusicIntent(text, [ack]), text).toBeNull();
+    }
+    // And a card whose pick is ALREADY the richer string keeps deferring: the
+    // typed request is the weaker one there.
+    expect(parseDirectMusicIntent('에스파 KISS N TELL 틀어줘', [CARD])).toBeNull();
+  });
+
   it('3. takes an explicit request verbatim when nothing is on the table', () => {
     // No history to misread, so nothing here can substitute one pick for another.
     const cases: [string, string][] = [

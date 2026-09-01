@@ -207,9 +207,37 @@ describe('pickAutoplayResult', () => {
     expect(pickAutoplayResult(results, 'jazz')?.result.id).toBe('a');
   });
 
-  it('still honours an exact title match on a short query', () => {
-    // Exact equality is a precise signal at any length, unlike substrings.
-    const results = [result('a', 'Jazz Cafe Long Session Mix'), result('b', 'Jazz')];
+  it('takes the top hit unannounced when a short query matches nothing', () => {
+    // Neither the top hit nor anything below carries the fragment, so relevance
+    // order is all there is -- and the caller must not claim it played what was
+    // asked for.
+    const results = [result('a', 'Chill Cafe Long Session Mix'), result('b', 'Smooth Beats Hours')];
+    const picked = pickAutoplayResult(results, 'jazz');
+    expect(picked?.result.id).toBe('a');
+    expect(picked?.matchedQuery).toBe(false);
+  });
+
+  it('keeps the top hit when a short query is already spelled out there', () => {
+    // The reported failure: "KISS N TELL" ranked aespa's MV first and an
+    // unrelated Topic upload titled exactly "KISS N TELL" fourth -- exact
+    // equality took the fourth. Title equality on a fragment names a different
+    // song as often as the right one, so relevance order stands whenever the
+    // top hit already carries the fragment.
+    const results = [
+      result('mv', "aespa エスパ 'KISS N TELL' MV", 'SMTOWN'),
+      result('lyrics', "aespa (에스파) 'Kiss n tell' (Color Coded Lyrics)", 'Jaeguchi'),
+      result('topic', 'KISS N TELL', 'untiljapan - Topic'),
+    ];
+    const picked = pickAutoplayResult(results, 'KISS N TELL');
+    expect(picked?.result.id).toBe('mv');
+    // The title contains what was asked for, so the caller may name it.
+    expect(picked?.matchedQuery).toBe(true);
+  });
+
+  it('still honours an exact title match on a short query the top hit ignores', () => {
+    // Equality remains the only signal available when nothing at the top
+    // accounts for the query at all.
+    const results = [result('a', 'Chill Cafe Long Session Mix'), result('b', 'Jazz')];
     expect(pickAutoplayResult(results, 'jazz')?.result.id).toBe('b');
   });
 

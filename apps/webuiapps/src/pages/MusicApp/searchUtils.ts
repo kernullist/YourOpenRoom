@@ -156,6 +156,21 @@ export function pickAutoplayResult(
     return fallback;
   }
 
+  // Relevance order is evidence too: YouTube ranked these FOR THIS QUERY.
+  // Below the title-like floor the query is a fragment rather than a title, and
+  // a video whose whole title equals a fragment is routinely a DIFFERENT song
+  // that happens to share the name. Searching "KISS N TELL" put aespa's MV
+  // first and an unrelated Topic upload titled exactly "KISS N TELL" fourth --
+  // and the exact rule below played the fourth. So when the top hit already
+  // spells the fragment out, ranking stands, and the match is real enough to
+  // announce: its title contains what was asked for.
+  if (
+    target.length < MIN_TITLE_LIKE_QUERY_CHARS &&
+    normalizeForTitleMatch(results[0].title).includes(target)
+  ) {
+    return { result: results[0], matchedQuery: true };
+  }
+
   const exactTitle = results.find((result) => normalizeForTitleMatch(result.title) === target);
   if (exactTitle) {
     return { result: exactTitle, matchedQuery: true };
