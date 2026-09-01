@@ -163,12 +163,67 @@ describe('pickAutoplayResult', () => {
     expect(pickAutoplayResult(results, 'Deep Focus Coding Session')?.result.id).toBe('b');
   });
 
-  it('prefers the least padded title when several carry the query', () => {
+  it('leaves two uploads of the same session to relevance order', () => {
+    // Both titles carry the query, so picking on title length alone was
+    // choosing between two copies of the same thing by padding. Ranking knows
+    // better, and preferring the shorter title is how a lower-ranked upload of
+    // the right song kept winning.
     const results = [
       result('padded', 'Deep Focus Coding Session [4K 60fps Extended Edition]'),
       result('tight', 'Deep Focus Coding Session [4K]'),
     ];
-    expect(pickAutoplayResult(results, 'Deep Focus Coding Session')?.result.id).toBe('tight');
+    expect(pickAutoplayResult(results, 'Deep Focus Coding Session')?.result.id).toBe('padded');
+  });
+
+  // The live result set for "에스파 KISS N TELL", in the order the search API
+  // returned it: a fan lyrics upload ranks above the official MV, hour-long
+  // loops and fancams fill the middle, and a "Recording ver." spells the
+  // request out word for word. That last one is what actually played.
+  const KISS_N_TELL = [
+    result('lyrics', "aespa (에스파) 'Kiss n tell' (Color Coded Lyrics)", 'Jaeguchi'),
+    result('mv', "aespa \u30a8\u30b9\u30d1 'KISS N TELL' MV", 'SMTOWN'),
+    result('fuji', "aespa 'KISS N TELL' from Fuji Television [STAR]", 'Warner Music Japan'),
+    result(
+      'hour',
+      '1시간 │ aespa (에스파) - KISS N TELL │ 가사해석 / 1 Hour Lyrics',
+      '1 Hour Lyrics',
+    ),
+    result('fancam', '260807 에스파 aespa KISS N TELL 직캠 @SYNK SEOUL', 'Coating'),
+    result(
+      'recording',
+      "aespa 'KISS N TELL' Recording ver. | 에스파 KISS N TELL 레코딩 버전",
+      '강양',
+    ),
+  ];
+
+  it('starts the song, not a derivative upload that spells the query out', () => {
+    // The reported failure: 'recording' is the only title carrying "에스파 KISS N
+    // TELL" verbatim -- the MV says \u30a8\u30b9\u30d1 -- so substring matching promoted it
+    // over both the top hit and the MV.
+    const picked = pickAutoplayResult(KISS_N_TELL, '에스파 KISS N TELL');
+    expect(picked?.result.id).toBe('mv');
+    // A word short of the request (the artist name in another script), so the
+    // caller must name what really started instead of echoing the query.
+    expect(picked?.matchedQuery).toBe(false);
+  });
+
+  it('steps over a lyrics upload that outranks the song itself', () => {
+    // 'lyrics' is rank 1 here. Relevance order is kept everywhere else, but a
+    // request to play a song is not a request for someone's lyric video.
+    expect(pickAutoplayResult(KISS_N_TELL, 'aespa KISS N TELL')?.result.id).toBe('mv');
+  });
+
+  it('returns the derivative when the request asks for that kind', () => {
+    // Asked for in Korean, answered by an English-titled upload: the exemption
+    // is per kind, not per word.
+    expect(pickAutoplayResult(KISS_N_TELL, '에스파 KISS N TELL 가사')?.result.id).toBe('lyrics');
+    expect(pickAutoplayResult(KISS_N_TELL, '에스파 KISS N TELL 직캠')?.result.id).toBe('fancam');
+  });
+
+  it('keeps relevance order when every hit is a derivative', () => {
+    // Preference, not a filter: with nothing else on offer the top hit stands.
+    const results = [KISS_N_TELL[0], KISS_N_TELL[3], KISS_N_TELL[5]];
+    expect(pickAutoplayResult(results, '에스파 KISS N TELL')?.result.id).toBe('lyrics');
   });
 
   it('prefers the most specific title the query accounts for', () => {
@@ -239,6 +294,19 @@ describe('pickAutoplayResult', () => {
     // accounts for the query at all.
     const results = [result('a', 'Chill Cafe Long Session Mix'), result('b', 'Jazz')];
     expect(pickAutoplayResult(results, 'jazz')?.result.id).toBe('b');
+  });
+
+  it('has no coverage to measure when a query is all single characters', () => {
+    // Single characters sit inside almost every title, so there is no word to
+    // check the top hit against -- the substring rules and relevance order are
+    // all that is left.
+    const results = [
+      result('a', 'A B C D E F G H I J K L [4K]'),
+      result('b', 'Something Else Long'),
+    ];
+    const picked = pickAutoplayResult(results, 'a b c d e f g h i j k l');
+    expect(picked?.result.id).toBe('a');
+    expect(picked?.matchedQuery).toBe(true);
   });
 
   it('returns null only for an empty result set', () => {

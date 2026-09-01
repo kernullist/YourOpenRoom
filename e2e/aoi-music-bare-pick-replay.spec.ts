@@ -26,8 +26,12 @@ const CONFIG_KEY = 'webuiapps-llm-config';
 const BARE_PICK_ACK = '"KISS N TELL" 유튜브에서 틀어볼게.';
 
 const MV_TITLE = "aespa エスパ 'KISS N TELL' MV";
-// Same title as the query, different song. This is what actually played.
-const SAME_TITLE_DECOY = 'KISS N TELL';
+// The live result set, in the order the search API really returns it: a fan
+// lyrics upload outranks the official MV, and a "Recording ver." upload sits
+// further down spelling the request out word for word. That last one is what
+// autoplay used to start.
+const LYRICS_TITLE = "aespa (에스파) 'Kiss n tell' (Color Coded Lyrics)";
+const RECORDING_TITLE = "aespa 'KISS N TELL' Recording ver. | 에스파 KISS N TELL 레코딩 버전";
 
 function video(id: string, title: string, channel: string) {
   return {
@@ -42,8 +46,9 @@ function video(id: string, title: string, channel: string) {
   };
 }
 
+const LYRICS = video('vid-lyrics', LYRICS_TITLE, 'Jaeguchi');
 const MV = video('vid-mv', MV_TITLE, 'SMTOWN');
-const DECOY = video('vid-topic', SAME_TITLE_DECOY, 'untiljapan - Topic');
+const RECORDING = video('vid-recording', RECORDING_TITLE, '강양');
 
 function transcript(...assistantMessages: string[]) {
   return {
@@ -105,9 +110,8 @@ test.describe('replaying a pick Aoi recorded without the artist', () => {
     await page.route('**/api/youtube-search**', async (route) => {
       const query = new URL(route.request().url()).searchParams.get('query') ?? '';
       searchQueries.push(query);
-      // Relevance order as YouTube really returned it: the MV on top, the
-      // same-title upload further down.
-      await route.fulfill({ json: { results: [MV, DECOY] } });
+      // Relevance order as YouTube really returned it.
+      await route.fulfill({ json: { results: [LYRICS, MV, RECORDING] } });
     });
     await page.route('https://www.youtube.com/**', (route) => route.abort());
     await page.route('https://i.ytimg.com/**', (route) => route.abort());
@@ -138,9 +142,10 @@ test.describe('replaying a pick Aoi recorded without the artist', () => {
     expect(llmCalls).toBe(0);
   });
 
-  test('starts the ranked video, not a same-title upload further down', async ({ page }) => {
+  test('starts the song, not the upload that spells the query out', async ({ page }) => {
     // The chip resolves the bare pick verbatim, so this is the query the app
-    // gets when nothing adds to it -- exactly the case autoplay got wrong.
+    // gets when nothing adds to it -- and "KISS N TELL" is a fragment, not a
+    // title, so a same-title upload must not outrank the MV.
     await stubTranscript(page, BARE_PICK_ACK);
     await page.goto('/');
     await send(page, '▶ 재생');

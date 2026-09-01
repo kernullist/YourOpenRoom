@@ -128,6 +128,113 @@ function byNormalizedTitleLength(
   };
 }
 
+// Uploads that announce themselves as a DERIVATIVE of the thing that was asked
+// for: lyric videos, one-hour loops, fancams, covers, recording sessions.
+// "에스파 KISS N TELL" really does return a Color Coded Lyrics upload above the
+// official MV, with a "Recording ver." upload further down -- and a play
+// request means the song, not a version of it. Skipping these is a preference,
+// never a filter: if every hit is one, relevance order still stands.
+//
+// Grouped by KIND rather than listed flat, because the exemption below is about
+// what the user asked for, not which language they asked in: "가사" has to
+// exempt an English "Lyrics" upload too.
+const DERIVATIVE_UPLOAD_KINDS: readonly (readonly RegExp[])[] = [
+  // Extended or looped re-uploads
+  [/\b(?:1|one)\s*hour\b/i, /1\s*시간/u, /\bloop(?:ed)?\b/i],
+  // Lyric videos
+  [/\blyrics?\b/i, /가사/u, /歌詞/u],
+  // Stage cuts and practice footage
+  [/\bfancam\b/i, /직캠/u, /\bdance\s*practice\b/i, /안무/u, /\bchoreograph/i, /\bmirrored\b/i],
+  // Covers and reactions
+  [/\bcover(?:ed|s)?\b/i, /커버/u, /\breaction\b/i, /리액션/u],
+  // Alternate audio
+  [
+    /\binstrumental\b/i,
+    /\bkaraoke\b/i,
+    /노래방/u,
+    /반주/u,
+    /\bsped\s*up\b/i,
+    /\bslowed\b/i,
+    /\bnightcore\b/i,
+    /\b8d\s*audio\b/i,
+  ],
+  // Studio and behind-the-scenes versions
+  [/\brecording\s*ver/i, /레코딩/u, /\bbehind\b/i, /메이킹/u, /\bmaking\s*film\b/i],
+  // Promos
+  [/\bteaser\b/i, /\bpreview\b/i, /예고/u],
+];
+
+// The derivative kinds the request itself asks for ("... 가사", "... 직캠",
+// "1시간 ..."). Nothing in that list may be skipped for this query, and the
+// highest-ranked result OF that kind is what the request means.
+function requestedDerivativeKinds(target: string): readonly (readonly RegExp[])[] {
+  return DERIVATIVE_UPLOAD_KINDS.filter((kind) => kind.some((pattern) => pattern.test(target)));
+}
+
+function describes(result: YoutubeSearchResult, kind: readonly RegExp[]): boolean {
+  const haystack = normalizeForTitleMatch(`${result.title} ${result.channel}`);
+  return kind.some((pattern) => pattern.test(haystack));
+}
+
+/**
+ * True when a result announces itself as a derivative version AND the query did
+ * not ask for that kind.
+ *
+ * The exemption is the whole reason this reads the query: someone asking for a
+ * lyric video, a one-hour loop or a fancam must still get one.
+ */
+function isDerivativeUpload(result: YoutubeSearchResult, target: string): boolean {
+  const asked = requestedDerivativeKinds(target);
+  return DERIVATIVE_UPLOAD_KINDS.some((kind) => !asked.includes(kind) && describes(result, kind));
+}
+
+/**
+ * The result relevance order actually recommends.
+ *
+ * In rank order: what the request asked for by kind, then anything that is not
+ * a derivative upload, then -- when every hit is one -- the literal top hit.
+ * Skipping is always a preference, never a filter.
+ */
+function preferredTopHit(
+  results: readonly YoutubeSearchResult[],
+  target: string,
+): YoutubeSearchResult {
+  const asked = requestedDerivativeKinds(target);
+  if (asked.length > 0) {
+    const requested = results.find((result) => asked.every((kind) => describes(result, kind)));
+    if (requested) {
+      return requested;
+    }
+  }
+  return results.find((result) => !isDerivativeUpload(result, target)) ?? results[0];
+}
+
+// Single characters carry no identity ("n" in "kiss n tell" sits inside almost
+// every title), so coverage is counted over the words that do.
+function meaningfulQueryTokens(target: string): string[] {
+  return target.split(/[^\p{L}\p{N}]+/u).filter((token) => token.length >= 2);
+}
+
+/**
+ * True when a result already answers the query well enough that a lower-ranked
+ * substring match is not a better answer.
+ *
+ * All but at most one word: the odd word out is routinely the SAME name in
+ * another script -- the official MV is titled "aespa エスパ 'KISS N TELL' MV"
+ * while the request said 에스파 -- and a fan upload that happens to spell every
+ * word the way the request did is not therefore the video that was asked for.
+ * That mismatch is exactly how a "Recording ver." upload beat the MV here.
+ */
+function answersQuery(result: YoutubeSearchResult, target: string): boolean {
+  const tokens = meaningfulQueryTokens(target);
+  if (tokens.length === 0) {
+    return false;
+  }
+  const haystack = normalizeForTitleMatch(`${result.title} ${result.channel}`);
+  const covered = tokens.filter((token) => haystack.includes(token)).length;
+  return covered >= Math.max(2, tokens.length - 1);
+}
+
 export interface AutoplaySelection {
   result: YoutubeSearchResult;
   // True when the query identified this specific video. False means nothing
@@ -150,11 +257,15 @@ export function pickAutoplayResult(
   if (results.length === 0) {
     return null;
   }
-  const fallback = { result: results[0], matchedQuery: false };
   const target = normalizeForTitleMatch(query);
   if (!target) {
-    return fallback;
+    return { result: results[0], matchedQuery: false };
   }
+
+  // What relevance order recommends once self-declared derivative uploads are
+  // stepped over. Everything below compares against THIS, not results[0].
+  const top = preferredTopHit(results, target);
+  const fallback = { result: top, matchedQuery: false };
 
   // Relevance order is evidence too: YouTube ranked these FOR THIS QUERY.
   // Below the title-like floor the query is a fragment rather than a title, and
@@ -166,11 +277,15 @@ export function pickAutoplayResult(
   // announce: its title contains what was asked for.
   if (
     target.length < MIN_TITLE_LIKE_QUERY_CHARS &&
-    normalizeForTitleMatch(results[0].title).includes(target)
+    normalizeForTitleMatch(top.title).includes(target)
   ) {
-    return { result: results[0], matchedQuery: true };
+    return { result: top, matchedQuery: true };
   }
 
+  // Exact identity is the one signal allowed to override ranking outright: it
+  // is the shape a taste-derived pick takes, and equality cannot be coincidence
+  // at this length. Derivatives are searched too -- a query that spells one out
+  // exactly is a request for that upload.
   const exactTitle = results.find((result) => normalizeForTitleMatch(result.title) === target);
   if (exactTitle) {
     return { result: exactTitle, matchedQuery: true };
@@ -185,14 +300,28 @@ export function pickAutoplayResult(
     return { result: exactTitleAndChannel, matchedQuery: true };
   }
 
+  // Nothing was named exactly, so the recommended hit is the answer unless it
+  // plainly does not answer the query. The substring rules below may only reach
+  // past a top hit that fails this: letting them override a good one is what
+  // started a "Recording ver." upload for a request the MV already answered.
+  if (answersQuery(top, target)) {
+    // Only claim the query named it when the title really carries the whole
+    // request; a word short (a name in another script) gets the honest ack.
+    return { result: top, matchedQuery: normalizeForTitleMatch(top.title).includes(target) };
+  }
+
   // Below this a query is too generic for substring matching to mean anything.
   if (target.length < MIN_TITLE_LIKE_QUERY_CHARS) {
     return fallback;
   }
 
+  // Derivatives stay out of the substring rules entirely: their titles quote the
+  // original in full, which is exactly what these rules reward.
+  const substringCandidates = results.filter((result) => !isDerivativeUpload(result, target));
+
   // The query spells this title out and adds something (usually the channel).
   // Longest wins: it is the most specific title the query can account for.
-  const spelledOutByQuery = [...results]
+  const spelledOutByQuery = [...substringCandidates]
     .filter((result) => {
       const title = normalizeForTitleMatch(result.title);
       return title.length >= MIN_TITLE_LIKE_QUERY_CHARS && target.includes(title);
@@ -204,7 +333,7 @@ export function pickAutoplayResult(
 
   // The title spells the query out and adds a suffix ("... [4K]", "(Official)").
   // Shortest wins: least padding around what was asked for.
-  const titleContainsQuery = [...results]
+  const titleContainsQuery = [...substringCandidates]
     .filter((result) => normalizeForTitleMatch(result.title).includes(target))
     .sort(byNormalizedTitleLength('shortest'))[0];
   if (titleContainsQuery) {
