@@ -24,6 +24,7 @@ import { generateLogFileName, createLogMiddleware } from './src/lib/logPlugin';
 import { appGeneratorPlugin } from './src/lib/appGeneratorPlugin';
 import { gmailPlugin } from './src/lib/gmailPlugin';
 import { idaPePlugin } from './src/lib/idaPePlugin';
+import { ghidraLabPlugin } from './src/lib/ghidraLabPlugin';
 import { idaSqlPlugin } from './src/lib/idaSqlPlugin';
 import {
   getProjectProfilePath,
@@ -4239,6 +4240,11 @@ const config = ({ mode }: ConfigEnv): UserConfigExport => {
     idaSqlPlugin({
       configFile: LLM_CONFIG_FILE,
       sessionsDir: SESSIONS_DIR,
+    }),
+    ghidraLabPlugin({
+      configFile: LLM_CONFIG_FILE,
+      sessionsDir: SESSIONS_DIR,
+      openroomHome: OPENROOM_HOME,
     }),
     albumFolderPlugin(),
     kiraConfigPlugin(),

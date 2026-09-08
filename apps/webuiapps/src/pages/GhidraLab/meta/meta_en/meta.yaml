@@ -1,0 +1,73 @@
+app_id: 32
+app_name: ghidralab
+app_display_name: Ghidra Lab
+version: '1.0.0'
+description: >
+  Ghidra Lab drives headless Ghidra on the real machine through pyghidra-mcp, and turns a whole
+  binary into a written report. Register a Ghidra install, a JDK 21+ home and one or more binary
+  roots, pick a binary, and the lab runs a ten-stage sweep -- identity, imports, exports, strings,
+  function inventory, deep read of the most interesting functions, capa capability matching, call
+  graph -- then writes a report in which every claim cites a collected evidence anchor. Session
+  start and sweep start both run through propose -> operator approval -> execute.
+displayDesc: >
+  Analyze a whole binary with Ghidra and get a cited report back.
+
+# Navigate and read only, on purpose.
+#
+# Aoi already has first-class tools for the effectful paths (ghidra_analyze_start,
+# ghidra_report_run), and those go through preview -> operator approval -> execute. An app action
+# that started a session, started a sweep, approved a pending action, edited the configured paths,
+# or created the Python environment would be a second door into the same effects that skips the
+# approval -- and the approval IS the control. The bootstrap path matters most: it installs
+# software.
+# Enforced by src/pages/GhidraLab/__tests__/actionSafety.test.ts.
+actions:
+  - type: SELECT_GHIDRA_SESSION
+    name: Select Ghidra Session
+    description: Focus one open analysis session.
+    params:
+      - name: sessionId
+        type: string
+        description: Session id from the sessions list.
+        required: true
+
+  - type: SELECT_GHIDRA_RUN
+    name: Select Sweep Run
+    description: Open one sweep run and load its report.
+    params:
+      - name: runId
+        type: string
+        description: Run id from the reports list.
+        required: true
+
+  - type: BROWSE_GHIDRA_BINARIES
+    name: Browse Binaries
+    description: Show the contents of one folder inside a registered binary root.
+    params:
+      - name: path
+        type: string
+        description: Absolute folder path inside a root. Empty lists the roots themselves.
+        required: false
+
+  - type: SET_GHIDRA_TAB
+    name: Set Tab
+    description: Switch the window to Setup, Binaries, Sessions or Reports.
+    params:
+      - name: tab
+        type: string
+        description: One of setup, binaries, sessions, reports.
+        required: true
+
+  - type: REFRESH_GHIDRA_LAB
+    name: Refresh Ghidra Lab
+    description: Re-read the preflight verdict, sessions, sweep runs and pending approvals.
+    params: []
+
+  - type: SYNC_STATE
+    name: Sync State
+    description: Re-read apps/ghidralab/data/state.json and apply its fields defensively.
+    params: []
+
+storage:
+  - path: apps/ghidralab/data/state.json
+    description: Selected tab, last selected binary path, and last opened sweep run.

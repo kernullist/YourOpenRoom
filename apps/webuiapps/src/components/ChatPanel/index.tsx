@@ -315,6 +315,13 @@ import {
   parseHostSpawnApprovalRequired,
 } from '@/lib/aoiHostProcessTools';
 import {
+  executeGhidraTool,
+  getGhidraToolDefinitions,
+  getGhidraToolPendingSummary,
+  isGhidraTool,
+  shouldEnableGhidraTools,
+} from '@/lib/aoiGhidraTools';
+import {
   executeIdaSqlTool,
   getIdaSqlToolDefinitions,
   getIdaSqlToolPendingSummary,
@@ -7994,6 +8001,12 @@ const ChatPanel: React.FC<{
       toolCallRuntimeAvailable &&
       !useDialogModel &&
       shouldEnableIdaSqlTools(latestUserMessage, history);
+    // Seven Ghidra tools, same reasoning as the IDA ones: they ride only when the
+    // turn looks like binary work or the lab has already been touched.
+    const hasGhidraTools =
+      toolCallRuntimeAvailable &&
+      !useDialogModel &&
+      shouldEnableGhidraTools(latestUserMessage, history);
     const confirmedResearchRequest = resolveAoiResearchConfirmationRequest(
       latestUserMessage,
       history,
@@ -8020,6 +8033,7 @@ const ChatPanel: React.FC<{
             ...(hasImageGen ? getImageGenToolDefinitions() : []),
             ...getHostProcessToolDefinitions(),
             ...(hasIdaSqlTools ? getIdaSqlToolDefinitions() : []),
+            ...(hasGhidraTools ? getGhidraToolDefinitions() : []),
             ...getHostBrowserToolDefinitions(),
             ...getBrowserDriveToolDefinitions(),
             ...getBrowserDriveActToolDefinitions(),
@@ -8973,6 +8987,19 @@ const ChatPanel: React.FC<{
               return {
                 toolCallId: tc.id,
                 pendingSummary: getIdaSqlToolPendingSummary(tc.function.name, params),
+                summarizedResult: summarizeToolResultForModel(tc.function.name, result),
+              };
+            }
+
+            if (isGhidraTool(tc.function.name)) {
+              // No popup here: a Ghidra proposal records a pending approval that
+              // the Ghidra Lab window polls for and presents with the context
+              // (preflight state, which binary, how long a sweep runs) that a
+              // one-line popup could not carry.
+              const result = await executeGhidraTool(tc.function.name, params);
+              return {
+                toolCallId: tc.id,
+                pendingSummary: getGhidraToolPendingSummary(tc.function.name, params),
                 summarizedResult: summarizeToolResultForModel(tc.function.name, result),
               };
             }
@@ -9973,6 +10000,29 @@ const ChatPanel: React.FC<{
               {
                 role: 'tool',
                 content: `error: ${err instanceof Error ? err.message : String(err)}`,
+                tool_call_id: tc.id,
+              },
+            ];
+          }
+          continue;
+        }
+
+        if (isGhidraTool(tc.function.name)) {
+          pendingToolCallsRef.current.push(getGhidraToolPendingSummary(tc.function.name, params));
+          try {
+            const result = await executeGhidraTool(tc.function.name, params);
+            const summarizedResult = summarizeToolResultForModel(tc.function.name, result);
+            currentMessages = [
+              ...currentMessages,
+              { role: 'tool', content: summarizedResult, tool_call_id: tc.id },
+            ];
+          } catch (err) {
+            console.error('[ChatPanel] ghidra tool failed', { tool: tc.function.name, err });
+            currentMessages = [
+              ...currentMessages,
+              {
+                role: 'tool',
+                content: JSON.stringify({ error: String(err) }),
                 tool_call_id: tc.id,
               },
             ];

@@ -1,5 +1,6 @@
 import type { ChatMessage } from './llmClient';
 import { getAppRecognitionEntries } from './appRegistry';
+import { shouldEnableGhidraTools } from './aoiGhidraTools';
 import { shouldEnableIdaSqlTools } from './aoiIdaSqlTools';
 
 const MAX_RECENT_HISTORY_MESSAGES = 12;
@@ -999,6 +1000,9 @@ export function shouldUseDialogModel(
   // and Aoi answered that it cannot analyze binaries, while a real session sat
   // open on the operator's PC.
   if (shouldEnableIdaSqlTools(latestUserMessage, history)) return false;
+  // Same reasoning for Ghidra Lab: a short question about a binary is under every
+  // length and keyword bar, and the dialog model has no analysis tools at all.
+  if (shouldEnableGhidraTools(latestUserMessage, history)) return false;
 
   const recentContext = normalizeWhitespace(
     history

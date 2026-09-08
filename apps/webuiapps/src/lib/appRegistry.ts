@@ -451,6 +451,28 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
     color: '#a855f7',
     defaultSize: { width: 1360, height: 860 },
   },
+  {
+    appId: 32,
+    appName: 'ghidralab',
+    route: '/ghidra-lab',
+    displayName: 'Ghidra Lab',
+    aliases: [
+      'ghidra',
+      'pyghidra',
+      'capa',
+      'headless analysis',
+      'binary report',
+      'decompiler report',
+      '기드라',
+      '기드라 랩',
+      '바이너리 보고서',
+      '정적 분석',
+    ],
+    sourceDir: 'GhidraLab',
+    icon: 'FileSearch',
+    color: '#2ea7ff',
+    defaultSize: { width: 1320, height: 880 },
+  },
 ];
 
 // OS actions are built-in system actions, not from meta.yaml
