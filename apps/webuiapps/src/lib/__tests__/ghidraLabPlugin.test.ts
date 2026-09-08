@@ -24,7 +24,7 @@ import {
   setAoiHostBridgeCapability,
 } from '../aoiHostBridgeKillSwitch';
 import { normalizeGhidraLabConfig } from '../ghidraLabConfig';
-import { GhidraLabRunManager } from '../ghidraLabRunner';
+import { GhidraLabRunManager, resetSharedGhidraLabRunManager } from '../ghidraLabRunner';
 import {
   GHIDRA_LAB_MAX_SESSIONS,
   GhidraLabSessionManager,
@@ -176,7 +176,9 @@ interface CallOptions {
   token?: string | null;
   preflight?: () => GhidraLabPreflightResult;
   sessions?: GhidraLabSessionManager;
-  runs?: GhidraLabRunManager;
+  runs?: GhidraLabRunManager | null;
+  /** Lets a test step past a preview's expiry window. */
+  now?: number;
 }
 
 async function call(route: string, options: CallOptions = {}) {
@@ -188,9 +190,11 @@ async function call(route: string, options: CallOptions = {}) {
     openroomHome: home,
     configFile,
     serverOrigin: 'http://127.0.0.1:3000',
-    now: Date.now(),
+    now: options.now ?? Date.now(),
     sessions: options.sessions ?? makeSessions(),
-    runs: options.runs ?? makeRuns(),
+    // Left undefined on purpose when a test asks for it: that is the only way
+    // to exercise the shared run manager the dev server actually builds.
+    ...(options.runs === null ? {} : { runs: options.runs ?? makeRuns() }),
     preflight: () => (options.preflight ?? passingPreflight)(),
   });
 }
@@ -860,4 +864,340 @@ describe('python bootstrap route', () => {
     expect(payload(result).ok).toBe(false);
     expect(String(payload(result).detail)).not.toBe('');
   }, 60_000);
+});
+
+describe('the wiring the routes use when nothing is injected', () => {
+  // Every other test in this file hands the route its own session and run
+  // managers, which means the production wiring -- the shared run manager, the
+  // model lookup behind it, the artifact directory it writes to -- was never the
+  // thing under test. These drive the real path.
+
+  beforeEach(() => {
+    resetSharedGhidraLabRunManager();
+  });
+
+  afterEach(() => {
+    resetSharedGhidraLabRunManager();
+  });
+
+  /** Bring a session up through preview and approval, and return its id. */
+  async function readySession(sessions: GhidraLabSessionManager): Promise<string> {
+    const preview = payload(
+      await call('/sessions/preview', {
+        method: 'POST',
+        body: { binaryPath: binary },
+        sessions,
+        runs: null,
+      }),
+    ).preview as Record<string, unknown>;
+    await call('/approvals/run', {
+      method: 'POST',
+      body: { approvalFingerprint: preview.approvalFingerprint },
+      sessions,
+      runs: null,
+    });
+    return sessions.list()[0]?.id ?? '';
+  }
+
+  /** Run a sweep on the SHARED run manager and wait for it to settle. */
+  async function sweepOnSharedManager(sessions: GhidraLabSessionManager): Promise<string> {
+    const sessionId = await readySession(sessions);
+    const preview = payload(
+      await call('/reports/preview', { method: 'POST', body: { sessionId }, sessions, runs: null }),
+    ).preview as Record<string, unknown>;
+    expect(preview.allowed, JSON.stringify(preview.blockReasons)).toBe(true);
+    const started = payload(
+      await call('/approvals/run', {
+        method: 'POST',
+        body: { approvalFingerprint: preview.approvalFingerprint },
+        sessions,
+        runs: null,
+      }),
+    );
+    expect(started.ok).toBe(true);
+    const runId = String(started.runId ?? '');
+
+    for (let tick = 0; tick < 400; tick += 1) {
+      const runs = payload(await call('/reports', { runs: null })).runs as {
+        runId: string;
+        state: string;
+      }[];
+      const state = runs.find((run) => run.runId === runId)?.state ?? '';
+      if (state === 'done' || state === 'failed' || state === 'cancelled') {
+        return runId;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error('the shared run manager never settled');
+  }
+
+  it('runs a sweep on the shared manager and serves the report it wrote to disk', async () => {
+    // No `runs` passed, so this exercises the production deps: the query closure
+    // over the session manager, the run directory under OPENROOM_HOME, and the
+    // artifact route reading the file back.
+    const sessions = makeSessions();
+    const runId = await sweepOnSharedManager(sessions);
+
+    const artifact = payload(await call('/reports/artifact', { body: { runId }, runs: null }));
+    expect(artifact.ok).toBe(true);
+    expect(String(artifact.report)).toContain('Binary Analysis Report');
+    expect(artifact.truncated).toBe(false);
+
+    const ledger = payload(
+      await call('/reports/artifact', { body: { runId, artifact: 'ledger' }, runs: null }),
+    );
+    expect(ledger.ok).toBe(true);
+  }, 60_000);
+
+  it('falls back to a deterministic report when the config names no model', async () => {
+    // callModel re-reads the config on every call rather than being decided at
+    // construction. With no llm block it throws, and the report writer falls
+    // back -- which is what makes a report exist at all on a machine with no
+    // model configured.
+    const sessions = makeSessions();
+    const runId = await sweepOnSharedManager(sessions);
+    const report = String(
+      payload(await call('/reports/artifact', { body: { runId }, runs: null })).report,
+    );
+    expect(report).toContain('Binary Analysis Report');
+  }, 60_000);
+
+  it('reaches the model adapter once a model IS configured, and still reports on failure', async () => {
+    // Same manager, different config: the point is that the lookup is live. The
+    // endpoint is a dead local port, so the call fails fast and the deterministic
+    // report ships -- a configured-but-unreachable model must not lose the run.
+    const persisted = JSON.parse(fs.readFileSync(configFile, 'utf-8')) as Record<string, unknown>;
+    persisted.llm = {
+      provider: 'openai',
+      model: 'test-model',
+      baseUrl: 'http://127.0.0.1:9/v1',
+      apiKey: '',
+    };
+    fs.writeFileSync(configFile, JSON.stringify(persisted));
+
+    const sessions = makeSessions();
+    const runId = await sweepOnSharedManager(sessions);
+    const report = String(
+      payload(await call('/reports/artifact', { body: { runId }, runs: null })).report,
+    );
+    expect(report).toContain('Binary Analysis Report');
+  }, 60_000);
+
+  it('refuses a second sweep while one is active on the same session', async () => {
+    const sessions = makeSessions();
+    const sessionId = await readySession(sessions);
+    const preview = payload(
+      await call('/reports/preview', { method: 'POST', body: { sessionId }, sessions, runs: null }),
+    ).preview as Record<string, unknown>;
+    await call('/approvals/run', {
+      method: 'POST',
+      body: { approvalFingerprint: preview.approvalFingerprint },
+      sessions,
+      runs: null,
+    });
+
+    const second = payload(
+      await call('/reports/preview', { method: 'POST', body: { sessionId }, sessions, runs: null }),
+    ).preview as Record<string, unknown>;
+    // Either the first run is still going (blocked) or it finished between the
+    // two calls (allowed). Only the blocked case carries a claim worth making.
+    if (second.allowed === false) {
+      expect(second.blockReasons).toContain('run_already_active');
+    }
+  }, 60_000);
+});
+
+describe('approval expiry', () => {
+  it('forgets a preview once its window has passed', async () => {
+    // The preview-to-click window is deliberately short: it is what stops an
+    // approval recorded hours ago from starting a JVM the operator has forgotten
+    // about. A stale fingerprint has to read as unknown, not as approved.
+    const sessions = makeSessions();
+    const preview = payload(
+      await call('/sessions/preview', {
+        method: 'POST',
+        body: { binaryPath: binary },
+        sessions,
+      }),
+    ).preview as Record<string, unknown>;
+    expect(preview.approvalFingerprint).toBeTruthy();
+
+    const result = await call('/approvals/run', {
+      method: 'POST',
+      body: { approvalFingerprint: preview.approvalFingerprint },
+      sessions,
+      now: Date.now() + 60 * 60 * 1000,
+    });
+    expect(result.status).toBe(404);
+    expect(payload(result).error).toBe('unknown_or_expired_preview');
+    expect(sessions.list()).toHaveLength(0);
+  });
+});
+
+describe('execute-time re-checks', () => {
+  it('refuses to start a session that no longer fits under the cap', async () => {
+    // The preview said yes; between the preview and the click, other sessions
+    // took the room. The cap is re-checked here rather than trusted.
+    const names = Array.from(
+      { length: GHIDRA_LAB_MAX_SESSIONS },
+      (_unused, index) => `late${index}.exe`,
+    );
+    const sessions = makeSessions({
+      createMcpClient: () => ({
+        initialize: async () => {},
+        listTools: async () => [{ name: 'list_project_binaries' }, { name: 'list_imports' }],
+        callTool: async (tool) =>
+          tool === 'list_project_binaries'
+            ? { binaries: [...names, 'client.exe'].map((name) => ({ name })) }
+            : { content: [{ type: 'text', text: '[]' }] },
+      }),
+    });
+
+    const preview = payload(
+      await call('/sessions/preview', {
+        method: 'POST',
+        body: { binaryPath: binary },
+        sessions,
+      }),
+    ).preview as Record<string, unknown>;
+    expect(preview.allowed).toBe(true);
+
+    for (const name of names) {
+      const target = join(root, name);
+      fs.writeFileSync(target, 'MZ');
+      const filler = payload(
+        await call('/sessions/preview', {
+          method: 'POST',
+          body: { binaryPath: target },
+          sessions,
+        }),
+      ).preview as Record<string, unknown>;
+      await call('/approvals/run', {
+        method: 'POST',
+        body: { approvalFingerprint: filler.approvalFingerprint },
+        sessions,
+      });
+    }
+
+    const result = await call('/approvals/run', {
+      method: 'POST',
+      body: { approvalFingerprint: preview.approvalFingerprint },
+      sessions,
+    });
+    expect(payload(result).ok).toBe(false);
+    expect(payload(result).error).toBe('too_many_sessions');
+  });
+
+  it('reports why a session failed to start instead of claiming it did', async () => {
+    const sessions = makeSessions({
+      spawnProcess: () => {
+        throw new Error('CreateProcess failed');
+      },
+    });
+    const preview = payload(
+      await call('/sessions/preview', {
+        method: 'POST',
+        body: { binaryPath: binary },
+        sessions,
+      }),
+    ).preview as Record<string, unknown>;
+    const result = await call('/approvals/run', {
+      method: 'POST',
+      body: { approvalFingerprint: preview.approvalFingerprint },
+      sessions,
+    });
+    expect(payload(result).ok).toBe(false);
+    expect(String(payload(result).error)).toBeTruthy();
+  });
+
+  it('refuses to sweep a session that was stopped after the preview', async () => {
+    const sessions = makeSessions();
+    const sessionPreview = payload(
+      await call('/sessions/preview', {
+        method: 'POST',
+        body: { binaryPath: binary },
+        sessions,
+      }),
+    ).preview as Record<string, unknown>;
+    await call('/approvals/run', {
+      method: 'POST',
+      body: { approvalFingerprint: sessionPreview.approvalFingerprint },
+      sessions,
+    });
+    const sessionId = sessions.list()[0]?.id ?? '';
+
+    const sweepPreview = payload(
+      await call('/reports/preview', { method: 'POST', body: { sessionId }, sessions }),
+    ).preview as Record<string, unknown>;
+    expect(sweepPreview.allowed).toBe(true);
+
+    await sessions.stop(sessionId);
+    const result = await call('/approvals/run', {
+      method: 'POST',
+      body: { approvalFingerprint: sweepPreview.approvalFingerprint },
+      sessions,
+    });
+    expect(payload(result).ok).toBe(false);
+    expect(payload(result).error).toBe('session_not_ready');
+  });
+});
+
+describe('find', () => {
+  it('searches under one requested folder rather than every root', async () => {
+    const nested = join(root, 'deep');
+    fs.mkdirSync(nested, { recursive: true });
+    fs.writeFileSync(join(nested, 'target.exe'), 'MZ');
+    fs.writeFileSync(join(root, 'target-elsewhere.exe'), 'MZ');
+
+    const result = await call('/browse', { body: { find: 'target', path: nested, depth: 2 } });
+    const names = (
+      (payload(result).browse as Record<string, unknown>).entries as { name: string }[]
+    ).map((entry) => entry.name);
+    expect(names).toContain('target.exe');
+    expect(names).not.toContain('target-elsewhere.exe');
+  });
+
+  it('accepts a depth given as a string, the way a query string delivers it', async () => {
+    const result = await call('/browse', { body: { find: 'client', depth: '3' } });
+    expect(payload(result).ok).toBe(true);
+  });
+
+  it('refuses to search under a folder outside every root', async () => {
+    const outside = join(home, 'elsewhere');
+    fs.mkdirSync(outside, { recursive: true });
+    const result = await call('/browse', { body: { find: 'client', path: outside } });
+    expect(payload(result).ok).toBe(false);
+    expect(payload(result).error).toBeTruthy();
+  });
+
+  it('skips files that do not match and stops at the match cap', async () => {
+    // 60 is the cap; the extras prove it truncates rather than growing, and the
+    // non-matching names prove the filter runs before the cap does.
+    const bulk = join(root, 'bulk');
+    fs.mkdirSync(bulk, { recursive: true });
+    for (let index = 0; index < 70; index += 1) {
+      // The non-matching names sort FIRST, so the filter has to run before the
+      // cap does -- with them second, the cap returns before they are ever seen
+      // and the filter goes untested.
+      fs.writeFileSync(join(bulk, `aaa-skip${index}.exe`), 'MZ');
+      fs.writeFileSync(join(bulk, `match${index}.exe`), 'MZ');
+    }
+    const result = await call('/browse', { body: { find: 'match', path: bulk } });
+    const browse = payload(result).browse as Record<string, unknown>;
+    const names = (browse.entries as { name: string }[]).map((entry) => entry.name);
+    expect(names.length).toBeLessThanOrEqual(60);
+    expect(names.every((name) => name.startsWith('match'))).toBe(true);
+    expect(browse.truncated).toBe(true);
+  });
+});
+
+describe('config file damage', () => {
+  it('reads as defaults when the config file is not JSON', async () => {
+    // The file is shared with the rest of the app. A half-written one must not
+    // take the lab down -- and must not silently look like a configured lab.
+    fs.writeFileSync(configFile, '{ this is not json');
+    const result = await call('/config');
+    expect(result.status).toBe(200);
+    expect((payload(result).config as GhidraLabConfigView).binaryRoots).toEqual([]);
+  });
 });

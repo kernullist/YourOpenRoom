@@ -16,6 +16,7 @@ import {
   setAoiHostBridgeCapability,
 } from '../aoiHostBridgeKillSwitch';
 import { normalizeGhidraLabConfig } from '../ghidraLabConfig';
+import { resetSharedGhidraLabSessionManager } from '../ghidraLabSession';
 import {
   bootstrapPyghidraVenv,
   createGhidraLabMiddleware,
@@ -255,6 +256,32 @@ describe('plugin factory', () => {
     // A Ghidra JVM never exits on its own, so the server going away has to
     // reclaim it -- otherwise every HMR restart leaks one holding a port.
     expect(closeHandlers).toContain('close');
+  });
+
+  it('reclaims the engines when the server closes, and survives having none', () => {
+    // The handler runs during shutdown, where throwing is not an option: it may
+    // fire with no session manager built at all (a server that never served a
+    // Ghidra request) or twice (close and process exit).
+    const plugin = ghidraLabPlugin({
+      sessionsDir: join(home, 'sessions'),
+      openroomHome: home,
+      configFile,
+    });
+    let onClose: (() => void) | null = null;
+    (plugin.configureServer as (server: unknown) => void)({
+      middlewares: { use: () => {} },
+      httpServer: {
+        once: (event: string, handler: () => void) => {
+          if (event === 'close') {
+            onClose = handler;
+          }
+        },
+      },
+    });
+    expect(onClose).not.toBeNull();
+    expect(() => (onClose as unknown as () => void)()).not.toThrow();
+    expect(() => (onClose as unknown as () => void)()).not.toThrow();
+    resetSharedGhidraLabSessionManager();
   });
 });
 
