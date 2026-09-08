@@ -5,15 +5,15 @@ written analysis report in which every claim cites the evidence that supports it
 
 ## What it needs before it does anything
 
-| Requirement                        | Where                            | Notes                                                                                                                                            |
-| ---------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Ghidra install folder              | this app, Setup -> Paths         | The extracted `ghidra_<version>_PUBLIC` folder itself -- the one containing `support/` and `Ghidra/`.                                             |
-| JDK 21+ home                       | this app, Setup -> Paths         | Ghidra 12 requires Java 21. Injected as `JAVA_HOME` into the Ghidra process only, so your system JDK is left alone.                               |
-| Python interpreter                 | this app, Setup -> Paths         | Only for headless MCP mode. Use **Bootstrap** to build a private venv with `pyghidra-mcp` in it.                                                  |
-| Ghidra project folder              | this app, Setup -> Paths         | Where `.gpr` projects live. Reusing a project is what makes a second analysis of the same binary fast.                                            |
-| At least one binary root           | this app, Setup -> Binary roots  | The reach limit: a file outside every root cannot be browsed, found, or analyzed.                                                                 |
-| `os_ghidra_analysis` capability    | Settings -> Advanced -> Host PC  | Off by default. Governs browse, session start, queries and sweeps.                                                                                |
-| capa (optional)                    | this app, Setup -> Paths         | Adds rule-backed ATT&CK / MBC capability matches. Without it, capability claims come from the import table instead.                               |
+| Requirement                     | Where                           | Notes                                                                                                               |
+| ------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Ghidra install folder           | this app, Setup -> Paths        | The extracted `ghidra_<version>_PUBLIC` folder itself -- the one containing `support/` and `Ghidra/`.               |
+| JDK 21+ home                    | this app, Setup -> Paths        | Ghidra 12 requires Java 21. Injected as `JAVA_HOME` into the Ghidra process only, so your system JDK is left alone. |
+| Python interpreter              | this app, Setup -> Paths        | Only for headless MCP mode. Use **Bootstrap** to build a private venv with `pyghidra-mcp` in it.                    |
+| Ghidra project folder           | this app, Setup -> Paths        | Where `.gpr` projects live. Reusing a project is what makes a second analysis of the same binary fast.              |
+| At least one binary root        | this app, Setup -> Binary roots | The reach limit: a file outside every root cannot be browsed, found, or analyzed.                                   |
+| `os_ghidra_analysis` capability | Settings -> Advanced -> Host PC | Off by default. Governs browse, session start, queries and sweeps.                                                  |
+| capa (optional)                 | this app, Setup -> Paths        | Adds rule-backed ATT&CK / MBC capability matches. Without it, capability claims come from the import table instead. |
 
 ## Why the JDK is a separate setting
 
@@ -26,10 +26,10 @@ Preflight therefore runs `java -version` itself and refuses to start when the ma
 
 ## Session modes
 
-| Mode         | What runs                                                    | Good for                                                        |
-| ------------ | ------------------------------------------------------------ | --------------------------------------------------------------- |
-| **headless** | `pyghidra-mcp` serving MCP over loopback HTTP                 | Everything. Long-lived, answers follow-up questions.             |
-| **batch**    | `analyzeHeadless` with a dump script, one shot                | A machine with no usable Python. Surface facts only, no session. |
+| Mode         | What runs                                      | Good for                                                         |
+| ------------ | ---------------------------------------------- | ---------------------------------------------------------------- |
+| **headless** | `pyghidra-mcp` serving MCP over loopback HTTP  | Everything. Long-lived, answers follow-up questions.             |
+| **batch**    | `analyzeHeadless` with a dump script, one shot | A machine with no usable Python. Surface facts only, no session. |
 
 A starting session reports which of two waits it is in. `Booting the JVM` means the engine is not
 answering yet, and a failure there is almost always the Ghidra folder or the JDK. `Analyzing` means
@@ -92,10 +92,10 @@ preflight state, and what approving will actually start.
 apps/ghidralab/data/state.json selected tab, last binary, last run
 ```
 
-The Ghidra project folder is configured separately and must NOT sit under a dotted
-directory. Ghidra rejects any path element beginning with `.`, so `~/.openroom/...`
-cannot hold it even though everything else here does -- and it only reports that
-after the JVM has started, as a bare exit code 1. Preflight catches it first.
+The Ghidra project folder is configured separately and must NOT sit under a dotted directory. Ghidra
+rejects any path element beginning with `.`, so `~/.openroom/...` cannot hold it even though
+everything else here does -- and it only reports that after the JVM has started, as a bare exit
+code 1. Preflight catches it first.
 
 The original binary is never modified. Ghidra analyzes an imported copy, and this app has no path
 that writes to the file it was pointed at.
