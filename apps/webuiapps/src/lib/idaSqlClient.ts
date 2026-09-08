@@ -45,7 +45,10 @@ async function readOk(response: Response): Promise<Record<string, unknown>> {
     const reasons = Array.isArray(payload.denyReasons)
       ? payload.denyReasons.filter((entry): entry is string => typeof entry === 'string')
       : [];
-    const withReasons = reasons.length > 0 ? `${base} [${reasons.join(', ')}]` : base;
+    // `base` is already denyReasons[0], so bracketing the whole list printed the
+    // first reason twice: "capability_disabled [capability_disabled, panic]".
+    const rest = reasons.filter((reason) => reason !== base);
+    const withReasons = rest.length > 0 ? `${base} [${rest.join(', ')}]` : base;
     throw new Error(detail && detail !== base ? `${withReasons}: ${detail}` : withReasons);
   }
   return payload;

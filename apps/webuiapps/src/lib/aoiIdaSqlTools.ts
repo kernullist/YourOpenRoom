@@ -518,6 +518,11 @@ async function runFindBinaryTool(
           ...(depth > 0 ? { depth } : {}),
         })
       : await (context.browsePath ?? browseIdaSqlPath)(path);
+    // Finding a binary is step one of the documented flow, and the turn that
+    // follows it is usually "analyze that one" -- with no trigger word in it.
+    // Without this mark the tools drop out of the next request and Aoi cannot
+    // act on the path it just handed the user.
+    markIdaSqlSessionTouched();
     const shaped = fitWithinBudget(
       view.entries.slice(0, MAX_ENTRIES_FOR_MODEL).map((entry) => ({
         name: entry.name,
@@ -920,6 +925,8 @@ async function runSessionStopTool(
   }
   try {
     await (context.stopSession ?? stopIdaSqlSession)(sessionId);
+    // Closing one session is rarely the end of the conversation about binaries.
+    markIdaSqlSessionTouched();
     return JSON.stringify({ status: 'ok', session_id: sessionId });
   } catch (error) {
     return errorResult(error, 'The session may already be closed.');

@@ -236,6 +236,18 @@ describe('ida-sql routes: authentication and the kill switch', () => {
     expect(result.payload.denyReasons).toContain('capability_disabled');
   });
 
+  it('sends the gate detail as a string the client can actually read', async () => {
+    // The gate answers with a LIST of details, and every consumer -- the browser
+    // client, the tool results, the error banner -- reads `detail` as a string.
+    // The array was therefore dropped on the floor, and the operator saw a bare
+    // code with no mention of WHICH capability was off.
+    const result = await call(fixture, harness.manager, 'GET', '/browse', {
+      path: fixture.binDir,
+    });
+    expect(typeof result.payload.detail).toBe('string');
+    expect(String(result.payload.detail)).toContain('os_ida_analysis');
+  });
+
   it('refuses everything under panic, even with the capability on', async () => {
     enableCapabilities(fixture.home, [IDA_SQL_ANALYSIS_CAPABILITY]);
     saveAoiHostBridgeKillSwitchState(

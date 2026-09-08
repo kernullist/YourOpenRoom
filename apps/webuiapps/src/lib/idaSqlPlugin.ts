@@ -552,7 +552,12 @@ function gateOrDeny(params: GateParams): { status: number; payload: unknown } | 
       ok: false,
       error: decision.denyReasons[0] ?? 'blocked',
       denyReasons: decision.denyReasons,
-      detail: decision.detail,
+      // Joined, because the gate answers with a LIST of details and every
+      // consumer of this field -- the browser client, the tool results, the
+      // error banner -- reads it as a string and silently discarded the array.
+      // These are the lines that name WHICH capability is off or which consent
+      // is missing, so dropping them left the operator with a bare code.
+      detail: decision.detail.join('; '),
     },
   };
 }

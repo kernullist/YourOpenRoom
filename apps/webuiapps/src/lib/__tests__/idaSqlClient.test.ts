@@ -49,8 +49,72 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
 });
 
+describe('deny messages', () => {
+  it('does not print the first deny reason twice', async () => {
+    // `error` is already denyReasons[0], so bracketing the whole list rendered
+    // "capability_disabled [capability_disabled, panic]".
+    const response = {
+      status: 403,
+      json: async () => ({
+        ok: false,
+        error: 'capability_disabled',
+        denyReasons: ['capability_disabled', 'panic'],
+        detail: 'capability_disabled:os_ida_analysis',
+      }),
+    } as unknown as Response;
+    const globalAny = globalThis as { fetch?: unknown };
+    const originalFetch = globalAny.fetch;
+    globalAny.fetch = async () => response;
+    try {
+      await expect(fetchIdaSqlSessions()).rejects.toThrow(
+        'capability_disabled [panic]: capability_disabled:os_ida_analysis',
+      );
+    } finally {
+      globalAny.fetch = originalFetch;
+    }
+  });
+
+  it('keeps a lone reason from disappearing, and says nothing twice', async () => {
+    const response = {
+      status: 403,
+      json: async () => ({
+        ok: false,
+        error: 'capability_disabled',
+        denyReasons: ['capability_disabled'],
+        detail: '',
+      }),
+    } as unknown as Response;
+    const globalAny = globalThis as { fetch?: unknown };
+    const originalFetch = globalAny.fetch;
+    globalAny.fetch = async () => response;
+    try {
+      await expect(fetchIdaSqlSessions()).rejects.toThrow('capability_disabled');
+    } finally {
+      globalAny.fetch = originalFetch;
+    }
+  });
+});
+
 describe('idaSqlClient error shaping', () => {
   it('throws with the error code, the deny reasons and the detail', async () => {
+    // The bracketed list holds the reasons BEYOND the first: `error` is already
+    // denyReasons[0], and printing the whole list after it read
+    // "capability_disabled [capability_disabled]" -- the same word twice.
+    nextResponse = {
+      status: 403,
+      payload: {
+        ok: false,
+        error: 'capability_disabled',
+        denyReasons: ['capability_disabled', 'panic'],
+        detail: 'capability_disabled:os_ida_analysis',
+      },
+    };
+    await expect(fetchIdaSqlSessions()).rejects.toThrow(
+      /^capability_disabled \[panic\]: capability_disabled:os_ida_analysis$/,
+    );
+  });
+
+  it('says the single reason once when it is the only one', async () => {
     nextResponse = {
       status: 403,
       payload: {
@@ -61,7 +125,7 @@ describe('idaSqlClient error shaping', () => {
       },
     };
     await expect(fetchIdaSqlSessions()).rejects.toThrow(
-      /capability_disabled \[capability_disabled\]: capability_disabled:os_ida_analysis/,
+      /^capability_disabled: capability_disabled:os_ida_analysis$/,
     );
   });
 

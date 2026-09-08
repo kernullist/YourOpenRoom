@@ -74,6 +74,41 @@ describe('tool definitions', () => {
   });
 });
 
+describe('tool stickiness from the entry points', () => {
+  it('marks the toolset in use after finding a binary', async () => {
+    // ida_find_binary is step one of the documented flow, and the turn after it
+    // is normally "analyze that one" with no trigger word in it. Without the
+    // mark the tools dropped out of the next request and Aoi could not act on
+    // the path it had just handed the user.
+    resetIdaSqlToolStickiness();
+    expect(shouldEnableIdaSqlTools('그거 분석해줘')).toBe(false);
+    await executeIdaSqlTool(
+      IDA_FIND_BINARY_TOOL,
+      { find: 'client' },
+      {
+        findBinaries: async () => ({
+          path: 'F:\\games',
+          rootId: 'games',
+          parentPath: '',
+          entries: [],
+          truncated: false,
+        }),
+      },
+    );
+    expect(shouldEnableIdaSqlTools('그거 분석해줘')).toBe(true);
+  });
+
+  it('marks it after closing a session too, since that rarely ends the topic', async () => {
+    resetIdaSqlToolStickiness();
+    await executeIdaSqlTool(
+      IDA_SESSION_STOP_TOOL,
+      { session_id: 'ida-1' },
+      { stopSession: async () => {} },
+    );
+    expect(shouldEnableIdaSqlTools('다른 거 열어줘')).toBe(true);
+  });
+});
+
 describe('shouldEnableIdaSqlTools', () => {
   it('rides a turn that mentions reversing work, in English or Korean', () => {
     for (const message of [
