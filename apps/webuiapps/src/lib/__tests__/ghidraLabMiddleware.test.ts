@@ -17,6 +17,7 @@ import {
 } from '../aoiHostBridgeKillSwitch';
 import { normalizeGhidraLabConfig } from '../ghidraLabConfig';
 import { resetSharedGhidraLabSessionManager } from '../ghidraLabSession';
+import { isGhidraAnalyzableName, type GhidraLabConfigView } from '../ghidraLabTypes';
 import {
   bootstrapPyghidraVenv,
   createGhidraLabMiddleware,
@@ -335,6 +336,23 @@ describe('filesystem helpers', () => {
   });
 });
 
+describe('isGhidraAnalyzableName', () => {
+  it('accepts the extensions Ghidra can import', () => {
+    for (const name of ['client.exe', 'driver.sys', 'lib.dll', 'thing.so', 'app.elf']) {
+      expect(isGhidraAnalyzableName(name)).toBe(true);
+    }
+    expect(isGhidraAnalyzableName('notes.txt')).toBe(false);
+    expect(isGhidraAnalyzableName('data.json')).toBe(false);
+  });
+
+  it('treats an extension-less file as a candidate', () => {
+    // POSIX targets routinely have no extension at all -- vmlinux, busybox, a
+    // stripped daemon. Filtering those out would hide most Linux binaries.
+    expect(isGhidraAnalyzableName('vmlinux')).toBe(true);
+    expect(isGhidraAnalyzableName('busybox')).toBe(true);
+  });
+});
+
 describe('bootstrapPyghidraVenv', () => {
   it('refuses without a usable interpreter', async () => {
     const result = await bootstrapPyghidraVenv({
@@ -420,5 +438,92 @@ describe('body guards', () => {
     });
     expect(res.statusCode).toBe(200);
     expect(storedMaxMem()).toBe(2048);
+  });
+});
+
+describe('bootstrapPyghidraVenv, step by step', () => {
+  // This is the one route that installs software, and until now only its
+  // refusal-with-no-interpreter case was covered. Each step is driven with a
+  // stubbed child so the decision tree can be checked without a pip install.
+  const ok = { ok: true, code: 0, stderr: '', error: '' };
+
+  function seedConfig(): GhidraLabConfigView {
+    const seed = join(home, 'python.exe');
+    fs.writeFileSync(seed, '');
+    return normalizeGhidraLabConfig({ pythonExePath: seed }) as GhidraLabConfigView;
+  }
+
+  /** Where the bootstrap puts the interpreter it expects to have created. */
+  function venvPython(): string {
+    return process.platform === 'win32'
+      ? join(home, 'ghidra-lab', 'venv', 'Scripts', 'python.exe')
+      : join(home, 'ghidra-lab', 'venv', 'bin', 'python');
+  }
+
+  function makeVenvPython(): void {
+    fs.mkdirSync(join(venvPython(), '..'), { recursive: true });
+    fs.writeFileSync(venvPython(), '');
+  }
+
+  it('reports what the interpreter said when venv creation fails', async () => {
+    const result = await bootstrapPyghidraVenv(
+      { config: seedConfig(), openroomHome: home },
+      async () => ({
+        ok: false,
+        code: 1,
+        stderr: 'No module named venv',
+        error: '',
+      }),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('No module named venv');
+  });
+
+  it('names the interpreter path that was supposed to appear and did not', async () => {
+    // A venv that exits 0 but produces nothing is what a redirected or
+    // sandboxed Python does; "bootstrap failed" alone would send the operator
+    // looking in the wrong place.
+    const result = await bootstrapPyghidraVenv(
+      { config: seedConfig(), openroomHome: home },
+      async () => ok,
+    );
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain(venvPython());
+  });
+
+  it('keeps the tail of a pip failure, which is where the reason is', async () => {
+    makeVenvPython();
+    const result = await bootstrapPyghidraVenv(
+      { config: seedConfig(), openroomHome: home },
+      async (program) =>
+        program === venvPython()
+          ? {
+              ok: false,
+              code: 1,
+              stderr: `${'noise '.repeat(400)}ERROR: no matching distribution`,
+              error: '',
+            }
+          : ok,
+    );
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('no matching distribution');
+  });
+
+  it('installs into the venv it made and hands back that interpreter', async () => {
+    makeVenvPython();
+    const calls: { program: string; args: readonly string[] }[] = [];
+    const result = await bootstrapPyghidraVenv(
+      { config: seedConfig(), openroomHome: home },
+      async (program, args) => {
+        calls.push({ program, args });
+        return ok;
+      },
+    );
+    expect(result.ok).toBe(true);
+    expect(result.pythonExePath).toBe(venvPython());
+    // The install must target the NEW interpreter, not the seed one -- installing
+    // into the operator's system Python is exactly what the venv is for.
+    expect(calls[1].program).toBe(venvPython());
+    expect(calls[1].args).toContain('pyghidra-mcp');
   });
 });

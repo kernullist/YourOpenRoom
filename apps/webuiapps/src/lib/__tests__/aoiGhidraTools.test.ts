@@ -279,6 +279,31 @@ describe('execution', () => {
     expect(result.error).toContain('path_outside_roots');
   });
 
+  it('turns a transport failure into an answer, for every tool', async () => {
+    // These run inside the model's turn. A tool that throws aborts the turn;
+    // one that answers with the failure lets the model say what went wrong and
+    // move on -- and the query tool's message has to point at the likely cause,
+    // which is a session that is not ready yet.
+    responder = () => {
+      throw new Error('ECONNREFUSED 127.0.0.1:3000');
+    };
+    const cases: [string, Record<string, unknown>][] = [
+      [GHIDRA_QUERY_TOOL, { sessionId: 'sess-1', kind: 'imports' }],
+      [GHIDRA_REPORT_RUN_TOOL, { sessionId: 'sess-1' }],
+      [GHIDRA_REPORT_READ_TOOL, { runId: 'grun-1-1' }],
+      [GHIDRA_SESSION_STOP_TOOL, { sessionId: 'sess-1' }],
+    ];
+    for (const [tool, args] of cases) {
+      const result = await executeGhidraTool(tool, args);
+      expect(String(result), tool).toContain('ECONNREFUSED');
+    }
+    const queryAnswer = await executeGhidraTool(GHIDRA_QUERY_TOOL, {
+      sessionId: 'sess-1',
+      kind: 'imports',
+    });
+    expect(String(queryAnswer)).toContain('ghidra_session_list');
+  });
+
   it('rejects an unknown tool name', async () => {
     const result = JSON.parse(await executeGhidraTool('ghidra_rename_function', {}));
     expect(result.error).toContain('unknown_ghidra_tool');

@@ -24,7 +24,9 @@ import {
   parseJavaMajorVersion,
   resolveAnalyzeHeadlessPath,
   resolveGhidraPathWithinRoots,
+  resolveGhidraVersionFilePath,
   resolveJavaExePath,
+  resolvePyghidraScriptPath,
   toStoredGhidraLabConfig,
 } from '../ghidraLabConfig';
 import type { GhidraLabConfigView } from '../ghidraLabTypes';
@@ -86,6 +88,30 @@ describe('normalizeGhidraLabConfig', () => {
     });
     expect(config.binaryRoots.some((root) => root.id === 'bad id!')).toBe(false);
     expect(config.binaryRoots.some((root) => root.id === 'relative')).toBe(false);
+  });
+
+  it('drops roots that are not records at all', () => {
+    const config = normalizeGhidraLabConfig({
+      binaryRoots: [null, [], 'C:/bins', 42, { id: 'ok', path: abs('bins'), label: '' }],
+    });
+    expect(config.binaryRoots).toHaveLength(1);
+    expect(config.binaryRoots[0].id).toBe('ok');
+  });
+
+  it('rejects ports outside the usable range rather than clamping into it', () => {
+    // A privileged or out-of-range port would fail to bind after the JVM is
+    // already up, which reads as "the engine never answered".
+    const low = normalizeGhidraLabConfig({ httpPortStart: 80, httpPortEnd: 443 });
+    expect(low.httpPortStart).toBe(GHIDRA_LAB_DEFAULT_PORT_START);
+    expect(low.httpPortEnd).toBe(GHIDRA_LAB_DEFAULT_PORT_END);
+    const high = normalizeGhidraLabConfig({ httpPortStart: 70000 });
+    expect(high.httpPortStart).toBe(GHIDRA_LAB_DEFAULT_PORT_START);
+  });
+
+  it('falls back for a negative duration instead of treating it as a floor', () => {
+    const config = normalizeGhidraLabConfig({ sessionIdleTimeoutMs: -5, analysisTimeoutMs: -1 });
+    expect(config.sessionIdleTimeoutMs).toBe(DEFAULT_GHIDRA_LAB_CONFIG.sessionIdleTimeoutMs);
+    expect(config.analysisTimeoutMs).toBe(DEFAULT_GHIDRA_LAB_CONFIG.analysisTimeoutMs);
   });
 
   it('swaps a reversed port window instead of allocating nothing', () => {
@@ -181,6 +207,31 @@ describe('parseGhidraVersion', () => {
   it('returns empty for a file that is not Ghidra properties', () => {
     expect(parseGhidraVersion('')).toBe('');
     expect(parseGhidraVersion('hello world')).toBe('');
+  });
+});
+
+describe('derived paths with nothing to derive from', () => {
+  it('returns empty rather than a path rooted at nothing', () => {
+    // An empty string here would become a read of the filesystem root, or an
+    // argument vector with a bare separator in it.
+    expect(resolveGhidraVersionFilePath(configWith({ ghidraInstallDir: '' }))).toBe('');
+    expect(resolvePyghidraScriptPath('')).toBe('');
+    // A bare interpreter name has no directory to hang Scripts/ off.
+    expect(resolvePyghidraScriptPath('python.exe')).toBe('');
+  });
+
+  it('refuses containment checks with a missing side', () => {
+    expect(isPathWithinRoot('', abs('bins'))).toBe(false);
+    expect(isPathWithinRoot(abs('bins', 'a.exe'), '')).toBe(false);
+  });
+
+  it('refuses a path longer than the cap before touching the filesystem', () => {
+    const long = abs('bins', 'x'.repeat(5000));
+    const result = resolveGhidraPathWithinRoots(long, [
+      { id: 'bins', path: abs('bins'), label: 'Bins' },
+    ]);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('path_too_long');
   });
 });
 

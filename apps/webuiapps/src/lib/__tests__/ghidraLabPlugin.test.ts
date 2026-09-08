@@ -983,6 +983,31 @@ describe('the wiring the routes use when nothing is injected', () => {
     expect(report).toContain('Binary Analysis Report');
   }, 60_000);
 
+  it('survives a config whose llm block is malformed, and runs capa through the shared dep', async () => {
+    // Two production closures at once. The llm lookup must not throw the run
+    // away on a config it cannot read -- a number where the model name goes is
+    // enough to break `.trim()`. And capa is reached through the shared runCapa
+    // dep, which nothing else in this suite exercises; pointing it at a path
+    // that does not exist makes the stage fail rather than the sweep.
+    const persisted = JSON.parse(fs.readFileSync(configFile, 'utf-8')) as Record<string, unknown>;
+    persisted.llm = { model: 123 };
+    fs.writeFileSync(configFile, JSON.stringify(persisted));
+    saveGhidraLabConfig(
+      configFile,
+      normalizeGhidraLabConfig({
+        ...loadGhidraLabConfig(configFile),
+        capaExePath: join(home, 'no-such-capa.exe'),
+      }),
+    );
+
+    const sessions = makeSessions();
+    const runId = await sweepOnSharedManager(sessions);
+    const report = String(
+      payload(await call('/reports/artifact', { body: { runId }, runs: null })).report,
+    );
+    expect(report).toContain('Binary Analysis Report');
+  }, 60_000);
+
   it('refuses a second sweep while one is active on the same session', async () => {
     const sessions = makeSessions();
     const sessionId = await readySession(sessions);
@@ -1160,6 +1185,30 @@ describe('find', () => {
   it('accepts a depth given as a string, the way a query string delivers it', async () => {
     const result = await call('/browse', { body: { find: 'client', depth: '3' } });
     expect(payload(result).ok).toBe(true);
+  });
+
+  it('refuses a path that only leaves the roots once the link is resolved', async () => {
+    // Containment is checked twice on purpose: the literal path passes, and then
+    // realpath moves it outside. A junction inside a root is the reachable form
+    // of that on Windows, and without the second check it is a way to hand
+    // Ghidra any file on the machine.
+    const outside = join(home, 'not-a-root');
+    fs.mkdirSync(outside, { recursive: true });
+    fs.writeFileSync(join(outside, 'secret.exe'), 'MZ');
+    const link = join(root, 'link');
+    try {
+      fs.symlinkSync(outside, link, 'junction');
+    } catch {
+      return; // No link support here; the second check is covered by unit tests.
+    }
+
+    const result = await call('/sessions/preview', {
+      method: 'POST',
+      body: { binaryPath: join(link, 'secret.exe') },
+    });
+    const preview = payload(result).preview as Record<string, unknown>;
+    expect(preview.allowed).toBe(false);
+    expect(preview.blockReasons).toContain('path_outside_roots');
   });
 
   it('refuses to search under a folder outside every root', async () => {

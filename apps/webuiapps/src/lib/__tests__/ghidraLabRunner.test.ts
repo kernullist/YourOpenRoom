@@ -567,6 +567,33 @@ describe('failure paths', () => {
     }
   });
 
+  it('catches a throw that escapes the run entirely, and keeps the record honest', async () => {
+    // The ledger is written outside the report's try block, so an artifact
+    // writer that throws there escapes execute() itself -- and nothing awaits
+    // execute(). Without the catch on the run promise this was an unhandled
+    // rejection, which Node terminates the process for.
+    const harness = makeHarness({
+      writeArtifact: (path) => {
+        if (path.endsWith('ledger.json')) {
+          throw new Error('ledger write refused');
+        }
+      },
+      logError: () => {
+        throw new Error('and the logger is broken too');
+      },
+    });
+    const started = harness.manager.start({
+      sessionId: 'sess-1',
+      binaryPath: BINARY,
+      binaryName: 'client.exe',
+      config,
+    });
+    await waitForRun(harness.manager, started.runId, ['failed']);
+    const view = harness.manager.get(started.runId);
+    expect(view?.failureReason).toContain('ledger write refused');
+    expect(view?.finishedAt).not.toBeNull();
+  });
+
   it('records the failure when writing the report throws', async () => {
     const harness = makeHarness({
       writeArtifact: (path) => {

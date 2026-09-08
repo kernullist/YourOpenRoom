@@ -482,6 +482,24 @@ describe('extraction', () => {
     ]);
   });
 
+  it('steps over rows that are not records, in every extractor', () => {
+    // The engine's answers are not schema-checked anywhere upstream. A null or a
+    // number mixed into a list has to be skipped, not crash the stage that was
+    // reading it -- one throw here costs the whole sweep.
+    expect(extractStrings([null, 42, true])).toEqual([]);
+    expect(extractFunctions([null, 42, {}])).toEqual([]);
+    expect(extractDecompiled([null, 42]).size).toBe(0);
+    expect(extractCallgraph([null, 42])).toBe('');
+  });
+
+  it('accepts a bare function name and a numeric string value', () => {
+    expect(extractFunctions(['DriverEntry', '  '])).toEqual([{ name: 'DriverEntry', address: '' }]);
+    // Some builds answer with the string's numeric value rather than its text.
+    expect(extractStrings([{ value: 12345, address: '0x1' }])).toEqual([
+      { value: '12345', address: '0x1' },
+    ]);
+  });
+
   it('reads functions and their optional metrics', () => {
     const [fn] = extractFunctions([
       { name: 'Main', entry_point: '0x1000', body_size: '512', xref_count: 4, is_entry: true },
@@ -575,5 +593,15 @@ describe('extraction', () => {
     expect(matches[0].addresses).toContain('0x401000');
     expect(extractCapaMatches(null)).toEqual([]);
     expect(extractCapaMatches({ nope: true })).toEqual([]);
+    // Older capa documents list attack/mbc as plain strings, not records.
+    const flat = extractCapaMatches({
+      rules: {
+        'flat meta': { meta: { attack: ['T1055 Process Injection'], mbc: ['C0051 File Read'] } },
+        'not a rule': 42,
+      },
+    });
+    expect(flat).toHaveLength(1);
+    expect(flat[0].attack).toEqual(['T1055 Process Injection']);
+    expect(flat[0].mbc).toEqual(['C0051 File Read']);
   });
 });

@@ -363,3 +363,88 @@ describe('runGhidraLabPreflight', () => {
     expect(result.capaVersion).toBe('capa 7.4.0');
   });
 });
+
+describe('paths that are configured but not there', () => {
+  // The difference between "not set" and "set to something that does not exist"
+  // is the whole value of this screen: the second one is a typo or a moved
+  // folder, and saying only "not configured" sends the operator to re-enter a
+  // path they already entered.
+
+  it('separates a missing Ghidra folder from an unset one', () => {
+    const world = healthyWorld();
+    const result = runGhidraLabPreflight(
+      fullConfig(),
+      makeDeps({ ...world, directories: new Set([PROJECTS, ROOT]) }),
+    );
+    const check = checkById(result, 'ghidra');
+    expect(check.ok).toBe(false);
+    // The state goes in `found`, the path to go fix in `remedy`.
+    expect(check.found).toBe('folder does not exist');
+    expect(check.remedy).toContain(GHIDRA_DIR);
+    expect(result.availableModes).toEqual([]);
+  });
+
+  it('names the java executable it looked for and did not find', () => {
+    // A JDK home pointing one level too high (or too low) is the common mistake,
+    // and the missing bin/java path is what makes that obvious.
+    const world = healthyWorld();
+    const files = new Set(world.files);
+    for (const path of files) {
+      if (path.includes('java')) {
+        files.delete(path);
+      }
+    }
+    const check = checkById(
+      runGhidraLabPreflight(fullConfig(), makeDeps({ ...world, files })),
+      'jdk',
+    );
+    expect(check.ok).toBe(false);
+    expect(check.found).toContain('java');
+  });
+
+  it('reports a Python path that is not on disk without probing it', () => {
+    // Probing a path that does not exist would report a spawn error instead of
+    // the real problem, and headless mode has to drop off the list either way.
+    const world = healthyWorld();
+    const files = new Set(world.files);
+    files.delete(PY);
+    const calls: { program: string; args: string[] }[] = [];
+    const result = runGhidraLabPreflight(fullConfig(), makeDeps({ ...world, files, calls }));
+    const check = checkById(result, 'python');
+    expect(check.ok).toBe(false);
+    expect(check.remedy).toContain(PY);
+    expect(calls.some((call) => call.program === PY)).toBe(false);
+    expect(result.availableModes).not.toContain('headless');
+  });
+
+  it('reports a capa path that is not on disk, and stays optional', () => {
+    const world = healthyWorld();
+    const capa = abs('tools', 'capa.exe');
+    const result = runGhidraLabPreflight(fullConfig({ capaExePath: capa }), makeDeps(world));
+    const check = checkById(result, 'capa');
+    expect(check.ok).toBe(false);
+    expect(check.required).toBe(false);
+    expect(check.remedy).toContain(capa);
+    // capa is a second opinion, not a gate: the lab still works without it.
+    expect(result.availableModes).toContain('headless');
+  });
+
+  it('reports a capa that is present but will not run', () => {
+    const world = healthyWorld();
+    const capa = abs('tools', 'capa.exe');
+    const files = new Set([...(world.files ?? []), capa]);
+    const result = runGhidraLabPreflight(
+      fullConfig({ capaExePath: capa }),
+      makeDeps({
+        ...world,
+        files,
+        probes: (program, args) =>
+          program === capa ? fail('not a valid executable') : world.probes!(program, args),
+      }),
+    );
+    const check = checkById(result, 'capa');
+    expect(check.ok).toBe(false);
+    expect(check.found + check.remedy).toContain('not a valid executable');
+    expect(result.capaVersion).toBe('');
+  });
+});

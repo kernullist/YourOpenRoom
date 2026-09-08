@@ -486,6 +486,16 @@ function runBounded(
 }
 
 /**
+ * How the bootstrap's two children are launched.
+ *
+ * Injectable only so the decision tree below -- venv creation failing, a venv
+ * that produces no interpreter, pip failing, the success path -- can be tested
+ * without running a real pip install over the network. Production passes
+ * nothing and gets the bounded spawner above.
+ */
+export type RunBounded = typeof runBounded;
+
+/**
  * Create the venv and install pyghidra-mcp into it.
  *
  * Operator-initiated and never in Aoi's tool list: it installs software. Two
@@ -493,10 +503,13 @@ function runBounded(
  * install into it. The resulting interpreter path is written back into the config
  * so the preflight and the session manager agree on which Python is meant.
  */
-export async function bootstrapPyghidraVenv(params: {
-  config: GhidraLabConfigView;
-  openroomHome: string;
-}): Promise<{ ok: boolean; pythonExePath: string; detail: string }> {
+export async function bootstrapPyghidraVenv(
+  params: {
+    config: GhidraLabConfigView;
+    openroomHome: string;
+  },
+  run: RunBounded = runBounded,
+): Promise<{ ok: boolean; pythonExePath: string; detail: string }> {
   const seed = params.config.pythonExePath;
   if (!seed || !fileExists(seed)) {
     return { ok: false, pythonExePath: '', detail: 'Set a working Python interpreter first.' };
@@ -504,7 +517,7 @@ export async function bootstrapPyghidraVenv(params: {
   const venvDir = join(params.openroomHome, 'ghidra-lab', 'venv');
   const env = buildGhidraChildEnv(params.config);
 
-  const created = await runBounded(seed, ['-m', 'venv', venvDir], env);
+  const created = await run(seed, ['-m', 'venv', venvDir], env);
   if (!created.ok) {
     return {
       ok: false,
@@ -524,7 +537,7 @@ export async function bootstrapPyghidraVenv(params: {
     };
   }
 
-  const installed = await runBounded(
+  const installed = await run(
     venvPython,
     ['-m', 'pip', 'install', '--upgrade', 'pyghidra-mcp'],
     env,

@@ -10,6 +10,7 @@ import {
   isRunActive,
   preflightTone,
   runStateLabel,
+  isSessionQueryable,
   sessionStateLabel,
   sortBrowseEntries,
   summarizeRunStages,
@@ -256,7 +257,19 @@ describe('formatting', () => {
 
   it('labels session states', () => {
     expect(sessionStateLabel(session({ state: 'starting' }))).toBe('Starting');
+    expect(sessionStateLabel(session({ state: 'ready' }))).toBe('Ready');
     expect(sessionStateLabel(session({ state: 'failed' }))).toBe('Failed');
+    expect(sessionStateLabel(session({ state: 'stopped' }))).toBe('Stopped');
+  });
+
+  it('lets only a ready session be queried', () => {
+    // The query box is enabled off this. A starting session would take the
+    // request and fail it ten stages in; a null one is the first render.
+    expect(isSessionQueryable(session({ state: 'ready' }))).toBe(true);
+    for (const state of ['starting', 'failed', 'stopped'] as const) {
+      expect(isSessionQueryable(session({ state }))).toBe(false);
+    }
+    expect(isSessionQueryable(null)).toBe(false);
   });
 });
 
@@ -270,12 +283,30 @@ describe('browse helpers', () => {
     expect(sorted.map((entry) => entry.name)).toEqual(['sub', 'client.exe', 'notes.txt']);
   });
 
+  it('falls back to name order inside a group', () => {
+    const sorted = sortBrowseEntries([
+      { name: 'zulu.exe', path: 'z', kind: 'file', sizeBytes: 1, analyzable: true },
+      { name: 'alpha.exe', path: 'a', kind: 'file', sizeBytes: 1, analyzable: true },
+    ]);
+    expect(sorted.map((entry) => entry.name)).toEqual(['alpha.exe', 'zulu.exe']);
+  });
+
   it('builds breadcrumbs relative to the containing root', () => {
     const crumbs = buildBreadcrumbs('C:\\bins\\game\\win64', [
       { id: 'bins', path: 'C:\\bins', label: 'Binaries' },
     ]);
     expect(crumbs.map((crumb) => crumb.label)).toEqual(['Binaries', 'game', 'win64']);
     expect(crumbs[2].path).toBe('C:\\bins\\game\\win64');
+  });
+
+  it('stops at the root itself, with or without a trailing separator', () => {
+    const roots = [{ id: 'bins', path: 'C:\\bins', label: 'Binaries' }];
+    expect(buildBreadcrumbs('C:\\bins', roots)).toEqual([{ label: 'Binaries', path: 'C:\\bins' }]);
+    // A trailing separator leaves an empty segment, which must not become a crumb.
+    expect(buildBreadcrumbs('C:\\bins\\game\\', roots).map((crumb) => crumb.label)).toEqual([
+      'Binaries',
+      'game',
+    ]);
   });
 
   it('degrades to a single crumb for a path outside every root', () => {
@@ -295,6 +326,13 @@ describe('explainLabError', () => {
     );
     expect(explainLabError(new Error('too_many_sessions'))).toContain('JVM');
     expect(explainLabError(new Error('session_already_open'))).toContain('Reuse');
+    expect(explainLabError(new Error('preflight_ghidra'))).toContain('not a Ghidra install');
+    expect(explainLabError(new Error('preflight_projects'))).toContain('project folder');
+    expect(explainLabError(new Error('preflight_roots'))).toContain('binary root');
+    expect(explainLabError(new Error('no_binary_roots'))).toContain('binary root');
+    expect(explainLabError(new Error('not_authenticated'))).toContain('token');
+    expect(explainLabError(new Error('capability_disabled'))).toContain('os_ghidra_analysis');
+    expect(explainLabError(new Error('os_ghidra_analysis'))).toContain('Settings');
   });
 
   it('passes an unrecognized message through rather than swallowing it', () => {
