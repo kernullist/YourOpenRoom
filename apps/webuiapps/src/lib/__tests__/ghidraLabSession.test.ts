@@ -80,6 +80,8 @@ interface Harness {
   child: FakeChild;
   clientCalls: { tool: string; args: Record<string, unknown> }[];
   spawns: { program: string; args: string[]; env: Record<string, string> }[];
+  /** Push the fake clock forward without a sleep, for the idle reaper. */
+  advanceClock(ms: number): void;
   setMcpUp(up: boolean): void;
   setProjectHasBinary(has: boolean): void;
   setToolResult(tool: string, result: unknown | (() => unknown)): void;
@@ -165,6 +167,9 @@ function makeHarness(overrides: Partial<GhidraLabSessionDeps> = {}): Harness {
     child,
     clientCalls,
     spawns,
+    advanceClock: (ms) => {
+      clock += ms;
+    },
     setMcpUp: (up) => {
       mcpUp = up;
     },
@@ -617,5 +622,126 @@ describe('shared session manager', () => {
     resetSharedGhidraLabSessionManager();
     expect(getSharedGhidraLabSessionManager(harness.deps)).not.toBe(first);
     resetSharedGhidraLabSessionManager();
+  });
+});
+
+describe('port allocation', () => {
+  it('refuses to start when the whole port window is taken', async () => {
+    // Every port busy means another lab (or a leaked JVM from a previous dev
+    // server) still holds the window. Starting anyway would bind nothing and
+    // then wait out the whole start-up deadline for an engine that is not there.
+    const harness = makeHarness({ isPortFree: async () => false });
+    const started = await harness.manager.startHeadless({
+      config: config(),
+      binaryPath: BINARY,
+      projectName: 'client-abc',
+      launch: 'module',
+    });
+    expect(started.ok).toBe(false);
+    expect(started.reason).toBe('no_free_port');
+    expect(harness.spawns).toHaveLength(0);
+  });
+});
+
+describe('records that are already finished', () => {
+  it('does not report a stopped session as the holder of its binary', async () => {
+    // findByBinary is what makes a second analysis point at the first session
+    // instead of starting a rival one. A stopped record must not keep that claim
+    // or the binary becomes permanently unanalyzable.
+    const harness = makeHarness();
+    const id = await startReady(harness);
+    expect(harness.manager.findByBinary(BINARY)?.id).toBe(id);
+    await harness.manager.stop(id);
+    expect(harness.manager.findByBinary(BINARY)).toBeNull();
+  });
+
+  it('ignores a child exit that arrives after the session was stopped', async () => {
+    // The kill IS what makes the child exit, so this ordering is the normal one.
+    // Letting it through would rewrite a clean 'stopped' into 'failed' and show
+    // the operator a crash they caused by clicking stop.
+    const harness = makeHarness();
+    const id = await startReady(harness);
+    await harness.manager.stop(id);
+    harness.child.emitExit(1, null);
+    expect(harness.manager.get(id)?.state).toBe('stopped');
+    expect(harness.manager.get(id)?.failureReason).toBe('');
+  });
+
+  it('logs a kill that throws rather than failing the stop', async () => {
+    const errors: string[] = [];
+    const child = makeChild();
+    child.kill = () => {
+      throw new Error('process already gone');
+    };
+    const harness = makeHarness({
+      spawnProcess: () => child,
+      logError: (message) => errors.push(message),
+    });
+    const id = await startReady(harness);
+    const stopped = await harness.manager.stop(id);
+    expect(stopped.ok).toBe(true);
+    expect(errors.join(' ')).toContain('kill failed');
+  });
+});
+
+describe('idle reaping', () => {
+  it('closes a session that has been idle past the timeout', async () => {
+    // Each live session is a JVM holding a multi-gigabyte heap. Nothing else
+    // ever releases one, so the reaper is the only thing that gives the memory
+    // back on a machine left running overnight.
+    const harness = makeHarness();
+    const id = await startReady(harness);
+    const reaped = await harness.manager.reapIdle(config({ sessionIdleTimeoutMs: 60 * 1000 }));
+    expect(reaped).toEqual([]);
+
+    harness.advanceClock(10 * 60 * 1000);
+    const later = await harness.manager.reapIdle(config({ sessionIdleTimeoutMs: 60 * 1000 }));
+    expect(later).toEqual([id]);
+    expect(harness.manager.get(id)?.state).toBe('stopped');
+    expect(harness.manager.get(id)?.failureReason).toBe('idle_timeout');
+    expect(harness.child.killed).toBe(true);
+  });
+});
+
+describe('an engine that advertises nothing', () => {
+  it('trusts the preferred tool name rather than refusing every query', async () => {
+    // A faked or very old server may expose no tool list at all. Refusing on an
+    // empty list would make the lab unusable against anything but the exact
+    // build this was written on.
+    const harness = makeHarness();
+    const id = await startReady(harness);
+    harness.setTools([]);
+    harness.setToolResult('list_imports', {
+      content: [{ type: 'text', text: '[{"name":"NtLoadDriver"}]' }],
+    });
+    const result = await harness.manager.query(id, 'imports', {});
+    expect(result.ok).toBe(true);
+    expect(result.mcpTool).toBe('list_imports');
+  });
+});
+
+describe('describeGhidraExit, remaining shapes', () => {
+  it('says so when there is no exit code at all', () => {
+    // A child killed by the OS reports a signal and no code; "exited with code
+    // null" would read as a Ghidra error rather than an external kill.
+    expect(describeGhidraExit(null, null, '')).toBe('exited without a code');
+  });
+});
+
+describe('findProjectBinary, remaining shapes', () => {
+  it('returns null for payloads that carry no list at all', () => {
+    expect(findProjectBinary('not an envelope', 'client.exe')).toBeNull();
+    expect(findProjectBinary(42, 'client.exe')).toBeNull();
+    expect(findProjectBinary(null, 'client.exe')).toBeNull();
+  });
+
+  it('skips rows that are not the binary it was asked for', () => {
+    // Bare strings and nulls both appear in the wild, mixed into one list.
+    expect(
+      findProjectBinary(
+        { binaries: ['other.exe', null, 42, { name: 'client.exe-e4c967' }] },
+        'client.exe',
+      ),
+    ).toEqual({ name: 'client.exe-e4c967', analysisComplete: true });
   });
 });

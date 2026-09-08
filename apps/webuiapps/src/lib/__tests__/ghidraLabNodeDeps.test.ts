@@ -227,6 +227,40 @@ describe('session node deps', () => {
     expect(deps.projectBytes?.('', 'demo')).toBe(0);
   });
 
+  it('recognizes an existing project, which is what forces a re-analysis', () => {
+    // pyghidra-mcp skips analysis entirely when the project already holds the
+    // binary, so a half-imported project is never finished without
+    // --force-analysis -- three sessions stalled for tens of minutes each before
+    // this answer was consulted. The .gpr beside the project root is the tell.
+    const projects = join(base, 'existing');
+    fs.mkdirSync(projects, { recursive: true });
+    fs.writeFileSync(join(projects, 'demo.gpr'), '');
+    expect(deps.projectExists?.(projects, 'demo')).toBe(true);
+    expect(deps.projectExists?.(projects, 'never-made')).toBe(false);
+    // No project root configured yet: not an error, just nothing to reuse.
+    expect(deps.projectExists?.('', 'demo')).toBe(false);
+  });
+
+  it('logs through the shared prefix instead of throwing during teardown', () => {
+    const original = console.error;
+    const seen: unknown[] = [];
+    console.error = (...args: unknown[]) => {
+      seen.push(args[0]);
+    };
+    try {
+      expect(() => deps.logError?.('kill failed', new Error('gone'))).not.toThrow();
+    } finally {
+      console.error = original;
+    }
+    expect(String(seen[0])).toContain('[ghidra-lab]');
+  });
+
+  it('sleeps for real, so the start-up poll actually waits between ticks', async () => {
+    const started = Date.now();
+    await deps.sleep(20);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(15);
+  });
+
   it('builds a distinct MCP client per endpoint', () => {
     const first = deps.createMcpClient('http://127.0.0.1:8500/mcp');
     const second = deps.createMcpClient('http://127.0.0.1:8500/mcp');
