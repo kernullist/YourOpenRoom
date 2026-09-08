@@ -44,8 +44,13 @@ async function readOk(response: Response): Promise<Record<string, unknown>> {
     const reasons = Array.isArray(parsed.denyReasons)
       ? parsed.denyReasons.filter((entry): entry is string => typeof entry === 'string')
       : [];
-    const suffix = detail || (reasons.length > 1 ? reasons.join(', ') : '');
-    throw new Error(suffix ? `${base}: ${suffix}` : base);
+    // `base` is already denyReasons[0], so joining the whole list printed the
+    // first reason twice ("capability_disabled: capability_disabled, panic"),
+    // and a single extra reason was dropped entirely by a `> 1` test on the
+    // full list rather than on the remainder.
+    const rest = reasons.filter((reason) => reason !== base);
+    const parts = [rest.length > 0 ? rest.join(', ') : '', detail].filter(Boolean);
+    throw new Error(parts.length > 0 ? `${base}: ${parts.join(' -- ')}` : base);
   }
   return parsed;
 }

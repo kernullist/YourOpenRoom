@@ -593,6 +593,22 @@ describe('extraction', () => {
     expect(matches[0].addresses).toContain('0x401000');
     expect(extractCapaMatches(null)).toEqual([]);
     expect(extractCapaMatches({ nope: true })).toEqual([]);
+    // An address capa did not write as a decimal number used to be pushed
+    // through Number() and land in the report as the literal string "0xNaN".
+    const odd = extractCapaMatches({
+      rules: {
+        'odd address': { meta: {}, matches: [[{ value: 'file offset 0x200' }, {}]] },
+        'hex address': { meta: {}, matches: [[{ value: '0x401000' }, {}]] },
+        'decimal address': { meta: {}, matches: [[{ value: 4198400 }, {}]] },
+      },
+    });
+    expect(odd.map((match) => match.addresses[0])).toEqual([
+      'file offset 0x200',
+      '0x401000',
+      '0x401000',
+    ]);
+    expect(JSON.stringify(odd)).not.toContain('NaN');
+
     // Older capa documents list attack/mbc as plain strings, not records.
     const flat = extractCapaMatches({
       rules: {

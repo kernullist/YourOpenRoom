@@ -226,6 +226,60 @@ describe('buildDeterministicReport', () => {
     expect(bad).toContain('unavailable');
   });
 
+  it('exempts only the four sections named, not any heading containing their words', () => {
+    // Substring matching was a way straight out of the enforcement pass: the
+    // model picks its own headings, and "Capability summary and coverage"
+    // contains 'coverage', which freed every line under it to say anything.
+    const known = new Set(['import:X']);
+    const smuggled = enforceReportAnchors(
+      ['## Capability summary and coverage', 'The binary exfiltrates data to a C2 server.'].join(
+        '\n',
+      ),
+      known,
+    );
+    expect(smuggled.report).not.toContain('exfiltrates');
+    expect(smuggled.droppedClaims).toBe(1);
+
+    // The real section still stands uncited -- that is what it is for.
+    const genuine = enforceReportAnchors(
+      ['## Coverage', 'The strings stage failed, so no string evidence was collected.'].join('\n'),
+      known,
+    );
+    expect(genuine.report).toContain('strings stage failed');
+    expect(genuine.droppedClaims).toBe(0);
+
+    // And punctuation or casing in the heading must not break the exemption.
+    for (const heading of ['## Open Questions', '### open questions:', '## Open questions']) {
+      const out = enforceReportAnchors(`${heading}\nIs this packed?`, known);
+      expect(out.droppedClaims, heading).toBe(0);
+    }
+  });
+
+  it('keeps list indentation, which is what markdown nests with', () => {
+    // Every kept prose line used to have its whitespace runs collapsed whether
+    // or not anything had been stripped from it, so a four-space child item came
+    // out as a one-space sibling and the nesting was gone.
+    const known = new Set(['import:X']);
+    const out = enforceReportAnchors(
+      ['- top [import:X]', '    - nested [import:X]'].join('\n'),
+      known,
+    );
+    expect(out.report).toContain('    - nested');
+  });
+
+  it('closes the gap a stripped citation leaves without moving the line', () => {
+    const known = new Set(['import:X']);
+    // Behind a heading, because the whole document is trimmed at the end.
+    const out = enforceReportAnchors(
+      ['## Findings', '  - it does a thing [import:X] [import:FAKE]'].join('\n'),
+      known,
+    );
+    expect(out.report).toContain('\n  - it does a thing');
+    expect(out.report).not.toContain('FAKE');
+    expect(out.report).not.toMatch(/\S {2,}\S/);
+    expect(out.unknownAnchors).toEqual(['import:FAKE']);
+  });
+
   it('states which stages failed rather than quietly omitting them', () => {
     const report = buildDeterministicReport(ledgerFixture());
     expect(report).toContain('strings: failed');

@@ -182,6 +182,33 @@ describe('capGhidraQueryRows', () => {
   });
 });
 
+describe('capping an oversized single row', () => {
+  it('caps a long string field inside an object row', () => {
+    // A decompiled body arrives as { name, code } with the whole function in
+    // `code`, so an object row was the one shape that needed the per-row cap and
+    // the only shape that did not get it.
+    const [row] = capGhidraQueryRows([{ name: 'f', code: 'x'.repeat(500_000) }]).rows;
+    const code = (row as { name: string; code: string }).code;
+    expect((row as { name: string }).name).toBe('f');
+    expect(code.length).toBeLessThan(500_000);
+    expect(code).toContain('[truncated]');
+  });
+
+  it('says truncated when the only row is over the total budget on its own', () => {
+    // Answering with nothing would be worse, so the row goes through even when
+    // it does not fit -- but reporting truncated:false about it told the caller
+    // the answer was complete.
+    const out = capGhidraQueryRows([{ blob: 'y'.repeat(5_000) }], 40, 1_000);
+    expect(out.rows).toHaveLength(1);
+    expect(out.truncated).toBe(true);
+  });
+
+  it('leaves a row that is already within the caps exactly as it was', () => {
+    const row = { name: 'f', code: 'short' };
+    expect(capGhidraQueryRows([row]).rows[0]).toBe(row);
+  });
+});
+
 describe('normalizeGhidraToolResult', () => {
   it('unwraps the standard MCP text-content envelope', () => {
     expect(

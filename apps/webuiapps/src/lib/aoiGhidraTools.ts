@@ -349,6 +349,11 @@ async function runFindBinaryTool(params: Record<string, unknown>): Promise<strin
     const view = find
       ? await findGhidraBinaries({ find, ...(path ? { path } : {}) })
       : await browseGhidraPath(path || undefined);
+    // Finding a binary is step one of the documented flow, and the turn that
+    // follows it is usually "analyze that one" -- with no trigger word in it.
+    // Without this mark the tools drop out of the next request and Aoi cannot
+    // act on what it just found.
+    touchGhidraTools();
     return jsonResult({
       path: view.path,
       truncated: view.truncated,
@@ -371,6 +376,9 @@ async function runFindBinaryTool(params: Record<string, unknown>): Promise<strin
 async function runSessionListTool(): Promise<string> {
   try {
     const [sessions, health] = await Promise.all([fetchGhidraSessions(), fetchGhidraLabHealth()]);
+    // Same reason as ghidra_find_binary: this is the other documented entry
+    // point, and the follow-up turn rarely repeats a trigger word.
+    touchGhidraTools();
     const failing = health.checks.filter((check) => !check.ok && check.required);
     return jsonResult({
       sessions: sessions.map(describeSession),
@@ -529,6 +537,7 @@ async function runSessionStopTool(params: Record<string, unknown>): Promise<stri
   }
   try {
     await stopGhidraSession(sessionId);
+    touchGhidraTools();
     return jsonResult({ stopped: true, sessionId });
   } catch (error) {
     return errorResult(error);

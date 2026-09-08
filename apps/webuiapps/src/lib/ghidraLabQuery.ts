@@ -319,13 +319,33 @@ function rowCharCost(row: unknown): number {
   }
 }
 
+/**
+ * Bring one row under the per-row cap, whatever shape it is.
+ *
+ * Object rows used to pass through untouched, and a decompiled body arrives as
+ * `{ name, code }` with the whole function in `code` -- so the per-row cap did
+ * not apply to the one row type that actually needs it. Long string fields are
+ * cut in place, which keeps the row a row (the caller reads `name`, `address`
+ * and the like off it) instead of degrading it to text.
+ */
 function capRowText(row: unknown): unknown {
-  if (typeof row !== 'string') {
+  if (typeof row === 'string') {
+    return row.length > GHIDRA_QUERY_MAX_ROW_CHARS
+      ? `${row.slice(0, GHIDRA_QUERY_MAX_ROW_CHARS)}\n...[truncated]`
+      : row;
+  }
+  if (!row || typeof row !== 'object' || Array.isArray(row)) {
     return row;
   }
-  return row.length > GHIDRA_QUERY_MAX_ROW_CHARS
-    ? `${row.slice(0, GHIDRA_QUERY_MAX_ROW_CHARS)}\n...[truncated]`
-    : row;
+  const record = row as Record<string, unknown>;
+  let capped: Record<string, unknown> | null = null;
+  for (const [key, value] of Object.entries(record)) {
+    if (typeof value === 'string' && value.length > GHIDRA_QUERY_MAX_ROW_CHARS) {
+      capped = capped ?? { ...record };
+      capped[key] = `${value.slice(0, GHIDRA_QUERY_MAX_ROW_CHARS)}\n...[truncated]`;
+    }
+  }
+  return capped ?? row;
 }
 
 /**
@@ -344,9 +364,14 @@ export function capGhidraQueryRows(
   for (const row of rows.slice(0, maxRows)) {
     const shaped = capRowText(row);
     const cost = rowCharCost(shaped);
-    if (total + cost > maxTotalChars && capped.length > 0) {
+    if (total + cost > maxTotalChars) {
+      // Never answer with nothing: the first row goes through even when it is
+      // over budget on its own. It is still over budget, though, and saying
+      // truncated:false about it told the caller the answer was complete.
       truncated = true;
-      break;
+      if (capped.length > 0) {
+        break;
+      }
     }
     capped.push(shaped);
     total += cost;

@@ -102,6 +102,37 @@ describe('bucketString', () => {
     expect(bucketString('hello world')).toBe('other');
   });
 
+  it('still fills the read budget when the engine gives no ranking signal', () => {
+    // Entry point, export, called APIs, xref count and size all come from the
+    // engine's function listing, and a stripped target can come back as bare
+    // {name, address}. Everything then scored zero, nothing was selected, and
+    // the deep read skipped the binaries where reading the code is the only
+    // thing left to do.
+    const bare = Array.from({ length: 200 }, (_unused, index) => ({
+      name: `sub_${(0x401000 + index * 16).toString(16)}`,
+      address: `0x${(0x401000 + index * 16).toString(16)}`,
+    }));
+    const selected = selectFunctionsForDeepRead(bare, 40);
+    expect(selected).toHaveLength(40);
+    expect(selected[0].reasons.join(' ')).toContain('no ranking signal');
+  });
+
+  it('keeps ranked functions ahead of the filler, and leaves boilerplate out', () => {
+    const selected = selectFunctionsForDeepRead(
+      [
+        { name: 'sub_401000', address: '0x401000' },
+        { name: 'DriverEntry', address: '0x401100', isEntryPoint: true },
+        { name: '__scrt_common_main', address: '0x401200' },
+        { name: 'sub_401300', address: '0x401300' },
+      ],
+      4,
+    );
+    expect(selected[0].name).toBe('DriverEntry');
+    // Named runtime boilerplate stays out even though there is room for it.
+    expect(selected.map((entry) => entry.name)).not.toContain('__scrt_common_main');
+    expect(selected).toHaveLength(3);
+  });
+
   it('files a module name as a module, not as a network host', () => {
     // "kernel32.dll" matches the host pattern exactly (letters-dot-letters), and
     // a report listing every imported DLL as a host is actively misleading --

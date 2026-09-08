@@ -41,13 +41,32 @@ const MAX_REPORT_CHARS = 60000;
 const REPORT_TOKENS = 6000;
 const VERIFIER_TOKENS = 1500;
 
-/** Sections whose prose is allowed to stand without a citation. */
+/**
+ * Sections whose prose is allowed to stand without a citation.
+ *
+ * Matched EXACTLY, not as substrings. Substring matching was an escape hatch
+ * out of the whole enforcement pass: a heading the model chose itself, like
+ * "Capability summary and coverage", contains 'coverage' and freed every line
+ * under it to say anything at all. The exemption exists for the four sections
+ * that are meant to hold interpretation rather than findings, and it should
+ * apply to those four and nothing else.
+ */
 const CITATION_EXEMPT_HEADINGS: readonly string[] = [
   'open questions',
   'evidence ledger',
   'coverage',
   'what was not examined',
 ];
+
+/** A heading reduced to comparable form: no markers, punctuation or case. */
+function normalizeHeading(heading: string): string {
+  return heading
+    .replace(/^#+\s*/, '')
+    .replace(/[^a-z0-9 ]+/gi, ' ')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+}
 
 const ANCHOR_KINDS: readonly string[] = [
   'header',
@@ -117,8 +136,8 @@ export function enforceReportAnchors(
     }
 
     if (trimmed.startsWith('#')) {
-      const heading = trimmed.replace(/^#+\s*/, '').toLowerCase();
-      exempt = CITATION_EXEMPT_HEADINGS.some((name) => heading.includes(name));
+      const heading = normalizeHeading(trimmed);
+      exempt = CITATION_EXEMPT_HEADINGS.includes(heading);
       kept.push(line);
       continue;
     }
@@ -160,17 +179,29 @@ export function enforceReportAnchors(
       cited.add(id);
     }
     // Strip citations that turned out to be invented, leaving the real ones.
-    const cleaned =
-      unknown.size === 0
-        ? line
-        : line.replace(CITATION_REGEX, (whole, id: string) => {
-            const trimmedId = id.trim();
-            if (looksLikeAnchorId(trimmedId) && !knownIds.has(trimmedId)) {
-              return '';
-            }
-            return whole;
-          });
-    kept.push(cleaned.replace(/\s{2,}/g, ' ').trimEnd());
+    if (real.length === matches.length) {
+      // Nothing to strip, so nothing to tidy: leave the line byte for byte.
+      kept.push(line);
+      continue;
+    }
+    const cleaned = line.replace(CITATION_REGEX, (whole, id: string) => {
+      const trimmedId = id.trim();
+      if (looksLikeAnchorId(trimmedId) && !knownIds.has(trimmedId)) {
+        return '';
+      }
+      return whole;
+    });
+    // Close the gap a removed citation left, but only from the BODY of the
+    // line. Collapsing every run of whitespace also collapsed leading indent,
+    // which is what markdown nests lists with -- a four-space child item came
+    // out as a one-space sibling.
+    const indent = cleaned.slice(0, cleaned.length - cleaned.trimStart().length);
+    kept.push(
+      `${indent}${cleaned
+        .trimStart()
+        .replace(/\s{2,}/g, ' ')
+        .trimEnd()}`,
+    );
   }
 
   return {

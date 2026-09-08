@@ -304,6 +304,33 @@ describe('execution', () => {
     expect(String(queryAnswer)).toContain('ghidra_session_list');
   });
 
+  it('marks the toolset in use from the documented entry points too', async () => {
+    // ghidra_find_binary and ghidra_session_list are step one of the flow, and
+    // the turn after them is normally "analyze that one" with no trigger word
+    // in it. Without the mark the tools drop out of the next request and Aoi
+    // cannot act on what it just found.
+    responder = () => ({ ok: true, browse: { path: '/', truncated: false, entries: [] } });
+    resetGhidraToolStickiness();
+    expect(shouldEnableGhidraTools('그거 분석해줘')).toBe(false);
+    await executeGhidraTool(GHIDRA_FIND_BINARY_TOOL, { find: 'client' });
+    expect(shouldEnableGhidraTools('그거 분석해줘')).toBe(true);
+
+    responder = () => ({
+      ok: true,
+      sessions: [],
+      health: {
+        checks: [],
+        availableModes: [],
+        ghidraVersion: '',
+        jdkVersion: '',
+        capaVersion: '',
+      },
+    });
+    resetGhidraToolStickiness();
+    await executeGhidraTool(GHIDRA_SESSION_LIST_TOOL, {});
+    expect(shouldEnableGhidraTools('그거 분석해줘')).toBe(true);
+  });
+
   it('rejects an unknown tool name', async () => {
     const result = JSON.parse(await executeGhidraTool('ghidra_rename_function', {}));
     expect(result.error).toContain('unknown_ghidra_tool');

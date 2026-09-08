@@ -523,6 +523,8 @@ export function selectFunctionsForDeepRead(
   limit = 40,
 ): GhidraSelectedFunction[] {
   const scored: GhidraSelectedFunction[] = [];
+  /** Scored exactly zero: no signal either way, kept as budget filler. */
+  const unranked: GhidraFunctionCandidate[] = [];
   for (const candidate of candidates) {
     if (!candidate.name && !candidate.address) {
       continue;
@@ -576,13 +578,40 @@ export function selectFunctionsForDeepRead(
       }
     }
 
-    if (score <= 0) {
+    if (score < 0) {
+      // Negative means the name itself says this is runtime boilerplate. Those
+      // stay out even when there is room, because reading them teaches nothing.
+      continue;
+    }
+    if (score === 0) {
+      unranked.push(candidate);
       continue;
     }
     scored.push({ ...candidate, score, reasons });
   }
 
-  return scored
+  const ranked = scored
     .sort((left, right) => right.score - left.score || left.name.localeCompare(right.name))
     .slice(0, Math.max(0, limit));
+
+  // Spend the rest of the budget rather than reading nothing.
+  //
+  // Every signal above -- entry point, export, called APIs, xref count, size --
+  // comes from the engine's function listing, and a stripped target can come
+  // back as bare {name, address} rows with none of them. Every function then
+  // scored zero, nothing was selected, and the deep read reported "no functions
+  // scored high enough to read" on exactly the binaries where reading the code
+  // is the only thing left to do.
+  if (ranked.length >= limit || unranked.length === 0) {
+    return ranked;
+  }
+  const room = Math.max(0, limit) - ranked.length;
+  for (const candidate of unranked.slice(0, room)) {
+    ranked.push({
+      ...candidate,
+      score: 0,
+      reasons: ['no ranking signal from the engine; included to fill the read budget'],
+    });
+  }
+  return ranked;
 }

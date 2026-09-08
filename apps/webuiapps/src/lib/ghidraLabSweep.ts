@@ -947,10 +947,14 @@ export function extractCapaMatches(payload: unknown): GhidraCapaMatch[] {
         const address = asRecord(entry[0]);
         const value = address ? pickString(address, ['value', 'address']) : '';
         if (value) {
+          // capa writes the address as a decimal number; anything else is kept
+          // verbatim rather than pushed through Number(), which turned an
+          // unexpected form into the literal string "0xNaN" in the report.
+          const numeric = Number(value);
           addresses.push(
-            typeof value === 'string' && value.startsWith('0x')
+            value.startsWith('0x') || !Number.isFinite(numeric)
               ? value
-              : `0x${Number(value).toString(16)}`,
+              : `0x${numeric.toString(16)}`,
           );
         }
       }

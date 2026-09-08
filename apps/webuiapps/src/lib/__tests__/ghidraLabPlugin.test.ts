@@ -316,6 +316,21 @@ describe('browse', () => {
     expect(payload(result).error).toBe('path_outside_roots');
   });
 
+  it('sends the gate detail as a string the client can actually read', async () => {
+    // The gate answers with a LIST of details, and every consumer -- the browser
+    // client, the tool results, the error banner -- reads `detail` as a string,
+    // so the array was dropped on the floor and the operator saw a bare code
+    // with no mention of which capability was off.
+    saveAoiHostBridgeKillSwitchState(
+      home,
+      setAoiHostBridgeCapability(null, 'os_ghidra_analysis', false, Date.now()),
+    );
+    const result = await call('/browse', { body: { path: root } });
+    expect(result.status).toBe(403);
+    expect(typeof payload(result).detail).toBe('string');
+    expect(String(payload(result).detail)).toContain('os_ghidra_analysis');
+  });
+
   it('is blocked when the capability is off', async () => {
     saveAoiHostBridgeKillSwitchState(
       home,
