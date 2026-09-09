@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildBreadcrumbs,
+  createLatestOnlyGate,
   describeHealth,
   describeProgress,
   explainLabError,
@@ -340,5 +341,36 @@ describe('explainLabError', () => {
       'something specific happened',
     );
     expect(explainLabError(null)).toContain('no error text');
+  });
+});
+
+describe('createLatestOnlyGate', () => {
+  it('lets only the newest request land', () => {
+    // Two clicks race and the SLOWER one wins by arriving last, which is how a
+    // report pane ends up showing run A's text under run B's id.
+    const gate = createLatestOnlyGate();
+    const first = gate.begin();
+    const second = gate.begin();
+    expect(gate.isStale(first)).toBe(true);
+    expect(gate.isStale(second)).toBe(false);
+  });
+
+  it('keeps a single request current until another starts', () => {
+    const gate = createLatestOnlyGate();
+    const ticket = gate.begin();
+    expect(gate.isStale(ticket)).toBe(false);
+    expect(gate.isStale(ticket)).toBe(false);
+    gate.begin();
+    expect(gate.isStale(ticket)).toBe(true);
+  });
+
+  it('gives each pane its own sequence', () => {
+    const reports = createLatestOnlyGate();
+    const browse = createLatestOnlyGate();
+    const ticket = reports.begin();
+    browse.begin();
+    browse.begin();
+    // Browsing elsewhere must not invalidate a report that is still current.
+    expect(reports.isStale(ticket)).toBe(false);
   });
 });

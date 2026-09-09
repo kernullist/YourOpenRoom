@@ -482,6 +482,29 @@ describe('extraction', () => {
     ]);
   });
 
+  it('counts an anchor once, however many stages saw it', async () => {
+    // ledger.anchors.length becomes the run's anchorCount in the UI and the
+    // manifest, while the report's "N of M cited" denominator comes from the
+    // deduplicated index. A duplicate pushed onto the array made those two
+    // counts of the same thing disagree.
+    const { ledger } = await sweep({
+      answers: {
+        exports: outcome([
+          { name: 'DllMain', address: '0x140001000' },
+          { name: 'DllMain', address: '0x140001000' },
+        ]),
+        imports: outcome([
+          { library: 'ntdll.dll', name: 'NtLoadDriver' },
+          { library: 'ntdll.dll', name: 'NtLoadDriver' },
+        ]),
+      },
+      deps: {},
+    });
+    const ids = ledger.anchors.map((entry) => entry.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids.filter((id) => id === 'export:DllMain')).toHaveLength(1);
+  });
+
   it('steps over rows that are not records, in every extractor', () => {
     // The engine's answers are not schema-checked anywhere upstream. A null or a
     // number mixed into a list has to be skipped, not crash the stage that was

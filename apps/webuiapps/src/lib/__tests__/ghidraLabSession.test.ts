@@ -611,6 +611,48 @@ describe('unknown sessions', () => {
   });
 });
 
+describe('the readiness watch', () => {
+  it('does not let a crashing dep escape as an unhandled rejection', async () => {
+    // Nothing awaits pollReady. Before it had a catch, a dep that threw inside
+    // the wait -- the clock, the sleeper, the progress sampler -- escaped as an
+    // unhandled rejection, which Node terminates the process for: one session
+    // that failed to start took the whole dev server with it.
+    const rejections: unknown[] = [];
+    const onRejection = (error: unknown): void => {
+      rejections.push(error);
+    };
+    process.on('unhandledRejection', onRejection);
+    try {
+      const errors: string[] = [];
+      const harness = makeHarness({
+        sleep: async () => {
+          throw new Error('sleep exploded');
+        },
+        logError: (message) => errors.push(message),
+      });
+      const started = await harness.manager.startHeadless({
+        config: config(),
+        binaryPath: BINARY,
+        projectName: 'client-abc',
+        launch: 'module',
+      });
+      expect(started.ok).toBe(true);
+      const id = started.session?.id ?? '';
+      await waitForState(harness.manager, id, ['failed']);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(rejections).toEqual([]);
+      expect(harness.manager.get(id)?.failureReason).toContain('sleep exploded');
+      // A pyghidra-mcp server never exits on its own, so the child has to be
+      // reclaimed here or it keeps the port with nothing able to reach it.
+      expect(harness.child.killed).toBe(true);
+      expect(errors.join(' ')).toContain('readiness watch crashed');
+    } finally {
+      process.off('unhandledRejection', onRejection);
+    }
+  });
+});
+
 describe('shared session manager', () => {
   it('is one per process and kills its children when reset', async () => {
     // Reset runs on dev-server shutdown. A manager that forgot its children

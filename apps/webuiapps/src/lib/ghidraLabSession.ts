@@ -484,7 +484,28 @@ export class GhidraLabSessionManager {
       record.failureReason = describeGhidraExit(code, signal, record.outputTail);
     });
 
-    void this.pollReady(record, params.config);
+    // Nothing awaits the readiness walk, which makes an unhandled rejection
+    // here fatal: Node terminates the process for one, and that takes the
+    // dev server down over a single session that failed to start. Every
+    // engine call inside pollReady is already guarded, so reaching this
+    // catch means an injected dep threw -- the clock, the sleeper, the
+    // progress sampler. Record it on the session and reclaim the child,
+    // because a pyghidra-mcp server never exits on its own.
+    void this.pollReady(record, params.config).catch((error) => {
+      if (!isTerminalSessionState(record)) {
+        record.state = 'failed';
+        record.failureReason = `readiness watch failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`;
+        record.progress = null;
+        this.terminateChild(record);
+      }
+      try {
+        this.deps.logError?.('ghidra-lab readiness watch crashed', error);
+      } catch {
+        // A logger that throws must not re-enter this handler.
+      }
+    });
     return { ok: true, session: toView(record), reason: '' };
   }
 

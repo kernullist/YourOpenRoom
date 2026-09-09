@@ -368,6 +368,17 @@ function anchor(
     detail: entry.detail,
     deterministic: entry.deterministic,
   };
+  // Deduplicate here rather than at every call site.
+  //
+  // buildAnchorIndex already collapses ids and keeps the first, so a duplicate
+  // pushed onto this array made ledger.anchors.length (which becomes the run's
+  // anchorCount in the UI and the manifest) larger than the number of anchors a
+  // report can actually cite -- two counts of the same thing, free to disagree.
+  // The imports stage carried its own guard for exactly this; the rest did not.
+  const existing = ledger.anchors.find((candidate) => candidate.id === full.id);
+  if (existing) {
+    return existing;
+  }
   ledger.anchors.push(full);
   return full;
 }

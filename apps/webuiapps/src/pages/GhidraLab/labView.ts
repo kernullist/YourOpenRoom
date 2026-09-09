@@ -229,6 +229,31 @@ export function isRunActive(run: GhidraReportRunView): boolean {
   );
 }
 
+/**
+ * Ticketing for "only the newest answer may land".
+ *
+ * Every panel here is a click that starts a fetch: pick a run, pick a folder,
+ * run a query. Two clicks in a row race, and the SLOWER one wins by arriving
+ * last -- so the report pane could show run A's text under run B's id, which is
+ * the one thing a report reader must be able to trust. Take a ticket before the
+ * request, drop the answer if the ticket is no longer current.
+ */
+export interface LatestOnlyGate {
+  begin(): number;
+  isStale(ticket: number): boolean;
+}
+
+export function createLatestOnlyGate(): LatestOnlyGate {
+  let current = 0;
+  return {
+    begin: () => {
+      current += 1;
+      return current;
+    },
+    isStale: (ticket: number) => ticket !== current,
+  };
+}
+
 export function sortBrowseEntries(
   entries: readonly GhidraLabBrowseEntry[],
 ): GhidraLabBrowseEntry[] {

@@ -49,6 +49,7 @@ import type {
 import { APP_ID, APP_NAME, APP_STORAGE_NAME } from './actions/constants';
 import {
   buildBreadcrumbs,
+  createLatestOnlyGate,
   describeHealth,
   describeProgress,
   explainLabError,
@@ -121,6 +122,11 @@ function GhidraLab(): JSX.Element {
   const [now, setNow] = useState(() => Date.now());
 
   const stateRef = useRef<AppState>(DEFAULT_STATE);
+  // One gate per pane: a second click must be able to win even while the first
+  // request is still in flight.
+  const reportGate = useRef(createLatestOnlyGate());
+  const browseGate = useRef(createLatestOnlyGate());
+  const queryGate = useRef(createLatestOnlyGate());
   // Approvals the operator dismissed here. Without this, an approval Aoi
   // recorded would reappear on the next poll immediately after being waved away.
   const dismissedRef = useRef<Set<string>>(new Set());
@@ -211,12 +217,18 @@ function GhidraLab(): JSX.Element {
 
   const loadBrowse = useCallback(
     async (path?: string) => {
+      const ticket = browseGate.current.begin();
       try {
         const view = await browseGhidraPath(path);
+        if (browseGate.current.isStale(ticket)) {
+          return;
+        }
         setBrowsePath(view.path);
         setBrowseEntries(sortBrowseEntries(view.entries));
       } catch (error) {
-        showError(error);
+        if (!browseGate.current.isStale(ticket)) {
+          showError(error);
+        }
       }
     },
     [showError],
@@ -475,6 +487,7 @@ function GhidraLab(): JSX.Element {
     }
     setBusy(true);
     setQueryRows(null);
+    const ticket = queryGate.current.begin();
     try {
       const spec = GHIDRA_QUERY_SPECS.find((entry) => entry.kind === queryKind);
       const args: Record<string, unknown> = {};
@@ -484,6 +497,9 @@ function GhidraLab(): JSX.Element {
           queryArg.trim();
       }
       const view = await runGhidraQuery({ sessionId: selectedSessionId, kind: queryKind, args });
+      if (queryGate.current.isStale(ticket)) {
+        return;
+      }
       setQueryRows(view.rows);
       touchGhidraTools();
       setNote({
@@ -504,10 +520,20 @@ function GhidraLab(): JSX.Element {
       setSelectedRunId(runId);
       void persistState({ lastRunId: runId });
       setReportText('');
+      // Two clicks race, and the slower answer wins by landing last. Showing run
+      // A's text under run B's id is the exact failure this whole stack exists
+      // to prevent, so an answer that is no longer the current one is dropped.
+      const ticket = reportGate.current.begin();
       try {
-        setReportText(await fetchGhidraReport(runId));
+        const text = await fetchGhidraReport(runId);
+        if (reportGate.current.isStale(ticket)) {
+          return;
+        }
+        setReportText(text);
       } catch (error) {
-        showError(error);
+        if (!reportGate.current.isStale(ticket)) {
+          showError(error);
+        }
       }
     },
     [persistState, showError],
@@ -568,16 +594,23 @@ function GhidraLab(): JSX.Element {
           setTab('binaries');
           return 'success';
         }
-        case 'REFRESH_GHIDRA_LAB':
-        case 'SYNC_STATE': {
+        case 'REFRESH_GHIDRA_LAB': {
           await refreshAll();
+          return 'success';
+        }
+        case 'SYNC_STATE': {
+          // The contract (data-interaction.md 2.4, and this app's own meta.yaml)
+          // is that the agent WRITES state.json and then sends SYNC_STATE. Only
+          // refreshing the server views ignored the file the agent had just
+          // written, so the tab and run it selected were silently dropped.
+          await loadState();
           return 'success';
         }
         default:
           return `error: unsupported action ${action.action_type}`;
       }
     },
-    [loadBrowse, openReport, persistState, refreshAll, refreshRuns, refreshSessions],
+    [loadBrowse, loadState, openReport, persistState, refreshAll, refreshRuns, refreshSessions],
   );
 
   useAgentActionListener(APP_ID, handleAgentAction);
