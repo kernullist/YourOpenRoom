@@ -243,8 +243,20 @@ export function categorizeApi(symbol: string, library = ''): GhidraApiMatch[] {
 export interface GhidraCapabilitySignal {
   category: GhidraApiCategory;
   claim: string;
-  /** The symbols that justify the claim -- the report cites these, not the claim. */
+  /**
+   * The symbols that justify the claim -- the report cites these, not the claim.
+   *
+   * A sample. `symbolCount` is how many there really are.
+   */
   symbols: string[];
+  /**
+   * Every import that matched this category, counted before `symbols` was cut.
+   *
+   * "reads or writes the registry" backed by four cited symbols reads very
+   * differently from the same claim backed by forty, and the reader could not
+   * tell which they were looking at.
+   */
+  symbolCount: number;
   weight: number;
 }
 
@@ -273,6 +285,8 @@ export function summarizeImportCapabilities(
         category: match.category,
         claim: match.claim,
         symbols: [match.symbol],
+        // Replaced with the true total once every import has been folded in.
+        symbolCount: 1,
         weight: match.weight,
       });
     }
@@ -280,6 +294,7 @@ export function summarizeImportCapabilities(
   return [...byCategory.values()]
     .map((signal) => ({
       ...signal,
+      symbolCount: signal.symbols.length,
       symbols: signal.symbols.slice(0, maxSymbolsPerSignal).sort(),
     }))
     .sort(
@@ -422,7 +437,9 @@ export function summarizeStrings(
 export interface GhidraAntiAnalysisIndicator {
   code: string;
   detail: string;
+  /** A sample of what triggered it; `evidenceTotal` is how much there was. */
   evidence: string[];
+  evidenceTotal: number;
 }
 
 /**
@@ -432,6 +449,17 @@ export interface GhidraAntiAnalysisIndicator {
  * suggestive of packing, not proof of it, and the wording says so -- a report
  * that calls a statically-linked binary "packed" has taught the reader nothing.
  */
+/** Evidence carried with an indicator. The rest is counted, not carried. */
+const MAX_INDICATOR_EVIDENCE = 10;
+
+/** Take a readable handful of evidence, and remember how much there was. */
+function indicatorEvidence(items: readonly string[]): {
+  evidence: string[];
+  evidenceTotal: number;
+} {
+  return { evidence: items.slice(0, MAX_INDICATOR_EVIDENCE), evidenceTotal: items.length };
+}
+
 export function detectAntiAnalysis(params: {
   imports: readonly { symbol: string; library?: string }[];
   sectionNames?: readonly string[];
@@ -446,7 +474,7 @@ export function detectAntiAnalysis(params: {
     indicators.push({
       code: 'anti_debug_imports',
       detail: 'Imports APIs whose main use is detecting a debugger.',
-      evidence: [...new Set(antiDebug.map((match) => match.symbol))].sort().slice(0, 10),
+      ...indicatorEvidence([...new Set(antiDebug.map((match) => match.symbol))].sort()),
     });
   }
 
@@ -458,7 +486,7 @@ export function detectAntiAnalysis(params: {
       code: 'minimal_import_table',
       detail:
         'Very small import table dominated by dynamic-resolution APIs. Consistent with packing or with imports resolved at runtime; not proof of either.',
-      evidence: loaderOnly.map((entry) => entry.symbol).slice(0, 10),
+      ...indicatorEvidence(loaderOnly.map((entry) => entry.symbol)),
     });
   }
 
@@ -469,7 +497,7 @@ export function detectAntiAnalysis(params: {
     indicators.push({
       code: 'packer_section_names',
       detail: 'Section names match a known packer or protector.',
-      evidence: suspiciousSections.slice(0, 10),
+      ...indicatorEvidence(suspiciousSections),
     });
   }
 
@@ -480,7 +508,7 @@ export function detectAntiAnalysis(params: {
     indicators.push({
       code: 'vm_detection_strings',
       detail: 'Contains strings used to recognise virtual machines or sandboxes.',
-      evidence: [...new Set(vmStrings)].slice(0, 10),
+      ...indicatorEvidence([...new Set(vmStrings)]),
     });
   }
 

@@ -360,7 +360,14 @@ export function capGhidraQueryRows(
 ): GhidraCappedRows {
   const capped: unknown[] = [];
   let total = 0;
-  let truncated = rows.length > maxRows;
+  // A page that came back exactly full is the signature of more behind it.
+  //
+  // The request carries `limit = maxRows`, so the engine never returns more
+  // than that and `rows.length > maxRows` was never once true: an answer that
+  // filled the limit exactly reported itself complete. Measured on notepad.exe
+  // -- 315 imports in the file, 200 returned, "200 imports across 11 libraries"
+  // in the report with no caveat, and every count downstream taken from the 200.
+  let truncated = rows.length >= maxRows;
   for (const row of rows.slice(0, maxRows)) {
     const shaped = capRowText(row);
     const cost = rowCharCost(shaped);

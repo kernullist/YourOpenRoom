@@ -284,3 +284,25 @@ describe('normalizeGhidraToolResult', () => {
     ]);
   });
 });
+
+describe('a page that came back exactly full', () => {
+  it('is reported as truncated, because the request set that limit', () => {
+    // The request carries limit = maxRows, so the engine never returns more and
+    // `rows.length > maxRows` could never be true. Measured on notepad.exe: 315
+    // imports in the file, 200 returned, and the report said "200 imports"
+    // without a caveat while every downstream count used the 200.
+    const rows = Array.from({ length: GHIDRA_QUERY_MAX_ROWS }, (_unused, index) => ({
+      name: `Import${index}`,
+    }));
+    const capped = capGhidraQueryRows(rows);
+    expect(capped.rowCount).toBe(GHIDRA_QUERY_MAX_ROWS);
+    expect(capped.truncated).toBe(true);
+  });
+
+  it('is not reported as truncated when the page had room to spare', () => {
+    const rows = Array.from({ length: GHIDRA_QUERY_MAX_ROWS - 1 }, (_unused, index) => ({
+      name: `Import${index}`,
+    }));
+    expect(capGhidraQueryRows(rows).truncated).toBe(false);
+  });
+});

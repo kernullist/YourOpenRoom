@@ -409,3 +409,40 @@ describe('what a thunk is allowed to displace', () => {
     expect(selected[0].name).toBe('PublicApi');
   });
 });
+
+describe('samples that say how much they are a sample of', () => {
+  it('counts every import behind a capability, not the ones it kept', () => {
+    // Four cited symbols behind a claim backed by forty read exactly like four
+    // behind a claim backed by four.
+    const imports = Array.from({ length: 30 }, (_unused, index) => ({
+      symbol: `RegQueryValueEx${index}`,
+      library: 'advapi32.dll',
+    }));
+    const [signal] = summarizeImportCapabilities(imports);
+    expect(signal.category).toBe('registry');
+    expect(signal.symbols).toHaveLength(12);
+    expect(signal.symbolCount).toBe(30);
+  });
+
+  it('counts the evidence behind an indicator, not the ten it prints', () => {
+    const imports = Array.from({ length: 14 }, (_unused, index) => ({
+      symbol: `IsDebuggerPresent${index}`,
+      library: 'kernel32.dll',
+    }));
+    const [indicator] = detectAntiAnalysis({ imports });
+    expect(indicator.code).toBe('anti_debug_imports');
+    expect(indicator.evidence).toHaveLength(10);
+    expect(indicator.evidenceTotal).toBe(14);
+  });
+
+  it('leaves the totals equal when nothing was cut', () => {
+    const [signal] = summarizeImportCapabilities([
+      { symbol: 'RegOpenKeyExW', library: 'advapi32.dll' },
+    ]);
+    expect(signal.symbolCount).toBe(1);
+    const [indicator] = detectAntiAnalysis({
+      imports: [{ symbol: 'IsDebuggerPresent', library: 'kernel32.dll' }],
+    });
+    expect(indicator.evidenceTotal).toBe(1);
+  });
+});

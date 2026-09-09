@@ -94,6 +94,23 @@ export const GHIDRA_DECOMPILE_BATCH = 8;
 export const STRING_INDEX_WAIT_MS = 60_000;
 const STRING_INDEX_POLL_MS = 5_000;
 
+/**
+ * Record that an anchor cap left evidence out.
+ *
+ * The ledger IS the evidence base: a claim whose anchor was never recorded is
+ * stripped by the enforcement pass as unsupported, however true it was. The
+ * reader deserves to know that happened, and the count at the foot of the
+ * report deserves to be a count of what was found rather than of what fitted.
+ */
+function recordAnchorCap(ledger: GhidraSweepLedger, kind: string, kept: number, found: number) {
+  if (found <= kept) {
+    return;
+  }
+  const caps = (ledger.facts.anchorCaps ?? []) as { kind: string; kept: number; found: number }[];
+  caps.push({ kind, kept, found });
+  ledger.facts.anchorCaps = caps;
+}
+
 const MAX_IMPORT_ANCHORS = 120;
 const MAX_STRING_ANCHORS = 80;
 /**
@@ -655,7 +672,9 @@ export async function runGhidraSweep(params: {
       ledger.facts.imports = imports;
       const signals = summarizeImportCapabilities(imports);
       ledger.facts.importCapabilities = signals;
-      ledger.facts.uncategorizedImports = uncategorizedImports(imports).slice(0, 200);
+      const uncategorized = uncategorizedImports(imports);
+      ledger.facts.uncategorizedImports = uncategorized.slice(0, 200);
+      ledger.facts.uncategorizedImportCount = uncategorized.length;
       // Symbols the report is going to cite must be anchored whatever the cap.
       // An import that fell off the end is an import the enforcement pass would
       // then delete the claim for -- the capability would be real and the report
@@ -666,6 +685,7 @@ export async function runGhidraSweep(params: {
         ...imports.filter((entry) => !willBeCited.has(entry.symbol)),
       ];
       const seenImportIds = new Set<string>();
+      recordAnchorCap(ledger, 'import', MAX_IMPORT_ANCHORS, ordered.length);
       for (const entry of ordered.slice(0, MAX_IMPORT_ANCHORS)) {
         const id = importAnchorId(entry.symbol);
         if (seenImportIds.has(id)) {
@@ -689,6 +709,9 @@ export async function runGhidraSweep(params: {
           view,
           'done',
           `${imports.length} imports across ${libraries.size} librar${libraries.size === 1 ? 'y' : 'ies'}; ${signals.length} capability signals`,
+          result.truncated
+            ? 'the engine returned a full page: there are more imports than these, and every count here is of what came back'
+            : '',
         );
       }
     }
@@ -809,6 +832,7 @@ export async function runGhidraSweep(params: {
             const counts = countByKind(recovered);
             const interesting = countInterestingDecoded(recovered);
             const heldBack = interesting - decoded.length;
+            recordAnchorCap(ledger, 'decoded', MAX_DECODED_ANCHORS, decoded.length);
             for (const entry of decoded.slice(0, MAX_DECODED_ANCHORS)) {
               anchor(ledger, {
                 id: decodedAnchorId(entry.decodingRoutine, entry.value),
@@ -862,7 +886,9 @@ export async function runGhidraSweep(params: {
           view,
           'done',
           `${functions.length} functions`,
-          result.truncated ? 'function list was truncated at the engine cap' : '',
+          result.truncated
+            ? 'the engine returned a full page: the image holds more functions than these'
+            : '',
         );
       }
     }
@@ -1418,6 +1444,7 @@ export async function runGhidraSweep(params: {
       });
       ledger.facts.behavior = behavior;
       ledger.facts.reachableCategories = summarizeReachableCategories(behavior.reachable);
+      recordAnchorCap(ledger, 'behavior', MAX_BEHAVIOR_ANCHORS, behavior.chains.length);
       for (const chain of behavior.chains.slice(0, MAX_BEHAVIOR_ANCHORS)) {
         anchor(ledger, {
           id: behaviorAnchorId(chain.code),

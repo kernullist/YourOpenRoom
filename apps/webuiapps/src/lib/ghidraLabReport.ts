@@ -253,6 +253,27 @@ export function buildAnchorIndex(ledger: GhidraSweepLedger): Map<string, GhidraE
  * this report is supposed to be checkable, and "the first 40 of them" is part
  * of what makes a count checkable.
  */
+/** Diagram text kept in the report. */
+const MAX_GRAPH_CHARS = 8000;
+
+/**
+ * Trim diagram text to a whole number of lines and say that it was trimmed.
+ *
+ * mermaid is line-oriented: half an edge is a syntax error, and the viewer
+ * renders a syntax error as an empty box rather than as a partial diagram.
+ */
+export function capGraphText(graph: string, limit: number): string {
+  if (graph.length <= limit) {
+    return graph;
+  }
+  const lines = graph.slice(0, limit).split('\n');
+  // Drop the line the cut landed in the middle of.
+  lines.pop();
+  const kept = lines.length;
+  const total = graph.split('\n').length;
+  return [...lines, `  %% truncated for the report: ${kept} of ${total} lines`].join('\n');
+}
+
 function samplingNote(shown: number, total: number, what: string): string[] {
   if (total <= shown) {
     return [];
@@ -350,11 +371,13 @@ export function buildDeterministicReport(ledger: GhidraSweepLedger): string {
     lines.push('#### From the import table');
     lines.push('');
     for (const signal of capabilities) {
-      const citations = signal.symbols
-        .slice(0, 4)
-        .map((symbol) => `[${importAnchorId(symbol)}]`)
-        .join(' ');
-      lines.push(`- **${signal.category}** -- ${signal.claim}. ${citations}`);
+      const cited = signal.symbols.slice(0, 4);
+      const citations = cited.map((symbol) => `[${importAnchorId(symbol)}]`).join(' ');
+      // Four citations behind a claim backed by forty imports read exactly like
+      // four behind a claim backed by four. The count separates them.
+      const total = signal.symbolCount ?? signal.symbols.length;
+      const scale = total > cited.length ? ` (${cited.length} of ${total} matching imports)` : '';
+      lines.push(`- **${signal.category}** -- ${signal.claim}.${scale} ${citations}`);
     }
     lines.push('');
   }
@@ -365,7 +388,10 @@ export function buildDeterministicReport(ledger: GhidraSweepLedger): string {
 
   if (typeof facts.callgraph === 'string' && facts.callgraph) {
     const root = String(facts.callgraphRoot ?? '');
-    const graph = String(facts.callgraph).slice(0, 8000);
+    // Cut on a line boundary. Slicing a mermaid diagram mid-edge leaves a
+    // broken statement, and a broken diagram renders as nothing at all --
+    // which is how a truncated graph came to look like no graph.
+    const graph = capGraphText(String(facts.callgraph), MAX_GRAPH_CHARS);
     lines.push('## Architecture and entry flow');
     lines.push('');
     lines.push(`Call graph rooted at \`${root}\`. [${callgraphAnchorId(root)}]`);
@@ -576,6 +602,9 @@ export function buildDeterministicReport(ledger: GhidraSweepLedger): string {
       `- ${stage.stage}: ${state}${stage.summary ? ` -- ${stage.summary}` : ''}${stage.detail ? ` (${stage.detail})` : ''}`,
     );
   }
+  // Evidence that hit an anchor cap is evidence no claim can cite, so it
+  // belongs in Coverage next to the stages that produced it.
+  lines.push(...anchorCapNotes(ledger));
   lines.push('');
 
   lines.push('## Open questions');
@@ -752,6 +781,24 @@ export function buildRewritePrompt(
 }
 
 /**
+ * Say when evidence was never recorded, so a stripped claim has an explanation.
+ *
+ * The ledger is what a claim has to cite, so evidence that hit an anchor cap is
+ * evidence no claim can lean on -- the enforcement pass deletes the sentence as
+ * unsupported and, without this line, gives no reason.
+ */
+function anchorCapNotes(ledger: GhidraSweepLedger): string[] {
+  const caps = (ledger.facts.anchorCaps ?? []) as { kind: string; kept: number; found: number }[];
+  if (!Array.isArray(caps) || caps.length === 0) {
+    return [];
+  }
+  return caps.map(
+    (cap) =>
+      `*${cap.found - cap.kept} ${cap.kind} anchors were not recorded: the ledger keeps ${cap.kept} of ${cap.found}.*`,
+  );
+}
+
+/**
  * The headings a complete report has, in prompt order.
  *
  * Used to notice a model that stopped early. A draft missing most of these did
@@ -838,12 +885,14 @@ function appendEnforcementNote(
   report: string,
   result: AnchorEnforcementResult,
   anchorCount: number,
+  ledger: GhidraSweepLedger,
 ): string {
   const notes = [
     '',
     '---',
     '',
     `*Evidence check: ${result.citedAnchors.length} of ${anchorCount} ledger anchors are cited above.*`,
+    ...anchorCapNotes(ledger),
   ];
   if (result.droppedClaims > 0) {
     notes.push(
@@ -876,7 +925,7 @@ export async function writeGhidraReport(
   if (!deps.callModel) {
     const enforced = enforceReportAnchors(deterministic, knownIds);
     return {
-      report: appendEnforcementNote(enforced.report, enforced, anchorIndex.size),
+      report: appendEnforcementNote(enforced.report, enforced, anchorIndex.size, ledger),
       modelWritten: false,
       droppedClaims: enforced.droppedClaims,
       unknownAnchors: enforced.unknownAnchors,
@@ -895,7 +944,7 @@ export async function writeGhidraReport(
   if (!draft || draft.length < 200) {
     const enforced = enforceReportAnchors(deterministic, knownIds);
     return {
-      report: appendEnforcementNote(enforced.report, enforced, anchorIndex.size),
+      report: appendEnforcementNote(enforced.report, enforced, anchorIndex.size, ledger),
       modelWritten: false,
       droppedClaims: enforced.droppedClaims,
       unknownAnchors: enforced.unknownAnchors,
@@ -948,7 +997,7 @@ export async function writeGhidraReport(
   if (enforced.citedAnchors.length === 0 || looksTruncated(enforced.report)) {
     const fallback = enforceReportAnchors(deterministic, knownIds);
     return {
-      report: appendEnforcementNote(fallback.report, fallback, anchorIndex.size),
+      report: appendEnforcementNote(fallback.report, fallback, anchorIndex.size, ledger),
       modelWritten: false,
       droppedClaims: enforced.droppedClaims + fallback.droppedClaims,
       unknownAnchors: enforced.unknownAnchors,
@@ -959,7 +1008,7 @@ export async function writeGhidraReport(
   }
 
   return {
-    report: appendEnforcementNote(enforced.report, enforced, anchorIndex.size),
+    report: appendEnforcementNote(enforced.report, enforced, anchorIndex.size, ledger),
     modelWritten: true,
     droppedClaims: enforced.droppedClaims,
     unknownAnchors: enforced.unknownAnchors,

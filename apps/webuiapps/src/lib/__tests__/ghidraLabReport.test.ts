@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildAnchorIndex,
   buildDeterministicReport,
+  capGraphText,
   buildLedgerText,
   buildReportPrompt,
   countRequiredSections,
@@ -862,5 +863,57 @@ describe('tables that show only part of what was found', () => {
   it('stays quiet when the table is everything there is', () => {
     const report = buildDeterministicReport(ledgerWithSelected(9));
     expect(report).not.toContain('Showing the first');
+  });
+});
+
+describe('what the report says about evidence it never had', () => {
+  it('cuts a diagram on a line and says how much of it is there', () => {
+    // mermaid is line-oriented: half an edge is a syntax error, and the viewer
+    // renders a syntax error as an empty box rather than a partial diagram.
+    const graph = [
+      'flowchart TD',
+      ...Array.from({ length: 200 }, (_u, i) => `  a${i} --> b${i}`),
+    ].join('\n');
+    const capped = capGraphText(graph, 400);
+    expect(capped.length).toBeLessThan(graph.length);
+    expect(
+      capped.split('\n').every((line) => !line.startsWith('  a') || line.includes('-->')),
+    ).toBe(true);
+    expect(capped).toContain('%% truncated for the report');
+  });
+
+  it('leaves a diagram alone when it fits', () => {
+    const graph = 'flowchart TD\n  a --> b';
+    expect(capGraphText(graph, 4000)).toBe(graph);
+  });
+
+  it('says when an anchor cap kept evidence out of the ledger', () => {
+    // A claim can only cite an anchor that exists, so evidence that hit a cap
+    // is evidence the enforcement pass will delete a true sentence for lacking.
+    const ledger = ledgerFixture();
+    (ledger.facts as Record<string, unknown>).anchorCaps = [
+      { kind: 'import', kept: 120, found: 296 },
+    ];
+    const report = buildDeterministicReport(ledger);
+    expect(report).toContain('176 import anchors were not recorded');
+    expect(report).toContain('keeps 120 of 296');
+  });
+
+  it('says nothing when every anchor was recorded', () => {
+    expect(buildDeterministicReport(ledgerFixture())).not.toContain('were not recorded');
+  });
+
+  it('gives a capability claim the scale of its evidence', () => {
+    const ledger = ledgerFixture();
+    (ledger.facts as Record<string, unknown>).importCapabilities = [
+      {
+        category: 'registry',
+        claim: 'reads or writes the registry',
+        symbols: ['RegOpenKeyExW', 'RegQueryValueExW', 'RegCloseKey', 'RegSetValueExW'],
+        symbolCount: 37,
+        weight: 5,
+      },
+    ];
+    expect(buildDeterministicReport(ledger)).toContain('(4 of 37 matching imports)');
   });
 });
