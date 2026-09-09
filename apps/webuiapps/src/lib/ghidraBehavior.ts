@@ -70,6 +70,16 @@ export interface GhidraBehaviorResult {
   entries: string[];
   /** True when the call graph had no edges to walk. */
   graphMissing: boolean;
+  /**
+   * False when the walk could not start at the entry point and fell back to
+   * treating each read function as its own root.
+   *
+   * The distinction is the claim: "reachable from the entry point" is a
+   * statement about the program, "reachable from GetPdbDll" is a statement
+   * about a function. The report must not print the second as though it were
+   * the first.
+   */
+  rootedAtEntry: boolean;
 }
 
 /** Depth cap: past this the "reachable from entry" claim stops meaning much. */
@@ -240,6 +250,7 @@ export function computeReachableApis(nodes: readonly GhidraCallNode[]): {
   reachable: GhidraReachableApi[];
   entries: string[];
   graphMissing: boolean;
+  rootedAtEntry: boolean;
 } {
   const byKey = new Map<string, GhidraCallNode>();
   for (const node of nodes) {
@@ -251,9 +262,53 @@ export function computeReachableApis(nodes: readonly GhidraCallNode[]): {
     }
   }
   const entries = nodes.filter((node) => node.isEntryPoint || node.isExport);
-  const roots = entries.length > 0 ? entries : nodes.slice(0, 1);
   const hasEdges = nodes.some((node) => (node.callsFunctions ?? []).length > 0);
+  const referencing = nodes.filter((node) => (node.callsImports ?? []).length > 0);
 
+  const walk = (roots: readonly GhidraCallNode[]): GhidraReachableApi[] => walkFrom(nodes, roots);
+
+  let rootedAtEntry = entries.length > 0;
+  let reachable = walk(entries.length > 0 ? entries : nodes.slice(0, 1));
+
+  // The entry point is the claim worth making, but it cannot always be made.
+  // Measured: Ghidra's decompiler wrote `___tmainCRTStartup()` while its own
+  // symbol table held `FID_conflict:_wmainCRTStartup`, so the edge out of
+  // `entry` could not be resolved by name and the walk stopped immediately --
+  // reporting zero on a binary whose read functions call LoadLibraryW,
+  // GetProcAddress and IsDebuggerPresent between them.
+  //
+  // Falling back to each read function as its own root keeps the finding and
+  // keeps it honest: `from` names that function, not the entry, and
+  // rootedAtEntry says which kind of claim this is.
+  if (reachable.length === 0 && referencing.length > 0) {
+    rootedAtEntry = false;
+    reachable = walk(referencing);
+  }
+
+  return {
+    reachable,
+    entries: (rootedAtEntry ? entries : referencing)
+      .map((node) => node.name || node.address)
+      .filter(Boolean),
+    graphMissing: !hasEdges,
+    rootedAtEntry,
+  };
+}
+
+/** Breadth-first from a set of roots, with the depth and reach caps applied. */
+function walkFrom(
+  nodes: readonly GhidraCallNode[],
+  roots: readonly GhidraCallNode[],
+): GhidraReachableApi[] {
+  const byKey = new Map<string, GhidraCallNode>();
+  for (const node of nodes) {
+    if (node.name) {
+      byKey.set(node.name.toLowerCase(), node);
+    }
+    if (node.address) {
+      byKey.set(node.address.toLowerCase(), node);
+    }
+  }
   const reachable: GhidraReachableApi[] = [];
   const seen = new Set<string>();
   for (const root of roots) {
@@ -295,13 +350,142 @@ export function computeReachableApis(nodes: readonly GhidraCallNode[]): {
       frontier = next;
     }
   }
-  return {
-    reachable: reachable.sort(
-      (left, right) => left.depth - right.depth || left.symbol.localeCompare(right.symbol),
-    ),
-    entries: roots.map((node) => node.name || node.address).filter(Boolean),
-    graphMissing: !hasEdges,
-  };
+  return reachable.sort(
+    (left, right) => left.depth - right.depth || left.symbol.localeCompare(right.symbol),
+  );
+}
+
+/**
+ * Build the call graph out of the decompiled bodies.
+ *
+ * The engine's function listing carries names and addresses and nothing else --
+ * no callees, no API references -- and `gen_callgraph` answered a real 32-bit PE
+ * with a diagram holding its root node and no edges at all. So reachability had
+ * nothing to walk and reported zero on a binary whose bodies name every call it
+ * makes.
+ *
+ * The bodies are already fetched, which makes this free: an identifier followed
+ * by `(` is a call, and it is either an API we know the name of or another
+ * function in the inventory. Anything else -- a cast, a macro, a local -- is
+ * neither, and is ignored rather than guessed at.
+ *
+ * The graph is therefore only as complete as the deep read, and the stage says
+ * so. A partial graph built from what was actually read beats a complete one
+ * that was not.
+ */
+export function buildCallGraphFromBodies(params: {
+  functions: readonly GhidraCallNode[];
+  bodies: readonly { name: string; address: string; decompiled: string }[];
+  knownApis: readonly string[];
+}): { nodes: GhidraCallNode[]; edgeCount: number; bodiesRead: number } {
+  const apis = new Map<string, string>();
+  for (const symbol of params.knownApis) {
+    if (symbol) {
+      apis.set(symbol.toLowerCase(), symbol);
+    }
+  }
+
+  /** Inventory by name and by address, so a body can name either. */
+  const byKey = new Map<string, GhidraCallNode>();
+  for (const node of params.functions) {
+    if (node.name) {
+      byKey.set(node.name.toLowerCase(), node);
+      // Also under the underscore-stripped name. The call site is read with its
+      // leading underscores removed (a decompiler writes thunks as `_name`), so
+      // an inventory keyed only by the raw name never matches the CRT: `entry`
+      // calls `___tmainCRTStartup`, which was looked up as `tmaincrtstartup`
+      // and missed -- leaving the entry point with no outgoing edges at all.
+      const stripped = node.name.toLowerCase().replace(/^_+/, '');
+      if (stripped && !byKey.has(stripped)) {
+        byKey.set(stripped, node);
+      }
+    }
+    if (node.address) {
+      byKey.set(node.address.toLowerCase(), node);
+      // Ghidra writes addresses with and without the 0x prefix in different
+      // places; a body referring to one must still find a node keyed by the other.
+      byKey.set(node.address.toLowerCase().replace(/^0x/, ''), node);
+    }
+  }
+
+  const importsOf = new Map<string, Set<string>>();
+  const calleesOf = new Map<string, Set<string>>();
+  let edgeCount = 0;
+
+  for (const body of params.bodies) {
+    const selfKey = (body.name || body.address).toLowerCase();
+    const imports = importsOf.get(selfKey) ?? new Set<string>();
+    const callees = calleesOf.get(selfKey) ?? new Set<string>();
+    for (const match of body.decompiled.matchAll(/\b_*([A-Za-z_][A-Za-z0-9_]{2,63})\s*\(/g)) {
+      const raw = match[1];
+      const lowered = raw.toLowerCase();
+      const api = apis.get(lowered);
+      if (api) {
+        imports.add(api);
+        continue;
+      }
+      const callee = byKey.get(lowered);
+      if (!callee) {
+        continue;
+      }
+      const calleeKey = (callee.name || callee.address).toLowerCase();
+      if (calleeKey === selfKey) {
+        // Recursion is an edge to nowhere for a reachability walk.
+        continue;
+      }
+      callees.add(callee.name || callee.address);
+    }
+    importsOf.set(selfKey, imports);
+    calleesOf.set(selfKey, callees);
+    edgeCount += callees.size;
+  }
+
+  const nodes = params.functions.map((node) => {
+    const key = (node.name || node.address).toLowerCase();
+    const imports = [...(importsOf.get(key) ?? new Set<string>())].sort();
+    const callees = [...(calleesOf.get(key) ?? new Set<string>())].sort();
+    return {
+      ...node,
+      // Anything the listing already knew is kept: it came from the engine and
+      // is not worse than what was read out of the text.
+      callsImports: [...new Set([...(node.callsImports ?? []), ...imports])],
+      callsFunctions: [...new Set([...(node.callsFunctions ?? []), ...callees])],
+    };
+  });
+
+  return { nodes, edgeCount, bodiesRead: params.bodies.length };
+}
+
+/** A mermaid label that cannot break the diagram it goes into. */
+function mermaidId(value: string): string {
+  return value.replace(/[^A-Za-z0-9_]/g, '_').slice(0, 48) || 'node';
+}
+
+/**
+ * Render the derived graph as mermaid.
+ *
+ * Used when the engine's own diagram came back with no edges, which is what a
+ * real run produced. A diagram of one node teaches nothing; this one is drawn
+ * from the calls the bodies actually make.
+ */
+export function mermaidFromCallGraph(nodes: readonly GhidraCallNode[], maxEdges = 60): string {
+  const lines = ['flowchart TD'];
+  const seen = new Set<string>();
+  for (const node of nodes) {
+    const from = node.name || node.address;
+    for (const callee of node.callsFunctions ?? []) {
+      const edge = `${mermaidId(from)} --> ${mermaidId(callee)}`;
+      if (seen.has(edge)) {
+        continue;
+      }
+      seen.add(edge);
+      lines.push(`  ${edge}`);
+      if (seen.size >= maxEdges) {
+        return `${lines.join('\n')}\n  %% truncated at ${maxEdges} edges`;
+      }
+    }
+  }
+  return seen.size > 0 ? lines.join('\n') : '';
 }
 
 /** APIs in the order they appear in a decompiled body. */
@@ -426,7 +610,7 @@ export function synthesizeBehavior(params: {
   knownApis: readonly string[];
 }): GhidraBehaviorResult {
   const known = new Set(params.knownApis.map((symbol) => symbol.toLowerCase()));
-  const { reachable, entries, graphMissing } = computeReachableApis(params.nodes);
+  const { reachable, entries, graphMissing, rootedAtEntry } = computeReachableApis(params.nodes);
   const sequences = params.bodies
     .map((body) =>
       extractApiSequence({
@@ -438,7 +622,7 @@ export function synthesizeBehavior(params: {
     )
     .filter((sequence) => sequence.apis.length > 1);
   const chains = detectBehaviorChains(sequences, reachable);
-  return { reachable, sequences, chains, entries, graphMissing };
+  return { reachable, sequences, chains, entries, graphMissing, rootedAtEntry };
 }
 
 /** The API categories a reachable set touches, for the report's summary line. */

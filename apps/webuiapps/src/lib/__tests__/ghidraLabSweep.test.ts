@@ -780,6 +780,88 @@ describe('the deep-analysis stages', () => {
     expect(behavior?.detail).not.toMatch(/\bit ran\b|\bwas observed\b/);
   });
 
+  it('walks a graph it built itself when the engine supplies no edges', async () => {
+    // The shape of a real run: the function listing carries names and addresses
+    // only, and gen_callgraph answers with its root node and nothing else. The
+    // bodies still name every call, so reachability has to come from them or the
+    // stage reports zero on a binary that plainly reaches an API.
+    const { ledger } = await sweep({
+      answers: {
+        imports: outcome([{ library: 'kernel32.dll', name: 'LoadLibraryW' }]),
+        functions: outcome([
+          { name: 'entry', address: '0x401000', is_entry: true },
+          { name: 'GetPdbDll', address: '0x402000' },
+        ]),
+        decompile: outcome([
+          { name: 'entry', code: 'GetPdbDll();\nreturn 0;' },
+          { name: 'GetPdbDll', code: 'h = LoadLibraryW(L"advapi32.dll");\nRegCloseKey(k);' },
+        ]),
+        // What the engine actually returned: a root and no edges at all.
+        callgraph: outcome(['flowchart TD\nclassDef sh fill:#339933\nentry']),
+      },
+      deps: {},
+    });
+
+    const behavior = ledger.facts.behavior as {
+      reachable: { symbol: string; from: string; via: string }[];
+      graphMissing: boolean;
+    };
+    expect(behavior.graphMissing).toBe(false);
+    expect(behavior.reachable.map((entry) => entry.symbol)).toContain('LoadLibraryW');
+    const hop = behavior.reachable.find((entry) => entry.symbol === 'LoadLibraryW');
+    expect(hop?.from).toBe('entry');
+    expect(hop?.via).toBe('GetPdbDll');
+
+    const view = stage(ledger, 'behavior');
+    expect(view.summary).toContain('call edges');
+    // Coverage is stated rather than implied: a zero has to be readable.
+    expect(view.detail).toContain('out of 2 in the image');
+  });
+
+  it('draws the call graph from the bodies when the engine drew one box', async () => {
+    const { ledger } = await sweep({
+      answers: {
+        functions: outcome([
+          { name: 'entry', address: '0x401000', is_entry: true },
+          { name: 'worker', address: '0x402000' },
+        ]),
+        decompile: outcome([{ name: 'entry', code: 'worker();' }]),
+        callgraph: outcome(['flowchart TD\nclassDef sh fill:#339933\nentry']),
+      },
+      deps: {},
+    });
+    const graph = String(ledger.facts.callgraph ?? '');
+    expect(graph).toContain('entry --> worker');
+    expect(stage(ledger, 'structure').detail).toContain('drawn from decompiled bodies');
+  });
+
+  it('reaches an API the import table never listed', async () => {
+    // The finding the whole deep-analysis pass exists for: GetPdbDll resolves
+    // registry functions at run time, so they are in no import table, and the
+    // behaviour stage must still see them as reachable from the entry point.
+    const { ledger } = await sweep({
+      answers: {
+        imports: outcome([{ library: 'kernel32.dll', name: 'GetProcAddress' }]),
+        functions: outcome([
+          { name: 'entry', address: '0x401000', is_entry: true },
+          { name: 'GetPdbDll', address: '0x402000' },
+        ]),
+        decompile: outcome([
+          { name: 'entry', code: 'GetPdbDll();' },
+          {
+            name: 'GetPdbDll',
+            code: ['p = GetProcAddress(h, "RegOpenKeyExW");', 'RegOpenKeyExW(a, b, c, d, e);'].join(
+              '\n',
+            ),
+          },
+        ]),
+      },
+      deps: {},
+    });
+    const behavior = ledger.facts.behavior as { reachable: { symbol: string }[] };
+    expect(behavior.reachable.map((entry) => entry.symbol)).toContain('RegOpenKeyExW');
+  });
+
   it('walks all fourteen stages in order', async () => {
     const { ledger } = await sweep({ answers: {}, deps: {} });
     expect(ledger.stages.map((entry) => entry.stage)).toEqual([...GHIDRA_SWEEP_STAGES]);

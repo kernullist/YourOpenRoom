@@ -8,9 +8,11 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  buildCallGraphFromBodies,
   computeReachableApis,
   detectBehaviorChains,
   extractApiSequence,
+  mermaidFromCallGraph,
   summarizeReachableCategories,
   synthesizeBehavior,
   type GhidraCallNode,
@@ -37,6 +39,34 @@ describe('computeReachableApis', () => {
     // not be presented as if it were.
     expect(symbols).not.toContain('MessageBoxA');
     expect(reachable.find((entry) => entry.symbol === 'CreateRemoteThread')?.via).toBe('stage2');
+  });
+
+  it('falls back to the read functions when no path from the entry resolves', () => {
+    // Measured: Ghidra's decompiler wrote `___tmainCRTStartup()` while its own
+    // symbol table held `FID_conflict:_wmainCRTStartup`, so the edge out of
+    // `entry` could not be resolved by name. Reporting zero after reading a
+    // function that plainly calls LoadLibraryW helps nobody -- but the claim
+    // has to change with it.
+    const result = computeReachableApis([
+      { name: 'entry', address: '0x1', isEntryPoint: true, callsFunctions: ['___tmainCRTStartup'] },
+      { name: 'GetPdbDll', address: '0x2', callsImports: ['LoadLibraryW'] },
+    ]);
+    expect(result.rootedAtEntry).toBe(false);
+    expect(result.reachable.map((entry) => entry.symbol)).toEqual(['LoadLibraryW']);
+    // `from` names the function, never the entry point.
+    expect(result.reachable[0].from).toBe('GetPdbDll');
+    expect(result.entries).toEqual(['GetPdbDll']);
+  });
+
+  it('keeps the stronger claim whenever the entry point does reach something', () => {
+    const result = computeReachableApis([
+      { name: 'entry', address: '0x1', isEntryPoint: true, callsFunctions: ['worker'] },
+      { name: 'worker', address: '0x2', callsImports: ['Sleep'] },
+      { name: 'orphan', address: '0x3', callsImports: ['MessageBoxA'] },
+    ]);
+    expect(result.rootedAtEntry).toBe(true);
+    // The orphan is not reachable from the entry and must not be smuggled in.
+    expect(result.reachable.map((entry) => entry.symbol)).toEqual(['Sleep']);
   });
 
   it('says when the engine gave it no edges to walk', () => {
@@ -260,5 +290,181 @@ describe('summarizeReachableCategories', () => {
 
   it('is empty for an empty set rather than inventing a category', () => {
     expect(summarizeReachableCategories([])).toEqual([]);
+  });
+});
+
+describe('buildCallGraphFromBodies', () => {
+  // Measured on a real 32-bit PE: the engine's function listing carried names
+  // and addresses and nothing else, and gen_callgraph answered with its root
+  // node and no edges. Reachability therefore reported zero on a binary whose
+  // 28 decompiled bodies name every call it makes.
+
+  const inventory = [
+    { name: 'entry', address: '0x1000', isEntryPoint: true },
+    { name: 'GetPdbDll', address: '0x2000' },
+    { name: 'FUN_00403000', address: '0x3000' },
+    { name: 'unread', address: '0x4000' },
+  ];
+
+  it('recovers callee edges and API references from the bodies alone', () => {
+    const graph = buildCallGraphFromBodies({
+      functions: inventory,
+      bodies: [
+        { name: 'entry', address: '0x1000', decompiled: 'GetPdbDll();\nreturn 0;' },
+        {
+          name: 'GetPdbDll',
+          address: '0x2000',
+          decompiled: [
+            'h = RegOpenKeyExW(HKEY_LOCAL_MACHINE, path, 0, 0x20019, &key);',
+            'RegQueryValueExW(key, name, 0, &type, buf, &len);',
+            'FUN_00403000(buf);',
+            'RegCloseKey(key);',
+          ].join('\n'),
+        },
+      ],
+      knownApis: ['RegOpenKeyExW', 'RegQueryValueExW', 'RegCloseKey'],
+    });
+
+    const byName = new Map(graph.nodes.map((node) => [node.name, node]));
+    expect(byName.get('entry')?.callsFunctions).toEqual(['GetPdbDll']);
+    expect(byName.get('GetPdbDll')?.callsImports).toEqual([
+      'RegCloseKey',
+      'RegOpenKeyExW',
+      'RegQueryValueExW',
+    ]);
+    expect(byName.get('GetPdbDll')?.callsFunctions).toEqual(['FUN_00403000']);
+    expect(graph.edgeCount).toBe(2);
+    expect(graph.bodiesRead).toBe(2);
+  });
+
+  it('makes the APIs reachable from the entry point, which is the whole point', () => {
+    const graph = buildCallGraphFromBodies({
+      functions: inventory,
+      bodies: [
+        { name: 'entry', address: '0x1000', decompiled: 'GetPdbDll();' },
+        { name: 'GetPdbDll', address: '0x2000', decompiled: 'RegOpenKeyExW(a, b, c, d, e);' },
+      ],
+      knownApis: ['RegOpenKeyExW'],
+    });
+    const { reachable, graphMissing } = computeReachableApis(graph.nodes);
+    expect(graphMissing).toBe(false);
+    expect(reachable.map((entry) => entry.symbol)).toEqual(['RegOpenKeyExW']);
+    expect(reachable[0].from).toBe('entry');
+    expect(reachable[0].via).toBe('GetPdbDll');
+  });
+
+  it('ignores anything that is neither a known API nor a function in the image', () => {
+    // A cast, a macro, a local helper the listing never mentioned: guessing at
+    // these would put edges in the graph that the evidence does not support.
+    const graph = buildCallGraphFromBodies({
+      functions: inventory,
+      bodies: [
+        {
+          name: 'entry',
+          address: '0x1000',
+          decompiled: 'if (x) { while (y) { local_thing(z); memset(buf, 0, n); } }',
+        },
+      ],
+      knownApis: ['RegOpenKeyExW'],
+    });
+    const entry = graph.nodes.find((node) => node.name === 'entry');
+    expect(entry?.callsFunctions).toEqual([]);
+    expect(entry?.callsImports).toEqual([]);
+  });
+
+  it('reads through the underscore a decompiler puts on a thunk', () => {
+    const graph = buildCallGraphFromBodies({
+      functions: inventory,
+      bodies: [{ name: 'entry', address: '0x1000', decompiled: '_RegCloseKey(key);' }],
+      knownApis: ['RegCloseKey'],
+    });
+    expect(graph.nodes.find((node) => node.name === 'entry')?.callsImports).toEqual([
+      'RegCloseKey',
+    ]);
+  });
+
+  it('matches a CRT thunk the decompiler wrote with leading underscores', () => {
+    // Measured: `entry` calls `___tmainCRTStartup()`. The call site is read with
+    // its underscores stripped, so an inventory keyed only by the raw name never
+    // matched and the entry point came out with no outgoing edges -- which made
+    // reachability zero on a binary whose graph was right there.
+    const graph = buildCallGraphFromBodies({
+      functions: [
+        { name: 'entry', address: '0x1000', isEntryPoint: true },
+        { name: '___tmainCRTStartup', address: '0x2000' },
+      ],
+      bodies: [
+        { name: 'entry', address: '0x1000', decompiled: '___tmainCRTStartup();' },
+        { name: '___tmainCRTStartup', address: '0x2000', decompiled: 'Sleep(1);' },
+      ],
+      knownApis: ['Sleep'],
+    });
+    expect(graph.nodes[0].callsFunctions).toEqual(['___tmainCRTStartup']);
+    const { reachable } = computeReachableApis(graph.nodes);
+    expect(reachable.map((entry) => entry.symbol)).toEqual(['Sleep']);
+  });
+
+  it('drops self-recursion, which is an edge to nowhere for a walk', () => {
+    const graph = buildCallGraphFromBodies({
+      functions: inventory,
+      bodies: [{ name: 'GetPdbDll', address: '0x2000', decompiled: 'GetPdbDll(n - 1);' }],
+      knownApis: [],
+    });
+    expect(graph.nodes.find((node) => node.name === 'GetPdbDll')?.callsFunctions).toEqual([]);
+    expect(graph.edgeCount).toBe(0);
+  });
+
+  it('keeps what the listing already knew rather than replacing it', () => {
+    const graph = buildCallGraphFromBodies({
+      functions: [{ name: 'entry', address: '0x1000', callsImports: ['Sleep'] }],
+      bodies: [{ name: 'entry', address: '0x1000', decompiled: 'RegCloseKey(k);' }],
+      knownApis: ['RegCloseKey'],
+    });
+    // The engine's own answer is not worse than what was read out of the text.
+    expect(graph.nodes[0].callsImports).toEqual(['Sleep', 'RegCloseKey']);
+  });
+
+  it('leaves a function with no body untouched, and says how many it read', () => {
+    const graph = buildCallGraphFromBodies({ functions: inventory, bodies: [], knownApis: [] });
+    expect(graph.bodiesRead).toBe(0);
+    expect(graph.edgeCount).toBe(0);
+    expect(graph.nodes.every((node) => (node.callsFunctions ?? []).length === 0)).toBe(true);
+  });
+});
+
+describe('mermaidFromCallGraph', () => {
+  it('draws the edges the bodies contained', () => {
+    const diagram = mermaidFromCallGraph([
+      { name: 'entry', address: '0x1', callsFunctions: ['GetPdbDll'] },
+      { name: 'GetPdbDll', address: '0x2', callsFunctions: ['FUN_00403000'] },
+    ]);
+    expect(diagram).toContain('flowchart TD');
+    expect(diagram).toContain('entry --> GetPdbDll');
+    expect(diagram).toContain('GetPdbDll --> FUN_00403000');
+  });
+
+  it('returns nothing when there is nothing to draw', () => {
+    // Better an absent diagram than a picture of one box, which is what the
+    // engine handed back on a real run.
+    expect(mermaidFromCallGraph([{ name: 'entry', address: '0x1' }])).toBe('');
+  });
+
+  it('sanitises a name that would break the diagram', () => {
+    const diagram = mermaidFromCallGraph([
+      { name: 'operator new[]', address: '0x1', callsFunctions: ['std::_Xlen'] },
+    ]);
+    expect(diagram).not.toContain('[]');
+    expect(diagram).toContain('-->');
+  });
+
+  it('stops at the edge cap rather than emitting an unreadable wall', () => {
+    const nodes = Array.from({ length: 200 }, (_unused, index) => ({
+      name: `f${index}`,
+      address: `0x${index}`,
+      callsFunctions: [`f${index + 1}`],
+    }));
+    const diagram = mermaidFromCallGraph(nodes, 10);
+    expect(diagram).toContain('truncated at 10 edges');
+    expect(diagram.split('-->').length - 1).toBe(10);
   });
 });

@@ -28,6 +28,8 @@ import {
 } from './ghidraLabHeuristics';
 import type { GhidraLabQueryOutcome } from './ghidraLabSession';
 import {
+  buildCallGraphFromBodies,
+  mermaidFromCallGraph,
   synthesizeBehavior,
   summarizeReachableCategories,
   type GhidraCallNode,
@@ -935,6 +937,26 @@ export async function runGhidraSweep(params: {
       );
     }
 
+    // The call graph, read out of the bodies rather than asked for.
+    //
+    // The engine's function listing carries no callees and no API references,
+    // and `gen_callgraph` answered a real PE with its root node and no edges --
+    // so reachability had nothing to walk and reported zero on a binary whose
+    // bodies name every call it makes. Derived here, once, because the
+    // structure stage draws it and the behaviour stage walks it.
+    const knownApis = [...new Set([...imports.map((entry) => entry.symbol), ...dynamicApis])];
+    const callGraph = buildCallGraphFromBodies({
+      functions: functions.map((entry) => ({
+        name: entry.name,
+        address: entry.address,
+        ...(entry.callsImports ? { callsImports: entry.callsImports } : {}),
+        ...(entry.isEntryPoint === undefined ? {} : { isEntryPoint: entry.isEntryPoint }),
+        ...(entry.isExport === undefined ? {} : { isExport: entry.isExport }),
+      })),
+      bodies: deepReadBodies,
+      knownApis,
+    });
+
     // --- 10. Capability map (capa) ----------------------------------------
     {
       const view = beginStage('capability');
@@ -1054,6 +1076,17 @@ export async function runGhidraSweep(params: {
           callgraphError = result.error;
         } else {
           callgraph = extractCallgraph(result.rows).slice(0, 20000);
+          // A diagram with no edges is a picture of one box. Draw the edges the
+          // bodies actually contain instead -- measured: the engine returned
+          // `flowchart TD / classDef / entry` and nothing else.
+          if (!/-->/.test(callgraph)) {
+            const derived = mermaidFromCallGraph(callGraph.nodes);
+            if (derived) {
+              callgraph = derived;
+              callgraphError =
+                callgraphError || 'engine returned no edges; drawn from decompiled bodies';
+            }
+          }
         }
       }
       ledger.facts.callgraph = callgraph;
@@ -1084,14 +1117,7 @@ export async function runGhidraSweep(params: {
     // which known chain that ordering matches.
     {
       const view = beginStage('behavior');
-      const knownApis = [...new Set([...imports.map((entry) => entry.symbol), ...dynamicApis])];
-      const nodes: GhidraCallNode[] = functions.map((entry) => ({
-        name: entry.name,
-        address: entry.address,
-        ...(entry.callsImports ? { callsImports: entry.callsImports } : {}),
-        ...(entry.isEntryPoint === undefined ? {} : { isEntryPoint: entry.isEntryPoint }),
-        ...(entry.isExport === undefined ? {} : { isExport: entry.isExport }),
-      }));
+      const nodes: GhidraCallNode[] = callGraph.nodes;
       const behavior = synthesizeBehavior({
         nodes,
         bodies: deepReadBodies,
@@ -1111,15 +1137,20 @@ export async function runGhidraSweep(params: {
       }
       const parts = [
         `${behavior.chains.length} behaviour chains`,
-        `${behavior.reachable.length} APIs reachable from ${behavior.entries.length || 0} entries`,
+        behavior.rootedAtEntry
+          ? `${behavior.reachable.length} APIs reachable from ${behavior.entries.length || 0} entries`
+          : `${behavior.reachable.length} APIs called by ${behavior.entries.length} read functions (no path from the entry point could be resolved)`,
+        `${callGraph.edgeCount} call edges from ${callGraph.bodiesRead} bodies`,
       ];
       endStage(
         view,
         'done',
         parts.join(', '),
+        // Coverage, not an excuse: the graph is only as complete as the deep
+        // read, and a reader needs to know that before trusting a zero.
         behavior.graphMissing
-          ? 'The engine returned no callee edges, so reachability was computed from each function in isolation rather than by walking the graph.'
-          : '',
+          ? 'No call edges were recovered, so reachability was computed from each function in isolation rather than by walking the graph.'
+          : `The graph covers the ${callGraph.bodiesRead} functions that were decompiled, out of ${functions.length} in the image, so an API only reachable through an unread function is not counted.`,
       );
     }
 

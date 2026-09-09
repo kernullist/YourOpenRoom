@@ -413,6 +413,13 @@ export function buildDeterministicReport(ledger: GhidraSweepLedger): string {
   lines.push(
     '> Reachability and call ordering, not observed execution. Nothing here says the binary ran.',
   );
+  if (behavior && !behavior.rootedAtEntry && behavior.reachable.length > 0) {
+    lines.push('');
+    // The weaker claim, said plainly rather than dressed as the stronger one.
+    lines.push(
+      '> No call path from the entry point could be resolved, so the table below lists what each function that WAS read calls -- not what the program reaches when it starts.',
+    );
+  }
   lines.push('');
   if (!behavior || behavior.chains.length === 0) {
     lines.push('> No known behaviour chain matched what was read.');
@@ -429,7 +436,11 @@ export function buildDeterministicReport(ledger: GhidraSweepLedger): string {
     lines.push('');
   }
   if (behavior && behavior.reachable.length > 0) {
-    lines.push('| Reached API | From | Depth | Via |');
+    lines.push(
+      behavior.rootedAtEntry
+        ? '| Reached API | From | Depth | Via |'
+        : '| Called API | Called by | Depth | Via |',
+    );
     lines.push('| --- | --- | --- | --- |');
     for (const entry of behavior.reachable.slice(0, 30)) {
       lines.push(`| \`${entry.symbol}\` | ${entry.from} | ${entry.depth} | ${entry.via} |`);
