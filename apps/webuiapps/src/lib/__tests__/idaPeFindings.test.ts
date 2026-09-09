@@ -5,7 +5,7 @@
 // import table and not by the sample of it that happens to be on display.
 import { describe, expect, it } from 'vitest';
 
-import { buildFindings, groupImportsFromIdaPro } from '../idaPePlugin';
+import { buildFindings, collectStrings, groupImportsFromIdaPro } from '../idaPePlugin';
 import type { PeImportModule, PeMetadata, PeSectionSummary, PeStringHit } from '../idaPeTypes';
 
 const metadata: PeMetadata = {
@@ -116,5 +116,46 @@ describe('grouping the IDA Pro import rows', () => {
     });
     expect(module.suspiciousNames).toEqual([]);
     expect(module.suspiciousCount).toBe(0);
+  });
+});
+
+describe('the string scan and the size of what it kept', () => {
+  /** A buffer holding `count` distinct printable strings, NUL separated. */
+  function bufferOfStrings(count: number, prefix = 'string_'): Buffer {
+    const parts: string[] = [];
+    for (let index = 0; index < count; index += 1) {
+      parts.push(`${prefix}${String(index).padStart(5, '0')}_padding`);
+    }
+    return Buffer.from(parts.join('\u0000') + '\u0000', 'ascii');
+  }
+
+  it('counts every string it found, not the ones it kept', () => {
+    // The counts were taken from the sample, which made 160 the largest number
+    // of strings any binary could be said to contain.
+    const scan = collectStrings(bufferOfStrings(400));
+    expect(scan.hits.length).toBe(160);
+    expect(scan.total).toBe(400);
+    expect(scan.truncated).toBe(true);
+  });
+
+  it('is not truncated when everything fits', () => {
+    const scan = collectStrings(bufferOfStrings(12));
+    expect(scan.hits.length).toBe(12);
+    expect(scan.total).toBe(12);
+    expect(scan.truncated).toBe(false);
+  });
+
+  it('counts suspicious strings over the whole scan', () => {
+    // One suspicious string among four hundred: the count has to find it, and
+    // the sample has to carry it, or the finding beside the count cites nothing.
+    const buffer = Buffer.concat([
+      bufferOfStrings(400),
+      Buffer.from('powershell.exe -enc SQBFAFgA\u0000', 'ascii'),
+    ]);
+    const scan = collectStrings(buffer);
+    expect(scan.suspiciousTotal).toBe(1);
+    expect(scan.hits.some((hit) => hit.suspicious)).toBe(true);
+    // Suspicious sorts first, so the cap can never be what hides it.
+    expect(scan.hits[0].suspicious).toBe(true);
   });
 });

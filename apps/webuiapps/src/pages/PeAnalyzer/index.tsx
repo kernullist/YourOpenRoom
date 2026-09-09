@@ -138,6 +138,30 @@ function suspiciousStrings(strings: PeStringHit[]): PeStringHit[] {
   return strings.filter((item) => item.suspicious).slice(0, 12);
 }
 
+/**
+ * The line under "Strings" that says how much of the scan is on screen.
+ *
+ * Both numbers it replaces were the size of a list that had already been cut:
+ * "12 suspicious / 160 indexed" was the display cap beside the sample cap, on a
+ * binary holding twelve thousand strings. Neither was a fact about the binary.
+ */
+export function stringScanLabel(params: {
+  shown: number;
+  suspiciousShown: number;
+  suspiciousTotal: number;
+  total: number | null;
+  truncated: boolean;
+}): string {
+  // A null total means the source was itself paged and the real number is not
+  // knowable -- saying "of N" there would be inventing one.
+  const scanned =
+    params.total === null
+      ? `${params.shown.toLocaleString()} sampled`
+      : `${params.shown.toLocaleString()} of ${params.total.toLocaleString()}`;
+  const rest = params.truncated ? ' (the rest were counted, not kept)' : '';
+  return `${params.suspiciousShown} of ${params.suspiciousTotal.toLocaleString()} suspicious shown; ${scanned} strings${rest}`;
+}
+
 function parseNumericAddress(raw: string | null | undefined): number | null {
   const value = (raw || '').trim();
   if (!value) return null;
@@ -926,12 +950,23 @@ const PeAnalyzerPage: React.FC = () => {
   const renderStrings = () => {
     if (!selectedAnalysis) return renderOverview();
     const interestingStrings = suspiciousStrings(selectedAnalysis.strings);
+    // Both numbers here used to be the size of a list that had already been cut:
+    // "12 suspicious / 160 indexed" was the display cap and the sample cap, on a
+    // binary holding thousands. The counts now come from the scan, and the
+    // sample says that it is one.
+    const { stringTotal, stringsTruncated, suspiciousStringCount } = selectedAnalysis.triage;
     return (
       <div className={styles.tableCard}>
         <div className={styles.panelHeader}>
           <h3>Strings</h3>
           <span className={styles.mutedLabel}>
-            {interestingStrings.length} suspicious / {selectedAnalysis.strings.length} indexed
+            {stringScanLabel({
+              shown: selectedAnalysis.strings.length,
+              suspiciousShown: interestingStrings.length,
+              suspiciousTotal: suspiciousStringCount,
+              total: stringTotal,
+              truncated: stringsTruncated,
+            })}
           </span>
         </div>
         <div className={styles.stringList}>

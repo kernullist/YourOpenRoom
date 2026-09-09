@@ -21,6 +21,7 @@ import type {
   PeSampleRecord,
   PeSectionSummary,
   PeStringHit,
+  PeStringScan,
   PeTriageSummary,
 } from './idaPeTypes';
 
@@ -700,7 +701,10 @@ function parseExports(
   return { count: numberOfNames, names };
 }
 
-function collectStrings(buffer: Buffer): PeStringHit[] {
+/** How many strings travel with an analysis. The rest are counted, not carried. */
+const MAX_STRING_SAMPLE = 160;
+
+export function collectStrings(buffer: Buffer): PeStringScan {
   const results: PeStringHit[] = [];
 
   let asciiStart = -1;
@@ -752,12 +756,20 @@ function collectStrings(buffer: Buffer): PeStringHit[] {
     if (!deduped.has(key)) deduped.set(key, item);
   }
 
-  return Array.from(deduped.values())
-    .sort((left, right) => {
-      if (left.suspicious !== right.suspicious) return left.suspicious ? -1 : 1;
-      return left.value.localeCompare(right.value);
-    })
-    .slice(0, 160);
+  const all = Array.from(deduped.values()).sort((left, right) => {
+    if (left.suspicious !== right.suspicious) return left.suspicious ? -1 : 1;
+    return left.value.localeCompare(right.value);
+  });
+  // Suspicious ones sort first, so the sample always carries them and a finding
+  // is never lost to the cap. The counts are still taken from the whole set:
+  // they were being taken from the sample, which made "suspicious strings: 160"
+  // the most a binary could ever have.
+  return {
+    hits: all.slice(0, MAX_STRING_SAMPLE),
+    total: all.length,
+    suspiciousTotal: all.filter((item) => item.suspicious).length,
+    truncated: all.length > MAX_STRING_SAMPLE,
+  };
 }
 
 /**
@@ -1014,7 +1026,7 @@ function parsePe(buffer: Buffer): ParsedPe {
     isPe32Plus,
   );
   const exports = parseExports(buffer, sectionEntries, sizeOfHeaders, exportDirectoryRva);
-  const strings = collectStrings(buffer);
+  const stringScan = collectStrings(buffer);
   const metadata: PeMetadata = {
     fileType,
     machine: machineName(machine),
@@ -1040,7 +1052,9 @@ function parsePe(buffer: Buffer): ParsedPe {
     importModuleCount: imports.length,
     importFunctionCount: imports.reduce((sum, entry) => sum + entry.count, 0),
     suspiciousImportCount: imports.reduce((sum, entry) => sum + entry.suspiciousCount, 0),
-    suspiciousStringCount: strings.filter((item) => item.suspicious).length,
+    suspiciousStringCount: stringScan.suspiciousTotal ?? stringScan.hits.length,
+    stringTotal: stringScan.total,
+    stringsTruncated: stringScan.truncated,
     highEntropySectionCount: sections.filter((section) => section.entropy >= 7.2).length,
     packedSectionCount: sections.filter((section) =>
       SUSPICIOUS_SECTION_NAMES.includes(section.name.toLowerCase()),
@@ -1049,14 +1063,14 @@ function parsePe(buffer: Buffer): ParsedPe {
       sections.filter((section) => section.entropy >= 7.2).length >= 2 ||
       sections.some((section) => SUSPICIOUS_SECTION_NAMES.includes(section.name.toLowerCase())),
   };
-  const findings = buildFindings(metadata, sections, imports, strings);
+  const findings = buildFindings(metadata, sections, imports, stringScan.hits);
 
   return {
     metadata,
     sections,
     imports,
     exports,
-    strings,
+    strings: stringScan.hits,
     dataDirectories,
     triage,
     findings,
@@ -1592,9 +1606,12 @@ function mapSegmentsToSections(payload: unknown): PeSectionSummary[] {
   });
 }
 
+/** Matches asked of the engine per pattern. A full page means there are more. */
+const IDA_STRING_PAGE = 40;
+
 async function collectIdaProSuspiciousStrings(
   backend: CompatibleMcpBackend,
-): Promise<PeStringHit[]> {
+): Promise<PeStringScan> {
   const regexes = [
     'powershell|cmd\\\\.exe|wscript|cscript|mshta',
     'hkey_(local_machine|current_user)|software\\\\\\\\microsoft\\\\\\\\windows\\\\\\\\currentversion\\\\\\\\run',
@@ -1605,15 +1622,21 @@ async function collectIdaProSuspiciousStrings(
     regexes.map((pattern) =>
       backend.client.callTool('find_regex', {
         pattern,
-        limit: 40,
+        limit: IDA_STRING_PAGE,
         offset: 0,
       }),
     ),
   );
 
   const deduped = new Map<string, PeStringHit>();
+  // A pattern that came back with a full page has more behind it, and there is
+  // no total to report -- only that this is a sample.
+  let pageWasFull = false;
   for (const payload of results) {
     const data = asRecord(payload);
+    if (asArray(data.matches).length >= IDA_STRING_PAGE) {
+      pageWasFull = true;
+    }
     for (const item of asArray(data.matches)) {
       const record = asRecord(item);
       const value = asString(record.string);
@@ -1628,7 +1651,13 @@ async function collectIdaProSuspiciousStrings(
     }
   }
 
-  return Array.from(deduped.values()).slice(0, 120);
+  const all = Array.from(deduped.values());
+  return {
+    hits: all.slice(0, MAX_STRING_SAMPLE),
+    total: pageWasFull ? null : all.length,
+    suspiciousTotal: pageWasFull ? null : all.length,
+    truncated: pageWasFull || all.length > MAX_STRING_SAMPLE,
+  };
 }
 
 async function analyzeCurrentIdaProIdb(configFile: string): Promise<IdaPeAnalysisResponse> {
@@ -1697,12 +1726,14 @@ async function analyzeCurrentIdaProIdb(configFile: string): Promise<IdaPeAnalysi
     importModuleCount: imports.length,
     importFunctionCount: imports.reduce((sum, entry) => sum + entry.count, 0),
     suspiciousImportCount: imports.reduce((sum, entry) => sum + entry.suspiciousCount, 0),
-    suspiciousStringCount: strings.length,
+    suspiciousStringCount: strings.suspiciousTotal ?? strings.hits.length,
+    stringTotal: strings.total,
+    stringsTruncated: strings.truncated,
     highEntropySectionCount: 0,
     packedSectionCount: 0,
     suspectedPacked: false,
   };
-  const findings = buildFindings(metadataRecord, sections, imports, strings);
+  const findings = buildFindings(metadataRecord, sections, imports, strings.hits);
   const sampleId = `current_${asString(metadata.sha256, `${now}`).slice(0, 12)}`;
   const sample: PeSampleRecord = {
     id: sampleId,
@@ -1734,7 +1765,7 @@ async function analyzeCurrentIdaProIdb(configFile: string): Promise<IdaPeAnalysi
     sections,
     imports,
     exports: { count: 0, names: [] },
-    strings,
+    strings: strings.hits,
     dataDirectories: [],
     findings,
   };

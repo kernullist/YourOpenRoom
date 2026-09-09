@@ -70,6 +70,30 @@ export interface PeStringHit {
   suspicious: boolean;
 }
 
+/**
+ * A string scan: the sample that is shown, and how much it is a sample of.
+ *
+ * The list on screen is capped, and a cap that does not say so reads as the
+ * whole truth -- 160 strings from a binary holding forty thousand looked like a
+ * binary with 160 strings in it.
+ */
+export interface PeStringScan {
+  /** Kept for display: suspicious first, then alphabetical. */
+  hits: PeStringHit[];
+  /**
+   * Distinct strings found before the sample was cut.
+   *
+   * Null when the number is not knowable -- the IDA path asks the engine for a
+   * bounded page per pattern, so a full page means "at least this many" and
+   * claiming a total would be inventing one.
+   */
+  total: number | null;
+  /** Suspicious ones among them, counted before the cut. Null when unknowable. */
+  suspiciousTotal: number | null;
+  /** True when `hits` is a sample rather than everything that was found. */
+  truncated: boolean;
+}
+
 export interface PeDataDirectorySummary {
   name: string;
   rva: string;
@@ -148,7 +172,12 @@ export interface PeTriageSummary {
   importModuleCount: number;
   importFunctionCount: number;
   suspiciousImportCount: number;
+  /** Counted over the whole scan where that is knowable, not over the sample. */
   suspiciousStringCount: number;
+  /** Distinct strings the scan found, or null when the source was itself paged. */
+  stringTotal: number | null;
+  /** True when the string list travelling with this analysis is a sample. */
+  stringsTruncated: boolean;
   highEntropySectionCount: number;
   packedSectionCount: number;
   suspectedPacked: boolean;
