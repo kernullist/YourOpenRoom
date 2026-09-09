@@ -61,6 +61,8 @@ import {
   toStoredGhidraLabConfig,
 } from './ghidraLabConfig';
 import { runGhidraLabPreflight, type GhidraLabPreflightResult } from './ghidraLabPreflight';
+import { runFloss } from './ghidraFloss';
+import { installFloss } from './ghidraFlossDownload';
 import { GhidraLabRunManager, getSharedGhidraLabRunManager, runCapa } from './ghidraLabRunner';
 import {
   GHIDRA_LAB_MAX_SESSIONS,
@@ -586,6 +588,7 @@ export async function resolveGhidraLabRoute(
         query: (sessionId, kind, args) => sessions.query(sessionId, kind, args),
         now: () => Date.now(),
         runCapa: (capaParams) => runCapa(capaParams),
+        runFloss: (flossParams) => runFloss(flossParams),
         logError: (message, error) => console.error(`[ghidra-lab] ${message}`, error),
         // Always present, and it re-reads the config on every call.
         //
@@ -668,6 +671,24 @@ export async function resolveGhidraLabRoute(
       return { status: 200, payload: { ok: true, config: next } };
     }
     return { status: 405, payload: { ok: false, error: 'method_not_allowed' } };
+  }
+
+  // Operator-only, like /bootstrap-python: it puts an executable on the
+  // machine. Deliberately absent from Aoi's tool list -- the model may ask for
+  // an analysis, not for a new binary in OPENROOM_HOME.
+  if (method === 'POST' && route === '/bootstrap-floss') {
+    const result = await installFloss(openroomHome);
+    if (!result.ok) {
+      return {
+        status: 200,
+        payload: { ok: false, error: 'floss_install_failed', detail: result.detail },
+      };
+    }
+    const next = saveGhidraLabConfig(
+      params.configFile,
+      mergeGhidraLabConfig(config, { flossExePath: result.flossExePath }),
+    );
+    return { status: 200, payload: { ok: true, config: next, detail: result.detail } };
   }
 
   if (method === 'POST' && route === '/bootstrap-python') {

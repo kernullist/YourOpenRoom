@@ -24,10 +24,18 @@ import {
   type GhidraCapabilitySignal,
   type GhidraStringSummary,
 } from './ghidraLabHeuristics';
+import type { GhidraBehaviorResult } from './ghidraBehavior';
+import type { GhidraDynamicApiResult } from './ghidraDynamicApi';
+import type { GhidraDecodedString } from './ghidraFloss';
+import type { GhidraObfuscationFinding } from './ghidraObfuscation';
 import { looksLikeMermaid, type GhidraCapaMatch } from './ghidraLabSweep';
 import {
+  behaviorAnchorId,
   callgraphAnchorId,
   capaAnchorId,
+  decodedAnchorId,
+  dynApiAnchorId,
+  obfuscationAnchorId,
   functionAnchorId,
   importAnchorId,
   indicatorAnchorId,
@@ -79,6 +87,10 @@ const ANCHOR_KINDS: readonly string[] = [
   'capa',
   'callgraph',
   'indicator',
+  'decoded',
+  'dynapi',
+  'obfuscation',
+  'behavior',
 ];
 
 /** `[import:kernel32.dll!OpenProcess]` but not a markdown link `[text](url)`. */
@@ -276,6 +288,12 @@ export function buildDeterministicReport(ledger: GhidraSweepLedger): string {
     (facts.selectedFunctions as
       | { name: string; address: string; reasons: string[] }[]
       | undefined) ?? [];
+  const decoded = (facts.decodedStrings as GhidraDecodedString[] | undefined) ?? [];
+  const dynamic = facts.dynamicApis as GhidraDynamicApiResult | undefined;
+  const obfuscation = (facts.obfuscation as GhidraObfuscationFinding[] | undefined) ?? [];
+  const behavior = facts.behavior as GhidraBehaviorResult | undefined;
+  const reachableCategories =
+    (facts.reachableCategories as { category: string; count: number }[] | undefined) ?? [];
 
   // Structure is expressed as headings, tables and blockquotes; CLAIMS are
   // expressed as cited lines. That split is not cosmetic: enforceReportAnchors
@@ -382,6 +400,100 @@ export function buildDeterministicReport(ledger: GhidraSweepLedger): string {
     }
   }
 
+  lines.push('## What it does when it runs');
+  lines.push('');
+  lines.push(
+    '> Reachability and call ordering, not observed execution. Nothing here says the binary ran.',
+  );
+  lines.push('');
+  if (!behavior || behavior.chains.length === 0) {
+    lines.push('> No known behaviour chain matched what was read.');
+    lines.push('');
+  } else {
+    for (const chain of behavior.chains) {
+      const where = chain.functionName
+        ? `in \`${chain.functionName}\``
+        : 'across the image, not within one function';
+      lines.push(
+        `- **${chain.title}** (${chain.confidence}) -- ${chain.apis.join(' -> ')} ${where}. [${behaviorAnchorId(chain.code)}]`,
+      );
+    }
+    lines.push('');
+  }
+  if (behavior && behavior.reachable.length > 0) {
+    lines.push('| Reached API | From | Depth | Via |');
+    lines.push('| --- | --- | --- | --- |');
+    for (const entry of behavior.reachable.slice(0, 30)) {
+      lines.push(`| \`${entry.symbol}\` | ${entry.from} | ${entry.depth} | ${entry.via} |`);
+    }
+    lines.push('');
+    if (reachableCategories.length > 0) {
+      lines.push(
+        `> Reachable API categories: ${reachableCategories.map((entry) => `${entry.category} ${entry.count}`).join(', ')}.`,
+      );
+      lines.push('');
+    }
+  }
+
+  lines.push('## Dynamically resolved APIs');
+  lines.push('');
+  if (!dynamic || (dynamic.resolved.length === 0 && dynamic.hashing.length === 0)) {
+    lines.push('> Nothing suggested the binary resolves APIs at run time.');
+    lines.push('');
+  } else {
+    for (const entry of dynamic.hashing) {
+      lines.push(`- **${entry.code}** -- ${entry.detail} [${dynApiAnchorId(entry.code)}]`);
+    }
+    const named = dynamic.resolved.filter((entry) => entry.symbol);
+    if (named.length > 0) {
+      lines.push('');
+      lines.push('| API | Resolved in | Evidence |');
+      lines.push('| --- | --- | --- |');
+      for (const entry of named.slice(0, 40)) {
+        lines.push(
+          `| \`${entry.symbol}\` [${dynApiAnchorId(entry.symbol)}] | ${entry.functionName || entry.address} | ${entry.evidence.replace(/_/g, ' ')} |`,
+        );
+      }
+    }
+    lines.push('');
+  }
+
+  lines.push('## Obfuscation');
+  lines.push('');
+  if (obfuscation.length === 0) {
+    lines.push('> No obfuscation construct was found in what was read.');
+    lines.push('');
+  } else {
+    lines.push('> Found and located, not undone. Each row names what would actually reverse it.');
+    lines.push('');
+    for (const finding of obfuscation) {
+      const where = finding.functionName || finding.address || 'whole image';
+      lines.push(
+        `- **${finding.code}** in ${where} (${finding.confidence}) -- ${finding.detail} [${obfuscationAnchorId(finding.code, finding.address || finding.functionName)}]`,
+      );
+    }
+    lines.push('');
+  }
+
+  lines.push('## Recovered strings');
+  lines.push('');
+  if (decoded.length === 0) {
+    lines.push(
+      '> No hidden strings were recovered. Either the binary does not hide its strings, or FLOSS was not configured -- Coverage says which.',
+    );
+    lines.push('');
+  } else {
+    lines.push('| String | Kind | Decoded by |');
+    lines.push('| --- | --- | --- |');
+    for (const entry of decoded.slice(0, 60)) {
+      const value = entry.value.replace(/\|/g, '\\|').slice(0, 120);
+      lines.push(
+        `| \`${value}\` [${decodedAnchorId(entry.decodingRoutine, entry.value)}] | ${entry.kind} | ${entry.decodingRoutine || 'n/a'} |`,
+      );
+    }
+    lines.push('');
+  }
+
   lines.push('## Anti-analysis and packaging');
   lines.push('');
   if (anti.length === 0) {
@@ -443,6 +555,9 @@ export function buildReportPrompt(ledger: GhidraSweepLedger): string {
     '- Never state a behaviour the ledger does not show. If you are inferring, say so in Open questions instead.',
     '- Anchors marked (model-inferred) are summaries, not measurements. Do not present them as facts about the binary.',
     '- Prefer capa rule matches over your own reading of decompiled code where both exist.',
+    '- In "What it does when it runs", write reachability and ordering ONLY. The binary was never executed; "can" and "is reachable from" are true, "does" and "then it" are not.',
+    '- In "Obfuscation", do not claim anything was deobfuscated. The anchors say what was found and what would undo it.',
+    '- A [dynapi:...] anchor for a hashing technique names a TECHNIQUE, not an API. Do not present it as a resolved function name.',
     '',
     'Required sections, in this order:',
     '# <binary name> -- Binary Analysis Report',
@@ -451,6 +566,10 @@ export function buildReportPrompt(ledger: GhidraSweepLedger): string {
     '## Architecture and entry flow',
     '## Notable functions',
     '## Strings of interest',
+    '## What it does when it runs',
+    '## Dynamically resolved APIs',
+    '## Obfuscation',
+    '## Recovered strings',
     '## Anti-analysis and packaging',
     '## Coverage',
     '## Open questions',

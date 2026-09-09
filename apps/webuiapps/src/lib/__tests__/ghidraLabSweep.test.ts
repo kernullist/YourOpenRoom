@@ -27,7 +27,7 @@ import {
   runGhidraSweep,
   type GhidraSweepDeps,
 } from '../ghidraLabSweep';
-import type { GhidraSweepStage } from '../ghidraLabTypes';
+import { GHIDRA_SWEEP_STAGES, type GhidraSweepStage } from '../ghidraLabTypes';
 
 const BINARY = 'C:\\bins\\client.exe';
 
@@ -642,5 +642,146 @@ describe('extraction', () => {
     expect(flat).toHaveLength(1);
     expect(flat[0].attack).toEqual(['T1055 Process Injection']);
     expect(flat[0].mbc).toEqual(['C0051 File Read']);
+  });
+});
+
+describe('the deep-analysis stages', () => {
+  it('skips recovered strings without FLOSS, and says what was lost', async () => {
+    // Skipped, never failed -- a missing optional tool is a smaller report. But
+    // the detail has to say what is missing, or a reader takes the empty
+    // Recovered strings section for a binary that hides nothing.
+    const { ledger } = await sweep({ answers: {}, deps: {} });
+    const view = stage(ledger, 'decodedstrings');
+    expect(view.state).toBe('skipped');
+    expect(view.detail).toContain('NOT recovered');
+  });
+
+  it('anchors recovered strings with the routine that produced them', async () => {
+    const deps = makeDeps({
+      answers: {},
+      deps: {
+        runFloss: async () => ({
+          ok: true,
+          error: '',
+          payload: {
+            strings: {
+              decoded_strings: [
+                { string: 'http://c2.example.com/gate', decoding_routine: 4198400 },
+              ],
+              stack_strings: [{ string: 'ntdll.dll' }],
+            },
+          },
+        }),
+      },
+    });
+    const ledger = await runGhidraSweep({
+      runId: 'run-1',
+      sessionId: 'sess-1',
+      binaryPath: BINARY,
+      binaryName: 'client.exe',
+      config: normalizeGhidraLabConfig({ ...config, flossExePath: 'C:\\floss.exe' }),
+      deps,
+    });
+    expect(stage(ledger, 'decodedstrings').summary).toContain('2 hidden strings');
+    const decoded = ledger.anchors.filter((entry) => entry.kind === 'decoded');
+    expect(decoded).toHaveLength(2);
+    // The routine is the reason this is worth an anchor: it is a lead.
+    expect(decoded.some((entry) => entry.detail.includes('decoded by 0x401000'))).toBe(true);
+  });
+
+  it('records a FLOSS failure as a stage failure, not a sweep failure', async () => {
+    const deps = makeDeps({
+      answers: {},
+      deps: { runFloss: async () => ({ ok: false, payload: null, error: 'floss exited 2' }) },
+    });
+    const ledger = await runGhidraSweep({
+      runId: 'run-1',
+      sessionId: 'sess-1',
+      binaryPath: BINARY,
+      binaryName: 'client.exe',
+      config: normalizeGhidraLabConfig({ ...config, flossExePath: 'C:\\floss.exe' }),
+      deps,
+    });
+    expect(stage(ledger, 'decodedstrings').state).toBe('failed');
+    expect(stage(ledger, 'decodedstrings').detail).toContain('floss exited 2');
+    expect(stage(ledger, 'behavior').state).toBe('done');
+  });
+
+  it('anchors an API the binary resolves at run time', async () => {
+    const { ledger } = await sweep({
+      answers: {
+        functions: outcome([{ name: 'resolve', address: '0x401000', is_entry: true }]),
+        decompile: outcome([
+          { name: 'resolve', code: 'p = GetProcAddress(h, "NtWriteVirtualMemory");' },
+        ]),
+      },
+      deps: {},
+    });
+    const dynapi = ledger.anchors.filter((entry) => entry.kind === 'dynapi');
+    expect(dynapi.map((entry) => entry.id)).toContain('dynapi:NtWriteVirtualMemory');
+    expect(stage(ledger, 'dynapi').summary).toContain('resolved at run time');
+  });
+
+  it('anchors an obfuscation finding with what would undo it', async () => {
+    const cases = Array.from(
+      { length: 12 },
+      (_unused, index) => `case ${index}: state = ${index + 1}; break;`,
+    ).join('\n');
+    const { ledger } = await sweep({
+      answers: {
+        functions: outcome([{ name: 'flat', address: '0x401000', is_entry: true }]),
+        decompile: outcome([
+          { name: 'flat', code: `while (true) { switch (state) { ${cases} } }` },
+        ]),
+      },
+      deps: {},
+    });
+    const found = ledger.anchors.find((entry) => entry.kind === 'obfuscation');
+    expect(found?.id).toContain('control_flow_flattening');
+    expect(found?.detail).toContain('Remedy:');
+    expect(stage(ledger, 'obfuscation').summary).toContain('findings');
+  });
+
+  it('names a behaviour chain from the order one function calls its APIs', async () => {
+    const { ledger } = await sweep({
+      answers: {
+        imports: outcome([
+          { library: 'kernel32.dll', name: 'OpenProcess' },
+          { library: 'kernel32.dll', name: 'VirtualAllocEx' },
+          { library: 'kernel32.dll', name: 'WriteProcessMemory' },
+          { library: 'kernel32.dll', name: 'CreateRemoteThread' },
+        ]),
+        functions: outcome([
+          {
+            name: 'inject',
+            address: '0x401000',
+            is_entry: true,
+            calls: ['OpenProcess', 'WriteProcessMemory'],
+          },
+        ]),
+        decompile: outcome([
+          {
+            name: 'inject',
+            code: [
+              'h = OpenProcess(a, b, c);',
+              'p = VirtualAllocEx(h, 0, n, 0x3000, 0x40);',
+              'WriteProcessMemory(h, p, buf, n, 0);',
+              'CreateRemoteThread(h, 0, 0, p, 0, 0, 0);',
+            ].join('\n'),
+          },
+        ]),
+      },
+      deps: {},
+    });
+    const behavior = ledger.anchors.find((entry) => entry.kind === 'behavior');
+    expect(behavior?.id).toBe('behavior:process_injection');
+    expect(behavior?.detail).toContain('OpenProcess -> VirtualAllocEx');
+    // The wording must stay on capability: the binary was never executed.
+    expect(behavior?.detail).not.toMatch(/\bit ran\b|\bwas observed\b/);
+  });
+
+  it('walks all fourteen stages in order', async () => {
+    const { ledger } = await sweep({ answers: {}, deps: {} });
+    expect(ledger.stages.map((entry) => entry.stage)).toEqual([...GHIDRA_SWEEP_STAGES]);
   });
 });

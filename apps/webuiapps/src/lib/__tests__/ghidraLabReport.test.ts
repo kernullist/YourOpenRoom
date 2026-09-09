@@ -13,6 +13,7 @@ import {
   buildAnchorIndex,
   buildDeterministicReport,
   buildLedgerText,
+  buildReportPrompt,
   enforceReportAnchors,
   parseVerifierResult,
   writeGhidraReport,
@@ -473,5 +474,183 @@ describe('buildAnchorIndex', () => {
     const index = buildAnchorIndex(ledger);
     expect(index.size).toBe(3);
     expect(index.get('header:sha256')?.detail).not.toBe('second');
+  });
+});
+
+describe('the deep-analysis report sections', () => {
+  function deepLedger() {
+    const ledger = ledgerFixture();
+    const facts = ledger.facts as Record<string, unknown>;
+    facts.decodedStrings = [
+      {
+        value: 'http://c2.example.com/gate',
+        kind: 'decoded',
+        address: '0x402000',
+        decodingRoutine: '0x401000',
+        encoding: '',
+      },
+    ];
+    facts.dynamicApis = {
+      resolved: [
+        {
+          symbol: 'NtWriteVirtualMemory',
+          library: '',
+          functionName: 'resolve',
+          address: '0x401000',
+          evidence: 'literal',
+        },
+      ],
+      hashing: [
+        {
+          code: 'api_hashing',
+          detail: 'Resolves imports by hashed name. ATT&CK T1027.007.',
+          evidence: ['resolve: ROR-13 over a byte loop'],
+        },
+      ],
+      resolverSites: [{ functionName: 'resolve', address: '0x401000', calls: 3 }],
+    };
+    facts.obfuscation = [
+      {
+        code: 'control_flow_flattening',
+        functionName: 'flat',
+        address: '0x403000',
+        confidence: 'strong',
+        detail: 'A dispatcher loop switches on `state`.',
+        evidence: ['state = 1;'],
+        remedy: 'D-810 does this at IDA decompilation time.',
+      },
+    ];
+    facts.behavior = {
+      reachable: [{ symbol: 'CreateRemoteThread', from: 'entry', depth: 2, via: 'inject' }],
+      sequences: [],
+      chains: [
+        {
+          code: 'process_injection',
+          title: 'Process injection',
+          detail: 'Opens another process and starts execution there.',
+          apis: ['OpenProcess', 'WriteProcessMemory'],
+          functionName: 'inject',
+          address: '0x401000',
+          confidence: 'strong',
+        },
+      ],
+      entries: ['entry'],
+      graphMissing: false,
+    };
+    facts.reachableCategories = [{ category: 'injection', count: 2 }];
+
+    // The anchors the sections cite have to exist, or enforcement strips them --
+    // which is exactly what these tests are here to catch.
+    ledger.anchors.push(
+      {
+        binary: ledger.binaryName,
+        id: 'decoded:0x401000:http://c2.example.com/gate',
+        kind: 'decoded',
+        address: '0x402000',
+        symbol: '0x401000',
+        detail: 'decoded string',
+        deterministic: true,
+      },
+      {
+        binary: ledger.binaryName,
+        id: 'dynapi:NtWriteVirtualMemory',
+        kind: 'dynapi',
+        address: '0x401000',
+        symbol: 'NtWriteVirtualMemory',
+        detail: 'resolved at run time',
+        deterministic: true,
+      },
+      {
+        binary: ledger.binaryName,
+        id: 'dynapi:api_hashing',
+        kind: 'dynapi',
+        address: '',
+        symbol: 'api_hashing',
+        detail: 'hashed imports',
+        deterministic: true,
+      },
+      {
+        binary: ledger.binaryName,
+        id: 'obfuscation:control_flow_flattening:0x403000',
+        kind: 'obfuscation',
+        address: '0x403000',
+        symbol: 'flat',
+        detail: 'flattened',
+        deterministic: true,
+      },
+      {
+        binary: ledger.binaryName,
+        id: 'behavior:process_injection',
+        kind: 'behavior',
+        address: '0x401000',
+        symbol: 'inject',
+        detail: 'injection chain',
+        deterministic: true,
+      },
+    );
+    return ledger;
+  }
+
+  it('renders all four sections with their evidence', () => {
+    const report = buildDeterministicReport(deepLedger());
+    expect(report).toContain('## What it does when it runs');
+    expect(report).toContain('## Dynamically resolved APIs');
+    expect(report).toContain('## Obfuscation');
+    expect(report).toContain('## Recovered strings');
+    expect(report).toContain('Process injection');
+    expect(report).toContain('NtWriteVirtualMemory');
+    expect(report).toContain('control_flow_flattening');
+    expect(report).toContain('c2.example.com');
+  });
+
+  it('keeps the behaviour section on reachability, never on execution', () => {
+    const report = buildDeterministicReport(deepLedger());
+    expect(report).toContain('not observed execution');
+    expect(report).toContain('Reachability');
+  });
+
+  it('survives its own enforcement pass with the new sections intact', () => {
+    // The deterministic report is the fallback AND the floor the model has to
+    // beat, so a section that enforcement strips out of it is a section that
+    // cannot ship on a machine with no model.
+    const ledger = deepLedger();
+    const known = new Set(ledger.anchors.map((entry) => entry.id));
+    const enforced = enforceReportAnchors(buildDeterministicReport(ledger), known);
+    expect(enforced.report).toContain('## Recovered strings');
+    expect(enforced.report).toContain('## Obfuscation');
+    expect(enforced.report).toContain('NtWriteVirtualMemory');
+    expect(enforced.report).toContain('Process injection');
+    expect(enforced.report).toContain('control_flow_flattening');
+
+    // Measured against the same ledger WITHOUT the deep facts, so the number is
+    // about the new sections rather than about the fixture. Adding them must not
+    // cost a single line: the deterministic report is the fallback, and a
+    // section enforcement strips out of it cannot ship at all where no model is
+    // configured.
+    const shallow = ledgerFixture();
+    shallow.anchors = ledger.anchors;
+    const baseline = enforceReportAnchors(buildDeterministicReport(shallow), known);
+    expect(enforced.droppedClaims).toBe(baseline.droppedClaims);
+    expect(enforced.unknownAnchors).toEqual(baseline.unknownAnchors);
+  });
+
+  it('says which tool was missing rather than implying a clean binary', () => {
+    const report = buildDeterministicReport(ledgerFixture());
+    expect(report).toContain('No hidden strings were recovered');
+    expect(report).toContain('Coverage says which');
+    expect(report).toContain('No known behaviour chain matched');
+    expect(report).toContain('No obfuscation construct was found');
+  });
+});
+
+describe('the report prompt', () => {
+  it('asks for the deep-analysis sections, or a model simply omits them', () => {
+    const prompt = buildReportPrompt(ledgerFixture());
+    expect(prompt).toContain('## What it does when it runs');
+    expect(prompt).toContain('## Recovered strings');
+    // The rules that keep the model on the right side of the claim.
+    expect(prompt).toContain('reachability and ordering ONLY');
+    expect(prompt).toContain('do not claim anything was deobfuscated');
+    expect(prompt).toContain('names a TECHNIQUE, not an API');
   });
 });

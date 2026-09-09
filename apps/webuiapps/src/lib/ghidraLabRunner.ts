@@ -19,6 +19,7 @@ import * as fs from 'fs';
 import { join } from 'path';
 
 import { buildGhidraChildEnv } from './ghidraLabConfig';
+import type { GhidraFlossOutcome } from './ghidraFloss';
 import { writeGhidraReport, type GhidraReportDeps } from './ghidraLabReport';
 import type { GhidraLabQueryOutcome } from './ghidraLabSession';
 import {
@@ -88,6 +89,11 @@ export interface GhidraLabRunDeps {
   callModel?(prompt: string, maxTokens: number, responseJson: boolean): Promise<string>;
   hashFile?(path: string): { sha256: string; sizeBytes: number; mtimeMs: number };
   runCapa?(params: { binaryPath: string; config: GhidraLabConfigView }): Promise<GhidraCapaOutcome>;
+  /** Absent -> the recovered-strings stage is skipped, not failed. */
+  runFloss?(params: {
+    binaryPath: string;
+    config: GhidraLabConfigView;
+  }): Promise<GhidraFlossOutcome>;
   writeArtifact?(path: string, contents: string): void;
   /** Injected so a test does not have to wait out the string-index poll. */
   sleep?(ms: number): Promise<void>;
@@ -371,6 +377,7 @@ export class GhidraLabRunManager {
       },
       ...(this.deps.logError ? { logError: this.deps.logError } : {}),
       ...(this.deps.runCapa ? { runCapa: this.deps.runCapa } : {}),
+      ...(this.deps.runFloss ? { runFloss: this.deps.runFloss } : {}),
       ...(this.deps.callModel
         ? {
             summarizeFunction: async (summaryParams) => {

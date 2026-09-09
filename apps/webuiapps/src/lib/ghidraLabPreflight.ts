@@ -68,6 +68,7 @@ export interface GhidraLabPreflightResult {
   /** How pyghidra-mcp actually answered, or null when it did not. */
   pyghidraLaunch: PyghidraLaunchKind | null;
   capaVersion: string;
+  flossVersion: string;
   availableModes: GhidraLabSessionMode[];
 }
 
@@ -429,6 +430,57 @@ function checkCapa(
   };
 }
 
+/**
+ * FLOSS: optional, and the difference between "no interesting strings" and
+ * "every interesting string was hidden" on an obfuscated target.
+ */
+function checkFloss(
+  config: GhidraLabConfigView,
+  deps: GhidraLabPreflightDeps,
+): { check: GhidraLabPreflightCheck; version: string } {
+  const base = { id: 'floss', label: 'FLOSS (optional)', required: false };
+  if (!config.flossExePath) {
+    return {
+      check: {
+        ...base,
+        ok: false,
+        found: 'not set',
+        remedy:
+          'Optional. FLOSS recovers stack strings, tight strings and strings a routine decodes at run time -- the ones a string dump cannot see. Use Download in Setup, or point this at floss.exe.',
+      },
+      version: '',
+    };
+  }
+  if (!deps.fileExists(config.flossExePath)) {
+    return {
+      check: {
+        ...base,
+        ok: false,
+        found: 'not found',
+        remedy: `No file at ${config.flossExePath}.`,
+      },
+      version: '',
+    };
+  }
+  const probe = deps.probe(config.flossExePath, ['--version'], buildGhidraChildEnv(config));
+  if (!probe.ok) {
+    return {
+      check: {
+        ...base,
+        ok: false,
+        found: 'did not run',
+        remedy: probe.error || truncate(probe.stderr) || `exit ${probe.code}`,
+      },
+      version: '',
+    };
+  }
+  const reported = truncate(`${probe.stdout}\n${probe.stderr}`).split(/\r?\n/)[0] ?? '';
+  return {
+    check: { ...base, ok: true, found: reported || 'floss', remedy: '' },
+    version: reported,
+  };
+}
+
 function checkBinaryRoots(
   config: GhidraLabConfigView,
   deps: GhidraLabPreflightDeps,
@@ -470,9 +522,10 @@ export function runGhidraLabPreflight(
   const python = checkPython(config, deps);
   const projects = checkProjectRoot(config, deps);
   const capa = checkCapa(config, deps);
+  const floss = checkFloss(config, deps);
   const roots = checkBinaryRoots(config, deps);
 
-  const checks = [ghidra.check, jdk.check, python.check, projects, capa.check, roots];
+  const checks = [ghidra.check, jdk.check, python.check, projects, capa.check, floss.check, roots];
 
   // Batch mode is the floor: Ghidra + a real JDK + somewhere to put the project
   // + something to analyze. Headless adds a working pyghidra-mcp on top.
@@ -493,6 +546,7 @@ export function runGhidraLabPreflight(
     pyghidraMcpVersion: python.version,
     pyghidraLaunch: python.launch,
     capaVersion: capa.version,
+    flossVersion: floss.version,
     availableModes,
   };
 }

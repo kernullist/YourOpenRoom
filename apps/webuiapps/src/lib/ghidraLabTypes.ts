@@ -67,6 +67,14 @@ export interface GhidraLabConfigView {
   /** Optional second engine: capa, for rule-backed ATT&CK/MBC capability matching. */
   capaExePath: string;
   /**
+   * Optional third engine: FLOSS, for strings that are not in the binary as text.
+   *
+   * Stack strings, tight strings and strings a routine decodes at run time are
+   * invisible to a string dump, and on anything obfuscated they are most of the
+   * interesting ones. FLOSS recovers them by emulating the code that builds them.
+   */
+  flossExePath: string;
+  /**
    * Let Ghidra download PDBs from Microsoft's symbol server during analysis.
    *
    * OFF by default, which is the opposite of pyghidra-mcp's own default, for two
@@ -266,11 +274,24 @@ export type GhidraSweepStage =
   | 'imports'
   | 'exports'
   | 'strings'
+  // Strings that are not in the binary as text: stack strings, tight strings and
+  // strings a routine decodes at run time. Runs right after the plain string
+  // stage because the later stages read its output.
+  | 'decodedstrings'
   | 'inventory'
   | 'selection'
   | 'deepread'
+  // What the import table does not show: GetProcAddress/LoadLibrary resolution
+  // and API hashing. Needs the decompiled bodies, so it follows deepread.
+  | 'dynapi'
   | 'capability'
+  // Control-flow flattening, opaque predicates, MBA density, packer sections.
+  | 'obfuscation'
   | 'structure'
+  // Reachability and ordering: which APIs are reachable from the entry, in what
+  // order, and which known chains that ordering matches. Last of the
+  // deterministic stages because it consumes all of them.
+  | 'behavior'
   | 'synthesis';
 
 export const GHIDRA_SWEEP_STAGES: readonly GhidraSweepStage[] = [
@@ -278,11 +299,15 @@ export const GHIDRA_SWEEP_STAGES: readonly GhidraSweepStage[] = [
   'imports',
   'exports',
   'strings',
+  'decodedstrings',
   'inventory',
   'selection',
   'deepread',
+  'dynapi',
   'capability',
+  'obfuscation',
   'structure',
+  'behavior',
   'synthesis',
 ];
 
@@ -330,7 +355,20 @@ export type GhidraAnchorKind =
   | 'callgraph'
   // A rolled-up anti-analysis finding. Its own kind because its evidence is not
   // always a symbol -- it can be a section name or a string.
-  | 'indicator';
+  | 'indicator'
+  // A string that was NOT visible statically: built on the stack, or produced by
+  // a decoder inside the binary and recovered by emulating it. Its own kind
+  // because the evidence includes the routine that produced it, which a plain
+  // string anchor has nowhere to put.
+  | 'decoded'
+  // An API the binary resolves at run time instead of importing. The import
+  // table of an obfuscated binary is a lie by omission, and these are the rest.
+  | 'dynapi'
+  // An obfuscation construct found at a location, with what would undo it.
+  | 'obfuscation'
+  // An ordered chain of APIs reachable from a named entry. Reachability and
+  // ordering -- never a claim that the binary was observed doing it.
+  | 'behavior';
 
 export interface GhidraEvidenceAnchor {
   id: string;
@@ -472,4 +510,27 @@ export function callgraphAnchorId(root: string): string {
 
 export function indicatorAnchorId(code: string): string {
   return `indicator:${code}`;
+}
+
+/**
+ * A recovered string, keyed by where it came from.
+ *
+ * The decoding routine is part of the identity on purpose: the same plaintext
+ * decoded by two different routines is two findings, and a report that collapses
+ * them loses the fact that the binary has two decoders.
+ */
+export function decodedAnchorId(routine: string, value: string): string {
+  return `decoded:${routine || 'unknown'}:${value.slice(0, 32)}`;
+}
+
+export function dynApiAnchorId(symbol: string): string {
+  return `dynapi:${symbol}`;
+}
+
+export function obfuscationAnchorId(code: string, where: string): string {
+  return `obfuscation:${code}${where ? `:${where}` : ''}`;
+}
+
+export function behaviorAnchorId(code: string): string {
+  return `behavior:${code}`;
 }

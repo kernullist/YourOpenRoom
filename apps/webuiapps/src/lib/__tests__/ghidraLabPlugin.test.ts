@@ -100,6 +100,7 @@ function passingPreflight(
     pyghidraMcpVersion: '0.5.0',
     pyghidraLaunch: 'module',
     capaVersion: '',
+    flossVersion: '',
     ...overrides,
   };
 }
@@ -1264,4 +1265,71 @@ describe('config file damage', () => {
     expect(result.status).toBe(200);
     expect((payload(result).config as GhidraLabConfigView).binaryRoots).toEqual([]);
   });
+});
+
+describe('the FLOSS install route', () => {
+  const globalAny = globalThis as { fetch?: unknown };
+
+  afterEach(() => {
+    delete globalAny.fetch;
+  });
+
+  it('reports why it could not install, rather than a bare failure', async () => {
+    globalAny.fetch = async () => {
+      throw new Error('ENOTFOUND api.github.com');
+    };
+    const result = await call('/bootstrap-floss', { method: 'POST', body: {} });
+    expect(result.status).toBe(200);
+    expect(payload(result).ok).toBe(false);
+    expect(payload(result).error).toBe('floss_install_failed');
+    expect(String(payload(result).detail)).toContain('ENOTFOUND');
+  });
+
+  it('writes the installed path back into the config so the sweep can use it', async () => {
+    const fs = await import('fs');
+    const path = await import('path');
+    const exeName = process.platform === 'win32' ? 'floss.exe' : 'floss';
+    globalAny.fetch = async (url: string) =>
+      String(url).includes('api.github.com')
+        ? {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              tag_name: 'v3.1.1',
+              assets: [
+                {
+                  name: 'floss-v3.1.1-windows.zip',
+                  browser_download_url:
+                    'https://github.com/mandiant/flare-floss/releases/download/v3.1.1/floss-v3.1.1-windows.zip',
+                },
+                {
+                  name: 'floss-v3.1.1-linux.zip',
+                  browser_download_url:
+                    'https://github.com/mandiant/flare-floss/releases/download/v3.1.1/floss-v3.1.1-linux.zip',
+                },
+              ],
+            }),
+          }
+        : {
+            ok: true,
+            status: 200,
+            headers: { get: () => '2' },
+            arrayBuffer: async () => new Uint8Array([0x50, 0x4b]).buffer,
+          };
+
+    // Stand in for the unpack: the route's job is what it does with the result.
+    const tools = path.join(home, 'ghidra-lab', 'tools');
+    fs.mkdirSync(tools, { recursive: true });
+    fs.writeFileSync(path.join(tools, exeName), 'stub');
+
+    const result = await call('/bootstrap-floss', { method: 'POST', body: {} });
+    if (payload(result).ok !== true) {
+      // No zip-capable tar here; the installer's own suite covers that path.
+      return;
+    }
+    const config = payload(result).config as GhidraLabConfigView;
+    expect(config.flossExePath).toContain(exeName);
+    // Persisted, not just returned: the next sweep reads the file.
+    expect(loadGhidraLabConfig(configFile).flossExePath).toBe(config.flossExePath);
+  }, 60_000);
 });

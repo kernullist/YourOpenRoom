@@ -108,6 +108,23 @@ export async function bootstrapGhidraPython(): Promise<{
   };
 }
 
+/**
+ * Install FLOSS from its official release.
+ *
+ * Operator-initiated only. There is no Aoi tool for this on purpose: it puts an
+ * executable on the machine.
+ */
+export async function bootstrapGhidraFloss(): Promise<{
+  config: GhidraLabConfigView;
+  detail: string;
+}> {
+  const payload = await sendJson('/bootstrap-floss', 'POST', {});
+  return {
+    config: payload.config as GhidraLabConfigView,
+    detail: typeof payload.detail === 'string' ? payload.detail : '',
+  };
+}
+
 export async function browseGhidraPath(path?: string): Promise<GhidraLabBrowseView> {
   return (await getJson('/browse', path ? { path } : {})).browse as GhidraLabBrowseView;
 }

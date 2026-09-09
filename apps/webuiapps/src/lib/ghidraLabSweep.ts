@@ -28,9 +28,27 @@ import {
 } from './ghidraLabHeuristics';
 import type { GhidraLabQueryOutcome } from './ghidraLabSession';
 import {
+  synthesizeBehavior,
+  summarizeReachableCategories,
+  type GhidraCallNode,
+} from './ghidraBehavior';
+import { findDynamicApis } from './ghidraDynamicApi';
+import {
+  countByKind,
+  parseFlossResult,
+  selectInterestingDecoded,
+  type GhidraDecodedString,
+  type GhidraFlossOutcome,
+} from './ghidraFloss';
+import { detectObfuscation } from './ghidraObfuscation';
+import {
   GHIDRA_SWEEP_STAGES,
+  behaviorAnchorId,
   callgraphAnchorId,
   capaAnchorId,
+  decodedAnchorId,
+  dynApiAnchorId,
+  obfuscationAnchorId,
   exportAnchorId,
   functionAnchorId,
   importAnchorId,
@@ -59,6 +77,17 @@ const STRING_INDEX_POLL_MS = 5_000;
 
 const MAX_IMPORT_ANCHORS = 120;
 const MAX_STRING_ANCHORS = 80;
+/**
+ * Caps for the deep-analysis stages.
+ *
+ * Recovered strings get the largest budget on purpose: on an obfuscated binary
+ * they carry the URLs, paths and API names that every other section wants to
+ * cite, so starving them starves the report.
+ */
+const MAX_DECODED_ANCHORS = 160;
+const MAX_DYNAPI_ANCHORS = 120;
+const MAX_OBFUSCATION_ANCHORS = 40;
+const MAX_BEHAVIOR_ANCHORS = 24;
 const MAX_EXPORT_ANCHORS = 60;
 
 export interface GhidraCapaOutcome {
@@ -77,6 +106,17 @@ export interface GhidraSweepDeps {
   hashFile(path: string): { sha256: string; sizeBytes: number; mtimeMs: number };
   /** Absent -> the capability stage is skipped, not failed. */
   runCapa?(params: { binaryPath: string; config: GhidraLabConfigView }): Promise<GhidraCapaOutcome>;
+  /**
+   * Absent -> the recovered-strings stage is skipped, not failed.
+   *
+   * Skipping it is a real loss on an obfuscated target -- the strings that were
+   * hidden are usually the ones worth reading -- so the stage detail says so
+   * rather than passing over it silently.
+   */
+  runFloss?(params: {
+    binaryPath: string;
+    config: GhidraLabConfigView;
+  }): Promise<GhidraFlossOutcome>;
   /** Absent -> deep read keeps the decompiled body but records no prose summary. */
   summarizeFunction?(params: {
     name: string;
@@ -638,7 +678,65 @@ export async function runGhidraSweep(params: {
       }
     }
 
-    // --- 5. Function inventory --------------------------------------------
+    // --- 5. Recovered strings (FLOSS) --------------------------------------
+    //
+    // The strings that are not in the binary as text. On an obfuscated target
+    // this is where the URLs, the registry paths and the API names live, and a
+    // report built from the static string list alone would describe a program
+    // with nothing to say.
+    let decoded: GhidraDecodedString[] = [];
+    {
+      const view = beginStage('decodedstrings');
+      if (!deps.runFloss || !params.config.flossExePath) {
+        endStage(
+          view,
+          'skipped',
+          'FLOSS not configured',
+          'Stack strings, tight strings and strings decoded at run time were NOT recovered. On an obfuscated binary these are usually the interesting ones -- configure FLOSS in Setup.',
+        );
+      } else {
+        try {
+          const outcome = await deps.runFloss({
+            binaryPath: params.binaryPath,
+            config: params.config,
+          });
+          if (!outcome.ok) {
+            endStage(view, 'failed', 'FLOSS did not produce a result', outcome.error);
+          } else {
+            decoded = selectInterestingDecoded(parseFlossResult(outcome.payload));
+            ledger.facts.decodedStrings = decoded;
+            const counts = countByKind(decoded);
+            for (const entry of decoded.slice(0, MAX_DECODED_ANCHORS)) {
+              anchor(ledger, {
+                id: decodedAnchorId(entry.decodingRoutine, entry.value),
+                kind: 'decoded',
+                address: entry.address,
+                symbol: entry.decodingRoutine,
+                detail: `${entry.kind} string${entry.decodingRoutine ? ` decoded by ${entry.decodingRoutine}` : ''}: ${entry.value}`,
+                deterministic: true,
+              });
+            }
+            endStage(
+              view,
+              'done',
+              `${decoded.length} hidden strings recovered (decoded ${counts.decoded}, tight ${counts.tight}, stack ${counts.stack})`,
+              decoded.length === 0
+                ? 'FLOSS ran and found none, which is itself a finding: this binary does not hide its strings.'
+                : '',
+            );
+          }
+        } catch (error) {
+          endStage(
+            view,
+            'failed',
+            'FLOSS failed',
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+      }
+    }
+
+    // --- 6. Function inventory --------------------------------------------
     let functions: GhidraFunctionCandidate[] = [];
     {
       const view = beginStage('inventory');
@@ -678,13 +776,24 @@ export async function runGhidraSweep(params: {
     }
 
     // --- 7. Deep read ------------------------------------------------------
+    //
+    // Declared out here because the dynamic-API, obfuscation and behaviour
+    // stages all read these bodies. They are the single most expensive thing
+    // the sweep produces and re-fetching them per stage would triple the cost.
+    const deepReadBodies: {
+      name: string;
+      address: string;
+      decompiled: string;
+      summary: string;
+    }[] = [];
     {
       const view = beginStage('deepread');
       let budget = GHIDRA_DEEP_READ_TOTAL_CHARS;
       let read_ok = 0;
       let summarized = 0;
       let lastError = '';
-      const bodies: { name: string; address: string; decompiled: string; summary: string }[] = [];
+      const bodies: { name: string; address: string; decompiled: string; summary: string }[] =
+        deepReadBodies;
 
       for (let offset = 0; offset < selected.length; offset += GHIDRA_DECOMPILE_BATCH) {
         if (budget <= 0) {
@@ -770,7 +879,63 @@ export async function runGhidraSweep(params: {
       }
     }
 
-    // --- 8. Capability map (capa) -----------------------------------------
+    // --- 9. Dynamically resolved APIs --------------------------------------
+    // (deepReadBodies is filled by the deep read above and read by the three
+    // stages below; it is declared before them so they share one list.)
+    //
+    // The import table of an obfuscated binary lists LoadLibrary,
+    // GetProcAddress and little else. Everything the program actually calls is
+    // resolved at run time, and a report that stops at the import table
+    // describes a binary that does nothing.
+    let dynamicApis: string[] = [];
+    {
+      const view = beginStage('dynapi');
+      const found = findDynamicApis({
+        bodies: deepReadBodies,
+        imports: imports.map((entry) => ({ symbol: entry.symbol, library: entry.library })),
+        recovered: decoded,
+      });
+      ledger.facts.dynamicApis = found;
+      dynamicApis = found.resolved.map((entry) => entry.symbol).filter(Boolean);
+      for (const entry of found.resolved.slice(0, MAX_DYNAPI_ANCHORS)) {
+        if (!entry.symbol) {
+          continue;
+        }
+        anchor(ledger, {
+          id: dynApiAnchorId(entry.symbol),
+          kind: 'dynapi',
+          address: entry.address,
+          symbol: entry.symbol,
+          detail: `resolved at run time in ${entry.functionName || entry.address} (evidence: ${entry.evidence.replace(/_/g, ' ')})`,
+          deterministic: entry.evidence !== 'recovered_string',
+        });
+      }
+      for (const entry of found.hashing) {
+        anchor(ledger, {
+          id: dynApiAnchorId(entry.code),
+          kind: 'dynapi',
+          address: '',
+          symbol: entry.code,
+          detail: `${entry.detail} Evidence: ${entry.evidence.join('; ')}`,
+          deterministic: true,
+        });
+      }
+      const parts = [
+        `${found.resolved.filter((entry) => entry.symbol).length} APIs resolved at run time`,
+        found.resolverSites.length > 0 ? `${found.resolverSites.length} resolver sites` : '',
+        found.hashing.length > 0 ? `${found.hashing.length} hashing indicators` : '',
+      ].filter(Boolean);
+      endStage(
+        view,
+        deepReadBodies.length === 0 ? 'skipped' : 'done',
+        deepReadBodies.length === 0 ? 'no decompiled bodies to scan' : parts.join(', '),
+        deepReadBodies.length === 0
+          ? 'Dynamic resolution is read out of decompiled code, so this needs the deep read to have produced something.'
+          : '',
+      );
+    }
+
+    // --- 10. Capability map (capa) ----------------------------------------
     {
       const view = beginStage('capability');
       if (!deps.runCapa || !params.config.capaExePath) {
@@ -816,7 +981,42 @@ export async function runGhidraSweep(params: {
       }
     }
 
-    // --- 9. Structure ------------------------------------------------------
+    // --- 11. Obfuscation ----------------------------------------------------
+    //
+    // Found and located, not undone. Automatic unflattening is a research
+    // problem and this says so; what it does deliver is WHICH functions are
+    // obfuscated and with what, which is most of the analyst's search.
+    {
+      const view = beginStage('obfuscation');
+      const findings = detectObfuscation({
+        bodies: deepReadBodies,
+        sectionNames: extractSectionNames(ledger.facts.metadata),
+      });
+      ledger.facts.obfuscation = findings;
+      for (const finding of findings.slice(0, MAX_OBFUSCATION_ANCHORS)) {
+        anchor(ledger, {
+          id: obfuscationAnchorId(finding.code, finding.address || finding.functionName),
+          kind: 'obfuscation',
+          address: finding.address,
+          symbol: finding.functionName,
+          detail: `${finding.confidence} -- ${finding.detail} Remedy: ${finding.remedy}`,
+          deterministic: true,
+        });
+      }
+      const strong = findings.filter((finding) => finding.confidence === 'strong').length;
+      endStage(
+        view,
+        'done',
+        findings.length === 0
+          ? 'no obfuscation constructs found in what was read'
+          : `${findings.length} findings (${strong} strong)`,
+        deepReadBodies.length === 0
+          ? 'Only whole-image checks ran: no decompiled bodies were available to scan.'
+          : '',
+      );
+    }
+
+    // --- 12. Structure ------------------------------------------------------
     {
       const view = beginStage('structure');
       const indicators = detectAntiAnalysis({
@@ -873,6 +1073,53 @@ export async function runGhidraSweep(params: {
         'done',
         `${indicators.length} anti-analysis indicators${callgraph ? `; call graph from ${rootName}` : ''}`,
         callgraphError,
+      );
+    }
+
+    // --- 13. Behaviour ------------------------------------------------------
+    //
+    // Reachability and ordering, never a claim that the binary was observed
+    // doing anything. Static analysis cannot say "it ran"; it can say which
+    // APIs a named entry can get to, in what order one function calls them, and
+    // which known chain that ordering matches.
+    {
+      const view = beginStage('behavior');
+      const knownApis = [...new Set([...imports.map((entry) => entry.symbol), ...dynamicApis])];
+      const nodes: GhidraCallNode[] = functions.map((entry) => ({
+        name: entry.name,
+        address: entry.address,
+        ...(entry.callsImports ? { callsImports: entry.callsImports } : {}),
+        ...(entry.isEntryPoint === undefined ? {} : { isEntryPoint: entry.isEntryPoint }),
+        ...(entry.isExport === undefined ? {} : { isExport: entry.isExport }),
+      }));
+      const behavior = synthesizeBehavior({
+        nodes,
+        bodies: deepReadBodies,
+        knownApis,
+      });
+      ledger.facts.behavior = behavior;
+      ledger.facts.reachableCategories = summarizeReachableCategories(behavior.reachable);
+      for (const chain of behavior.chains.slice(0, MAX_BEHAVIOR_ANCHORS)) {
+        anchor(ledger, {
+          id: behaviorAnchorId(chain.code),
+          kind: 'behavior',
+          address: chain.address,
+          symbol: chain.functionName,
+          detail: `${chain.title} (${chain.confidence}): ${chain.detail} APIs in order: ${chain.apis.join(' -> ')}${chain.functionName ? `, in ${chain.functionName}` : ''}.`,
+          deterministic: true,
+        });
+      }
+      const parts = [
+        `${behavior.chains.length} behaviour chains`,
+        `${behavior.reachable.length} APIs reachable from ${behavior.entries.length || 0} entries`,
+      ];
+      endStage(
+        view,
+        'done',
+        parts.join(', '),
+        behavior.graphMissing
+          ? 'The engine returned no callee edges, so reachability was computed from each function in isolation rather than by walking the graph.'
+          : '',
       );
     }
 

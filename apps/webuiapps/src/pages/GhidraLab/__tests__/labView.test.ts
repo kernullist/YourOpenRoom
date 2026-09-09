@@ -51,6 +51,7 @@ function health(patch: Partial<GhidraLabHealthView> = {}): GhidraLabHealthView {
       sessionIdleTimeoutMs: 0,
       analysisTimeoutMs: 0,
       capaExePath: '',
+      flossExePath: '',
       symbolDownloads: false,
       writeEnabled: false,
     },

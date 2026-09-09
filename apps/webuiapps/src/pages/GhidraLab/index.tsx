@@ -20,6 +20,7 @@ import {
   type CharacterAppAction,
 } from '@/lib';
 import {
+  bootstrapGhidraFloss,
   bootstrapGhidraPython,
   browseGhidraPath,
   cancelGhidraRun,
@@ -357,6 +358,21 @@ function GhidraLab(): JSX.Element {
     },
     [config, loadBrowse, saveConfig],
   );
+
+  const bootstrapFloss = useCallback(async () => {
+    setBusy(true);
+    setNote({ tone: 'warn', text: 'Downloading FLOSS from its official release...' });
+    try {
+      const result = await bootstrapGhidraFloss();
+      setConfigDraft(result.config);
+      await refreshHealth();
+      setNote({ tone: 'ok', text: result.detail || 'FLOSS installed.' });
+    } catch (error) {
+      showError(error);
+    } finally {
+      setBusy(false);
+    }
+  }, [refreshHealth, showError]);
 
   const bootstrapPython = useCallback(async () => {
     setBusy(true);
@@ -833,6 +849,25 @@ function GhidraLab(): JSX.Element {
                   data-testid="ghidra-lab-capa-path"
                 />
               </label>
+              <label className={styles.field}>
+                <span>FLOSS executable (optional)</span>
+                <input
+                  className={styles.input}
+                  value={config?.flossExePath ?? ''}
+                  placeholder="C:\tools\floss.exe"
+                  onChange={(event) =>
+                    setConfigDraft((current) =>
+                      current ? { ...current, flossExePath: event.target.value } : current,
+                    )
+                  }
+                  data-testid="ghidra-lab-floss-path"
+                />
+              </label>
+              <div className={styles.hint}>
+                Recovers stack strings, tight strings and strings a routine decodes at run time --
+                the ones a string dump cannot see. On an obfuscated binary these are usually the
+                only interesting strings there are.
+              </div>
               <label className={styles.checkboxRow}>
                 <input
                   type="checkbox"
@@ -894,6 +929,15 @@ function GhidraLab(): JSX.Element {
                   data-testid="ghidra-lab-bootstrap"
                 >
                   Bootstrap pyghidra-mcp
+                </button>
+                <button
+                  type="button"
+                  className={styles.secondaryBtn}
+                  disabled={busy}
+                  onClick={() => void bootstrapFloss()}
+                  data-testid="ghidra-lab-download-floss"
+                >
+                  Download FLOSS
                 </button>
               </div>
               <div className={styles.hint}>

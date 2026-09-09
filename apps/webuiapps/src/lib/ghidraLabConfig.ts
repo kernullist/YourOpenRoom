@@ -75,6 +75,7 @@ export interface GhidraLabStoredConfig {
   sessionIdleTimeoutMs?: number;
   analysisTimeoutMs?: number;
   capaExePath?: string;
+  flossExePath?: string;
   symbolDownloads?: boolean;
   writeEnabled?: boolean;
 }
@@ -91,6 +92,7 @@ export const DEFAULT_GHIDRA_LAB_CONFIG: GhidraLabConfigView = {
   sessionIdleTimeoutMs: DEFAULT_IDLE_TIMEOUT_MS,
   analysisTimeoutMs: DEFAULT_ANALYSIS_TIMEOUT_MS,
   capaExePath: '',
+  flossExePath: '',
   symbolDownloads: false,
   writeEnabled: false,
 };
@@ -203,6 +205,7 @@ export function normalizeGhidraLabConfig(raw: unknown): GhidraLabConfigView {
       MAX_ANALYSIS_TIMEOUT_MS,
     ),
     capaExePath: normalizeAbsolutePath(value.capaExePath),
+    flossExePath: normalizeAbsolutePath(value.flossExePath),
     // Opt-IN, unlike the engine's own default: see the field comment.
     symbolDownloads: value.symbolDownloads === true,
     writeEnabled: value.writeEnabled === true,
@@ -217,6 +220,7 @@ export function toStoredGhidraLabConfig(config: GhidraLabConfigView): GhidraLabS
     ...(config.pythonExePath ? { pythonExePath: config.pythonExePath } : {}),
     ...(config.projectRoot ? { projectRoot: config.projectRoot } : {}),
     ...(config.capaExePath ? { capaExePath: config.capaExePath } : {}),
+    ...(config.flossExePath ? { flossExePath: config.flossExePath } : {}),
     maxMemMb: config.maxMemMb,
     binaryRoots: config.binaryRoots,
     httpPortStart: config.httpPortStart,
@@ -240,6 +244,7 @@ const PATCHABLE_KEYS: readonly (keyof GhidraLabStoredConfig)[] = [
   'sessionIdleTimeoutMs',
   'analysisTimeoutMs',
   'capaExePath',
+  'flossExePath',
   'symbolDownloads',
   'writeEnabled',
 ];

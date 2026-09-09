@@ -120,7 +120,7 @@ function checkById(result: ReturnType<typeof runGhidraLabPreflight>, id: string)
 }
 
 describe('runGhidraLabPreflight', () => {
-  it('reports six checks in a stable order, whatever the config', () => {
+  it('reports seven checks in a stable order, whatever the config', () => {
     const result = runGhidraLabPreflight(normalizeGhidraLabConfig({}), makeDeps({}));
     expect(result.checks.map((check) => check.id)).toEqual([
       'ghidra',
@@ -128,6 +128,7 @@ describe('runGhidraLabPreflight', () => {
       'python',
       'projects',
       'capa',
+      'floss',
       'roots',
     ]);
   });
@@ -446,5 +447,67 @@ describe('paths that are configured but not there', () => {
     expect(check.ok).toBe(false);
     expect(check.found + check.remedy).toContain('not a valid executable');
     expect(result.capaVersion).toBe('');
+  });
+});
+
+describe('the FLOSS row', () => {
+  const FLOSS = abs('tools', 'floss.exe');
+
+  it('says what an unset FLOSS costs, and points at the Download button', () => {
+    const check = checkById(runGhidraLabPreflight(fullConfig(), makeDeps(healthyWorld())), 'floss');
+    expect(check.ok).toBe(false);
+    expect(check.required).toBe(false);
+    expect(check.remedy).toContain('decodes at run time');
+    expect(check.remedy).toContain('Download');
+  });
+
+  it('reports a configured path that is not on disk', () => {
+    const check = checkById(
+      runGhidraLabPreflight(fullConfig({ flossExePath: FLOSS }), makeDeps(healthyWorld())),
+      'floss',
+    );
+    expect(check.found).toBe('not found');
+    expect(check.remedy).toContain(FLOSS);
+  });
+
+  it('reports a FLOSS that is present but will not run', () => {
+    const world = healthyWorld();
+    const files = new Set([...(world.files ?? []), FLOSS]);
+    const check = checkById(
+      runGhidraLabPreflight(
+        fullConfig({ flossExePath: FLOSS }),
+        makeDeps({
+          ...world,
+          files,
+          probes: (program, args) =>
+            program === FLOSS ? fail('not a valid executable') : world.probes!(program, args),
+        }),
+      ),
+      'floss',
+    );
+    expect(check.ok).toBe(false);
+    expect(check.found).toBe('did not run');
+    expect(check.remedy).toContain('not a valid executable');
+  });
+
+  it('reports the version a working FLOSS prints, and never blocks a mode', () => {
+    const world = healthyWorld();
+    const files = new Set([...(world.files ?? []), FLOSS]);
+    const result = runGhidraLabPreflight(
+      fullConfig({ flossExePath: FLOSS }),
+      makeDeps({
+        ...world,
+        files,
+        probes: (program, args) =>
+          program === FLOSS ? ok('floss 3.1.1') : world.probes!(program, args),
+      }),
+    );
+    const check = checkById(result, 'floss');
+    expect(check.ok).toBe(true);
+    expect(check.found).toContain('3.1.1');
+    expect(result.flossVersion).toContain('3.1.1');
+    // Optional means optional: a missing or broken FLOSS is a smaller report,
+    // never a lab that will not start.
+    expect(result.availableModes).toContain('headless');
   });
 });
