@@ -520,7 +520,15 @@ export function indicatorAnchorId(code: string): string {
  * them loses the fact that the binary has two decoders.
  */
 export function decodedAnchorId(routine: string, value: string): string {
-  return `decoded:${routine || 'unknown'}:${value.slice(0, 32)}`;
+  // The value goes into the id, so it must survive being written as a citation.
+  // A recovered string carrying `]` would end the bracket early: the report
+  // would cite a truncated id, enforcement would not find it, and the line
+  // would be deleted as invented -- losing the very finding FLOSS just made.
+  const safe = value
+    .slice(0, 32)
+    .replace(/[[\]\r\n]+/g, ' ')
+    .trim();
+  return `decoded:${routine || 'unknown'}:${safe}`;
 }
 
 export function dynApiAnchorId(symbol: string): string {

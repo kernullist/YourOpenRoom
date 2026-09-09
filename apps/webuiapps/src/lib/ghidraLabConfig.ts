@@ -609,6 +609,26 @@ export function buildAnalyzeHeadlessCommand(params: {
  * the system JDK 11 and produce an interactive prompt instead of a failure.
  * The JDK's bin is also prepended to PATH for the tools Ghidra shells out to.
  */
+/** What Python's getpass.getuser() looks for, in its order. */
+const IDENTITY_ENV_KEYS: readonly string[] = ['LOGNAME', 'USER', 'LNAME', 'USERNAME'];
+
+/**
+ * A user name for a child that inherited none.
+ *
+ * Read off USERPROFILE rather than from the OS so this stays a pure function of
+ * the environment it is given -- the same reason every other decision in this
+ * file is testable without touching the machine.
+ */
+export function userNameFrom(env: Readonly<Record<string, string>>): string {
+  const profile = env.USERPROFILE ?? env.HOME ?? '';
+  const leaf =
+    profile
+      .split(/[\\/]+/)
+      .filter(Boolean)
+      .pop() ?? '';
+  return leaf || 'openroom';
+}
+
 export function buildGhidraChildEnv(
   config: GhidraLabConfigView,
   baseEnv: NodeJS.ProcessEnv = process.env,
@@ -630,6 +650,21 @@ export function buildGhidraChildEnv(
     if (env.Path !== undefined) {
       env.Path = nextPath;
     }
+  }
+  // Guarantee an identity variable.
+  //
+  // Python's getpass.getuser() reads LOGNAME, USER, LNAME and USERNAME in that
+  // order and, finding none, falls back to `import pwd` -- a POSIX-only module.
+  // On Windows that is an outright ModuleNotFoundError deep inside an import
+  // chain, which is how it surfaces: a PyInstaller traceback ending in
+  // "No module named 'pwd'" rather than anything about the missing variable.
+  //
+  // vivisect calls it at import time, so BOTH optional engines here (FLOSS and
+  // capa) die on it. The parent usually has USERNAME and this is a no-op -- but
+  // a dev server launched from a service or a sanitized shell does not, and then
+  // the tool never runs at all. Measured on this machine.
+  if (!IDENTITY_ENV_KEYS.some((key) => env[key])) {
+    env.USERNAME = userNameFrom(env);
   }
   if (config.ghidraInstallDir) {
     env.GHIDRA_INSTALL_DIR = config.ghidraInstallDir;

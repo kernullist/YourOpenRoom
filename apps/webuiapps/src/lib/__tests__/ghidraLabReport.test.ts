@@ -14,6 +14,8 @@ import {
   buildDeterministicReport,
   buildLedgerText,
   buildReportPrompt,
+  countRequiredSections,
+  looksTruncated,
   enforceReportAnchors,
   parseVerifierResult,
   writeGhidraReport,
@@ -357,10 +359,20 @@ describe('writeGhidraReport', () => {
               '- Installs or talks to a kernel driver. [import:NtLoadDriver]',
               '- Its entry point is DriverEntry. [function:0x140001000]',
               '',
+              // Every required heading, so this test stays about citations
+              // rather than about the completeness guard.
+              '## Architecture and entry flow',
+              '## Notable functions',
+              '## Strings of interest',
+              '## What it does when it runs',
+              '## Dynamically resolved APIs',
+              '## Obfuscation',
+              '## Recovered strings',
+              '## Anti-analysis and packaging',
+              '## Coverage',
+              '',
               '## Open questions',
               '',
-              '- Nothing was executed.',
-              'padding to clear the minimum length gate '.repeat(6),
             ].join('\n'),
     });
     expect(result.modelWritten).toBe(true);
@@ -402,7 +414,7 @@ describe('writeGhidraReport', () => {
       '- Installs or talks to a kernel driver. [import:NtLoadDriver]',
       '- Its entry point is DriverEntry. [function:0x140001000]',
       '- Identity confirmed. [header:sha256]',
-      'padding to clear the minimum length gate '.repeat(6),
+      'padding to clear the minimum length gate. '.repeat(6),
     ].join('\n');
     const result = await writeGhidraReport(ledgerFixture(), {
       callModel: async (_prompt, _tokens, json) => {
@@ -431,7 +443,19 @@ describe('writeGhidraReport', () => {
       '',
       '- Installs or talks to a kernel driver. [import:NtLoadDriver]',
       '- Its entry point is DriverEntry. [function:0x140001000]',
-      'padding to clear the minimum length gate '.repeat(6),
+      // Every required heading, so this test stays about the rewrite rather
+      // than about the completeness guard.
+      '## Architecture and entry flow',
+      '## Notable functions',
+      '## Strings of interest',
+      '## What it does when it runs',
+      '## Dynamically resolved APIs',
+      '## Obfuscation',
+      '## Recovered strings',
+      '## Anti-analysis and packaging',
+      '## Coverage',
+      '## Open questions',
+      'padding to clear the minimum length gate. '.repeat(6),
     ].join('\n');
     const result = await writeGhidraReport(ledgerFixture(), {
       callModel: async (_prompt, _tokens, json) => {
@@ -458,7 +482,7 @@ describe('writeGhidraReport', () => {
               '',
               '- Installs or talks to a kernel driver. [import:NtLoadDriver]',
               '- It also steals passwords.',
-              'padding to clear the minimum length gate '.repeat(6),
+              'padding to clear the minimum length gate. '.repeat(6),
             ].join('\n'),
     });
     expect(result.droppedClaims).toBeGreaterThan(0);
@@ -652,5 +676,87 @@ describe('the report prompt', () => {
     expect(prompt).toContain('reachability and ordering ONLY');
     expect(prompt).toContain('do not claim anything was deobfuscated');
     expect(prompt).toContain('names a TECHNIQUE, not an API');
+  });
+});
+
+describe('a model that stopped before it finished', () => {
+  // Measured on a real run: the prompt grew to fourteen stages' worth of
+  // sections while the token budget stayed at the six-section figure, so the
+  // draft ended mid-sentence in "Notable functions" and the four deep-analysis
+  // sections were never written. It shipped anyway, because it had cited
+  // SOMETHING -- which is how a report silently loses the findings that cost the
+  // most to collect.
+
+  function fullSections(): string {
+    return [
+      '# client.exe -- Binary Analysis Report',
+      'Identity paragraph. [import:NtLoadDriver]',
+      '## Capability summary',
+      'It can load a driver. [import:NtLoadDriver]',
+      '## Architecture and entry flow',
+      'Entry is DriverEntry. [import:NtLoadDriver]',
+      '## Notable functions',
+      'One function stands out. [import:NtLoadDriver]',
+      '## Strings of interest',
+      'Nothing notable. [import:NtLoadDriver]',
+      '## What it does when it runs',
+      'A driver load is reachable. [import:NtLoadDriver]',
+      '## Dynamically resolved APIs',
+      'None found. [import:NtLoadDriver]',
+      '## Obfuscation',
+      'None found. [import:NtLoadDriver]',
+      '## Recovered strings',
+      'None recovered. [import:NtLoadDriver]',
+      '## Anti-analysis and packaging',
+      'Nothing suggested packing. [import:NtLoadDriver]',
+      '## Coverage',
+      'Every stage ran.',
+      '## Open questions',
+      'What loads the driver?',
+    ].join('\n');
+  }
+
+  it('counts the required sections a draft actually reached', () => {
+    expect(countRequiredSections(fullSections())).toBe(11);
+    expect(countRequiredSections('# Title\n## Capability summary\nx.')).toBe(1);
+    // Casing and trailing punctuation in a heading must not lose the match.
+    expect(countRequiredSections('## Capability Summary:\n## OBFUSCATION')).toBe(2);
+  });
+
+  it('calls a draft that stopped a third of the way through truncated', () => {
+    const cut = fullSections().split('## Strings of interest')[0];
+    expect(looksTruncated(cut)).toBe(true);
+  });
+
+  it('calls a draft that ends mid-sentence truncated, even with every heading', () => {
+    const cut = `${fullSections()}\nSeveral additional functions were included primarily to fill the analysis`;
+    expect(looksTruncated(cut)).toBe(true);
+  });
+
+  it('does not call a finished report truncated', () => {
+    expect(looksTruncated(fullSections())).toBe(false);
+    // Ending on a table or a fence is finished, not cut off.
+    expect(looksTruncated(`${fullSections()}\n| a | b |`)).toBe(false);
+  });
+
+  it('ships the deterministic report instead of a truncated draft', async () => {
+    const ledger = ledgerFixture();
+    const cut = fullSections().split('## Notable functions')[0];
+    const result = await writeGhidraReport(ledger, {
+      callModel: async (_prompt, _tokens, json) => (json ? '{"needsRewrite":false}' : cut),
+    });
+    // The draft cited real anchors, so the old "cited nothing" guard let it
+    // through. The section it never reached is the one the sweep paid for.
+    expect(result.modelWritten).toBe(false);
+    expect(result.report).toContain('## Recovered strings');
+    expect(result.report).toContain('## What it does when it runs');
+  });
+
+  it('still ships a complete model draft', async () => {
+    const result = await writeGhidraReport(ledgerFixture(), {
+      callModel: async (_prompt, _tokens, json) =>
+        json ? '{"needsRewrite":false,"findings":[]}' : fullSections(),
+    });
+    expect(result.modelWritten).toBe(true);
   });
 });

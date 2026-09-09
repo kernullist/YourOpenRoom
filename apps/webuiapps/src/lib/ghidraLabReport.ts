@@ -46,7 +46,15 @@ import {
 
 const MAX_LEDGER_CHARS = 40000;
 const MAX_REPORT_CHARS = 60000;
-const REPORT_TOKENS = 6000;
+/**
+ * Room for the whole report.
+ *
+ * Raised with the section count. At 6000 -- the budget from when there were six
+ * sections -- a real run ended mid-sentence in "Notable functions" and the four
+ * deep-analysis sections after it were simply never written. A truncated report
+ * is not a shorter report; it is one that silently omits its findings.
+ */
+const REPORT_TOKENS = 12000;
 const VERIFIER_TOKENS = 1500;
 
 /**
@@ -686,6 +694,70 @@ export function buildRewritePrompt(
   ].join('\n');
 }
 
+/**
+ * The headings a complete report has, in prompt order.
+ *
+ * Used to notice a model that stopped early. A draft missing most of these did
+ * not summarise the binary more briefly -- it ran out of room, and the sections
+ * it never reached are the ones the deep-analysis stages just paid for.
+ */
+const REQUIRED_SECTIONS: readonly string[] = [
+  'capability summary',
+  'architecture and entry flow',
+  'notable functions',
+  'strings of interest',
+  'what it does when it runs',
+  'dynamically resolved apis',
+  'obfuscation',
+  'recovered strings',
+  // Already in normalised form: the normaliser turns punctuation into spaces,
+  // so a hyphen here would never match the heading it came from.
+  'anti analysis and packaging',
+  'coverage',
+  'open questions',
+];
+
+/** How many of the required sections a draft must carry to be worth shipping. */
+const MIN_SECTION_COVERAGE = 0.6;
+
+export function countRequiredSections(report: string): number {
+  const headings = new Set(
+    report
+      .split(/\r?\n/)
+      .filter((line) => line.trim().startsWith('#'))
+      .map((line) =>
+        line
+          .replace(/^#+\s*/, '')
+          .replace(/[^a-z0-9 ]+/gi, ' ')
+          .trim()
+          .replace(/\s+/g, ' ')
+          .toLowerCase(),
+      ),
+  );
+  return REQUIRED_SECTIONS.filter((name) => headings.has(name)).length;
+}
+
+/**
+ * Did the model stop before it finished?
+ *
+ * Two tells, either of which is enough. A draft that reached fewer than most of
+ * its required headings ran out of budget; so did one whose last line of prose
+ * ends without terminal punctuation, which is what hitting a token cap
+ * mid-sentence looks like.
+ */
+export function looksTruncated(report: string): boolean {
+  if (countRequiredSections(report) < Math.ceil(REQUIRED_SECTIONS.length * MIN_SECTION_COVERAGE)) {
+    return true;
+  }
+  const lines = report
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const last = lines[lines.length - 1] ?? '';
+  const isProse = !/^[#|>*-]|^```|^\*/.test(last);
+  return isProse && last.length > 40 && !/[.!?:)\]`]$/.test(last);
+}
+
 export interface GhidraReportDeps {
   /** Absent -> the deterministic report is the deliverable. */
   callModel?(prompt: string, maxTokens: number, responseJson: boolean): Promise<string>;
@@ -809,9 +881,14 @@ export async function writeGhidraReport(
     deps.logError?.('ghidra-lab report verification failed', error);
   }
 
-  // A draft that lost almost everything to enforcement is worse than the
-  // deterministic report; ship the one that actually says something.
-  if (enforced.citedAnchors.length === 0) {
+  // A draft that lost almost everything to enforcement, or that stopped before
+  // it finished, is worse than the deterministic report -- which always carries
+  // every section. Ship the one that actually says something.
+  //
+  // Measured: a model asked for fourteen stages' worth of sections inside a
+  // six-section token budget ended mid-sentence with four sections missing, and
+  // shipped anyway because it had cited SOMETHING.
+  if (enforced.citedAnchors.length === 0 || looksTruncated(enforced.report)) {
     const fallback = enforceReportAnchors(deterministic, knownIds);
     return {
       report: appendEnforcementNote(fallback.report, fallback, anchorIndex.size),

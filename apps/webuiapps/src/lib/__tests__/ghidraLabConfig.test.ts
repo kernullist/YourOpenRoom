@@ -28,6 +28,7 @@ import {
   resolveJavaExePath,
   resolvePyghidraScriptPath,
   toStoredGhidraLabConfig,
+  userNameFrom,
 } from '../ghidraLabConfig';
 import type { GhidraLabConfigView } from '../ghidraLabTypes';
 
@@ -472,5 +473,46 @@ describe('derived paths', () => {
       'client-win64-shipping-exe-abcdef01',
     );
     expect(deriveGhidraProjectName('!!!', '')).toBe('binary');
+  });
+});
+
+describe('the identity variable a Python engine needs', () => {
+  it('supplies USERNAME when the parent had none', () => {
+    // Python's getpass.getuser() reads four names and, finding none, falls back
+    // to `import pwd` -- POSIX-only. On Windows that surfaces as a PyInstaller
+    // traceback ending in "No module named 'pwd'", nowhere near the real cause.
+    // vivisect calls it at import time, so FLOSS and capa both die on it.
+    const env = buildGhidraChildEnv(configWith({ jdkHome: abs('jdk21') }), {
+      SystemRoot: 'C:\\Windows',
+      USERPROFILE: 'C:\\Users\\kernulist',
+      Path: 'C:\\Windows',
+    });
+    expect(env.USERNAME).toBe('kernulist');
+  });
+
+  it('leaves an inherited identity alone, whichever of the four it is', () => {
+    for (const key of ['LOGNAME', 'USER', 'LNAME', 'USERNAME']) {
+      const env = buildGhidraChildEnv(configWith({}), {
+        USERPROFILE: 'C:\\Users\\someone-else',
+        [key]: 'real-user',
+      });
+      expect(env[key], key).toBe('real-user');
+      if (key !== 'USERNAME') {
+        // Nothing invented on top of an identity that was already there.
+        expect(env.USERNAME, key).toBeUndefined();
+      }
+    }
+  });
+
+  it('falls back to a name rather than leaving the child with none', () => {
+    const env = buildGhidraChildEnv(configWith({}), { SystemRoot: 'C:\\Windows' });
+    expect(env.USERNAME).toBe('openroom');
+  });
+
+  it('reads the leaf of a profile path, on either separator', () => {
+    expect(userNameFrom({ USERPROFILE: 'C:\\Users\\kernulist' })).toBe('kernulist');
+    expect(userNameFrom({ USERPROFILE: 'C:/Users/kernulist/' })).toBe('kernulist');
+    expect(userNameFrom({ HOME: '/home/kernulist' })).toBe('kernulist');
+    expect(userNameFrom({})).toBe('openroom');
   });
 });

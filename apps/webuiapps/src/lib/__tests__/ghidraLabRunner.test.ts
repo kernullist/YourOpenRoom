@@ -159,7 +159,20 @@ describe('GhidraLabRunManager', () => {
               '',
               '- Can load a kernel driver. [import:NtLoadDriver]',
               '- Entry point is DriverEntry. [function:0x1000]',
-              'padding to clear the minimum length gate '.repeat(6),
+              // Every required heading: a draft missing most of them reads as a
+              // model that ran out of budget, and the writer prefers the
+              // deterministic report over a truncated one.
+              '## Architecture and entry flow',
+              '## Notable functions',
+              '## Strings of interest',
+              '## What it does when it runs',
+              '## Dynamically resolved APIs',
+              '## Obfuscation',
+              '## Recovered strings',
+              '## Anti-analysis and packaging',
+              '## Coverage',
+              '## Open questions',
+              'padding to clear the minimum length gate. '.repeat(6),
             ].join('\n'),
     });
     const started = harness.manager.start({

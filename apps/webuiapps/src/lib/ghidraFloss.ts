@@ -227,9 +227,18 @@ export function countByKind(
  * server's Node process, FLOSS emulates and can run for minutes, and a
  * synchronous spawn there freezes every other request for the whole run.
  *
- * `--no static` is deliberate. The sweep already has a static string stage, and
- * asking FLOSS for them again doubles the runtime to produce a list we would
- * throw away.
+ * The argument vector is exact, and both halves of it were wrong at first:
+ *
+ *   * The JSON switch is `-j`. `--json` is not a FLOSS flag at all -- it exits
+ *     with a usage message, which the stage then reported as "did not produce a
+ *     result". Measured on 3.1.1.
+ *   * `--no` takes one or more choices, so argparse swallows a following
+ *     positional into it: `--no static <sample>` fails with "invalid choice:
+ *     <path>". `--` ends the option list and makes the sample unambiguous.
+ *
+ * `--no static` itself is deliberate: the sweep already has a static string
+ * stage, and asking FLOSS for them again doubles a run that takes minutes to
+ * produce a list we would throw away.
  */
 export function runFloss(
   params: { binaryPath: string; config: GhidraLabConfigView },
@@ -252,7 +261,7 @@ export function runFloss(
 
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawnFloss(exe, ['--json', '--no', 'static', params.binaryPath], {
+      child = spawnFloss(exe, ['-j', '--no', 'static', '--', params.binaryPath], {
         env: buildGhidraChildEnv(params.config),
         windowsHide: true,
         shell: false,

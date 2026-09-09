@@ -15,6 +15,7 @@ import {
   selectInterestingDecoded,
 } from '../ghidraFloss';
 import { normalizeGhidraLabConfig } from '../ghidraLabConfig';
+import { decodedAnchorId } from '../ghidraLabTypes';
 
 const BINARY = 'C:\\bins\\client.exe';
 
@@ -210,9 +211,16 @@ describe('runFloss', () => {
     emit('out:data', '{"strings":{}}');
     emit('close', 0);
     await pending;
-    // Asking for them again doubles a run that already takes minutes.
-    expect(args).toContain('--json');
+    // The JSON switch is `-j`; `--json` is not a FLOSS flag at all and exits
+    // with a usage message, which the stage then reports as "did not produce a
+    // result". Measured against 3.1.1.
+    expect(args).toContain('-j');
+    expect(args).not.toContain('--json');
+    // Asking for static strings again doubles a run that already takes minutes.
     expect(args.join(' ')).toContain('--no static');
+    // `--no` takes one or more choices, so without the separator argparse
+    // swallows the sample into it: "invalid choice: <path>".
+    expect(args[args.length - 2]).toBe('--');
     expect(args[args.length - 1]).toBe(BINARY);
   });
 
@@ -271,5 +279,27 @@ describe('runFloss', () => {
     await Promise.resolve();
     emit('error', new Error('ENOENT'));
     expect((await pending).error).toBe('ENOENT');
+  });
+});
+
+describe('decodedAnchorId', () => {
+  it('keeps a recovered string citable, whatever is in it', () => {
+    // The value goes into the id and the id gets written inside brackets. A
+    // recovered string carrying `]` would end the citation early, enforcement
+    // would not find the truncated id, and the line would be deleted as
+    // invented -- losing the finding FLOSS had just made.
+    const id = decodedAnchorId('0x401000', 'array[0] = key ^ 0x2a;');
+    expect(id).not.toContain(']');
+    expect(id).not.toContain('[');
+    expect(id.startsWith('decoded:0x401000:')).toBe(true);
+  });
+
+  it('folds newlines out of a multi-line recovery', () => {
+    const id = decodedAnchorId('0x1', ['line one', 'line two'].join('\r\n'));
+    expect(id).toBe('decoded:0x1:line one line two');
+  });
+
+  it('says so when the decoder is unknown, rather than leaving a gap', () => {
+    expect(decodedAnchorId('', 'plain')).toBe('decoded:unknown:plain');
   });
 });
