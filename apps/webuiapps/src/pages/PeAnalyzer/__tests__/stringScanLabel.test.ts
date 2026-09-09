@@ -47,3 +47,22 @@ describe('stringScanLabel', () => {
     expect(label).not.toMatch(/of \d+ strings/);
   });
 });
+
+describe('an analysis saved before these fields existed', () => {
+  it('does not take the panel down for a missing total', () => {
+    // Analyses live on the NAS and are read back. A record written before the
+    // scan reported its totals arrives with them undefined, and the label used
+    // to call toLocaleString on that.
+    const label = stringScanLabel({
+      shown: 160,
+      suspiciousShown: 12,
+    } as Parameters<typeof stringScanLabel>[0]);
+    expect(label).toContain('160 sampled strings');
+    expect(label).toContain('12 of 12 suspicious shown');
+  });
+
+  it('treats an undefined truncated flag as not truncated', () => {
+    const label = stringScanLabel({ shown: 5, suspiciousShown: 0, total: 5 });
+    expect(label).not.toContain('the rest were counted');
+  });
+});

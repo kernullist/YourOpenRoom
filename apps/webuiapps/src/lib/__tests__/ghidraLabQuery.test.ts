@@ -306,3 +306,19 @@ describe('a page that came back exactly full', () => {
     expect(capGhidraQueryRows(rows).truncated).toBe(false);
   });
 });
+
+describe('the limit a page is judged against', () => {
+  it('flags a full page at a smaller limit the caller asked for', () => {
+    // The module default is not the only limit in play: a caller can ask for
+    // fewer rows, and fifty rows back from a request for fifty is just as much
+    // "there are more" as two hundred from a request for two hundred.
+    const rows = Array.from({ length: 50 }, (_unused, index) => ({ name: `Row${index}` }));
+    expect(capGhidraQueryRows(rows, 50).truncated).toBe(true);
+    expect(capGhidraQueryRows(rows, 51).truncated).toBe(false);
+  });
+
+  it('does not call an empty answer truncated when the limit is zero', () => {
+    expect(capGhidraQueryRows([], 0).truncated).toBe(false);
+    expect(capGhidraQueryRows([], 0).rowCount).toBe(0);
+  });
+});

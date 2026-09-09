@@ -41,6 +41,7 @@ import {
   type PyghidraLaunchKind,
 } from './ghidraLabConfig';
 import {
+  GHIDRA_QUERY_MAX_ROWS,
   capGhidraQueryRows,
   normalizeGhidraToolResult,
   planGhidraQuery,
@@ -689,7 +690,14 @@ export class GhidraLabSessionManager {
     record.activeQueries += 1;
     try {
       const payload = await client.callTool(tool, plan.args);
-      const capped = capGhidraQueryRows(normalizeGhidraToolResult(payload));
+      // Cap against what was asked for. planGhidraQuery only ever lowers the
+      // limit, so a caller that asked for fifty rows and got fifty has more
+      // behind them just as surely as one that asked for the module default.
+      const requestedLimit =
+        typeof plan.args.limit === 'number' && plan.args.limit > 0
+          ? Math.min(plan.args.limit, GHIDRA_QUERY_MAX_ROWS)
+          : GHIDRA_QUERY_MAX_ROWS;
+      const capped = capGhidraQueryRows(normalizeGhidraToolResult(payload), requestedLimit);
       record.queryCount += 1;
       record.lastUsedAt = this.deps.now();
       return {

@@ -892,7 +892,10 @@ function appendEnforcementNote(
     '---',
     '',
     `*Evidence check: ${result.citedAnchors.length} of ${anchorCount} ledger anchors are cited above.*`,
-    ...anchorCapNotes(ledger),
+    // The deterministic report already carries these in Coverage, and it is
+    // what ships when the model's draft is discarded -- so the footer would
+    // have said the same thing twice on exactly the runs that fall back.
+    ...anchorCapNotes(ledger).filter((line) => !report.includes(line)),
   ];
   if (result.droppedClaims > 0) {
     notes.push(

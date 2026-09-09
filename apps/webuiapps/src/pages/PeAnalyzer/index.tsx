@@ -143,8 +143,11 @@ function findLatestAnalysisForSample(
  * separately.
  */
 function importChips(entry: PeImportModule): string[] {
-  const suspicious = entry.suspiciousNames;
-  const rest = entry.names.filter((name) => !suspicious.includes(name));
+  // Same reason as the label above: a module read back from a stored analysis
+  // can predate this field, and `undefined.includes` is a blank screen.
+  const suspicious = entry.suspiciousNames ?? [];
+  const names = entry.names ?? [];
+  const rest = names.filter((name) => !suspicious.includes(name));
   return [...suspicious, ...rest];
 }
 
@@ -162,18 +165,24 @@ function suspiciousStrings(strings: PeStringHit[]): PeStringHit[] {
 export function stringScanLabel(params: {
   shown: number;
   suspiciousShown: number;
-  suspiciousTotal: number;
-  total: number | null;
-  truncated: boolean;
+  /** Absent on an analysis saved before the scan reported its totals. */
+  suspiciousTotal?: number | null;
+  total?: number | null;
+  truncated?: boolean;
 }): string {
-  // A null total means the source was itself paged and the real number is not
-  // knowable -- saying "of N" there would be inventing one.
+  // Analyses are written to the NAS and read back, so a record can predate any
+  // field added here. An unknown total is treated exactly like a total the
+  // source could not give -- the alternative was `undefined.toLocaleString()`,
+  // which takes the whole panel down for anyone with a saved analysis.
+  const total = typeof params.total === 'number' ? params.total : null;
+  const suspiciousTotal =
+    typeof params.suspiciousTotal === 'number' ? params.suspiciousTotal : params.suspiciousShown;
   const scanned =
-    params.total === null
+    total === null
       ? `${params.shown.toLocaleString()} sampled`
-      : `${params.shown.toLocaleString()} of ${params.total.toLocaleString()}`;
+      : `${params.shown.toLocaleString()} of ${total.toLocaleString()}`;
   const rest = params.truncated ? ' (the rest were counted, not kept)' : '';
-  return `${params.suspiciousShown} of ${params.suspiciousTotal.toLocaleString()} suspicious shown; ${scanned} strings${rest}`;
+  return `${params.suspiciousShown} of ${suspiciousTotal.toLocaleString()} suspicious shown; ${scanned} strings${rest}`;
 }
 
 function parseNumericAddress(raw: string | null | undefined): number | null {

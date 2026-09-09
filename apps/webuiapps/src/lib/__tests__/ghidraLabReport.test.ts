@@ -917,3 +917,20 @@ describe('what the report says about evidence it never had', () => {
     expect(buildDeterministicReport(ledger)).toContain('(4 of 37 matching imports)');
   });
 });
+
+describe('the anchor-cap note in the report that ships', () => {
+  it('appears once, not twice, when the deterministic report is the one shipped', async () => {
+    // The fallback ships buildDeterministicReport, which already carries the
+    // note in Coverage; the enforcement footer would then repeat it verbatim on
+    // exactly the runs that fall back.
+    const ledger = ledgerFixture();
+    (ledger.facts as Record<string, unknown>).anchorCaps = [
+      { kind: 'import', kept: 120, found: 200 },
+    ];
+    // No model configured: the deterministic report is what ships.
+    const written = await writeGhidraReport(ledger);
+    const note = '80 import anchors were not recorded';
+    const occurrences = written.report.split(note).length - 1;
+    expect(occurrences).toBe(1);
+  });
+});

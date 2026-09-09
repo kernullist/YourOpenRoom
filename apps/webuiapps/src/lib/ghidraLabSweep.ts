@@ -106,7 +106,10 @@ function recordAnchorCap(ledger: GhidraSweepLedger, kind: string, kept: number, 
   if (found <= kept) {
     return;
   }
-  const caps = (ledger.facts.anchorCaps ?? []) as { kind: string; kept: number; found: number }[];
+  const existing = ledger.facts.anchorCaps;
+  const caps = Array.isArray(existing)
+    ? (existing as { kind: string; kept: number; found: number }[])
+    : [];
   caps.push({ kind, kept, found });
   ledger.facts.anchorCaps = caps;
 }
@@ -685,7 +688,16 @@ export async function runGhidraSweep(params: {
         ...imports.filter((entry) => !willBeCited.has(entry.symbol)),
       ];
       const seenImportIds = new Set<string>();
-      recordAnchorCap(ledger, 'import', MAX_IMPORT_ANCHORS, ordered.length);
+      // Counted in anchors, not in rows. The same symbol can be imported from
+      // two libraries -- which is why the dedupe below exists -- and counting
+      // rows would report evidence as missing that was never a separate anchor
+      // to begin with.
+      recordAnchorCap(
+        ledger,
+        'import',
+        MAX_IMPORT_ANCHORS,
+        new Set(imports.map((entry) => importAnchorId(entry.symbol))).size,
+      );
       for (const entry of ordered.slice(0, MAX_IMPORT_ANCHORS)) {
         const id = importAnchorId(entry.symbol);
         if (seenImportIds.has(id)) {
