@@ -772,6 +772,14 @@ export function collectStrings(buffer: Buffer): PeStringScan {
   };
 }
 
+/** Indicators printed with a finding. The rest are counted, not printed. */
+const MAX_FINDING_EVIDENCE = 6;
+
+/** Take a readable handful of evidence, and remember how much there was. */
+function evidenceSample(items: readonly string[]): { evidence: string[]; evidenceTotal: number } {
+  return { evidence: items.slice(0, MAX_FINDING_EVIDENCE), evidenceTotal: items.length };
+}
+
 /**
  * How many suspicious imports per module travel with the analysis.
  *
@@ -825,12 +833,12 @@ export function buildFindings(
       category: 'packer',
       description:
         'Section names and entropy suggest the sample may be packed, compressed, or intentionally obfuscated.',
-      evidence: [
+      ...evidenceSample([
         ...packedSections.map((section) => `Section ${section.name} matches known packer naming`),
         ...highEntropySections.map(
           (section) => `Section ${section.name} has high entropy (${section.entropy.toFixed(2)})`,
         ),
-      ].slice(0, 6),
+      ]),
     });
   }
 
@@ -846,7 +854,7 @@ export function buildFindings(
       category: 'imports',
       description:
         'The import set includes APIs commonly used for remote allocation, memory writing, or remote thread creation.',
-      evidence: suspiciousImportNames.slice(0, 6),
+      ...evidenceSample(suspiciousImportNames),
     });
   }
 
@@ -865,12 +873,12 @@ export function buildFindings(
       category: 'network',
       description:
         'Import names and embedded strings suggest external communication, download logic, or URL handling.',
-      evidence: [
+      ...evidenceSample([
         ...suspiciousImportNames.filter((name) =>
           NETWORK_IMPORT_HINTS.some((hint) => name.toLowerCase().includes(hint)),
         ),
         ...suspiciousStrings.filter((value) => /^https?:\/\//i.test(value)).slice(0, 3),
-      ].slice(0, 6),
+      ]),
     });
   }
 
@@ -886,11 +894,11 @@ export function buildFindings(
       category: 'anti-analysis',
       description:
         'The sample references APIs often used for debugger checks, timing evasion, or environment probing.',
-      evidence: suspiciousImportNames
-        .filter((name) =>
+      ...evidenceSample(
+        suspiciousImportNames.filter((name) =>
           ANTI_ANALYSIS_IMPORT_HINTS.some((hint) => name.toLowerCase().includes(hint)),
-        )
-        .slice(0, 6),
+        ),
+      ),
     });
   }
 
@@ -902,7 +910,7 @@ export function buildFindings(
       category: 'tls',
       description:
         'TLS callbacks can execute before the regular entry point and are worth reviewing during manual reversing.',
-      evidence: ['TLS data directory is present in the optional header'],
+      ...evidenceSample(['TLS data directory is present in the optional header']),
     });
   }
 
@@ -914,9 +922,9 @@ export function buildFindings(
       category: 'entrypoint',
       description:
         'The entry point resolves inside a writable section, which is unusual for normal compiler output and can indicate unpacking or self-modifying behavior.',
-      evidence: [
+      ...evidenceSample([
         `Entry point RVA ${metadata.entryPointRva} falls inside ${entrySection.name} (${entrySection.permissions})`,
-      ],
+      ]),
     });
   }
 
@@ -928,11 +936,14 @@ export function buildFindings(
       category: 'strings',
       description:
         'Embedded strings reference shell execution, registry run keys, or external destinations that deserve review.',
-      evidence: suspiciousStrings.slice(0, 6),
+      ...evidenceSample(suspiciousStrings),
     });
   }
 
-  return findings.slice(0, 8);
+  // No cap. There are seven of these and they are the product of the whole
+  // triage; quietly dropping one to keep a list short is the one thing this
+  // function must not do.
+  return findings;
 }
 
 function buildSummary(
@@ -1193,6 +1204,7 @@ async function ensureIdaProBackend(configFile: string) {
 function normalizeHeadlessFunctions(payload: unknown): {
   functions: PeBackendFunctionSummary[];
   total: number;
+  totalKnown: boolean;
   offset: number;
   count: number;
   limit: number;
@@ -1209,6 +1221,7 @@ function normalizeHeadlessFunctions(payload: unknown): {
   return {
     functions,
     total: asNumber(data.total, functions.length),
+    totalKnown: typeof data.total === 'number',
     offset: asNumber(data.offset, 0),
     count: asNumber(data.count, functions.length),
     limit: asNumber(data.limit, functions.length),
@@ -1402,6 +1415,7 @@ function doesIdaProMetadataMatchSample(
 function normalizeIdaProFunctions(payload: unknown): {
   functions: PeBackendFunctionSummary[];
   total: number;
+  totalKnown: boolean;
   offset: number;
   count: number;
   limit: number;
@@ -1420,6 +1434,7 @@ function normalizeIdaProFunctions(payload: unknown): {
   return {
     functions: data,
     total: asNumber(page.total, data.length),
+    totalKnown: typeof page.total === 'number',
     offset: asNumber(page.offset, 0),
     count: asNumber(page.count, data.length),
     limit: data.length,

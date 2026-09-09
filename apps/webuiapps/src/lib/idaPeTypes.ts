@@ -102,6 +102,12 @@ export interface PeDataDirectorySummary {
 }
 
 export interface PeFinding {
+  /**
+   * How many indicators this finding assembled, before `evidence` was cut to a
+   * readable handful. A list of six with nothing saying six of what reads as
+   * the complete case for the finding.
+   */
+  evidenceTotal: number;
   id: string;
   title: string;
   severity: PeFindingSeverity;
@@ -242,7 +248,15 @@ export interface IdaPeAnalysisResponse {
 
 export interface IdaPeFunctionsResponse {
   sessionId: string;
+  /** The engine's count when it gave one; otherwise the size of this page. */
   total: number;
+  /**
+   * False when the engine sent no total and `total` is only what arrived.
+   *
+   * Presenting a page size as a total is how a paged list comes to look
+   * complete -- the same mistake as a cap that does not say it is one.
+   */
+  totalKnown: boolean;
   offset: number;
   count: number;
   limit: number;

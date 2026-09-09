@@ -159,3 +159,69 @@ describe('the string scan and the size of what it kept', () => {
     expect(scan.hits[0].suspicious).toBe(true);
   });
 });
+
+describe('evidence, and how much of it there was', () => {
+  function moduleWith(names: string[]): PeImportModule {
+    return {
+      module: 'kernel32.dll',
+      count: names.length,
+      suspiciousCount: names.length,
+      names,
+      suspiciousNames: names,
+    };
+  }
+
+  it('counts the indicators behind a finding, not the ones it prints', () => {
+    // Six chips with nothing saying "six of what" read as the complete case for
+    // a finding. On a real import table there can be many more.
+    const injection = [
+      'WriteProcessMemory',
+      'CreateRemoteThread',
+      'VirtualAllocEx',
+      'OpenProcess',
+      'NtWriteVirtualMemory',
+      'QueueUserAPC',
+      'VirtualProtectEx',
+      'RtlCreateUserThread',
+    ];
+    const findings = buildFindings(metadata, sections, [moduleWith(injection)], noStrings);
+    const found = findings.find((entry) => entry.id === 'process-injection');
+    expect(found?.evidence).toHaveLength(6);
+    expect(found?.evidenceTotal).toBe(injection.length);
+  });
+
+  it('reports evidenceTotal equal to the list when nothing was cut', () => {
+    const findings = buildFindings(
+      metadata,
+      sections,
+      [moduleWith(['WriteProcessMemory', 'CreateRemoteThread'])],
+      noStrings,
+    );
+    const found = findings.find((entry) => entry.id === 'process-injection');
+    expect(found?.evidence).toHaveLength(2);
+    expect(found?.evidenceTotal).toBe(2);
+  });
+
+  it('never drops a finding to keep the list short', () => {
+    // There are seven of these and they are the product of the whole triage.
+    // The old cap of eight could not bite yet, which is exactly why it would
+    // have gone unnoticed when an eighth was added.
+    const packed: PeSectionSummary[] = [
+      { ...sections[0], name: 'UPX0', entropy: 7.9 },
+      { ...sections[0], name: 'UPX1', entropy: 7.8 },
+    ];
+    const strings: PeStringHit[] = [
+      { value: 'powershell.exe -enc', kind: 'ascii', offset: '1000', suspicious: true },
+      { value: 'http://example.test/x', kind: 'ascii', offset: '1010', suspicious: true },
+    ];
+    const findings = buildFindings(
+      { ...metadata, tlsDirectoryPresent: true },
+      packed,
+      [moduleWith(['WriteProcessMemory', 'InternetOpenW', 'IsDebuggerPresent'])],
+      strings,
+    );
+    // Five distinct findings from one sample, none of them lost.
+    expect(new Set(findings.map((entry) => entry.id)).size).toBe(findings.length);
+    expect(findings.length).toBeGreaterThanOrEqual(5);
+  });
+});

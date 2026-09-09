@@ -34,6 +34,7 @@ import type {
   PeAnalyzerState,
   PeAnalysisView,
   PeFindingSeverity,
+  PeImportModule,
   PeSampleRecord,
   PeStringHit,
 } from '@/lib/idaPeTypes';
@@ -134,6 +135,19 @@ function findLatestAnalysisForSample(
   );
 }
 
+/**
+ * The import names worth putting on screen, suspicious ones first.
+ *
+ * `names` is a sample of the table in link order, and the suspicious ones can
+ * sit anywhere in it -- including past the cut, which is why they travel
+ * separately.
+ */
+function importChips(entry: PeImportModule): string[] {
+  const suspicious = entry.suspiciousNames;
+  const rest = entry.names.filter((name) => !suspicious.includes(name));
+  return [...suspicious, ...rest];
+}
+
 function suspiciousStrings(strings: PeStringHit[]): PeStringHit[] {
   return strings.filter((item) => item.suspicious).slice(0, 12);
 }
@@ -205,6 +219,12 @@ const PeAnalyzerPage: React.FC = () => {
   const [sidebarOpen, setSidebarOpen] = useState(DEFAULT_STATE.sidebarOpen);
   const [backendFunctions, setBackendFunctions] = useState<PeBackendFunctionSummary[]>([]);
   const [backendFunctionTotal, setBackendFunctionTotal] = useState(0);
+
+  // False when the engine sent no total and the number above is only the page
+
+  // that arrived. Printing that as a total is how a paged list looks complete.
+
+  const [backendFunctionTotalKnown, setBackendFunctionTotalKnown] = useState(true);
   const [functionDetail, setFunctionDetail] = useState<PeBackendFunctionDetail | null>(null);
   const [functionError, setFunctionError] = useState<string | null>(null);
   const [isFunctionsLoading, setIsFunctionsLoading] = useState(false);
@@ -673,6 +693,9 @@ const PeAnalyzerPage: React.FC = () => {
 
         setBackendFunctions(nextFunctions);
         setBackendFunctionTotal(response.total);
+        setBackendFunctionTotalKnown(response.totalKnown !== false);
+
+        setBackendFunctionTotalKnown(response.totalKnown !== false);
         setSelectedFunctionEa(preferredEntryFunctionEa || nextFunctions[0]?.address || null);
       } catch (error) {
         if (cancelled) return;
@@ -861,6 +884,15 @@ const PeAnalyzerPage: React.FC = () => {
                   <span>{item}</span>
                 </div>
               ))}
+              {highlightedFinding.evidenceTotal > highlightedFinding.evidence.length && (
+                <div className={styles.evidenceChip}>
+                  <ChevronLine />
+                  <span>
+                    and {highlightedFinding.evidenceTotal - highlightedFinding.evidence.length} more
+                    indicator(s) behind this finding
+                  </span>
+                </div>
+              )}
             </div>
           ) : (
             <div className={styles.emptyInline}>
@@ -895,7 +927,13 @@ const PeAnalyzerPage: React.FC = () => {
                 )}
               </div>
               <div className={styles.nameCloud}>
-                {entry.names.map((name) => (
+                {/*
+                  Suspicious first, then the rest of the sample. The badge above
+                  counts the whole import table, so a module reading "5
+                  suspicious" whose chips are the first 120 names in table order
+                  could show none of the five.
+                */}
+                {importChips(entry).map((name) => (
                   <span
                     key={`${entry.module}:${name}`}
                     className={`${styles.nameChip} ${
@@ -907,6 +945,11 @@ const PeAnalyzerPage: React.FC = () => {
                     {name}
                   </span>
                 ))}
+                {entry.count > importChips(entry).length && (
+                  <span className={styles.nameChip}>
+                    +{(entry.count - importChips(entry).length).toLocaleString()} more
+                  </span>
+                )}
               </div>
             </div>
           ))}
@@ -1010,7 +1053,11 @@ const PeAnalyzerPage: React.FC = () => {
         <aside className={styles.functionSidebar}>
           <div className={styles.panelHeader}>
             <h3>Functions</h3>
-            <span className={styles.mutedLabel}>{backendFunctionTotal}</span>
+            <span className={styles.mutedLabel}>
+              {backendFunctionTotalKnown
+                ? backendFunctionTotal.toLocaleString()
+                : `at least ${backendFunctionTotal.toLocaleString()}`}
+            </span>
           </div>
           <label className={styles.functionSearch}>
             <Search size={15} />
