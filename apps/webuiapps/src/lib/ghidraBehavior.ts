@@ -492,9 +492,14 @@ export function selectFrontier(params: {
       byKey.set(node.address.toLowerCase(), node);
     }
   }
+  // Addresses are unique and names are not, so a node that has an address is
+  // judged by that alone. Checking the name too meant reading `strcmp` at one
+  // address marked the OTHER `strcmp` as read, and the twin was never expanded
+  // to. The name is still the answer for a node the engine gave no address.
   const isRead = (node: GhidraCallNode): boolean =>
-    params.read.has((node.name || '').toLowerCase()) ||
-    params.read.has((node.address || '').toLowerCase());
+    node.address
+      ? params.read.has(node.address.toLowerCase())
+      : params.read.has((node.name || '').toLowerCase());
 
   const roots = params.nodes.filter((node) => node.isEntryPoint || node.isExport);
   /** Walk only THROUGH functions already read: an unread one has no edges yet. */

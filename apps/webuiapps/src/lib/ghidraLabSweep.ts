@@ -362,32 +362,76 @@ export function extractFunctions(rows: readonly unknown[]): GhidraFunctionCandid
  * decompiled" even though every call succeeded. Match on the name, the address,
  * or the combined form.
  */
+/** Strip `0x` and leading zeros so `0x4123f0` and `004123f0` compare equal. */
+function normalizeAddress(value: string): string {
+  return value.toLowerCase().replace(/^0x/, '').replace(/^0+/, '');
+}
+
+/**
+ * The address half of an engine key.
+ *
+ * Keys arrive as `<name>-<address>` (`GetPdbDll-00413890`), sometimes with a
+ * namespace on the front (`MSVCR100D.DLL::strcmp-004110b9`). Splitting on the
+ * LAST dash leaves the address whatever the name contains.
+ */
+function keyAddress(key: string): string {
+  const dash = key.lastIndexOf('-');
+  return normalizeAddress(dash >= 0 ? key.slice(dash + 1) : key);
+}
+
+/**
+ * The name half of an engine key, with any namespace taken off.
+ *
+ * A CRT import comes back as `MSVCR100D.DLL::strcmp-004110b9`. Asked for
+ * `strcmp`, a prefix test never gets past the namespace, so a function with no
+ * address to match on was unfindable by the only other key it had.
+ */
+function keyName(key: string): string {
+  const dash = key.lastIndexOf('-');
+  const head = dash >= 0 ? key.slice(0, dash) : key;
+  const scope = head.lastIndexOf('::');
+  return (scope >= 0 ? head.slice(scope + 2) : head).toLowerCase();
+}
+
 export function findDecompiledBody(
   bodies: ReadonlyMap<string, string>,
   name: string,
   address: string,
 ): string {
-  const direct = (address ? bodies.get(address) : '') || bodies.get(name);
-  if (direct) {
-    return direct;
+  // An exact address key beats everything, including an exact name key. With a
+  // duplicated symbol the name is shared and the address is not, so consulting
+  // the name first can answer with the twin's body while the right one sits in
+  // the same map.
+  const byAddress = address ? bodies.get(address) : '';
+  if (byAddress) {
+    return byAddress;
   }
   const wantedName = name.toLowerCase();
-  // Addresses come back with and without a leading 0x depending on the field.
-  const wantedAddress = address.toLowerCase().replace(/^0x/, '');
+  const wantedAddress = normalizeAddress(address);
   // The address is checked first, and in a pass of its own, because a name is
   // not unique. A real PE had 36 of its 128 functions sharing a name with a
   // function at another address -- `strcmp`, `_atexit`, `initterm`: a thunk and
   // the body it jumps to. Matching on the name handed both the same body.
+  //
+  // The comparison is against the key's address HALF, never the whole key. A
+  // Ghidra name carries an address of its own: the thunk at 00411131 is called
+  // `thunk_FUN_00411440`, so a substring test for 00411440 matches the thunk's
+  // key and hands the real function at 00411440 the thunk's body instead. The
+  // report then cites an address for code that is not there.
   if (wantedAddress) {
     for (const [key, body] of bodies) {
-      if (key.toLowerCase().includes(wantedAddress)) {
+      if (keyAddress(key) === wantedAddress) {
         return body;
       }
     }
   }
+  const byName = bodies.get(name);
+  if (byName) {
+    return byName;
+  }
   for (const [key, body] of bodies) {
     const lowered = key.toLowerCase();
-    if (wantedName && (lowered === wantedName || lowered.startsWith(`${wantedName}-`))) {
+    if (wantedName && (lowered === wantedName || keyName(key) === wantedName)) {
       return body;
     }
   }
@@ -823,7 +867,11 @@ export async function runGhidraSweep(params: {
       // slots back from and holding them back just leaves functions unread: a
       // 128-function binary was stopping at 100 with four fifths of the
       // character budget untouched.
-      const fitsEntirely = functions.length <= GHIDRA_DEEP_READ_LIMIT;
+      const externalCount = functions.filter((entry) => entry.isExternal).length;
+      // Externals are not counted: they have no body here, so an image of 400
+      // rows where 300 are imports really does fit, and holding slots back from
+      // an expansion that has nothing to reach only leaves real code unread.
+      const fitsEntirely = functions.length - externalCount <= GHIDRA_DEEP_READ_LIMIT;
       const seedLimit = fitsEntirely
         ? GHIDRA_DEEP_READ_LIMIT
         : Math.max(1, Math.round(GHIDRA_DEEP_READ_LIMIT * (1 - DEEP_READ_PATH_RESERVE)));
@@ -859,10 +907,16 @@ export async function runGhidraSweep(params: {
         selected.length > 0
           ? `${selected.length} of ${functions.length} functions seeded for deep read${
               fitsEntirely
-                ? ' (every function in the image fits the budget)'
+                ? ' (every function with a body fits the budget)'
                 : `, ${GHIDRA_DEEP_READ_LIMIT - seedLimit} slots held for the entry path`
             }`
-          : 'no functions scored high enough to read',
+          : externalCount > 0
+            ? // Reading nothing is a real outcome and it deserves its cause. An
+              // external has no body in this image, so if the engine labels the
+              // whole list external the deep read is empty for a reason the
+              // reader can act on rather than for no stated reason at all.
+              `no functions to read: ${externalCount} of ${functions.length} are listed as external, which have no body in this binary`
+            : 'no functions scored high enough to read',
       );
     }
 
@@ -986,8 +1040,16 @@ export async function runGhidraSweep(params: {
             }
 
             bodies.push({ name: entry.name, address: entry.address, decompiled: capped, summary });
-            readKeys.add(entry.name.toLowerCase());
-            readKeys.add(entry.address.toLowerCase());
+            // Only real keys. An entry with no address used to add '' to
+            // the set, and the frontier's membership test then reported every
+            // node without an address as already read -- expansion stopped
+            // dead on any engine answer that comes back as bare names.
+            if (entry.name) {
+              readKeys.add(entry.name.toLowerCase());
+            }
+            if (entry.address) {
+              readKeys.add(entry.address.toLowerCase());
+            }
             anchor(ledger, {
               id: functionAnchorId(entry.address, entry.name),
               kind: 'function',
@@ -1086,10 +1148,14 @@ export async function runGhidraSweep(params: {
         endStage(
           view,
           selected.length === 0 ? 'skipped' : 'done',
-          `${read_ok} functions decompiled (${pathFollowed} by following ${
-            frontierFromEntry ? 'the entry path' : 'callers that were read'
-          } over ${expandRounds} rounds), ${summarized} summarized${
-            missing > 0 ? `, ${missing} returned no body` : ''
+          `${read_ok} functions decompiled${
+            pathFollowed > 0
+              ? ` (${pathFollowed} by following ${
+                  frontierFromEntry ? 'the entry path' : 'callers that were read'
+                } over ${expandRounds} rounds)`
+              : ''
+          }, ${summarized} summarized${missing > 0 ? `, ${missing} returned no body` : ''}${
+            budget <= 0 ? ', the character budget ran out' : ''
           }`,
           lastError ? `some batches failed: ${lastError}` : '',
         );

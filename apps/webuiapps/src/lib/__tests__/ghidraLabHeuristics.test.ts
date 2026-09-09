@@ -379,3 +379,33 @@ describe('selection against the shapes a real image produces', () => {
     expect(selected[0].name).toBe('ZzzHotPath');
   });
 });
+
+describe('what a thunk is allowed to displace', () => {
+  it('keeps a thunk entry point at the front, not at the back', () => {
+    // A packed image commonly has a thunk for an entry point, and that one jump
+    // is the only thing that says where the real code begins. Rank it last and
+    // the path expansion has no root to expand from -- which is the whole
+    // mechanism that reaches code no score can find.
+    const selected = selectFunctionsForDeepRead(
+      [
+        { name: 'entry', address: '00401000', isEntryPoint: true, isThunk: true },
+        { name: 'Worker', address: '00402000', xrefCount: 12, size: 4096 },
+      ],
+      40,
+    );
+    expect(selected[0].name).toBe('entry');
+  });
+
+  it('does not bury a DLL export just because it is a thunk', () => {
+    // Exported thunks are the API surface of most DLLs. Ranking them behind
+    // every internal helper reads the library's insides and never its contract.
+    const selected = selectFunctionsForDeepRead(
+      [
+        { name: 'PublicApi', address: '00401000', isExport: true, isThunk: true },
+        { name: 'internal_helper', address: '00402000', xrefCount: 4 },
+      ],
+      40,
+    );
+    expect(selected[0].name).toBe('PublicApi');
+  });
+});

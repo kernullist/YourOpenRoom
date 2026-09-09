@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildCallGraphFromBodies,
   computeReachableApis,
+  selectFrontier,
   detectBehaviorChains,
   extractApiSequence,
   mermaidFromCallGraph,
@@ -466,5 +467,44 @@ describe('mermaidFromCallGraph', () => {
     const diagram = mermaidFromCallGraph(nodes, 10);
     expect(diagram).toContain('truncated at 10 edges');
     expect(diagram.split('-->').length - 1).toBe(10);
+  });
+});
+
+describe('selectFrontier and the keys it trusts', () => {
+  const node = (over: Partial<GhidraCallNode>): GhidraCallNode => ({
+    name: '',
+    address: '',
+    callsFunctions: [],
+    callsImports: [],
+    isEntryPoint: false,
+    isExport: false,
+    ...over,
+  });
+
+  it('does not treat a function as read because its namesake was', () => {
+    // 36 of one binary's 128 functions share a name with a function at another
+    // address. Judging "already read" by name marked the twin as read too, and
+    // the frontier then refused to expand to code nobody had looked at.
+    const nodes = [
+      node({ name: 'entry', address: '00401000', isEntryPoint: true, callsFunctions: ['strcmp'] }),
+      node({ name: 'strcmp', address: '00402000' }),
+      node({ name: 'strcmp', address: '00403000' }),
+    ];
+    const frontier = selectFrontier({
+      nodes,
+      // The entry point and ONE of the two strcmps have been read.
+      read: new Set(['entry', '00401000', 'strcmp', '00402000']),
+      limit: 8,
+    });
+    expect(frontier.names).toContain('strcmp');
+  });
+
+  it('falls back to the name for a node the engine gave no address', () => {
+    const nodes = [
+      node({ name: 'root', isEntryPoint: true, callsFunctions: ['leaf'] }),
+      node({ name: 'leaf' }),
+    ];
+    expect(selectFrontier({ nodes, read: new Set(['root']), limit: 8 }).names).toEqual(['leaf']);
+    expect(selectFrontier({ nodes, read: new Set(['root', 'leaf']), limit: 8 }).names).toEqual([]);
   });
 });

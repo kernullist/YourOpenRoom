@@ -604,13 +604,19 @@ export function selectFunctionsForDeepRead(
       }
     }
 
-    if (candidate.isThunk) {
+    if (candidate.isThunk && !candidate.isEntryPoint && !candidate.isExport) {
       // A thunk is `jmp real_function`. Measured on a real PE: 67 of 128
       // "functions" were thunks, and 14 of them held seed slots beside the very
       // functions they jump to -- the same body read twice, once uselessly.
       //
       // Kept, because they are a few bytes each and they complete the call
       // graph, but never ahead of a function with a body worth reading.
+      //
+      // Entry points and exports are exempt, and have to be. A packed image
+      // often has a thunk for an entry point, and that jump is the only thing
+      // that says where the real code starts -- rank it last and the path
+      // expansion has nothing to expand from. A DLL's exports are frequently
+      // thunks too, and they are its whole API surface.
       deprioritized.push({
         ...candidate,
         score: Math.min(score, 0) - 1,

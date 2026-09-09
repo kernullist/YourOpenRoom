@@ -373,9 +373,14 @@ export function buildDeterministicReport(ledger: GhidraSweepLedger): string {
     lines.push('| Function | Address | Selected because | Summary | Evidence |');
     lines.push('| --- | --- | --- | --- | --- |');
     for (const entry of selected.slice(0, 40)) {
-      const body = deepRead.find(
-        (candidate) => candidate.address === entry.address || candidate.name === entry.name,
-      );
+      // Address first, and only then the name. Taking either meant the row
+      // for the second of two same-named functions matched the first one by
+      // name and printed its summary -- a description of one function's code
+      // filed under the other's address.
+      const body =
+        deepRead.find(
+          (candidate) => Boolean(candidate.address) && candidate.address === entry.address,
+        ) ?? deepRead.find((candidate) => candidate.name === entry.name);
       const label = entry.name || entry.address || '(unnamed)';
       // A summary containing a pipe or a newline would break the table row it
       // sits in, and the model writes these.
@@ -473,9 +478,10 @@ export function buildDeterministicReport(ledger: GhidraSweepLedger): string {
         // unique: this binary has two `_RTC_GetSrcLine` functions, and two
         // rows naming the same one read as a duplicate rather than as the
         // two separate resolver sites they are.
+        const where = entry.address ? ` @${entry.address}` : '';
         const site = entry.functionName
-          ? `\`${entry.functionName}\` @${entry.address}`
-          : `@${entry.address}`;
+          ? `\`${entry.functionName}\`${where}`
+          : where.trim() || 'an unnamed site';
         lines.push(
           `| \`${entry.symbol}\` [${dynApiAnchorId(entry.symbol)}] | ${site} | ${entry.evidence.replace(/_/g, ' ')} |`,
         );

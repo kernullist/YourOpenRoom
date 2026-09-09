@@ -791,3 +791,49 @@ describe('a model that stopped before it finished', () => {
     expect(result.modelWritten).toBe(true);
   });
 });
+
+describe('a resolver site with no address', () => {
+  it('does not print a bare @', () => {
+    const ledger = ledgerFixture();
+    (ledger.facts as Record<string, unknown>).dynamicApis = {
+      resolved: [
+        {
+          symbol: 'LoadLibraryW',
+          library: '',
+          functionName: 'resolve',
+          address: '',
+          evidence: 'literal',
+        },
+      ],
+      hashing: [],
+      resolverSites: [],
+    };
+    const report = buildDeterministicReport(ledger);
+    expect(report).toContain('`resolve`');
+    expect(report).not.toMatch(/@\s*\|/);
+  });
+});
+
+describe('the notable-functions table with duplicated symbols', () => {
+  it('gives each of two same-named functions its own summary', () => {
+    const ledger = ledgerFixture();
+    const facts = ledger.facts as Record<string, unknown>;
+    facts.selectedFunctions = [
+      { name: 'strcmp', address: '004110b9', reasons: ['has a symbol name'] },
+      { name: 'strcmp', address: '00411d8c', reasons: ['has a symbol name'] },
+    ];
+    facts.deepRead = [
+      { name: 'strcmp', address: '004110b9', summary: 'the import stub', decompiled: 'a' },
+      { name: 'strcmp', address: '00411d8c', summary: 'the thunk beside it', decompiled: 'b' },
+    ];
+    const report = buildDeterministicReport(ledger);
+    // Matching on either key took the first row for both, so one function's
+    // description was printed under the other function's address.
+    expect(report).toContain('the import stub');
+    expect(report).toContain('the thunk beside it');
+    const stub = report.indexOf('the import stub');
+    const thunk = report.indexOf('the thunk beside it');
+    expect(report.slice(0, stub)).toContain('004110b9');
+    expect(report.slice(stub, thunk)).toContain('00411d8c');
+  });
+});

@@ -937,24 +937,38 @@ describe('the deep-analysis stages', () => {
     // Ghidra writes `___tmainCRTStartup()` while its symbol table holds
     // `FID_conflict:_wmainCRTStartup`; the edge out of `entry` cannot be joined
     // by name. Expansion still has somewhere to go, and has to say which.
+    //
+    // The filler exists to push the image past the whole read budget. Under it,
+    // every function is seeded, nothing is left to expand to, and the test
+    // proves nothing about expansion at all. It is deliberately ranked between
+    // `helper` (which must be seeded, since expansion walks out from what was
+    // read) and `deeper` (which must not be).
+    const filler = Array.from({ length: 200 }, (_unused, index) => ({
+      name: `Filler${index}`,
+      address: `0x${(0x500000 + index * 16).toString(16)}`,
+      size: 1024,
+      refcount: 5,
+    }));
     const { ledger } = await sweep({
       answers: {
         imports: outcome([{ library: 'kernel32.dll', name: 'Sleep' }]),
         functions: outcome([
           { name: 'entry', address: '0x401000', is_entry: true, size: 16 },
-          { name: 'helper', address: '0x402000', size: 4096, xref_count: 30 },
+          { name: 'helper', address: '0x402000', size: 8192, refcount: 50 },
           { name: 'deeper', address: '0x403000', size: 16 },
+          ...filler,
         ]),
         decompile: () =>
           outcome([
-            { name: 'entry', code: '___tmainCRTStartup();' },
-            { name: 'helper', code: 'deeper();' },
-            { name: 'deeper', code: 'Sleep(1000);' },
+            { name: 'entry-0x401000', code: '___tmainCRTStartup();' },
+            { name: 'helper-0x402000', code: 'deeper();' },
+            { name: 'deeper-0x403000', code: 'Sleep(1000);' },
           ]),
       },
       deps: {},
     });
     const read = (ledger.facts.deepRead as { name: string }[]).map((entry) => entry.name);
+    expect(read).toContain('helper');
     expect(read).toContain('deeper');
     expect(stage(ledger, 'deepread').summary).toContain('callers that were read');
   });
@@ -1213,5 +1227,149 @@ describe('when one of the engine keys is ambiguous', () => {
     expect(queriesOf(deps).filter((entry) => entry.kind === 'decompile')).toHaveLength(2);
     expect(stage(ledger, 'deepread').state).toBe('failed');
     expect(stage(ledger, 'deepread').summary).toBe('no function could be decompiled');
+  });
+});
+
+describe('matching a decompiled body back to the function that was asked for', () => {
+  it('does not hand a function the body of a thunk that merely names it', () => {
+    // Both shapes are real, from the same binary. The thunk lives at 00411131
+    // and is called `thunk_FUN_00411440` -- its NAME carries the address of the
+    // function it jumps to. A substring test for 00411440 therefore matches the
+    // thunk's key, and the function actually at 00411440 is handed the wrong
+    // body: three lines of jump instead of the code, filed under an address
+    // where that code does not exist. Thirteen pairs in one 128-function image
+    // were exposed to this.
+    const bodies = new Map([
+      ['thunk_FUN_00411440-00411131', 'JMP FUN_00411440'],
+      ['FUN_00411440-00411440', 'the real body'],
+    ]);
+    expect(findDecompiledBody(bodies, 'FUN_00411440', '00411440')).toBe('the real body');
+    expect(findDecompiledBody(bodies, 'thunk_FUN_00411440', '00411131')).toBe('JMP FUN_00411440');
+  });
+
+  it('reads an address the same whether it is padded or prefixed', () => {
+    const bodies = new Map([['worker-0x4123f0', 'body']]);
+    expect(findDecompiledBody(bodies, 'worker', '004123f0')).toBe('body');
+    expect(findDecompiledBody(bodies, 'worker', '0x4123f0')).toBe('body');
+  });
+
+  it('finds a namespaced key by name when there is no address to match on', () => {
+    // `MSVCR100D.DLL::strcmp-004110b9` is what the engine returns for a CRT
+    // import. Without an address the name is the only key left, and a plain
+    // prefix test never matches past the namespace.
+    const bodies = new Map([['MSVCR100D.DLL::strcmp-004110b9', 'int strcmp(...)']]);
+    expect(findDecompiledBody(bodies, 'strcmp', '')).toBe('int strcmp(...)');
+  });
+
+  it('keeps expanding when the engine answers with bare names and no addresses', async () => {
+    // Some answers are plain strings, so every function carries an empty
+    // address. That empty string used to be written into the set of things
+    // already read, and the frontier's membership test then matched every node
+    // without an address -- so everything looked read and expansion stopped on
+    // the first round.
+    //
+    // The filler pushes the image past the read budget so expansion is the only
+    // way to reach `omega`; `Aalpha` sorts ahead of it into the seed.
+    const filler = Array.from({ length: 200 }, (_unused, index) => `Filler${index}`);
+    const { ledger } = await sweep({
+      answers: {
+        functions: outcome(['Aalpha', ...filler, 'omega']),
+        decompile: () =>
+          outcome([
+            { name: 'Aalpha', code: 'omega();' },
+            { name: 'omega', code: 'return 1;' },
+          ]),
+      },
+      deps: {},
+    });
+    const read = (ledger.facts.deepRead as { name: string }[]).map((entry) => entry.name);
+    expect(read).toContain('Aalpha');
+    expect(read).toContain('omega');
+  });
+
+  it('names the cause when every function the engine listed is external', async () => {
+    // Nothing to read is a result, and it has a reason worth printing. An
+    // external is an import wearing a function row.
+    const { ledger } = await sweep({
+      answers: {
+        functions: outcome([
+          { name: 'Sleep', address: '00405000', external: true },
+          { name: 'GetProcAddress', address: '00405010', external: true },
+        ]),
+      },
+      deps: {},
+    });
+    expect(stage(ledger, 'selection').state).toBe('skipped');
+    expect(stage(ledger, 'selection').summary).toContain('2 of 2 are listed as external');
+  });
+
+  it('leaves the path clause out when no path was followed', async () => {
+    const { ledger } = await sweep({
+      answers: {
+        functions: outcome([{ name: 'Only', address: '00401000', refcount: 3 }]),
+        decompile: () => outcome([{ name: 'Only-00401000', code: 'return 0;' }]),
+      },
+      deps: {},
+    });
+    const summary = stage(ledger, 'deepread').summary;
+    expect(summary).toBe('1 functions decompiled, 0 summarized');
+    expect(summary).not.toContain('over 0 rounds');
+  });
+});
+
+describe('the budget, and saying when it ran out', () => {
+  it('reports a read that stopped at the character budget', async () => {
+    // A truncated read used to look exactly like a complete one. The count is
+    // in the summary either way, so nothing said whether the sweep chose to
+    // stop reading or was stopped.
+    const many = Array.from({ length: 120 }, (_unused, index) => ({
+      name: `Big${index}`,
+      address: `0x${(0x401000 + index * 16).toString(16)}`,
+      refcount: 4,
+    }));
+    const huge = 'x'.repeat(GHIDRA_DECOMPILE_CHARS);
+    const { ledger } = await sweep({
+      answers: {
+        functions: outcome(many),
+        decompile: () =>
+          outcome(many.map((entry) => ({ name: `${entry.name}-${entry.address}`, code: huge }))),
+      },
+      deps: {},
+    });
+    const bodies = ledger.facts.deepRead as { decompiled: string }[];
+    expect(bodies.length).toBeLessThan(many.length);
+    // The cap is on characters stored, and the last body is trimmed to whatever
+    // was left rather than being dropped or stored whole.
+    const stored = bodies.reduce((total, entry) => total + entry.decompiled.length, 0);
+    expect(stored).toBeLessThanOrEqual(GHIDRA_DEEP_READ_TOTAL_CHARS);
+    expect(stage(ledger, 'deepread').summary).toContain('the character budget ran out');
+  });
+
+  it('counts only functions with a body towards "the whole image fits"', async () => {
+    // 300 rows, but 260 of them are imports wearing a function row. The 40 that
+    // have a body fit the budget with room to spare, and holding slots back for
+    // an expansion with nothing to reach would only leave real code unread.
+    const externals = Array.from({ length: 260 }, (_unused, index) => ({
+      name: `Imported${index}`,
+      address: `0x${(0x700000 + index * 16).toString(16)}`,
+      external: true,
+    }));
+    const real = Array.from({ length: 40 }, (_unused, index) => ({
+      name: `Real${index}`,
+      address: `0x${(0x401000 + index * 16).toString(16)}`,
+      refcount: 3,
+    }));
+    const { ledger } = await sweep({
+      answers: {
+        functions: outcome([...externals, ...real]),
+        decompile: () =>
+          outcome(
+            real.map((entry) => ({ name: `${entry.name}-${entry.address}`, code: 'return 0;' })),
+          ),
+      },
+      deps: {},
+    });
+    expect(stage(ledger, 'selection').summary).toContain('fits the budget');
+    expect((ledger.facts.deepRead as unknown[]).length).toBe(40);
   });
 });
