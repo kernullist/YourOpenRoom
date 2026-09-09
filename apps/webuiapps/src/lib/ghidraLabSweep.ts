@@ -39,6 +39,7 @@ import { findDynamicApis } from './ghidraDynamicApi';
 import {
   countByKind,
   parseFlossResult,
+  countInterestingDecoded,
   selectInterestingDecoded,
   type GhidraDecodedString,
   type GhidraFlossOutcome,
@@ -798,9 +799,16 @@ export async function runGhidraSweep(params: {
           if (!outcome.ok) {
             endStage(view, 'failed', 'FLOSS did not produce a result', outcome.error);
           } else {
-            decoded = selectInterestingDecoded(parseFlossResult(outcome.payload));
+            const recovered = parseFlossResult(outcome.payload);
+            decoded = selectInterestingDecoded(recovered);
             ledger.facts.decodedStrings = decoded;
-            const counts = countByKind(decoded);
+            // Counted over everything FLOSS gave back, not over the sample kept
+            // for the ledger. Counting the sample made MAX_DECODED_STRINGS the
+            // largest number of hidden strings any binary could be said to
+            // have, and said nothing about the ones left out.
+            const counts = countByKind(recovered);
+            const interesting = countInterestingDecoded(recovered);
+            const heldBack = interesting - decoded.length;
             for (const entry of decoded.slice(0, MAX_DECODED_ANCHORS)) {
               anchor(ledger, {
                 id: decodedAnchorId(entry.decodingRoutine, entry.value),
@@ -814,10 +822,14 @@ export async function runGhidraSweep(params: {
             endStage(
               view,
               'done',
-              `${decoded.length} hidden strings recovered (decoded ${counts.decoded}, tight ${counts.tight}, stack ${counts.stack})`,
-              decoded.length === 0
+              `${interesting} hidden strings recovered (decoded ${counts.decoded}, tight ${counts.tight}, stack ${counts.stack})${
+                heldBack > 0 ? `, ${decoded.length} kept` : ''
+              }`,
+              interesting === 0
                 ? 'FLOSS ran and found none, which is itself a finding: this binary does not hide its strings.'
-                : '',
+                : heldBack > 0
+                  ? `${heldBack} were counted but not kept: the ledger holds the ${decoded.length} most interesting, ranked by how they were produced.`
+                  : '',
             );
           }
         } catch (error) {

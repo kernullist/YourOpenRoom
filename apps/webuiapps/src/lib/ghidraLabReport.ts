@@ -246,6 +246,20 @@ export function buildAnchorIndex(ledger: GhidraSweepLedger): Map<string, GhidraE
 }
 
 /** The ledger, rendered for a prompt. Bounded, and deterministic facts first. */
+/**
+ * A line admitting that a table is a sample, printed only when it is one.
+ *
+ * A capped table with nothing above it reads as the whole set. Every number in
+ * this report is supposed to be checkable, and "the first 40 of them" is part
+ * of what makes a count checkable.
+ */
+function samplingNote(shown: number, total: number, what: string): string[] {
+  if (total <= shown) {
+    return [];
+  }
+  return [`> Showing the first ${shown} of ${total} ${what}.`, ''];
+}
+
 export function buildLedgerText(ledger: GhidraSweepLedger): string {
   const lines: string[] = [];
   const ordered = [...ledger.anchors].sort((left, right) => {
@@ -325,6 +339,7 @@ export function buildDeterministicReport(ledger: GhidraSweepLedger): string {
   if (capa.length > 0) {
     lines.push('#### From capa rules');
     lines.push('');
+    lines.push(...samplingNote(Math.min(40, capa.length), capa.length, 'capa matches'));
     for (const match of capa.slice(0, 40)) {
       const mapping = [...match.attack, ...match.mbc].filter(Boolean).join('; ');
       lines.push(`- ${match.rule}${mapping ? ` (${mapping})` : ''} [${capaAnchorId(match.rule)}]`);
@@ -370,6 +385,9 @@ export function buildDeterministicReport(ledger: GhidraSweepLedger): string {
     lines.push('> No functions scored high enough to be read in depth.');
     lines.push('');
   } else {
+    lines.push(
+      ...samplingNote(Math.min(40, selected.length), selected.length, 'functions that were read'),
+    );
     lines.push('| Function | Address | Selected because | Summary | Evidence |');
     lines.push('| --- | --- | --- | --- | --- |');
     for (const entry of selected.slice(0, 40)) {
@@ -447,6 +465,13 @@ export function buildDeterministicReport(ledger: GhidraSweepLedger): string {
         : '| Called API | Called by | Depth | Via |',
     );
     lines.push('| --- | --- | --- | --- |');
+    lines.push(
+      ...samplingNote(
+        Math.min(30, behavior.reachable.length),
+        behavior.reachable.length,
+        'reachable APIs',
+      ),
+    );
     for (const entry of behavior.reachable.slice(0, 30)) {
       lines.push(`| \`${entry.symbol}\` | ${entry.from} | ${entry.depth} | ${entry.via} |`);
     }
@@ -473,6 +498,7 @@ export function buildDeterministicReport(ledger: GhidraSweepLedger): string {
       lines.push('');
       lines.push('| API | Resolved in | Evidence |');
       lines.push('| --- | --- | --- |');
+      lines.push(...samplingNote(Math.min(40, named.length), named.length, 'resolved APIs'));
       for (const entry of named.slice(0, 40)) {
         // The address rides along with the name because the name is not
         // unique: this binary has two `_RTC_GetSrcLine` functions, and two
@@ -515,6 +541,7 @@ export function buildDeterministicReport(ledger: GhidraSweepLedger): string {
     );
     lines.push('');
   } else {
+    lines.push(...samplingNote(Math.min(60, decoded.length), decoded.length, 'recovered strings'));
     lines.push('| String | Kind | Decoded by |');
     lines.push('| --- | --- | --- |');
     for (const entry of decoded.slice(0, 60)) {
@@ -612,9 +639,15 @@ export function buildReportPrompt(ledger: GhidraSweepLedger): string {
     `Size: ${ledger.sizeBytes} bytes`,
     '',
     'Stage outcomes (say so in Coverage if a stage failed):',
+    // The detail carries "truncated at the engine cap", "some batches failed"
+    // and "waited for the string index". Sending only the summary meant the
+    // model wrote a Coverage section that could not mention any of them.
     ledger.stages
       .map(
-        (stage) => `- ${stage.stage}: ${stage.state}${stage.summary ? ` -- ${stage.summary}` : ''}`,
+        (stage) =>
+          `- ${stage.stage}: ${stage.state}${stage.summary ? ` -- ${stage.summary}` : ''}${
+            stage.detail ? ` (${stage.detail})` : ''
+          }`,
       )
       .join('\n'),
     '',

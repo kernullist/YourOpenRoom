@@ -1373,3 +1373,50 @@ describe('the budget, and saying when it ran out', () => {
     expect((ledger.facts.deepRead as unknown[]).length).toBe(40);
   });
 });
+
+describe('the FLOSS stage and the size of what it kept', () => {
+  function flossPayload(count: number) {
+    return {
+      strings: {
+        decoded_strings: Array.from({ length: count }, (_unused, index) => ({
+          string: `secret_${index}`,
+          address: 0x402000 + index,
+          decoding_routine: { address: 0x401000 },
+        })),
+      },
+    };
+  }
+
+  async function sweepWithFloss(count: number) {
+    const deps = makeDeps({
+      answers: {},
+      deps: { runFloss: async () => ({ ok: true, payload: flossPayload(count), error: '' }) },
+    });
+    return runGhidraSweep({
+      runId: 'run-1',
+      sessionId: 'sess-1',
+      binaryPath: BINARY,
+      binaryName: 'client.exe',
+      config: normalizeGhidraLabConfig({ ...config, flossExePath: 'C:\\floss.exe' }),
+      deps,
+    });
+  }
+
+  it('reports what FLOSS recovered, and how much of it was kept', async () => {
+    const ledger = await sweepWithFloss(520);
+    const summary = stage(ledger, 'decodedstrings').summary;
+    // 520 found, 400 kept: both numbers belong to the reader.
+    expect(summary).toContain('520 hidden strings recovered');
+    expect(summary).toContain('400 kept');
+    expect(stage(ledger, 'decodedstrings').detail).toContain('120 were counted but not kept');
+    expect((ledger.facts.decodedStrings as unknown[]).length).toBe(400);
+  });
+
+  it('says nothing about a cap when nothing was capped', async () => {
+    const ledger = await sweepWithFloss(3);
+    expect(stage(ledger, 'decodedstrings').summary).toBe(
+      '3 hidden strings recovered (decoded 3, tight 0, stack 0)',
+    );
+    expect(stage(ledger, 'decodedstrings').detail).toBe('');
+  });
+});

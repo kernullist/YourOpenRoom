@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 import {
   MAX_DECODED_STRINGS,
   countByKind,
+  countInterestingDecoded,
   parseFlossResult,
   runFloss,
   selectInterestingDecoded,
@@ -301,5 +302,45 @@ describe('decodedAnchorId', () => {
 
   it('says so when the decoder is unknown, rather than leaving a gap', () => {
     expect(decodedAnchorId('', 'plain')).toBe('decoded:unknown:plain');
+  });
+});
+
+describe('counting a recovery against what is kept', () => {
+  const many = (count: number, kind: 'decoded' | 'static' = 'decoded') =>
+    Array.from({ length: count }, (_unused, index) => ({
+      value: `${kind}_secret_${index}`,
+      kind,
+      address: '',
+      decodingRoutine: 'sub_401000',
+      encoding: '',
+    }));
+
+  it('counts everything worth keeping, not everything that fitted', () => {
+    // Counting the kept list made MAX_DECODED_STRINGS the largest number of
+    // hidden strings any binary could be reported to have.
+    const recovered = many(MAX_DECODED_STRINGS + 120);
+    expect(countInterestingDecoded(recovered)).toBe(MAX_DECODED_STRINGS + 120);
+    expect(selectInterestingDecoded(recovered).length).toBe(MAX_DECODED_STRINGS);
+  });
+
+  it('leaves static strings out of the count, as it leaves them out of the list', () => {
+    // FLOSS's static strings are the ones the plain string table already holds.
+    const recovered = [...many(3), ...many(40, 'static')];
+    expect(countInterestingDecoded(recovered)).toBe(3);
+  });
+
+  it('does not count a single character as a recovered string', () => {
+    const recovered = [
+      { value: 'a', kind: 'decoded' as const, address: '', decodingRoutine: '', encoding: '' },
+      {
+        value: 'http://c2',
+        kind: 'decoded' as const,
+        address: '',
+        decodingRoutine: '',
+        encoding: '',
+      },
+    ];
+    expect(countInterestingDecoded(recovered)).toBe(1);
+    expect(selectInterestingDecoded(recovered)).toHaveLength(1);
   });
 });

@@ -837,3 +837,30 @@ describe('the notable-functions table with duplicated symbols', () => {
     expect(report.slice(stub, thunk)).toContain('00411d8c');
   });
 });
+
+describe('tables that show only part of what was found', () => {
+  function ledgerWithSelected(count: number) {
+    const ledger = ledgerFixture();
+    (ledger.facts as Record<string, unknown>).selectedFunctions = Array.from(
+      { length: count },
+      (_unused, index) => ({
+        name: `Fn${index}`,
+        address: `0040${(0x1000 + index).toString(16)}`,
+        reasons: ['has a symbol name'],
+      }),
+    );
+    return ledger;
+  }
+
+  it('says a table is the first N of more', () => {
+    // A capped table with nothing above it reads as the whole set, and this
+    // report exists to be checkable line by line.
+    const report = buildDeterministicReport(ledgerWithSelected(128));
+    expect(report).toContain('Showing the first 40 of 128 functions that were read');
+  });
+
+  it('stays quiet when the table is everything there is', () => {
+    const report = buildDeterministicReport(ledgerWithSelected(9));
+    expect(report).not.toContain('Showing the first');
+  });
+});

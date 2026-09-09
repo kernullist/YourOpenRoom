@@ -184,6 +184,26 @@ export function parseFlossResult(payload: unknown): GhidraDecodedString[] {
  * is by how much work was done to hide the string -- decoded first, because a
  * decoder routine is itself a lead.
  */
+/**
+ * Worth keeping: not a plain static string, and not a single character.
+ *
+ * FLOSS's static strings are the same ones the normal string table already
+ * holds, so they are dropped here rather than counted twice.
+ */
+function isInterestingDecoded(entry: GhidraDecodedString): boolean {
+  return entry.kind !== 'static' && entry.value.trim().length > 1;
+}
+
+/**
+ * How many recovered strings are worth keeping, BEFORE any limit.
+ *
+ * The number a report should print. Counting the kept list instead made the
+ * limit the largest number of hidden strings any binary could be said to have.
+ */
+export function countInterestingDecoded(strings: readonly GhidraDecodedString[]): number {
+  return strings.filter(isInterestingDecoded).length;
+}
+
 export function selectInterestingDecoded(
   strings: readonly GhidraDecodedString[],
   limit: number = MAX_DECODED_STRINGS,
@@ -196,7 +216,7 @@ export function selectInterestingDecoded(
     static: 4,
   };
   return strings
-    .filter((entry) => entry.kind !== 'static' && entry.value.trim().length > 1)
+    .filter(isInterestingDecoded)
     .sort(
       (left, right) => rank[left.kind] - rank[right.kind] || left.value.localeCompare(right.value),
     )
