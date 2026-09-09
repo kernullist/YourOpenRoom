@@ -30,6 +30,7 @@ import type { GhidraLabQueryOutcome } from './ghidraLabSession';
 import {
   buildCallGraphFromBodies,
   mermaidFromCallGraph,
+  selectFrontier,
   synthesizeBehavior,
   summarizeReachableCategories,
   type GhidraCallNode,
@@ -90,6 +91,21 @@ const MAX_DECODED_ANCHORS = 160;
 const MAX_DYNAPI_ANCHORS = 120;
 const MAX_OBFUSCATION_ANCHORS = 40;
 const MAX_BEHAVIOR_ANCHORS = 24;
+/**
+ * How much of the deep-read budget is held back to follow the entry path.
+ *
+ * Scoring alone never finds that path: CRT startup functions are small, have one
+ * xref and call nothing interesting, so they never place and the chain out of
+ * `entry` stays unread. Measured on a real PE -- 28 of 128 bodies read and not
+ * one of them connected the entry point to anything.
+ *
+ * The reserve is spent expanding outward from what has already been read, one
+ * hop per round, so the path is discovered as it is followed.
+ */
+const DEEP_READ_PATH_RESERVE = 0.4;
+const DEEP_READ_EXPAND_ROUNDS = 4;
+/** Entry points and exports always read, however they scored. */
+const MAX_ROOT_SEED = 8;
 const MAX_EXPORT_ANCHORS = 60;
 
 export interface GhidraCapaOutcome {
@@ -766,13 +782,41 @@ export async function runGhidraSweep(params: {
     let selected: ReturnType<typeof selectFunctionsForDeepRead> = [];
     {
       const view = beginStage('selection');
-      selected = selectFunctionsForDeepRead(functions, GHIDRA_DEEP_READ_LIMIT);
+      // The scored seed only. The rest of the budget is spent following the
+      // call path out of the entry point, which cannot be scored for because it
+      // is not visible until something has been read.
+      const seedLimit = Math.max(
+        1,
+        Math.round(GHIDRA_DEEP_READ_LIMIT * (1 - DEEP_READ_PATH_RESERVE)),
+      );
+      const scoredSeed = selectFunctionsForDeepRead(functions, seedLimit);
+      // The entry point and the exports go in whatever they score.
+      //
+      // They are the roots of every path, and scoring can push them out: a
+      // handful of large, heavily-referenced functions elsewhere in the image
+      // outrank a 32-byte startup stub, and then there is nothing to expand
+      // from and the whole path-following reserve is wasted.
+      const rootFns = selectFunctionsForDeepRead(
+        functions.filter((entry) => entry.isEntryPoint || entry.isExport),
+        MAX_ROOT_SEED,
+      );
+      const seen = new Set<string>();
+      selected = [...rootFns, ...scoredSeed]
+        .filter((entry) => {
+          const key = (entry.name || entry.address).toLowerCase();
+          if (seen.has(key)) {
+            return false;
+          }
+          seen.add(key);
+          return true;
+        })
+        .slice(0, seedLimit);
       ledger.facts.selectedFunctions = selected;
       endStage(
         view,
         selected.length > 0 ? 'done' : 'skipped',
         selected.length > 0
-          ? `${selected.length} of ${functions.length} functions selected for deep read`
+          ? `${selected.length} of ${functions.length} functions seeded for deep read, ${GHIDRA_DEEP_READ_LIMIT - seedLimit} slots held for the entry path`
           : 'no functions scored high enough to read',
       );
     }
@@ -797,77 +841,143 @@ export async function runGhidraSweep(params: {
       const bodies: { name: string; address: string; decompiled: string; summary: string }[] =
         deepReadBodies;
 
-      for (let offset = 0; offset < selected.length; offset += GHIDRA_DECOMPILE_BATCH) {
-        if (budget <= 0) {
-          break;
-        }
-        const batch = selected.slice(offset, offset + GHIDRA_DECOMPILE_BATCH);
-        const names = batch.map((entry) => entry.name || entry.address).filter(Boolean);
-        if (names.length === 0) {
-          continue;
-        }
-        const result = await read('decompile', {
-          names,
-          include_callees: false,
-          include_xrefs: true,
-        });
-        if (result.error) {
-          lastError = result.error;
-          continue;
-        }
-        const decompiled = extractDecompiled(result.rows);
-        for (const entry of batch) {
-          // Re-check INSIDE the batch. Checking only per batch let one long body
-          // drive the budget negative, and `slice(0, negative)` counts from the
-          // end of the string -- so the cap stopped capping and every later
-          // function in the batch stored a body cut from the wrong end.
+      /** Every function whose body is in hand, by name and by address. */
+      const readKeys = new Set<string>();
+      let pathFollowed = 0;
+      let expandRounds = 0;
+      let frontierFromEntry = false;
+
+      const readBatchesOf = async (
+        queue: readonly ReturnType<typeof selectFunctionsForDeepRead>[number][],
+      ): Promise<void> => {
+        for (let offset = 0; offset < queue.length; offset += GHIDRA_DECOMPILE_BATCH) {
           if (budget <= 0) {
             break;
           }
-          const body = findDecompiledBody(decompiled, entry.name, entry.address);
-          if (!body) {
+          const batch = queue.slice(offset, offset + GHIDRA_DECOMPILE_BATCH);
+          const names = batch.map((entry) => entry.name || entry.address).filter(Boolean);
+          if (names.length === 0) {
             continue;
           }
-          const room = Math.max(0, Math.min(GHIDRA_DECOMPILE_CHARS, budget));
-          const capped = body.slice(0, room);
-          if (!capped) {
-            break;
-          }
-          budget -= capped.length;
-          read_ok += 1;
-
-          let summary = '';
-          if (deps.summarizeFunction) {
-            try {
-              summary = await deps.summarizeFunction({
-                name: entry.name,
-                address: entry.address,
-                decompiled: capped,
-                reasons: entry.reasons,
-              });
-              if (summary) {
-                summarized += 1;
-              }
-            } catch (error) {
-              deps.logError?.('ghidra-lab function summary failed', error);
-            }
-          }
-
-          bodies.push({ name: entry.name, address: entry.address, decompiled: capped, summary });
-          anchor(ledger, {
-            id: functionAnchorId(entry.address, entry.name),
-            kind: 'function',
-            address: entry.address,
-            symbol: entry.name,
-            detail: summary
-              ? `${entry.reasons.join('; ')} -- ${summary}`
-              : `${entry.reasons.join('; ')} (decompiled, not summarized)`,
-            // A model wrote the summary half of this. Marked so the report can
-            // separate what was measured from what was inferred.
-            deterministic: !summary,
+          const result = await read('decompile', {
+            names,
+            include_callees: false,
+            include_xrefs: true,
           });
+          if (result.error) {
+            lastError = result.error;
+            continue;
+          }
+          const decompiled = extractDecompiled(result.rows);
+          for (const entry of batch) {
+            // Re-check INSIDE the batch. Checking only per batch let one long body
+            // drive the budget negative, and `slice(0, negative)` counts from the
+            // end of the string -- so the cap stopped capping and every later
+            // function in the batch stored a body cut from the wrong end.
+            if (budget <= 0) {
+              break;
+            }
+            const body = findDecompiledBody(decompiled, entry.name, entry.address);
+            if (!body) {
+              continue;
+            }
+            const room = Math.max(0, Math.min(GHIDRA_DECOMPILE_CHARS, budget));
+            const capped = body.slice(0, room);
+            if (!capped) {
+              break;
+            }
+            budget -= capped.length;
+            read_ok += 1;
+
+            let summary = '';
+            if (deps.summarizeFunction) {
+              try {
+                summary = await deps.summarizeFunction({
+                  name: entry.name,
+                  address: entry.address,
+                  decompiled: capped,
+                  reasons: entry.reasons,
+                });
+                if (summary) {
+                  summarized += 1;
+                }
+              } catch (error) {
+                deps.logError?.('ghidra-lab function summary failed', error);
+              }
+            }
+
+            bodies.push({ name: entry.name, address: entry.address, decompiled: capped, summary });
+            readKeys.add(entry.name.toLowerCase());
+            readKeys.add(entry.address.toLowerCase());
+            anchor(ledger, {
+              id: functionAnchorId(entry.address, entry.name),
+              kind: 'function',
+              address: entry.address,
+              symbol: entry.name,
+              detail: summary
+                ? `${entry.reasons.join('; ')} -- ${summary}`
+                : `${entry.reasons.join('; ')} (decompiled, not summarized)`,
+              // A model wrote the summary half of this. Marked so the report can
+              // separate what was measured from what was inferred.
+              deterministic: !summary,
+            });
+          }
+        }
+      };
+
+      await readBatchesOf(selected);
+
+      // Follow the path out of the entry point, one hop per round.
+      //
+      // Each round rebuilds the graph from what is in hand, takes the unread
+      // functions its read callers name, nearest to the entry first, and reads
+      // them. That is how the chain out of `entry` gets read at all: it is only
+      // visible one hop at a time.
+      const byName = new Map(
+        functions.map((entry) => [(entry.name || entry.address).toLowerCase(), entry]),
+      );
+      for (let round = 0; round < DEEP_READ_EXPAND_ROUNDS; round += 1) {
+        // Cancellation is checked at the next beginStage, as everywhere else.
+        const room = GHIDRA_DEEP_READ_LIMIT - bodies.length;
+        if (budget <= 0 || room <= 0) {
+          break;
+        }
+        const graph = buildCallGraphFromBodies({
+          functions: functions.map((entry) => ({
+            name: entry.name,
+            address: entry.address,
+            ...(entry.isEntryPoint === undefined ? {} : { isEntryPoint: entry.isEntryPoint }),
+            ...(entry.isExport === undefined ? {} : { isExport: entry.isExport }),
+          })),
+          bodies,
+          knownApis: imports.map((entry) => entry.symbol),
+        });
+        const frontier = selectFrontier({ nodes: graph.nodes, read: readKeys, limit: room });
+        if (frontier.names.length === 0) {
+          break;
+        }
+        frontierFromEntry = frontierFromEntry || frontier.fromEntry;
+        expandRounds += 1;
+        const next = frontier.names
+          .map((name) => byName.get(name.toLowerCase()))
+          .filter((entry): entry is (typeof functions)[number] => Boolean(entry))
+          .map((entry) => ({
+            ...entry,
+            score: 0,
+            reasons: [
+              frontier.fromEntry
+                ? 'on a call path from the entry point'
+                : 'called by a function that was read',
+            ],
+          }));
+        const before = bodies.length;
+        await readBatchesOf(next);
+        pathFollowed += bodies.length - before;
+        if (bodies.length === before) {
+          break;
         }
       }
+
       ledger.facts.deepRead = bodies;
       if (read_ok === 0 && selected.length > 0) {
         endStage(view, 'failed', 'no function could be decompiled', lastError);
@@ -875,7 +985,9 @@ export async function runGhidraSweep(params: {
         endStage(
           view,
           selected.length === 0 ? 'skipped' : 'done',
-          `${read_ok} functions decompiled, ${summarized} summarized`,
+          `${read_ok} functions decompiled (${pathFollowed} by following ${
+            frontierFromEntry ? 'the entry path' : 'callers that were read'
+          } over ${expandRounds} rounds), ${summarized} summarized`,
           lastError ? `some batches failed: ${lastError}` : '',
         );
       }

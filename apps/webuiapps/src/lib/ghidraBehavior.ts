@@ -456,6 +456,100 @@ export function buildCallGraphFromBodies(params: {
   return { nodes, edgeCount, bodiesRead: params.bodies.length };
 }
 
+/**
+ * The next functions to read, following the path out of the entry point.
+ *
+ * Selection has a chicken-and-egg problem: the functions worth reading first are
+ * the ones on a path from the entry, and that path is only visible once enough
+ * has been read to build a graph. Scoring alone does not find it -- CRT startup
+ * functions are small, have one xref and call nothing interesting, so they never
+ * place, and the chain out of `entry` stays unread. Measured: 28 of 128 bodies
+ * read and not one of them connected the entry point to anything.
+ *
+ * So the deep read seeds with the scored set and then expands: whatever has been
+ * read defines a frontier of named-but-unread callees, and the ones closest to
+ * the entry come next.
+ *
+ * `fromEntry` is false when the roots could not be resolved, in which case the
+ * frontier is every unread callee of a read function -- still the right next
+ * thing to read, but not a claim about distance from the entry.
+ */
+export function selectFrontier(params: {
+  nodes: readonly GhidraCallNode[];
+  /** Lower-cased names AND addresses of functions already read. */
+  read: ReadonlySet<string>;
+  limit: number;
+}): { names: string[]; fromEntry: boolean } {
+  if (params.limit <= 0) {
+    return { names: [], fromEntry: false };
+  }
+  const byKey = new Map<string, GhidraCallNode>();
+  for (const node of params.nodes) {
+    if (node.name) {
+      byKey.set(node.name.toLowerCase(), node);
+    }
+    if (node.address) {
+      byKey.set(node.address.toLowerCase(), node);
+    }
+  }
+  const isRead = (node: GhidraCallNode): boolean =>
+    params.read.has((node.name || '').toLowerCase()) ||
+    params.read.has((node.address || '').toLowerCase());
+
+  const roots = params.nodes.filter((node) => node.isEntryPoint || node.isExport);
+  /** Walk only THROUGH functions already read: an unread one has no edges yet. */
+  const walk = (from: readonly GhidraCallNode[]): Map<string, number> => {
+    const found = new Map<string, number>();
+    const visited = new Set<string>();
+    let frontier = from.map((node) => ({ node, depth: 0 }));
+    let guard = 0;
+    while (frontier.length > 0 && guard < 4096) {
+      const next: { node: GhidraCallNode; depth: number }[] = [];
+      for (const { node, depth } of frontier) {
+        guard += 1;
+        const key = (node.name || node.address).toLowerCase();
+        if (visited.has(key)) {
+          continue;
+        }
+        visited.add(key);
+        for (const callee of node.callsFunctions ?? []) {
+          const child = byKey.get(callee.toLowerCase());
+          if (!child) {
+            continue;
+          }
+          if (!isRead(child)) {
+            // Unread: this is the frontier, and the shallowest hop wins.
+            const name = child.name || child.address;
+            const seen = found.get(name);
+            if (seen === undefined || depth + 1 < seen) {
+              found.set(name, depth + 1);
+            }
+            continue;
+          }
+          next.push({ node: child, depth: depth + 1 });
+        }
+      }
+      frontier = next;
+    }
+    return found;
+  };
+
+  let fromEntry = roots.length > 0;
+  let found = fromEntry ? walk(roots) : new Map<string, number>();
+  if (found.size === 0) {
+    // Either there were no roots, or the entry's own edges could not be
+    // resolved. Expanding from everything read is still the right next move.
+    fromEntry = false;
+    found = walk(params.nodes.filter((node) => isRead(node)));
+  }
+
+  const names = [...found.entries()]
+    .sort((left, right) => left[1] - right[1] || left[0].localeCompare(right[0]))
+    .slice(0, params.limit)
+    .map(([name]) => name);
+  return { names, fromEntry };
+}
+
 /** A mermaid label that cannot break the diagram it goes into. */
 function mermaidId(value: string): string {
   return value.replace(/[^A-Za-z0-9_]/g, '_').slice(0, 48) || 'node';

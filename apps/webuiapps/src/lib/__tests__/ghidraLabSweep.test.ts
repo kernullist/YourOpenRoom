@@ -359,8 +359,15 @@ describe('runGhidraSweep', () => {
       answers: { functions: outcome(many), decompile: outcome([]) },
       deps: {},
     });
+    // The SEED is capped below the limit, because the rest of the budget is
+    // held back to follow the call path out of the entry point -- which cannot
+    // be scored for, since it is not visible until something has been read.
     const selected = ledger.facts.selectedFunctions as unknown[];
-    expect(selected.length).toBe(GHIDRA_DEEP_READ_LIMIT);
+    expect(selected.length).toBeLessThan(GHIDRA_DEEP_READ_LIMIT);
+    expect(selected.length).toBeGreaterThan(GHIDRA_DEEP_READ_LIMIT / 2);
+    // The invariant that matters is the total, seed plus expansion.
+    const read = ledger.facts.deepRead as unknown[];
+    expect(read.length).toBeLessThanOrEqual(GHIDRA_DEEP_READ_LIMIT);
   });
 
   it('never stores more decompiled text than the budget allows', async () => {
@@ -860,6 +867,113 @@ describe('the deep-analysis stages', () => {
     });
     const behavior = ledger.facts.behavior as { reachable: { symbol: string }[] };
     expect(behavior.reachable.map((entry) => entry.symbol)).toContain('RegOpenKeyExW');
+  });
+
+  it('follows the call path out of the entry point, one hop per round', async () => {
+    // Scoring alone never finds this chain: each link is small, has one xref and
+    // calls nothing interesting, so none of them place. Measured on a real PE --
+    // 28 of 128 bodies read and not one connected the entry point to anything.
+    //
+    // Noise is what the seed WOULD spend its whole budget on: large, heavily
+    // referenced functions that are nowhere near the entry.
+    const noise = Array.from({ length: 60 }, (_unused, index) => ({
+      name: `Noise${index}`,
+      address: `0x${(0x500000 + index * 16).toString(16)}`,
+      size: 8192,
+      xref_count: 50,
+      calls: ['OpenProcess'],
+    }));
+    const chain = ['entry', 'crt_startup', 'crt_init', 'real_main', 'DoTheWork'];
+    const chainFns = chain.map((name, index) => ({
+      name,
+      address: `0x${(0x401000 + index * 16).toString(16)}`,
+      size: 32,
+      ...(index === 0 ? { is_entry: true } : {}),
+    }));
+    const bodyOf = new Map<string, string>([
+      ['entry', 'crt_startup();'],
+      ['crt_startup', 'crt_init();'],
+      ['crt_init', 'real_main();'],
+      ['real_main', 'DoTheWork();'],
+      ['DoTheWork', 'WriteProcessMemory(a, b, c, d, e);'],
+    ]);
+
+    const { ledger } = await sweep({
+      answers: {
+        imports: outcome([{ library: 'kernel32.dll', name: 'WriteProcessMemory' }]),
+        functions: outcome([...chainFns, ...noise]),
+        // The engine answers for whatever it was asked; the noise functions
+        // decompile to something dull, the chain to its next link.
+        decompile: () =>
+          outcome([
+            ...[...bodyOf.entries()].map(([name, code]) => ({ name, code })),
+            ...noise.map((entry) => ({ name: entry.name, code: 'return 0;' })),
+          ]),
+      },
+      deps: {},
+    });
+
+    const read = (ledger.facts.deepRead as { name: string }[]).map((entry) => entry.name);
+    // The far end of the chain is four hops from the entry and scores nothing.
+    // Only following the path gets there.
+    expect(read).toContain('DoTheWork');
+    expect(stage(ledger, 'deepread').summary).toContain('by following the entry path');
+
+    // And the point of getting there: the API is now reachable FROM the entry,
+    // which is the strong claim rather than the fallback one.
+    const behavior = ledger.facts.behavior as {
+      rootedAtEntry: boolean;
+      reachable: { symbol: string; from: string }[];
+    };
+    expect(behavior.rootedAtEntry).toBe(true);
+    expect(behavior.reachable.map((entry) => entry.symbol)).toContain('WriteProcessMemory');
+    expect(behavior.reachable[0].from).toBe('entry');
+  });
+
+  it('says it followed read callers when the entry path cannot be resolved', async () => {
+    // Ghidra writes `___tmainCRTStartup()` while its symbol table holds
+    // `FID_conflict:_wmainCRTStartup`; the edge out of `entry` cannot be joined
+    // by name. Expansion still has somewhere to go, and has to say which.
+    const { ledger } = await sweep({
+      answers: {
+        imports: outcome([{ library: 'kernel32.dll', name: 'Sleep' }]),
+        functions: outcome([
+          { name: 'entry', address: '0x401000', is_entry: true, size: 16 },
+          { name: 'helper', address: '0x402000', size: 4096, xref_count: 30 },
+          { name: 'deeper', address: '0x403000', size: 16 },
+        ]),
+        decompile: () =>
+          outcome([
+            { name: 'entry', code: '___tmainCRTStartup();' },
+            { name: 'helper', code: 'deeper();' },
+            { name: 'deeper', code: 'Sleep(1000);' },
+          ]),
+      },
+      deps: {},
+    });
+    const read = (ledger.facts.deepRead as { name: string }[]).map((entry) => entry.name);
+    expect(read).toContain('deeper');
+    expect(stage(ledger, 'deepread').summary).toContain('callers that were read');
+  });
+
+  it('never reads more than the limit, seed and expansion together', async () => {
+    const many = Array.from({ length: 300 }, (_unused, index) => ({
+      name: `F${index}`,
+      address: `0x${(0x401000 + index * 16).toString(16)}`,
+      size: 4096,
+      xref_count: 10,
+      ...(index === 0 ? { is_entry: true } : {}),
+    }));
+    const { ledger } = await sweep({
+      answers: {
+        functions: outcome(many),
+        // Every function calls the next, so the frontier never runs out.
+        decompile: () =>
+          outcome(many.map((entry, index) => ({ name: entry.name, code: `F${index + 1}();` }))),
+      },
+      deps: {},
+    });
+    expect((ledger.facts.deepRead as unknown[]).length).toBeLessThanOrEqual(GHIDRA_DEEP_READ_LIMIT);
   });
 
   it('walks all fourteen stages in order', async () => {
