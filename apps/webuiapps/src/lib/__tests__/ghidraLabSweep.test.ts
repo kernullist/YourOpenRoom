@@ -875,8 +875,11 @@ describe('the deep-analysis stages', () => {
     // 28 of 128 bodies read and not one connected the entry point to anything.
     //
     // Noise is what the seed WOULD spend its whole budget on: large, heavily
-    // referenced functions that are nowhere near the entry.
-    const noise = Array.from({ length: 60 }, (_unused, index) => ({
+    // referenced functions that are nowhere near the entry. There has to be
+    // more of it than the whole read budget holds, or every function fits and
+    // the seed reads the chain by accident -- and the test stops proving
+    // anything.
+    const noise = Array.from({ length: 200 }, (_unused, index) => ({
       name: `Noise${index}`,
       address: `0x${(0x500000 + index * 16).toString(16)}`,
       size: 8192,
@@ -956,6 +959,34 @@ describe('the deep-analysis stages', () => {
     expect(stage(ledger, 'deepread').summary).toContain('callers that were read');
   });
 
+  it('seeds the whole image when the whole image fits', async () => {
+    // The path reserve exists to leave room for following calls out of the entry
+    // point in an image too big to read in one go. Holding those slots back when
+    // everything fits only leaves functions unread: a real 128-function binary
+    // stopped at 100 with four fifths of the character budget untouched.
+    const small = Array.from({ length: 12 }, (_unused, index) => ({
+      name: `Fn${index}`,
+      address: `0x${(0x401000 + index * 16).toString(16)}`,
+      refcount: 2,
+    }));
+    const { ledger } = await sweep({
+      answers: {
+        functions: outcome(small),
+        decompile: () =>
+          outcome(
+            small.map((entry) => ({
+              name: `${entry.name}-${entry.address}`,
+              code: 'return 0;',
+            })),
+          ),
+      },
+      deps: {},
+    });
+    expect(stage(ledger, 'selection').summary).toContain('12 of 12 functions seeded');
+    expect(stage(ledger, 'selection').summary).toContain('fits the budget');
+    expect((ledger.facts.deepRead as unknown[]).length).toBe(12);
+  });
+
   it('never reads more than the limit, seed and expansion together', async () => {
     const many = Array.from({ length: 300 }, (_unused, index) => ({
       name: `F${index}`,
@@ -979,5 +1010,208 @@ describe('the deep-analysis stages', () => {
   it('walks all fourteen stages in order', async () => {
     const { ledger } = await sweep({ answers: {}, deps: {} });
     expect(ledger.stages.map((entry) => entry.stage)).toEqual([...GHIDRA_SWEEP_STAGES]);
+  });
+});
+
+describe('reading what the engine actually returns', () => {
+  // Every fixture here is the row shape pyghidra-mcp 0.2.5 really sends, copied
+  // off a live session rather than guessed at. Three separate things were being
+  // read wrong at once, and all three were invisible: the sweep reported success
+  // either way, just with less of the binary in it.
+  const ENGINE_ROWS = [
+    {
+      name: 'entry',
+      address: '00401000',
+      type: 'Function',
+      namespace: 'Global',
+      source: 'ANALYSIS',
+      refcount: 0,
+      external: false,
+      is_thunk: false,
+      thunk_target: null,
+      is_entry: true,
+    },
+    {
+      name: 'strcmp',
+      address: '00402000',
+      type: 'Function',
+      refcount: 12,
+      external: false,
+      is_thunk: false,
+      thunk_target: null,
+    },
+    {
+      name: 'strcmp',
+      address: '00403000',
+      type: 'Function',
+      refcount: 1,
+      external: false,
+      is_thunk: true,
+      thunk_target: 'strcmp',
+    },
+    {
+      name: 'CoreWorker',
+      address: '00404000',
+      type: 'Function',
+      refcount: 6,
+      external: false,
+      is_thunk: false,
+      thunk_target: null,
+    },
+    {
+      name: 'Sleep',
+      address: '00405000',
+      type: 'Function',
+      refcount: 3,
+      external: true,
+      is_thunk: false,
+      thunk_target: null,
+    },
+  ];
+
+  it('reads refcount, thunk and external off the engine row', () => {
+    const parsed = extractFunctions(ENGINE_ROWS);
+    const byAddress = new Map(parsed.map((entry) => [entry.address, entry]));
+
+    // `refcount` is the field name. The list only knew `xref_count`, `xrefs`,
+    // `references` and `reference_count`, so on every real binary the reference
+    // weight scored zero for all 128 functions and the ranking came down to a
+    // name comparison.
+    expect(byAddress.get('00402000')?.xrefCount).toBe(12);
+    expect(byAddress.get('00404000')?.xrefCount).toBe(6);
+    expect(byAddress.get('00403000')?.isThunk).toBe(true);
+    expect(byAddress.get('00402000')?.isThunk).toBeUndefined();
+    expect(byAddress.get('00405000')?.isExternal).toBe(true);
+  });
+
+  it('gives two functions that share a name their own bodies', () => {
+    // `strcmp` exists twice: the body and the thunk that jumps to it. Matching a
+    // decompile answer by name returned whichever came first in the map, so both
+    // were recorded with the same code -- and the report then cited one address
+    // for a body belonging to the other.
+    const bodies = new Map([
+      ['strcmp-00402000', 'int strcmp(char *a, char *b) { /* real */ }'],
+      ['strcmp-00403000', 'JMP strcmp'],
+    ]);
+    expect(findDecompiledBody(bodies, 'strcmp', '00402000')).toContain('real');
+    expect(findDecompiledBody(bodies, 'strcmp', '00403000')).toBe('JMP strcmp');
+  });
+
+  it('still matches on the name when there is no address to go on', () => {
+    const bodies = new Map([['lonely-00401000', 'void lonely(void) { return; }']]);
+    expect(findDecompiledBody(bodies, 'lonely', '')).toContain('lonely');
+  });
+
+  it('asks for bodies by address, and keeps both halves of a duplicated name', async () => {
+    const { ledger, deps } = await sweep({
+      answers: {
+        functions: outcome(ENGINE_ROWS),
+        decompile: () =>
+          outcome([
+            { name: 'entry-00401000', code: 'CoreWorker();' },
+            { name: 'strcmp-00402000', code: 'int strcmp(char *a, char *b) { /* real */ }' },
+            { name: 'strcmp-00403000', code: 'JMP strcmp' },
+            { name: 'CoreWorker-00404000', code: 'strcmp(x, y);' },
+          ]),
+      },
+      deps: {},
+    });
+
+    // Asked by name, the engine answers a duplicated symbol with
+    // `Function or symbol 'strcmp' not found.` and the read is lost.
+    const asked = queriesOf(deps)
+      .filter((entry) => entry.kind === 'decompile')
+      .flatMap((entry) => (entry.args.names as string[]) ?? []);
+    expect(asked).toContain('00402000');
+    expect(asked).not.toContain('strcmp');
+
+    const read = ledger.facts.deepRead as { name: string; address: string; decompiled: string }[];
+    const strcmps = read.filter((entry) => entry.name === 'strcmp');
+    expect(strcmps).toHaveLength(2);
+    expect(new Set(strcmps.map((entry) => entry.decompiled)).size).toBe(2);
+
+    // An external is an import wearing a function row: there is no body here to
+    // decompile, so spending a slot on it only ever returns nothing.
+    expect(read.some((entry) => entry.name === 'Sleep')).toBe(false);
+  });
+
+  it('says how many requested bodies never came back', async () => {
+    const { ledger } = await sweep({
+      answers: {
+        functions: outcome([
+          { name: 'Present', address: '00401000', refcount: 4 },
+          { name: 'Absent', address: '00402000', refcount: 4 },
+        ]),
+        decompile: () => outcome([{ name: 'Present-00401000', code: 'return 1;' }]),
+      },
+      deps: {},
+    });
+    // This used to be a bare `continue`: the stage called itself done while
+    // silently dropping the functions it had just decided were worth reading.
+    expect(stage(ledger, 'deepread').summary).toContain('1 returned no body');
+  });
+});
+
+describe('when one of the engine keys is ambiguous', () => {
+  it('asks again by name for whatever the address could not resolve', async () => {
+    // One address, two symbols: `GetPdbDll` and `?GetPdbDll@@YAPAUHINSTANCE__@@XZ`
+    // both sit at 00413890, and the engine refuses to choose -- `Ambiguous match
+    // for '00413890'`. It answered the name without complaint. Without the
+    // second attempt this binary lost the one function holding its dynamically
+    // resolved registry APIs, which is the whole finding.
+    let call = 0;
+    const { ledger, deps } = await sweep({
+      answers: {
+        functions: outcome([{ name: 'GetPdbDll', address: '00413890', refcount: 2 }]),
+        decompile: () => {
+          call += 1;
+          return call === 1
+            ? outcome([{ name: '00413890', code: '', error: "Ambiguous match for '00413890'." }])
+            : outcome([
+                { name: 'GetPdbDll-00413890', code: 'pRegOpenKeyExW(HKEY_LOCAL_MACHINE);' },
+              ]);
+        },
+      },
+      deps: {},
+    });
+
+    const asked = queriesOf(deps)
+      .filter((entry) => entry.kind === 'decompile')
+      .map((entry) => (entry.args.names as string[]).join(','));
+    expect(asked).toEqual(['00413890', 'GetPdbDll']);
+
+    const read = ledger.facts.deepRead as { name: string; decompiled: string }[];
+    expect(read.map((entry) => entry.name)).toContain('GetPdbDll');
+    expect(stage(ledger, 'deepread').summary).not.toContain('returned no body');
+  });
+
+  it('does not ask for xrefs it never reads', async () => {
+    // Asking for them is what made the address ambiguous in the first place.
+    const { deps } = await sweep({
+      answers: {
+        functions: outcome([{ name: 'Worker', address: '00401000', refcount: 4 }]),
+        decompile: () => outcome([{ name: 'Worker-00401000', code: 'return 0;' }]),
+      },
+      deps: {},
+    });
+    const decompiles = queriesOf(deps).filter((entry) => entry.kind === 'decompile');
+    expect(decompiles).not.toHaveLength(0);
+    for (const entry of decompiles) {
+      expect(entry.args.include_xrefs).toBe(false);
+    }
+  });
+
+  it('counts a function as missing only after both keys have failed', async () => {
+    const { ledger, deps } = await sweep({
+      answers: {
+        functions: outcome([{ name: 'Absent', address: '00402000', refcount: 4 }]),
+        decompile: () => outcome([]),
+      },
+      deps: {},
+    });
+    // Two attempts, one per key, before it is called a failure.
+    expect(queriesOf(deps).filter((entry) => entry.kind === 'decompile')).toHaveLength(2);
+    expect(stage(ledger, 'deepread').state).toBe('failed');
+    expect(stage(ledger, 'deepread').summary).toBe('no function could be decompiled');
   });
 });

@@ -65,12 +65,27 @@ import {
   type GhidraSweepStageView,
 } from './ghidraLabTypes';
 
-/** How many functions the deep read may spend tokens on. */
-export const GHIDRA_DEEP_READ_LIMIT = 40;
+/**
+ * How many functions the deep read may spend tokens on.
+ *
+ * Raised from 40 after a real run read 18 of 128 and used 13.8% of the
+ * character budget: neither this nor the budget was binding, the scorer simply
+ * had nothing left to offer. It is the CHARACTER budget below that is the real
+ * cost control -- this is only there to stop an enormous image from queueing
+ * thousands of calls.
+ */
+export const GHIDRA_DEEP_READ_LIMIT = 160;
 /** Per-function decompiled body kept in the ledger. */
 export const GHIDRA_DECOMPILE_CHARS = 6000;
-/** Total decompiled text the whole sweep may accumulate. */
-export const GHIDRA_DEEP_READ_TOTAL_CHARS = 120000;
+/**
+ * Total decompiled text the whole sweep may accumulate.
+ *
+ * Sized against measurement rather than a guess: bodies averaged 919 characters
+ * on a real 32-bit PE, so the limit above fits comfortably. A binary of large
+ * functions still stops here, which is the point -- the cap is on what is read,
+ * not on how many were asked for.
+ */
+export const GHIDRA_DEEP_READ_TOTAL_CHARS = 320000;
 /** Functions per decompile call -- the engine's batch form is why this is not 1. */
 export const GHIDRA_DECOMPILE_BATCH = 8;
 
@@ -282,6 +297,16 @@ export function extractStrings(rows: readonly unknown[]): ExtractedString[] {
   return strings;
 }
 
+/**
+ * Field names carrying a reference count.
+ *
+ * `refcount` is what pyghidra-mcp sends, and its absence from this list meant
+ * the reference weight never once fired on a real binary: every function was
+ * scored on its name alone, so a 12-reference worker and a 1-reference stub
+ * ranked identically and the alphabetical tie-break decided what got read.
+ */
+const XREF_FIELDS = ['refcount', 'xref_count', 'xrefs', 'references', 'reference_count'];
+
 export function extractFunctions(rows: readonly unknown[]): GhidraFunctionCandidate[] {
   const functions: GhidraFunctionCandidate[] = [];
   for (const row of rows) {
@@ -315,14 +340,14 @@ export function extractFunctions(rows: readonly unknown[]): GhidraFunctionCandid
       ...(pickNumber(record, ['size', 'length', 'body_size']) !== undefined
         ? { size: pickNumber(record, ['size', 'length', 'body_size']) }
         : {}),
-      ...(pickNumber(record, ['xref_count', 'xrefs', 'references', 'reference_count']) !== undefined
-        ? {
-            xrefCount: pickNumber(record, ['xref_count', 'xrefs', 'references', 'reference_count']),
-          }
+      ...(pickNumber(record, XREF_FIELDS) !== undefined
+        ? { xrefCount: pickNumber(record, XREF_FIELDS) }
         : {}),
       ...(callsImports && callsImports.length ? { callsImports } : {}),
       ...(record.is_entry === true || record.entry === true ? { isEntryPoint: true } : {}),
       ...(record.is_export === true || record.exported === true ? { isExport: true } : {}),
+      ...(record.is_thunk === true || record.thunk === true ? { isThunk: true } : {}),
+      ...(record.external === true || record.is_external === true ? { isExternal: true } : {}),
     });
   }
   return functions;
@@ -342,19 +367,27 @@ export function findDecompiledBody(
   name: string,
   address: string,
 ): string {
-  const direct = bodies.get(name) || (address ? bodies.get(address) : '');
+  const direct = (address ? bodies.get(address) : '') || bodies.get(name);
   if (direct) {
     return direct;
   }
   const wantedName = name.toLowerCase();
   // Addresses come back with and without a leading 0x depending on the field.
   const wantedAddress = address.toLowerCase().replace(/^0x/, '');
+  // The address is checked first, and in a pass of its own, because a name is
+  // not unique. A real PE had 36 of its 128 functions sharing a name with a
+  // function at another address -- `strcmp`, `_atexit`, `initterm`: a thunk and
+  // the body it jumps to. Matching on the name handed both the same body.
+  if (wantedAddress) {
+    for (const [key, body] of bodies) {
+      if (key.toLowerCase().includes(wantedAddress)) {
+        return body;
+      }
+    }
+  }
   for (const [key, body] of bodies) {
     const lowered = key.toLowerCase();
     if (wantedName && (lowered === wantedName || lowered.startsWith(`${wantedName}-`))) {
-      return body;
-    }
-    if (wantedAddress && lowered.includes(wantedAddress)) {
       return body;
     }
   }
@@ -785,10 +818,15 @@ export async function runGhidraSweep(params: {
       // The scored seed only. The rest of the budget is spent following the
       // call path out of the entry point, which cannot be scored for because it
       // is not visible until something has been read.
-      const seedLimit = Math.max(
-        1,
-        Math.round(GHIDRA_DEEP_READ_LIMIT * (1 - DEEP_READ_PATH_RESERVE)),
-      );
+      //
+      // ...unless the whole image fits, in which case there is nothing to hold
+      // slots back from and holding them back just leaves functions unread: a
+      // 128-function binary was stopping at 100 with four fifths of the
+      // character budget untouched.
+      const fitsEntirely = functions.length <= GHIDRA_DEEP_READ_LIMIT;
+      const seedLimit = fitsEntirely
+        ? GHIDRA_DEEP_READ_LIMIT
+        : Math.max(1, Math.round(GHIDRA_DEEP_READ_LIMIT * (1 - DEEP_READ_PATH_RESERVE)));
       const scoredSeed = selectFunctionsForDeepRead(functions, seedLimit);
       // The entry point and the exports go in whatever they score.
       //
@@ -803,7 +841,10 @@ export async function runGhidraSweep(params: {
       const seen = new Set<string>();
       selected = [...rootFns, ...scoredSeed]
         .filter((entry) => {
-          const key = (entry.name || entry.address).toLowerCase();
+          // Keyed on the address. Keyed on the name, 36 of this binary's 128
+          // functions collapsed into 18 -- a thunk and the function it jumps to
+          // share a symbol -- and the seed quietly shrank by that much.
+          const key = (entry.address || entry.name).toLowerCase();
           if (seen.has(key)) {
             return false;
           }
@@ -816,7 +857,11 @@ export async function runGhidraSweep(params: {
         view,
         selected.length > 0 ? 'done' : 'skipped',
         selected.length > 0
-          ? `${selected.length} of ${functions.length} functions seeded for deep read, ${GHIDRA_DEEP_READ_LIMIT - seedLimit} slots held for the entry path`
+          ? `${selected.length} of ${functions.length} functions seeded for deep read${
+              fitsEntirely
+                ? ' (every function in the image fits the budget)'
+                : `, ${GHIDRA_DEEP_READ_LIMIT - seedLimit} slots held for the entry path`
+            }`
           : 'no functions scored high enough to read',
       );
     }
@@ -837,6 +882,7 @@ export async function runGhidraSweep(params: {
       let budget = GHIDRA_DEEP_READ_TOTAL_CHARS;
       let read_ok = 0;
       let summarized = 0;
+      let missing = 0;
       let lastError = '';
       const bodies: { name: string; address: string; decompiled: string; summary: string }[] =
         deepReadBodies;
@@ -847,22 +893,51 @@ export async function runGhidraSweep(params: {
       let expandRounds = 0;
       let frontierFromEntry = false;
 
+      /**
+       * Read a queue of functions, then retry whatever came back empty.
+       *
+       * The engine resolves a function by `name_or_address`, and BOTH keys are
+       * ambiguous on a real binary, in opposite cases:
+       *
+       *   - By name: two functions can share one. `strcmp` is the body and the
+       *     thunk that jumps to it, and the answer is
+       *     `Function or symbol 'strcmp' not found.`
+       *   - By address: one address can carry a demangled name and a mangled
+       *     symbol. 00413890 is both `GetPdbDll` and
+       *     `?GetPdbDll@@YAPAUHINSTANCE__@@XZ`, and the answer is
+       *     `Ambiguous match for '00413890'.`
+       *
+       * So the address goes first, because a duplicated name cannot be resolved
+       * at all, and anything it fails on is asked for again by name. Each key
+       * covers the other's blind spot; only a function that fails both is
+       * genuinely unreadable, and only that is counted as missing.
+       */
       const readBatchesOf = async (
         queue: readonly ReturnType<typeof selectFunctionsForDeepRead>[number][],
+        byName = false,
       ): Promise<void> => {
+        const unresolved: ReturnType<typeof selectFunctionsForDeepRead>[number][] = [];
         for (let offset = 0; offset < queue.length; offset += GHIDRA_DECOMPILE_BATCH) {
           if (budget <= 0) {
             break;
           }
           const batch = queue.slice(offset, offset + GHIDRA_DECOMPILE_BATCH);
-          const names = batch.map((entry) => entry.name || entry.address).filter(Boolean);
+          const names = batch
+            .map((entry) => (byName ? entry.name || entry.address : entry.address || entry.name))
+            .filter(Boolean);
           if (names.length === 0) {
             continue;
           }
           const result = await read('decompile', {
             names,
             include_callees: false,
-            include_xrefs: true,
+            // Off, because asking for xrefs sends the engine down a symbol-table
+            // lookup that cannot separate a demangled name from the mangled
+            // symbol at the same address -- 13 of 96 requested bodies came back
+            // as `Ambiguous match`, among them every named function this binary
+            // is interesting for. The same addresses resolve cleanly with this
+            // false, and nothing here ever read the xrefs it returned.
+            include_xrefs: false,
           });
           if (result.error) {
             lastError = result.error;
@@ -879,6 +954,10 @@ export async function runGhidraSweep(params: {
             }
             const body = findDecompiledBody(decompiled, entry.name, entry.address);
             if (!body) {
+              // Held for the retry pass rather than written off. Dropping these
+              // silently hid a real failure: on one run 13 selected functions
+              // produced nothing and the stage still reported itself done.
+              unresolved.push(entry);
               continue;
             }
             const room = Math.max(0, Math.min(GHIDRA_DECOMPILE_CHARS, budget));
@@ -923,6 +1002,19 @@ export async function runGhidraSweep(params: {
             });
           }
         }
+
+        if (byName) {
+          missing += unresolved.length;
+          return;
+        }
+        const retry = unresolved.filter(
+          (entry) => entry.name && entry.address && entry.name !== entry.address,
+        );
+        // Nothing else to try for these: the two keys are the same string.
+        missing += unresolved.length - retry.length;
+        if (retry.length > 0 && budget > 0) {
+          await readBatchesOf(retry, true);
+        }
       };
 
       await readBatchesOf(selected);
@@ -933,9 +1025,18 @@ export async function runGhidraSweep(params: {
       // functions its read callers name, nearest to the entry first, and reads
       // them. That is how the chain out of `entry` gets read at all: it is only
       // visible one hop at a time.
-      const byName = new Map(
-        functions.map((entry) => [(entry.name || entry.address).toLowerCase(), entry]),
-      );
+      const byName = new Map<string, (typeof functions)[number]>();
+      for (const entry of functions) {
+        // Address wins, and the name is only a fallback key, so a duplicated
+        // symbol resolves to one real function instead of whichever of the two
+        // the engine happened to list last.
+        if (entry.address) {
+          byName.set(entry.address.toLowerCase(), entry);
+        }
+        if (entry.name && !byName.has(entry.name.toLowerCase())) {
+          byName.set(entry.name.toLowerCase(), entry);
+        }
+      }
       for (let round = 0; round < DEEP_READ_EXPAND_ROUNDS; round += 1) {
         // Cancellation is checked at the next beginStage, as everywhere else.
         const room = GHIDRA_DEEP_READ_LIMIT - bodies.length;
@@ -987,7 +1088,9 @@ export async function runGhidraSweep(params: {
           selected.length === 0 ? 'skipped' : 'done',
           `${read_ok} functions decompiled (${pathFollowed} by following ${
             frontierFromEntry ? 'the entry path' : 'callers that were read'
-          } over ${expandRounds} rounds), ${summarized} summarized`,
+          } over ${expandRounds} rounds), ${summarized} summarized${
+            missing > 0 ? `, ${missing} returned no body` : ''
+          }`,
           lastError ? `some batches failed: ${lastError}` : '',
         );
       }

@@ -117,7 +117,7 @@ describe('bucketString', () => {
     expect(selected[0].reasons.join(' ')).toContain('no ranking signal');
   });
 
-  it('keeps ranked functions ahead of the filler, and leaves boilerplate out', () => {
+  it('keeps ranked functions ahead of the filler, and boilerplate behind both', () => {
     const selected = selectFunctionsForDeepRead(
       [
         { name: 'sub_401000', address: '0x401000' },
@@ -128,9 +128,13 @@ describe('bucketString', () => {
       4,
     );
     expect(selected[0].name).toBe('DriverEntry');
-    // Named runtime boilerplate stays out even though there is room for it.
-    expect(selected.map((entry) => entry.name)).not.toContain('__scrt_common_main');
-    expect(selected).toHaveLength(3);
+    // Boilerplate is read only after everything else, and never instead of it.
+    // Excluding it outright capped coverage at 14% of a real image while the
+    // character budget sat almost untouched, so it is filler of last resort
+    // rather than something dropped.
+    const names = selected.map((entry) => entry.name);
+    expect(names[names.length - 1]).toBe('__scrt_common_main');
+    expect(names.indexOf('__scrt_common_main')).toBeGreaterThan(names.indexOf('sub_401000'));
   });
 
   it('files a module name as a module, not as a network host', () => {
@@ -266,5 +270,112 @@ describe('selectFunctionsForDeepRead', () => {
     }));
     expect(selectFunctionsForDeepRead(many, 10)).toHaveLength(10);
     expect(selectFunctionsForDeepRead([{ name: '', address: '' }])).toEqual([]);
+  });
+});
+
+describe('what counts as runtime boilerplate', () => {
+  function scoreOf(name: string) {
+    const [picked] = selectFunctionsForDeepRead([{ name, address: '0x1000' }], 10);
+    return picked;
+  }
+
+  it('marks the runtime helpers as boilerplate rather than as code to read', () => {
+    for (const name of [
+      '__scrt_common_main_seh',
+      '__security_init_cookie',
+      '_RTC_CheckEsp',
+      'std::_Xlen',
+      'operator new',
+      'malloc',
+      'memcpy',
+    ]) {
+      const picked = scoreOf(name);
+      // Present, because excluding them wasted budget -- but scored below zero,
+      // which is what keeps them behind everything else.
+      expect(picked, name).toBeDefined();
+      expect(picked?.score, name).toBeLessThan(0);
+      expect(picked?.reasons.join(' '), name).toContain('runtime');
+    }
+  });
+
+  it('never lets boilerplate displace a function with real signal', () => {
+    // Measured: narrowing the rule so CRT names tied with real code at the same
+    // score handed the seed to `___report_gsfailure`, `__RTC_InitBase` and
+    // `_atexit`, and pushed out `GetPdbDll` -- the one function holding the
+    // binary's dynamically resolved registry APIs. The dynamic-API stage went
+    // from three findings to none.
+    const image = [
+      ...Array.from({ length: 40 }, (_unused, index) => ({
+        name: `__RTC_helper${index}`,
+        address: `0x${(0x401000 + index * 16).toString(16)}`,
+      })),
+      { name: 'GetPdbDll', address: '0x500000' },
+    ];
+    const selected = selectFunctionsForDeepRead(image, 8);
+    expect(selected[0].name).toBe('GetPdbDll');
+  });
+
+  it('fills the rest of the budget with boilerplate rather than reading nothing', () => {
+    const image = Array.from({ length: 128 }, (_unused, index) => ({
+      name: index % 8 === 0 ? `handler${index}` : `_helper${index}`,
+      address: `0x${(0x401000 + index * 16).toString(16)}`,
+    }));
+    const selected = selectFunctionsForDeepRead(image, 96);
+    expect(selected).toHaveLength(96);
+    // The real functions are still first.
+    expect(selected.slice(0, 16).every((entry) => entry.name.startsWith('handler'))).toBe(true);
+  });
+});
+
+describe('selection against the shapes a real image produces', () => {
+  it('never spends a slot on an external', () => {
+    // An external is an import listed as a function. It has no body in this
+    // binary, so the read comes back empty however much room there was.
+    const selected = selectFunctionsForDeepRead(
+      [
+        { name: 'Sleep', address: '00405000', xrefCount: 30, isExternal: true },
+        { name: 'RealWork', address: '00401000', xrefCount: 1 },
+      ],
+      40,
+    );
+    expect(selected.map((entry) => entry.name)).toEqual(['RealWork']);
+  });
+
+  it('ranks a thunk behind the function it jumps to, however it scores', () => {
+    // Measured on a real PE: 67 of 128 rows were thunks, and 14 held seed slots
+    // next to their own targets -- the same body read twice. A thunk is one jump
+    // instruction; it can outscore real code on name and reference count alone.
+    const selected = selectFunctionsForDeepRead(
+      [
+        { name: 'thunk_CoreWorker', address: '00411440', xrefCount: 40, size: 8, isThunk: true },
+        { name: 'CoreWorker', address: '00404000', xrefCount: 1, size: 4096 },
+      ],
+      40,
+    );
+    expect(selected.map((entry) => entry.name)).toEqual(['CoreWorker', 'thunk_CoreWorker']);
+  });
+
+  it('still reads thunks once nothing better is left', () => {
+    // They are a few bytes each and they complete the call graph. Ranking last
+    // is not the same as being thrown away.
+    const selected = selectFunctionsForDeepRead(
+      [{ name: 'thunk_CoreWorker', address: '00411440', isThunk: true }],
+      40,
+    );
+    expect(selected).toHaveLength(1);
+    expect(selected[0].reasons).toContain('thunk to another function');
+  });
+
+  it('lets the reference count decide between two equally named functions', () => {
+    // This is what `refcount` buys. Without it both of these scored 6 and the
+    // alphabetical tie-break picked the loser.
+    const selected = selectFunctionsForDeepRead(
+      [
+        { name: 'AaaRarelyCalled', address: '00401000', xrefCount: 1 },
+        { name: 'ZzzHotPath', address: '00402000', xrefCount: 12 },
+      ],
+      40,
+    );
+    expect(selected[0].name).toBe('ZzzHotPath');
   });
 });

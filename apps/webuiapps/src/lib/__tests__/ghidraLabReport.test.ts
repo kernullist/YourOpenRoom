@@ -677,6 +677,37 @@ describe('the report prompt', () => {
     expect(prompt).toContain('do not claim anything was deobfuscated');
     expect(prompt).toContain('names a TECHNIQUE, not an API');
   });
+
+  it('separates two resolver sites that share a function name', () => {
+    // Reading the whole image means reading functions whose names repeat: this
+    // binary has two `_RTC_GetSrcLine` bodies at different addresses, each with
+    // its own GetProcAddress call. Named alone, the two rows look like one row
+    // printed twice.
+    const ledger = ledgerFixture();
+    (ledger.facts as Record<string, unknown>).dynamicApis = {
+      resolved: [
+        {
+          symbol: 'PDBOpenValidate5',
+          library: '',
+          functionName: '_RTC_GetSrcLine',
+          address: '0041119a',
+          evidence: 'literal',
+        },
+        {
+          symbol: 'PDBOpenValidate5',
+          library: '',
+          functionName: '_RTC_GetSrcLine',
+          address: '00413520',
+          evidence: 'literal',
+        },
+      ],
+      hashing: [],
+      resolverSites: [],
+    };
+    const report = buildDeterministicReport(ledger);
+    expect(report).toContain('@0041119a');
+    expect(report).toContain('@00413520');
+  });
 });
 
 describe('a model that stopped before it finished', () => {

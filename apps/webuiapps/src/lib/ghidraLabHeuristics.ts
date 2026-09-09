@@ -498,6 +498,10 @@ export interface GhidraFunctionCandidate {
   callsImports?: readonly string[];
   isEntryPoint?: boolean;
   isExport?: boolean;
+  /** A one-instruction jump to the real function. Cheap to read, teaches nothing. */
+  isThunk?: boolean;
+  /** Lives in another module: there is no body in this binary to decompile. */
+  isExternal?: boolean;
 }
 
 export interface GhidraSelectedFunction extends GhidraFunctionCandidate {
@@ -506,6 +510,21 @@ export interface GhidraSelectedFunction extends GhidraFunctionCandidate {
   reasons: string[];
 }
 
+/**
+ * Names that identify runtime plumbing rather than the program's own code.
+ *
+ * The leading underscore is deliberately part of this: in an MSVC build it
+ * really does mean CRT, and the alternative was measured. Narrowing the rule to
+ * a list of specific helpers let ~110 of 128 functions tie with real code at the
+ * same score, and since the tie-break is alphabetical, `___report_gsfailure`,
+ * `__RTC_InitBase` and `_atexit` took the seed and pushed `GetPdbDll` -- the one
+ * function holding the binary's dynamically resolved registry APIs -- out of it
+ * entirely. The dynamic-API stage went from three findings to none.
+ *
+ * A match no longer EXCLUDES the function, though. It ranks it last, so it is
+ * read only when there is budget nobody else wants -- which is what raises
+ * coverage without letting boilerplate displace anything.
+ */
 const DEFAULT_LIBRARY_NAME =
   /^(?:_+|std::|operator|__scrt|__security|_cinit|atexit|malloc$|free$|memcpy$|memset$|printf$)/i;
 
@@ -525,8 +544,15 @@ export function selectFunctionsForDeepRead(
   const scored: GhidraSelectedFunction[] = [];
   /** Scored exactly zero: no signal either way, kept as budget filler. */
   const unranked: GhidraFunctionCandidate[] = [];
+  /** Named as runtime boilerplate: filler of last resort, never a displacer. */
+  const deprioritized: GhidraSelectedFunction[] = [];
   for (const candidate of candidates) {
     if (!candidate.name && !candidate.address) {
+      continue;
+    }
+    if (candidate.isExternal) {
+      // An imported symbol listed as a function. There is no body in this
+      // binary to decompile, so a slot spent here comes back empty.
       continue;
     }
     let score = 0;
@@ -578,9 +604,31 @@ export function selectFunctionsForDeepRead(
       }
     }
 
+    if (candidate.isThunk) {
+      // A thunk is `jmp real_function`. Measured on a real PE: 67 of 128
+      // "functions" were thunks, and 14 of them held seed slots beside the very
+      // functions they jump to -- the same body read twice, once uselessly.
+      //
+      // Kept, because they are a few bytes each and they complete the call
+      // graph, but never ahead of a function with a body worth reading.
+      deprioritized.push({
+        ...candidate,
+        score: Math.min(score, 0) - 1,
+        reasons: [...reasons, 'thunk to another function'],
+      });
+      continue;
+    }
+
     if (score < 0) {
-      // Negative means the name itself says this is runtime boilerplate. Those
-      // stay out even when there is room, because reading them teaches nothing.
+      // The name says runtime boilerplate. Kept, but behind everything else:
+      // reading `_atexit` teaches nothing until there is nothing better left,
+      // and excluding it outright was capping coverage at 14% of the image with
+      // the character budget almost untouched.
+      //
+      // The ones that genuinely matter -- the CRT startup chain -- are reached
+      // by the deep read's path expansion rather than by scoring, which is what
+      // that reserve is for.
+      deprioritized.push({ ...candidate, score, reasons });
       continue;
     }
     if (score === 0) {
@@ -602,16 +650,28 @@ export function selectFunctionsForDeepRead(
   // scored zero, nothing was selected, and the deep read reported "no functions
   // scored high enough to read" on exactly the binaries where reading the code
   // is the only thing left to do.
-  if (ranked.length >= limit || unranked.length === 0) {
+  if (ranked.length >= limit) {
     return ranked;
   }
-  const room = Math.max(0, limit) - ranked.length;
-  for (const candidate of unranked.slice(0, room)) {
+  for (const candidate of unranked) {
+    if (ranked.length >= limit) {
+      return ranked;
+    }
     ranked.push({
       ...candidate,
       score: 0,
       reasons: ['no ranking signal from the engine; included to fill the read budget'],
     });
+  }
+  // Boilerplate last, and only into budget nobody else wanted.
+  const boilerplate = [...deprioritized].sort(
+    (left, right) => right.score - left.score || left.name.localeCompare(right.name),
+  );
+  for (const candidate of boilerplate) {
+    if (ranked.length >= limit) {
+      return ranked;
+    }
+    ranked.push(candidate);
   }
   return ranked;
 }

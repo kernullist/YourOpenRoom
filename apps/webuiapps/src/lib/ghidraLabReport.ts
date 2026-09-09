@@ -469,8 +469,15 @@ export function buildDeterministicReport(ledger: GhidraSweepLedger): string {
       lines.push('| API | Resolved in | Evidence |');
       lines.push('| --- | --- | --- |');
       for (const entry of named.slice(0, 40)) {
+        // The address rides along with the name because the name is not
+        // unique: this binary has two `_RTC_GetSrcLine` functions, and two
+        // rows naming the same one read as a duplicate rather than as the
+        // two separate resolver sites they are.
+        const site = entry.functionName
+          ? `\`${entry.functionName}\` @${entry.address}`
+          : `@${entry.address}`;
         lines.push(
-          `| \`${entry.symbol}\` [${dynApiAnchorId(entry.symbol)}] | ${entry.functionName || entry.address} | ${entry.evidence.replace(/_/g, ' ')} |`,
+          `| \`${entry.symbol}\` [${dynApiAnchorId(entry.symbol)}] | ${site} | ${entry.evidence.replace(/_/g, ' ')} |`,
         );
       }
     }
