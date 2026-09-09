@@ -661,12 +661,13 @@ function parseImportModules(
       }
     }
 
-    const suspiciousCount = names.filter((name) => isSuspiciousImport(name)).length;
+    const suspiciousNames = names.filter((name) => isSuspiciousImport(name));
     modules.push({
       module,
       count: names.length,
-      suspiciousCount,
+      suspiciousCount: suspiciousNames.length,
       names: names.slice(0, 120),
+      suspiciousNames: suspiciousNames.slice(0, MAX_SUSPICIOUS_IMPORT_EVIDENCE),
     });
   }
 
@@ -759,6 +760,14 @@ function collectStrings(buffer: Buffer): PeStringHit[] {
     .slice(0, 160);
 }
 
+/**
+ * How many suspicious imports per module travel with the analysis.
+ *
+ * Larger than any finding prints, so the evidence a finding cites is never the
+ * thing that was cut.
+ */
+const MAX_SUSPICIOUS_IMPORT_EVIDENCE = 64;
+
 function isSuspiciousImport(importName: string): boolean {
   const lowered = importName.toLowerCase();
   return (
@@ -773,16 +782,17 @@ function isSuspiciousString(value: string): boolean {
   return SUSPICIOUS_STRING_PATTERNS.some((pattern) => pattern.test(value));
 }
 
-function buildFindings(
+export function buildFindings(
   metadata: PeMetadata,
   sections: PeSectionSummary[],
   imports: PeImportModule[],
   strings: PeStringHit[],
 ): PeFinding[] {
   const findings: PeFinding[] = [];
-  const suspiciousImportNames = imports.flatMap((entry) =>
-    entry.names.filter((name) => isSuspiciousImport(name)),
-  );
+  // `suspiciousNames`, never `names`. The latter is a capped sample for the
+  // UI, and reading it meant an import past the cap could not raise a finding
+  // no matter how loudly it should have.
+  const suspiciousImportNames = imports.flatMap((entry) => entry.suspiciousNames);
   const suspiciousStrings = strings.filter((item) => item.suspicious).map((item) => item.value);
   const packedSections = sections.filter((section) =>
     SUSPICIOUS_SECTION_NAMES.includes(section.name.toLowerCase()),
@@ -1532,7 +1542,7 @@ async function getIdaProFunctionDetail(
   };
 }
 
-function groupImportsFromIdaPro(payload: unknown): PeImportModule[] {
+export function groupImportsFromIdaPro(payload: unknown): PeImportModule[] {
   const page = asRecord(payload);
   const rows = asArray(page.data);
   const grouped = new Map<string, Set<string>>();
@@ -1551,11 +1561,13 @@ function groupImportsFromIdaPro(payload: unknown): PeImportModule[] {
   return Array.from(grouped.entries())
     .map(([module, namesSet]) => {
       const names = Array.from(namesSet.values());
+      const suspiciousNames = names.filter((name) => isSuspiciousImport(name));
       return {
         module,
         count: names.length,
-        suspiciousCount: names.filter((name) => isSuspiciousImport(name)).length,
+        suspiciousCount: suspiciousNames.length,
         names: names.slice(0, 120),
+        suspiciousNames: suspiciousNames.slice(0, MAX_SUSPICIOUS_IMPORT_EVIDENCE),
       };
     })
     .sort((left, right) => right.count - left.count);

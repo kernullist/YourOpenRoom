@@ -38,7 +38,24 @@ export interface PeImportModule {
   module: string;
   count: number;
   suspiciousCount: number;
+  /**
+   * A sample of the imported names, for display.
+   *
+   * Capped, so it is not the whole import table and must never be the input to
+   * an analysis: see `suspiciousNames`.
+   */
   names: string[];
+  /**
+   * The suspicious imports, chosen from the WHOLE table before `names` was cut.
+   *
+   * Findings read this and not `names`. A module can import several hundred
+   * functions, `names` keeps the first 120 in import-table order, and the
+   * injection APIs sit wherever the linker put them -- so drawing evidence from
+   * the display sample meant a binary importing WriteProcessMemory at position
+   * 150 raised no injection finding at all, while the count beside it still
+   * said one import was suspicious.
+   */
+  suspiciousNames: string[];
 }
 
 export interface PeExportSummary {
