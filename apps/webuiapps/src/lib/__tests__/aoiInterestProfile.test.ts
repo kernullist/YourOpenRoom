@@ -262,3 +262,43 @@ describe('Aoi interest profile - non-work interests', () => {
     expect(topics.some((item) => item.label.toLowerCase().includes('indie'))).toBe(false);
   });
 });
+
+describe('what is allowed to become a research topic', () => {
+  it('does not turn a date into something to go research', () => {
+    // A live profile held "2026 07 02" and "2026 07 16" at confidence 0.8, and
+    // the scout spent one of its three daily runs on it: "I found 5 public
+    // sources that may be worth a quick look for 2026 07 02."
+    const topics = extractAoiInterestTopicsFromMemories({
+      sessionPath: 'aoi/default',
+      memories: [
+        makeMemory({
+          id: 'memory-date-topic',
+          content: 'Kickoff was 2026 07 02 and the follow-up is 2026 07 16.',
+          tags: ['2026 07 02', '2026 07 16'],
+          entities: ['2026 07 02'],
+        }),
+      ],
+      now: 1_800_000_000_000,
+    });
+    for (const topic of topics) {
+      expect(topic.label).toMatch(/\p{L}/u);
+    }
+    expect(topics.map((topic) => topic.label)).not.toContain('2026 07 02');
+  });
+
+  it('keeps a real topic that happens to carry numbers', () => {
+    const topics = extractAoiInterestTopicsFromMemories({
+      sessionPath: 'aoi/default',
+      memories: [
+        makeMemory({
+          id: 'memory-numeric-topic',
+          content: 'The user works on Unreal Engine 5 anti-cheat and Windows 11 kernel drivers.',
+          tags: ['UE5', 'Windows 11'],
+        }),
+      ],
+      now: 1_800_000_000_000,
+    });
+    const labels = topics.map((topic) => topic.label.toLowerCase());
+    expect(labels.some((label) => label.includes('ue5') || label.includes('unreal'))).toBe(true);
+  });
+});

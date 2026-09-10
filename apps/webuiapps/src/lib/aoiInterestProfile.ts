@@ -294,8 +294,17 @@ function isSafeTopicLabel(value: string): boolean {
   if (/https?:\/\//i.test(normalized) || /\bprivate\b/i.test(normalized)) {
     return false;
   }
-  // Any Unicode letter/number so non-English (e.g. Korean) labels are allowed.
-  return /[\p{L}\p{N}]/u.test(normalized);
+  // A topic has to contain a LETTER, in any script.
+  //
+  // Accepting `\p{N}` on its own turned any date in a memory into a research
+  // topic: a live profile held "2026 07 02" and "2026 07 16" at confidence 0.8,
+  // and the scout spent one of its three daily runs looking for public sources
+  // about a date, then briefed the operator with
+  // "I found 5 public sources that may be worth a quick look for 2026 07 02."
+  //
+  // Numbers still ride along inside a real label -- UE5, C++, Windows 11 -- and
+  // Korean or any other script satisfies \p{L} as before.
+  return /\p{L}/u.test(normalized);
 }
 
 function toTitleCaseLabel(value: string): string {
