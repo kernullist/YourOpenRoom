@@ -221,6 +221,8 @@ export async function saveConfig(
         ...(conversationPreferencesConfig.operatorVoicePolicy
           ? { operatorVoicePolicy: conversationPreferencesConfig.operatorVoicePolicy }
           : {}),
+        turnUnderstandingMode:
+          conversationPreferencesConfig.turnUnderstandingMode === 'off' ? 'off' : 'on',
       };
     } else if (conversationPreferencesConfig === undefined && existing.conversationPreferences) {
       persisted.conversationPreferences = existing.conversationPreferences;
@@ -700,7 +702,7 @@ function resolveOpenCodeApiStyle(config: LLMConfig): LLMApiStyle {
   return 'openai-chat';
 }
 
-function shouldUseOpenAIResponses(config: LLMConfig): boolean {
+export function shouldUseOpenAIResponses(config: LLMConfig): boolean {
   if (config.apiStyle === 'openai-responses') return true;
   return (
     config.provider === 'openai' && normalizeProviderModel(config).toLowerCase().startsWith('gpt-5')
@@ -1096,6 +1098,17 @@ async function chatOpenAI(
   };
   if (shouldDisableOpenAiThinking(config)) {
     body.thinking = { type: 'disabled' };
+    body.reasoning = { enabled: false };
+  }
+  // OpenRouter honours an explicit reasoning.enabled=false. Nothing on this path
+  // used to send it, so a config asking for no thinking still got the provider
+  // default (thinking on for qwen3.7-flash). Measured on the turn classifier:
+  // p90 13.2 s with thinking on against 1.4 s off, at the same routing accuracy.
+  // Only 'none' is mapped; other efforts stay provider-default here.
+  if (
+    config.provider === 'openrouter' &&
+    normalizeReasoningEffort(config.reasoningEffort) === 'none'
+  ) {
     body.reasoning = { enabled: false };
   }
   applyDeepSeekChatRuntimeOptions(body, config);

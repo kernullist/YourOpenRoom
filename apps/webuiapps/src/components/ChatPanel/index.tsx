@@ -410,13 +410,44 @@ import {
   buildAoiRunGoalPrompt,
   createAoiRunGoalFromMessage,
   createAoiRunLedgerEntry,
+  escalateAoiRunLedgerEntry,
   finalizeAoiRunLedgerEntry,
   loadAoiRunLedger,
+  recordAoiRunLedgerTokens,
   saveAoiRunLedger,
   summarizeAoiRunLedger,
   upsertAoiRunLedgerEntry,
   type AoiRunLedgerEntry,
 } from '@/lib/aoiRunLedger';
+import {
+  appendAoiTurnRecord,
+  buildAoiRecentTurnsPromptBlock,
+  createAoiDirectActionTurnRecord,
+  createAoiTurnRecord,
+  loadAoiTurnRecords,
+  mergeAoiTurnRecords,
+  nextAoiTurnIndex,
+  saveAoiTurnRecords,
+  type AoiCapabilityFamily,
+  type AoiTurnOutcome,
+  type AoiTurnRecord,
+} from '@/lib/aoiTurnRecord';
+import {
+  classifyAoiTurn,
+  inferAoiTurnUnderstandingFromRegex,
+  type AoiTurnUnderstanding,
+} from '@/lib/aoiTurnUnderstanding';
+import {
+  AOI_REQUEST_CAPABILITIES_TOOL_NAME,
+  buildAoiRequestCapabilitiesPolicyPrompt,
+  buildAoiTurnContextPromptBlock,
+  decideAoiClarification,
+  getAoiRequestCapabilitiesToolDefinition,
+  parseAoiRequestCapabilitiesParams,
+  resolveAoiTurnRoute,
+  resolveAoiTurnToolFlags,
+  toAoiRunLedgerUnderstanding,
+} from '@/lib/aoiTurnContext';
 import {
   buildAoiFileTaskContractPrompt,
   buildAoiFileTaskCorrectionPrompt,
@@ -852,9 +883,26 @@ interface ConversationRunOptions {
   signal?: AbortSignal;
   onStatus?: (status: string) => void;
   aoiTrendFollowUpContext?: AoiProactiveTrendFollowUpContext | null;
+  // Set on the re-run after request_capabilities: the reading is carried over
+  // instead of classified again, and the escalation forces the main route.
+  understanding?: AoiTurnUnderstanding | null;
+  escalation?: {
+    families: AoiCapabilityFamily[];
+    reason: string;
+    ledgerEntry: AoiRunLedgerEntry;
+    // Model iterations the dialog attempt already spent, so the re-run's
+    // iteration numbers and budget continue rather than restart.
+    iterationOffset: number;
+  } | null;
 }
 
 const MAX_PROMPT_BUDGET_ENTRIES = 10;
+// Providers that run a local process per chat() call. See classifierCfg.
+const TURN_CLASSIFIER_PROCESS_PROVIDERS: ReadonlySet<string> = new Set([
+  'claude-cli',
+  'codex-cli',
+  'codex-auth',
+]);
 const DEFAULT_CONVERSATION_ITERATION_LIMIT = 10;
 const CONFIRMED_FILE_TASK_RECOVERY_ITERATIONS = 6;
 const CONFIRMED_FILE_TASK_MAX_ITERATIONS = 20;
@@ -2479,6 +2527,11 @@ function buildSystemPrompt(
   // Distinct from hasWebSearchTool so the "not this turn" case can be stated
   // accurately instead of being silently indistinguishable from "never".
   webSearchConfigured = false,
+  // The recent-turns block plus the classifier's reading of the latest message.
+  // Changes every send, so it lives in perTurn.
+  turnContextPrompt = '',
+  // request_capabilities is in this turn's tools array (dialog route, first run).
+  capabilityEscalationAvailable = false,
 ): BuiltSystemPrompt {
   let prompt = getCharacterPromptContext(character);
   // R7.2: the persona is immediately followed by ~150 lines of tool policy and
@@ -2618,6 +2671,9 @@ App control (minimal set this turn):
 - File, IDE, workspace and command tools are NOT in this turn's tools. Do not describe reading or writing files.
 - NEVER promise an action for "the next turn", and never ask the user to wait for one. You cannot schedule a turn. Either call app_action now, or say plainly that you have not done it.
 - Never write that you played, opened, started, or lined anything up unless app_action actually succeeded this turn.`;
+      if (capabilityEscalationAvailable) {
+        prompt += buildAoiRequestCapabilitiesPolicyPrompt();
+      }
     }
 
     // Always: respond_to_user and generate_image are in the tools array on every
@@ -2748,6 +2804,9 @@ Length and scope:
     // Changes on every send by construction: recall is scored against this
     // message, and the goal quotes it.
     aoiMemoryPrompt +
+    // The recent turns and the reading of this message: what 그거 / 아까 / 다시
+    // point at. Newest information, so it sits next to the goal.
+    turnContextPrompt +
     runGoalPrompt;
 
   // The legacy per-session memory block used to be appended here. It shadowed
@@ -4211,6 +4270,25 @@ const ChatPanel: React.FC<{
       aoiRunLedgerRef.current = entries;
       setAoiRunLedger(entries);
     });
+    aoiTurnRecordsRef.current = [];
+    aoiTurnRecordsGenerationRef.current += 1;
+    const recordsGeneration = aoiTurnRecordsGenerationRef.current;
+    loadAoiTurnRecords(sessionPath).then((records) => {
+      // A session switch or a clear-history since the fetch began makes this
+      // list stale; a turn that finished meanwhile has already appended to the
+      // ref and must be kept, rebased after the persisted ones, not overwritten.
+      if (recordsGeneration !== aoiTurnRecordsGenerationRef.current) {
+        return;
+      }
+      const inMemory = aoiTurnRecordsRef.current;
+      const merged = mergeAoiTurnRecords(records, inMemory);
+      aoiTurnRecordsRef.current = merged;
+      if (inMemory.length > 0) {
+        void saveAoiTurnRecords(sessionPath, merged).catch((error) => {
+          console.warn('[ChatPanel] Aoi turn record merge save failed', error);
+        });
+      }
+    });
   }, [sessionPath]);
 
   // Load configs from file (async override).
@@ -4342,6 +4420,13 @@ const ChatPanel: React.FC<{
 
   const handleClearHistory = useCallback(async () => {
     await clearChatHistory(sessionPathRef.current);
+    // The turn records describe the transcript that was just wiped; a next turn
+    // must not resolve 그거 against a chat the user no longer sees.
+    aoiTurnRecordsRef.current = [];
+    aoiTurnRecordsGenerationRef.current += 1;
+    void saveAoiTurnRecords(sessionPathRef.current, []).catch((error) => {
+      console.warn('[ChatPanel] Aoi turn record clear failed', error);
+    });
     pendingImageAttachmentsRef.current = [];
     setPendingImageAttachments([]);
     setAttachmentError('');
@@ -4366,6 +4451,8 @@ const ChatPanel: React.FC<{
     setMemories([]);
     aoiRunLedgerRef.current = [];
     setAoiRunLedger([]);
+    aoiTurnRecordsRef.current = [];
+    aoiTurnRecordsGenerationRef.current += 1;
     setCurrentEmotion(undefined);
     pendingImageAttachmentsRef.current = [];
     setPendingImageAttachments([]);
@@ -4559,6 +4646,12 @@ const ChatPanel: React.FC<{
   const aoiMemoriesRef = useRef(aoiMemories);
   aoiMemoriesRef.current = aoiMemories;
   const aoiRunLedgerRef = useRef(aoiRunLedger);
+  // What each recent turn actually did, for the next turn's references. Loaded
+  // with the run ledger, appended at the end of every turn, persisted per session.
+  const aoiTurnRecordsRef = useRef<AoiTurnRecord[]>([]);
+  // Bumped on every session load and clear so a load that resolves late cannot
+  // repopulate a list the user has since wiped or switched away from.
+  const aoiTurnRecordsGenerationRef = useRef(0);
   aoiRunLedgerRef.current = aoiRunLedger;
   const aoiSkillsRef = useRef(aoiSkills);
   aoiSkillsRef.current = aoiSkills;
@@ -4615,6 +4708,28 @@ const ChatPanel: React.FC<{
       llmConfig?: LLMConfig | null;
     }) => {
       if (!params.userMessage.trim() && !params.assistantMessage.trim()) return;
+      // A direct action (chip, music parser, music classifier) answers in code and
+      // never reaches runConversation, so it records its own turn here; otherwise
+      // the next turn would see a gap where the song was played.
+      // Proactive nudges arrive here with a synthetic "[aoi-...]" user message;
+      // they are Aoi's own turns and must not become a T-1 the user can refer to.
+      if (params.source === 'direct_action' && !params.userMessage.trim().startsWith('[aoi-')) {
+        const records = aoiTurnRecordsRef.current;
+        const nextRecords = appendAoiTurnRecord(
+          records,
+          createAoiDirectActionTurnRecord({
+            id: `aoi-direct-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+            turnIndex: nextAoiTurnIndex(records),
+            userMessage: params.userMessage,
+            assistantMessage: params.assistantMessage,
+            toolCallLabels: params.toolCalls ?? [],
+          }),
+        );
+        aoiTurnRecordsRef.current = nextRecords;
+        void saveAoiTurnRecords(sessionPathRef.current, nextRecords).catch((error) => {
+          console.warn('[ChatPanel] Aoi turn record save failed', error);
+        });
+      }
       void syncAoiMemoryFromTurn({
         sessionPath: sessionPathRef.current,
         userMessage: params.userMessage,
@@ -7943,20 +8058,47 @@ const ChatPanel: React.FC<{
           latestUserTurn.attachments,
         )}]`
       : latestUserMessage;
-    const outcomeFeedbackContract = parseAoiOutcomeFeedbackContract(latestUserMessage);
-    const selectedConversationModel = selectConversationModel(history, cfg, dialogCfg);
-    const useDialogModel =
-      selectedConversationModel.useDialogModel && outcomeFeedbackContract === null;
-    const activeCfg = useDialogModel ? selectedConversationModel.config : cfg;
-    if (!hasUsableLLMConfig(activeCfg)) {
-      throw new Error('No usable LLM config was found for this conversation turn.');
-    }
-    const toolCallRuntimeAvailable = supportsStructuredConversationTools(activeCfg);
-    // Whether this turn's model can receive an image at all. Attaching one to a
-    // model that cannot THROWS at the request boundary rather than degrading,
-    // so anything that produces a picture has to know this up front.
-    const canSeeImages = supportsChatImageAttachments(activeCfg);
-    const activeModelRoute: PromptBudgetEntry['modelRoute'] = useDialogModel ? 'dialog' : 'main';
+    // Turn understanding starts here and runs while the context below loads, so
+    // its latency hides behind the memory / mission / context-router round trips.
+    // The reading can only add to what the regex router decides (aoiTurnContext),
+    // and null -- gate closed, timeout, provider error -- leaves the turn exactly
+    // as it was before the classifier existed.
+    const turnRecordsBefore = aoiTurnRecordsRef.current;
+    const previousTurnRecord = turnRecordsBefore[turnRecordsBefore.length - 1] ?? null;
+    const recentTurnsBlock = buildAoiRecentTurnsPromptBlock(turnRecordsBefore);
+    const latestTurnHasAttachments = Boolean(latestUserTurn?.attachments?.length);
+    // A CLI or managed-auth provider spawns a process per call, and the 8 s
+    // classifier budget would usually expire first: cost with no reading. Classify
+    // with the dialog model when it is an API provider, as the memory distiller
+    // does, otherwise skip the call.
+    const classifierCfg = TURN_CLASSIFIER_PROCESS_PROVIDERS.has(cfg.provider)
+      ? (() => {
+          const dialogCandidate = resolveLlmOverride(cfg, dialogCfg);
+          return dialogCandidate &&
+            hasUsableLLMConfig(dialogCandidate) &&
+            !TURN_CLASSIFIER_PROCESS_PROVIDERS.has(dialogCandidate.provider)
+            ? dialogCandidate
+            : null;
+        })()
+      : cfg;
+    const turnUnderstandingEnabled =
+      conversationPreferencesRef.current?.turnUnderstandingMode !== 'off' &&
+      classifierCfg !== null &&
+      supportsStructuredConversationTools(classifierCfg);
+    const understandingPromise: Promise<AoiTurnUnderstanding | null> =
+      options.understanding !== undefined
+        ? Promise.resolve(options.understanding)
+        : classifyAoiTurn(
+            {
+              text: latestUserMessage,
+              records: turnRecordsBefore,
+              recentTurnsBlock,
+              hasAttachments: latestTurnHasAttachments,
+              enabled: turnUnderstandingEnabled,
+            },
+            classifierCfg ?? cfg,
+            { signal: options.signal },
+          );
     const confirmedActionRequest = resolveAoiActionConfirmationRequest(latestUserMessage, history);
     const fileTaskContract = resolveAoiFileTaskContract({
       latestUserMessage,
@@ -7968,136 +8110,6 @@ const ChatPanel: React.FC<{
         '\n',
       ),
     );
-    const includeAppTools =
-      toolCallRuntimeAvailable &&
-      !useDialogModel &&
-      shouldEnableAppTools(latestUserMessage, history);
-    // Obligation for this turn: if the user asked an app to DO something, the
-    // reply may not claim it happened unless an app_action actually succeeded.
-    // Skipped entirely without structured tool calls -- that provider cannot
-    // dispatch and the system prompt already tells it not to claim tool actions.
-    // app_action now rides every tool-capable turn (getMinimalAppToolDefinitions),
-    // so the contract's "you cannot perform it here" branch no longer applies to
-    // a tool-capable turn: the correction is always "go do it". The flag stays in
-    // the contract because a provider without structured tool calls still has no
-    // way to act, and a claim made there is still false.
-    const appActionClaimContract = toolCallRuntimeAvailable
-      ? resolveAoiAppActionClaimContract({
-          latestUserMessage,
-          knownAppNames: knownInRoomAppNames,
-          appToolsAvailable: toolCallRuntimeAvailable,
-        })
-      : null;
-    // Whether search_web is actually in this turn's tools array. hasTavily only
-    // says a key is configured; the dialog route ships a two-tool array, so the
-    // key being present there does not mean the model can search. The system
-    // prompt has to follow this flag rather than hasTavily, or it instructs a
-    // procedure the model was not given.
-    const hasWebSearchTool = toolCallRuntimeAvailable && !useDialogModel && hasTavily;
-    const hasResearchTools = toolCallRuntimeAvailable && !useDialogModel && hasTavily;
-    // Six IDA tools on every turn is real prompt cost, so they ride only when the
-    // turn looks like reversing work or a session has already been touched.
-    const hasIdaSqlTools =
-      toolCallRuntimeAvailable &&
-      !useDialogModel &&
-      shouldEnableIdaSqlTools(latestUserMessage, history);
-    // Seven Ghidra tools, same reasoning as the IDA ones: they ride only when the
-    // turn looks like binary work or the lab has already been touched.
-    const hasGhidraTools =
-      toolCallRuntimeAvailable &&
-      !useDialogModel &&
-      shouldEnableGhidraTools(latestUserMessage, history);
-    const confirmedResearchRequest = resolveAoiResearchConfirmationRequest(
-      latestUserMessage,
-      history,
-    );
-    const shouldPreferResearchRun =
-      hasResearchTools && shouldUseAoiResearchRun(latestUserMessage, history);
-    const shouldPreSearchWeb =
-      hasTavily &&
-      !includeAppTools &&
-      !shouldPreferResearchRun &&
-      shouldUseWebSearch(latestUserMessage);
-    const condensedHistory = condenseConversationHistory(history);
-
-    const tools = toolCallRuntimeAvailable
-      ? useDialogModel
-        ? [getRespondToUserToolDef(), getFinishTargetToolDef(), ...getMinimalAppToolDefinitions()]
-        : [
-            getRespondToUserToolDef(),
-            getFinishTargetToolDef(),
-            ...getMemoryToolDefinitions(),
-            ...(outcomeFeedbackContract ? [getAoiOutcomeFeedbackToolDefinition()] : []),
-            ...(hasWebSearchTool ? getTavilyToolDefinitions() : []),
-            ...(hasResearchTools ? getAoiResearchToolDefinitions() : []),
-            ...(hasImageGen ? getImageGenToolDefinitions() : []),
-            ...getHostProcessToolDefinitions(),
-            ...(hasIdaSqlTools ? getIdaSqlToolDefinitions() : []),
-            ...(hasGhidraTools ? getGhidraToolDefinitions() : []),
-            ...getHostBrowserToolDefinitions(),
-            ...getBrowserDriveToolDefinitions(),
-            ...getBrowserDriveActToolDefinitions(),
-            // desktop_capture returns an image, and attaching one for a model
-            // that cannot take images THROWS rather than degrading -- so a
-            // text-only model must not be offered it at all.
-            ...getDesktopInputToolDefinitions({ canSeeImages }),
-            ...(includeAppTools
-              ? [
-                  getListAppsToolDefinition(),
-                  getAppActionToolDefinition(),
-                  ...getFileToolDefinitions(),
-                  ...getAppSchemaToolDefinitions(),
-                  ...getWorkspaceToolDefinitions(),
-                  ...getIdeToolDefinitions(),
-                  ...getSymbolToolDefinitions(),
-                  ...getSemanticToolDefinitions(),
-                  ...getAppStateToolDefinitions(),
-                  ...getAppIntentToolDefinitions(),
-                  ...getUrlToolDefinitions(),
-                  ...getCommandToolDefinitions(),
-                  ...getDiagnosticsToolDefinitions(),
-                  ...getCheckpointToolDefinitions(),
-                  ...getAutofixMacroToolDefinitions(),
-                  ...getPreviewToolDefinitions(),
-                  ...getUndoToolDefinitions(),
-                  ...getBackgroundWatchToolDefinitions(),
-                ]
-              : getMinimalAppToolDefinitions()),
-          ]
-      : [];
-    const selectedToolNames = tools.map((tool) => tool.function.name);
-    const capabilityPrompt = toolCallRuntimeAvailable
-      ? buildAoiCapabilityPrompt(selectedToolNames)
-      : '';
-    const runGoal = createAoiRunGoalFromMessage(
-      fileTaskContract?.sourceMessage ?? confirmedActionRequest ?? latestUserMessage,
-    );
-    const runGoalPrompt = buildAoiRunGoalPrompt(runGoal);
-    const activeSkillMatches = resolveAoiActiveSkills(latestUserMessage, aoiSkillsRef.current);
-    // P5.8: append the read-only tools registered by trusted skills as advisory capability
-    // context (always available, not trigger-gated). Empty when no skill registers a tool.
-    const skillsPrompt =
-      buildAoiSkillsPrompt(activeSkillMatches) +
-      buildAoiRegisteredSkillToolsCatalog(resolveAoiRegisteredSkillTools(aoiSkillsRef.current));
-    const mcpPluginPrompt = buildAoiMcpPluginPrompt(aoiMcpPluginsRef.current);
-    console.info('[ChatPanel] Tool selection', {
-      latestUserMessage,
-      useDialogModel,
-      activeModel: activeCfg.model,
-      toolCallRuntimeAvailable,
-      includeAppTools,
-      hasResearchTools,
-      shouldPreferResearchRun,
-      confirmedActionRequest,
-      confirmedResearchRequest,
-      shouldPreSearchWeb,
-      toolNames: selectedToolNames,
-      activeSkills: activeSkillMatches.map((match) => match.skill.id),
-      activeMcpPlugins: aoiMcpPluginsRef.current
-        .filter((entry) => entry.enabled && entry.trusted)
-        .map((entry) => entry.id),
-    });
-
     const currentMemories = memoriesRef.current;
     let latestAoiMemories = aoiMemoriesRef.current;
     try {
@@ -8137,14 +8149,18 @@ const ChatPanel: React.FC<{
     // Feed recall back into ranking and decay: the memories that actually made
     // it into this prompt are the ones proving their worth. Fire-and-forget so
     // a slow write never delays the turn.
-    void recordAoiMemoryRecallUsage(
-      selectAoiMemoriesForPrompt(latestAoiMemories, latestUserMessage, {
-        queryEmbedding: aoiQueryEmbedding,
-        queryEmbeddingModel: aoiEmbeddingProviderRef.current?.model ?? null,
-      }),
-    ).catch((error) => {
-      console.warn('[ChatPanel] Failed to record Aoi memory recall usage', error);
-    });
+    // Not on the re-run after request_capabilities: the recall was already
+    // credited for this turn, and counting it twice skews ranking and decay.
+    if (!options.escalation) {
+      void recordAoiMemoryRecallUsage(
+        selectAoiMemoriesForPrompt(latestAoiMemories, latestUserMessage, {
+          queryEmbedding: aoiQueryEmbedding,
+          queryEmbeddingModel: aoiEmbeddingProviderRef.current?.model ?? null,
+        }),
+      ).catch((error) => {
+        console.warn('[ChatPanel] Failed to record Aoi memory recall usage', error);
+      });
+    }
     // R5.1: Aoi's own side. Agent-scope memories are what she actually
     // researched, so they are the one self-side material that can be evidence-
     // backed; crossing them with the user's interest topics is what makes "I
@@ -8215,6 +8231,259 @@ const ChatPanel: React.FC<{
       latestUserMessage,
     });
     const currentAoiMusicTastePrompt = buildAoiMusicTastePromptBlock(musicTasteStateRef.current);
+    updateStatus('Reading the request');
+    const understanding = await understandingPromise;
+    throwIfConversationAborted(options.signal);
+    const regexReading = inferAoiTurnUnderstandingFromRegex(latestUserMessage, history);
+    // On the re-run the model's own request is the reading: the classifier read
+    // this turn as something that needed no tools, and was wrong.
+    const effectiveReading: AoiTurnUnderstanding = options.escalation
+      ? {
+          ...(understanding ?? regexReading),
+          kind: 'action_request',
+          families: options.escalation.families,
+        }
+      : (understanding ?? regexReading);
+    const outcomeFeedbackContract = parseAoiOutcomeFeedbackContract(latestUserMessage);
+    // Route: the regex router is the floor. A high-confidence classifier reading
+    // or the model's own request_capabilities call can pull a turn onto the main
+    // route and add tool families; nothing can push one down to dialog.
+    const regexSelection = selectConversationModel(history, cfg, dialogCfg);
+    const turnRoute = resolveAoiTurnRoute({
+      hasAttachments: latestTurnHasAttachments,
+      outcomeFeedbackContract: outcomeFeedbackContract !== null,
+      dialogAvailable: hasUsableLLMConfig(resolveLlmOverride(cfg, dialogCfg)),
+      regexDialog: regexSelection.useDialogModel,
+      understanding,
+      escalation: options.escalation
+        ? { families: options.escalation.families, reason: options.escalation.reason }
+        : null,
+    });
+    const useDialogModel = turnRoute.route === 'dialog';
+    const activeCfg = useDialogModel ? regexSelection.config : cfg;
+    if (!hasUsableLLMConfig(activeCfg)) {
+      throw new Error('No usable LLM config was found for this conversation turn.');
+    }
+    const toolCallRuntimeAvailable = supportsStructuredConversationTools(activeCfg);
+    // Whether this turn's model can receive an image at all. Attaching one to a
+    // model that cannot THROWS at the request boundary rather than degrading,
+    // so anything that produces a picture has to know this up front.
+    const canSeeImages = supportsChatImageAttachments(activeCfg);
+    const activeModelRoute: PromptBudgetEntry['modelRoute'] = useDialogModel ? 'dialog' : 'main';
+    // Tool families: regex flags first, then whatever the route decision added
+    // (a high-confidence reading, or the families an escalation named).
+    const turnToolFlags = resolveAoiTurnToolFlags({
+      regex: {
+        includeAppTools: shouldEnableAppTools(latestUserMessage, history),
+        includeIdaTools: shouldEnableIdaSqlTools(latestUserMessage, history),
+        includeGhidraTools: shouldEnableGhidraTools(latestUserMessage, history),
+      },
+      families: turnRoute.families,
+    });
+    const includeAppTools =
+      toolCallRuntimeAvailable && !useDialogModel && turnToolFlags.includeAppTools;
+    // Obligation for this turn: if the user asked an app to DO something, the
+    // reply may not claim it happened unless an app_action actually succeeded.
+    // Skipped entirely without structured tool calls -- that provider cannot
+    // dispatch and the system prompt already tells it not to claim tool actions.
+    // app_action now rides every tool-capable turn (getMinimalAppToolDefinitions),
+    // so the contract's "you cannot perform it here" branch no longer applies to
+    // a tool-capable turn: the correction is always "go do it". The flag stays in
+    // the contract because a provider without structured tool calls still has no
+    // way to act, and a claim made there is still false.
+    const appActionClaimContract = toolCallRuntimeAvailable
+      ? resolveAoiAppActionClaimContract({
+          latestUserMessage,
+          knownAppNames: knownInRoomAppNames,
+          appToolsAvailable: toolCallRuntimeAvailable,
+        })
+      : null;
+    // Whether search_web is actually in this turn's tools array. hasTavily only
+    // says a key is configured; the dialog route ships a two-tool array, so the
+    // key being present there does not mean the model can search. The system
+    // prompt has to follow this flag rather than hasTavily, or it instructs a
+    // procedure the model was not given.
+    const hasWebSearchTool = toolCallRuntimeAvailable && !useDialogModel && hasTavily;
+    const hasResearchTools = toolCallRuntimeAvailable && !useDialogModel && hasTavily;
+    // Six IDA tools on every turn is real prompt cost, so they ride only when the
+    // turn looks like reversing work or a session has already been touched.
+    const hasIdaSqlTools =
+      toolCallRuntimeAvailable && !useDialogModel && turnToolFlags.includeIdaTools;
+    // Seven Ghidra tools, same reasoning as the IDA ones: they ride only when the
+    // turn looks like binary work or the lab has already been touched.
+    const hasGhidraTools =
+      toolCallRuntimeAvailable && !useDialogModel && turnToolFlags.includeGhidraTools;
+    const confirmedResearchRequest = resolveAoiResearchConfirmationRequest(
+      latestUserMessage,
+      history,
+    );
+    const shouldPreferResearchRun =
+      hasResearchTools && shouldUseAoiResearchRun(latestUserMessage, history);
+    const shouldPreSearchWeb =
+      hasTavily &&
+      !includeAppTools &&
+      !shouldPreferResearchRun &&
+      shouldUseWebSearch(latestUserMessage);
+    const condensedHistory = condenseConversationHistory(history);
+
+    // Ask instead of act: only on a low-confidence classifier reading of a
+    // side-effectful request, with the question the classifier supplied, and
+    // never twice in a row. The question is the turn; no model call is made.
+    const clarification = options.escalation
+      ? { ask: false as const, reason: 'escalated turn' }
+      : decideAoiClarification({ understanding, previousRecord: previousTurnRecord });
+    if (clarification.ask) {
+      const clarificationLedger = finalizeAoiRunLedgerEntry(
+        appendAoiRunLedgerEvent(
+          createAoiRunLedgerEntry({
+            goal: createAoiRunGoalFromMessage(latestUserMessage),
+            modelRoute: turnRoute.route,
+            modelId: activeCfg.model,
+            includeAppTools: false,
+            exposedToolNames: [],
+            routeReason: `${turnRoute.reason}; clarification asked`,
+            understanding: toAoiRunLedgerUnderstanding(understanding),
+          }),
+          { type: 'clarification_asked', message: clarification.question.slice(0, 200) },
+        ),
+        'completed',
+        clarification.question,
+      );
+      publishAoiRunLedgerEntry(sessionPathRef.current, clarificationLedger, true);
+      console.info('[ChatPanel] Clarification asked instead of running the turn', {
+        question: clarification.question,
+        options: clarification.options,
+      });
+      emitAssistantMessage(
+        {
+          id: String(Date.now()),
+          role: 'assistant',
+          content: clarification.question,
+          suggestedReplies: clarification.options,
+        },
+        { updateSuggestedReplies: true },
+      );
+      const clarificationRecord = createAoiTurnRecord({
+        id: clarificationLedger.id,
+        turnIndex: nextAoiTurnIndex(aoiTurnRecordsRef.current),
+        userMessage: latestUserMessage,
+        assistantMessage: clarification.question,
+        route: turnRoute.route,
+        routeReason: turnRoute.reason,
+        kind: effectiveReading.kind,
+        families: effectiveReading.families,
+        messages: [],
+        suggestedReplies: clarification.options,
+        outcome: 'clarification_asked',
+        openQuestion: clarification.question,
+      });
+      const nextRecords = appendAoiTurnRecord(aoiTurnRecordsRef.current, clarificationRecord);
+      aoiTurnRecordsRef.current = nextRecords;
+      void saveAoiTurnRecords(sessionPathRef.current, nextRecords).catch((error) => {
+        console.warn('[ChatPanel] Aoi turn record save failed', error);
+      });
+      return;
+    }
+
+    // The dialog route carries request_capabilities so a misrouted turn can ask
+    // for the tools it needs instead of telling the user they do not exist. Not
+    // on the re-run: one escalation per turn.
+    const capabilityEscalationAvailable =
+      toolCallRuntimeAvailable && useDialogModel && !options.escalation;
+    const tools = toolCallRuntimeAvailable
+      ? useDialogModel
+        ? [
+            getRespondToUserToolDef(),
+            getFinishTargetToolDef(),
+            ...getMinimalAppToolDefinitions(),
+            ...(capabilityEscalationAvailable ? [getAoiRequestCapabilitiesToolDefinition()] : []),
+          ]
+        : [
+            getRespondToUserToolDef(),
+            getFinishTargetToolDef(),
+            ...getMemoryToolDefinitions(),
+            ...(outcomeFeedbackContract ? [getAoiOutcomeFeedbackToolDefinition()] : []),
+            ...(hasWebSearchTool ? getTavilyToolDefinitions() : []),
+            ...(hasResearchTools ? getAoiResearchToolDefinitions() : []),
+            ...(hasImageGen ? getImageGenToolDefinitions() : []),
+            ...getHostProcessToolDefinitions(),
+            ...(hasIdaSqlTools ? getIdaSqlToolDefinitions() : []),
+            ...(hasGhidraTools ? getGhidraToolDefinitions() : []),
+            ...getHostBrowserToolDefinitions(),
+            ...getBrowserDriveToolDefinitions(),
+            ...getBrowserDriveActToolDefinitions(),
+            // desktop_capture returns an image, and attaching one for a model
+            // that cannot take images THROWS rather than degrading -- so a
+            // text-only model must not be offered it at all.
+            ...getDesktopInputToolDefinitions({ canSeeImages }),
+            ...(includeAppTools
+              ? [
+                  getListAppsToolDefinition(),
+                  getAppActionToolDefinition(),
+                  ...getFileToolDefinitions(),
+                  ...getAppSchemaToolDefinitions(),
+                  ...getWorkspaceToolDefinitions(),
+                  ...getIdeToolDefinitions(),
+                  ...getSymbolToolDefinitions(),
+                  ...getSemanticToolDefinitions(),
+                  ...getAppStateToolDefinitions(),
+                  ...getAppIntentToolDefinitions(),
+                  ...getUrlToolDefinitions(),
+                  ...getCommandToolDefinitions(),
+                  ...getDiagnosticsToolDefinitions(),
+                  ...getCheckpointToolDefinitions(),
+                  ...getAutofixMacroToolDefinitions(),
+                  ...getPreviewToolDefinitions(),
+                  ...getUndoToolDefinitions(),
+                  ...getBackgroundWatchToolDefinitions(),
+                ]
+              : getMinimalAppToolDefinitions()),
+          ]
+      : [];
+    const selectedToolNames = tools.map((tool) => tool.function.name);
+    const capabilityPrompt = toolCallRuntimeAvailable
+      ? buildAoiCapabilityPrompt(selectedToolNames)
+      : '';
+    const runGoal = createAoiRunGoalFromMessage(
+      fileTaskContract?.sourceMessage ?? confirmedActionRequest ?? latestUserMessage,
+    );
+    const runGoalPrompt = buildAoiRunGoalPrompt(runGoal);
+    const activeSkillMatches = resolveAoiActiveSkills(latestUserMessage, aoiSkillsRef.current);
+    // P5.8: append the read-only tools registered by trusted skills as advisory capability
+    // context (always available, not trigger-gated). Empty when no skill registers a tool.
+    const skillsPrompt =
+      buildAoiSkillsPrompt(activeSkillMatches) +
+      buildAoiRegisteredSkillToolsCatalog(resolveAoiRegisteredSkillTools(aoiSkillsRef.current));
+    const mcpPluginPrompt = buildAoiMcpPluginPrompt(aoiMcpPluginsRef.current);
+    console.info('[ChatPanel] Tool selection', {
+      latestUserMessage,
+      useDialogModel,
+      routeReason: turnRoute.reason,
+      understanding: understanding
+        ? `${understanding.kind}/${understanding.confidence}/${understanding.families.join('+')}`
+        : null,
+      activeModel: activeCfg.model,
+      toolCallRuntimeAvailable,
+      includeAppTools,
+      hasResearchTools,
+      shouldPreferResearchRun,
+      confirmedActionRequest,
+      confirmedResearchRequest,
+      shouldPreSearchWeb,
+      toolNames: selectedToolNames,
+      activeSkills: activeSkillMatches.map((match) => match.skill.id),
+      activeMcpPlugins: aoiMcpPluginsRef.current
+        .filter((entry) => entry.enabled && entry.trusted)
+        .map((entry) => entry.id),
+    });
+
+    const turnContextPrompt = buildAoiTurnContextPromptBlock({
+      recentTurnsBlock,
+      // A reading the model has already overruled by asking for tools would
+      // contradict the re-run; the recent turns alone are shown then.
+      understanding: options.escalation ? null : understanding,
+      records: turnRecordsBefore,
+    });
     const builtSystemPrompt = buildSystemPrompt(
       char,
       mm,
@@ -8251,6 +8520,8 @@ const ChatPanel: React.FC<{
       }),
       includeAppTools,
       hasTavily,
+      turnContextPrompt,
+      capabilityEscalationAvailable,
     );
     // Budget accounting stays on the combined text so the snapshots remain
     // comparable to the ones recorded before the split.
@@ -8365,13 +8636,28 @@ const ChatPanel: React.FC<{
       ].slice(-MAX_PROMPT_BUDGET_ENTRIES),
     );
     const runSessionPath = sessionPathRef.current;
-    let runLedgerEntry = createAoiRunLedgerEntry({
-      goal: runGoal,
-      modelRoute: activeModelRoute,
-      modelId: activeCfg.model,
-      includeAppTools,
-      exposedToolNames: selectedToolNames,
-    });
+    // One turn is one run: the re-run after request_capabilities continues the
+    // dialog attempt's entry rather than opening a second one.
+    let runLedgerEntry = options.escalation
+      ? escalateAoiRunLedgerEntry(options.escalation.ledgerEntry, {
+          families: options.escalation.families,
+          reason: options.escalation.reason,
+          modelId: activeCfg.model,
+          includeAppTools,
+          exposedToolNames: selectedToolNames,
+          routeReason: turnRoute.reason,
+          promptTokensEstimate: seedBudgetSnapshot.estimatedTokens,
+        })
+      : createAoiRunLedgerEntry({
+          goal: runGoal,
+          modelRoute: activeModelRoute,
+          modelId: activeCfg.model,
+          includeAppTools,
+          exposedToolNames: selectedToolNames,
+          routeReason: turnRoute.reason,
+          understanding: toAoiRunLedgerUnderstanding(understanding),
+          promptTokensEstimate: seedBudgetSnapshot.estimatedTokens,
+        });
     publishAoiRunLedgerEntry(runSessionPath, runLedgerEntry);
 
     const recordRunLedgerEvent = (
@@ -8386,12 +8672,19 @@ const ChatPanel: React.FC<{
       runLedgerEntry = finalizeAoiRunLedgerEntry(runLedgerEntry, status, message);
       publishAoiRunLedgerEntry(runSessionPath, runLedgerEntry, true);
     };
-
-    if (outcomeFeedbackContract && !toolCallRuntimeAvailable) {
-      const failureMessage =
-        'Aoi outcome feedback requires a structured-tool-capable main model; canonical feedback was not written.';
-      finalizeRunLedger('failed', failureMessage);
-      throw new Error(failureMessage);
+    if (understanding && !options.escalation) {
+      recordRunLedgerEvent({
+        type: 'turn_understood',
+        message: [
+          `${understanding.kind}/${understanding.confidence}`,
+          `families=${understanding.families.join('+')}`,
+          understanding.refersToTurn !== null ? `refers=${understanding.refersToTurn}` : '',
+          understanding.referent ? `referent=${understanding.referent}` : '',
+          typeof understanding.latencyMs === 'number' ? `${understanding.latencyMs}ms` : '',
+        ]
+          .filter(Boolean)
+          .join(' '),
+      });
     }
 
     let currentMessages: ChatMessage[] = fullMessages;
@@ -8401,8 +8694,14 @@ const ChatPanel: React.FC<{
         (!fileTaskContract.previewRequired &&
           !toolSafetyPolicyRef.current.requirePreviewBeforeMutation)),
     );
-    let iterations = 0;
+    // The re-run continues the dialog attempt's numbering so the ledger's
+    // iteration count describes the whole turn, and gets a fresh budget on top of
+    // what the attempt spent: the attempt did no real work, and starving the
+    // re-run for it would fail the turn the escalation exists to rescue.
+    const iterationOffset = options.escalation?.iterationOffset ?? 0;
+    let iterations = iterationOffset;
     let iterationLimit =
+      iterationOffset +
       DEFAULT_CONVERSATION_ITERATION_LIMIT +
       (fileTaskExecutionConfirmed ? CONFIRMED_FILE_TASK_RECOVERY_ITERATIONS : 0);
     pendingToolCallsRef.current = [];
@@ -8412,6 +8711,49 @@ const ChatPanel: React.FC<{
     let fileMutatedSinceDiagnostics = false;
     let deliveredAssistantContent = '';
     let deliveredToolCalls: string[] = [];
+    let deliveredSuggestedReplies: string[] = [];
+    // Whether any tool batch has started executing in this run (plain-text
+    // iterations and refused escalations do not count).
+    let dialogToolExecuted = false;
+    // The record of this turn for the next one. Derived from the final message
+    // array (real tool calls, real results), the delivered reply, and the chips.
+    const persistTurnRecord = (
+      outcome: AoiTurnOutcome,
+      assistantMessage: string,
+      openQuestion?: string | null,
+    ) => {
+      const records = aoiTurnRecordsRef.current;
+      const families = [
+        ...new Set<AoiCapabilityFamily>([...effectiveReading.families, ...turnRoute.families]),
+      ].filter((family, _index, all) => family !== 'none' || all.length === 1);
+      const nextRecord = createAoiTurnRecord({
+        id: runLedgerEntry.id,
+        turnIndex: nextAoiTurnIndex(records),
+        userMessage: latestUserMessage,
+        assistantMessage,
+        route: turnRoute.route,
+        routeReason: turnRoute.reason,
+        kind: effectiveReading.kind,
+        families: families.length > 0 ? families : ['none'],
+        messages: currentMessages,
+        suggestedReplies: deliveredSuggestedReplies,
+        outcome,
+        openQuestion,
+      });
+      const nextRecords = appendAoiTurnRecord(records, nextRecord);
+      aoiTurnRecordsRef.current = nextRecords;
+      void saveAoiTurnRecords(runSessionPath, nextRecords).catch((error) => {
+        console.warn('[ChatPanel] Aoi turn record save failed', error);
+      });
+    };
+
+    if (outcomeFeedbackContract && !toolCallRuntimeAvailable) {
+      const failureMessage =
+        'Aoi outcome feedback requires a structured-tool-capable main model; canonical feedback was not written.';
+      finalizeRunLedger('failed', failureMessage);
+      persistTurnRecord('failed', failureMessage);
+      throw new Error(failureMessage);
+    }
     let pendingResearchStartAck: string | null = null;
     let fileTaskEvidence = createAoiFileTaskEvidence();
     let appActionClaimEvidence: AoiAppActionClaimEvidence = createAoiAppActionClaimEvidence();
@@ -8685,12 +9027,19 @@ const ChatPanel: React.FC<{
         response = await chat(currentMessages, tools, activeCfg, { signal: options.signal });
         throwIfConversationAborted(options.signal);
       } catch (error) {
-        finalizeRunLedger(
-          'failed',
-          error instanceof Error ? error.message : `Model call failed: ${String(error)}`,
-        );
+        const failureMessage =
+          error instanceof Error ? error.message : `Model call failed: ${String(error)}`;
+        finalizeRunLedger('failed', failureMessage);
+        if (!isChatAbortError(error)) {
+          persistTurnRecord('failed', failureMessage);
+        }
         throw error;
       }
+      // Provider-reported usage, when the provider returns it, accumulates onto
+      // the run so token cost can be read back with the route decision.
+      runLedgerEntry = recordAoiRunLedgerTokens(runLedgerEntry, {
+        usageTotalTokens: response.usage?.totalTokens,
+      });
       console.info('[ChatPanel] LLM iteration response', {
         iteration: iterations,
         contentPreview: response.content.slice(0, 200),
@@ -8768,6 +9117,100 @@ const ChatPanel: React.FC<{
         (tc) => tc.function.name === 'respond_to_user',
       );
       const batchHasMemoryTool = response.toolCalls.some((tc) => isMemoryTool(tc.function.name));
+      // request_capabilities: the dialog-route model says this turn needs tools it
+      // was not given. Checked before anything in the batch runs, so a reply in
+      // the same batch is not delivered and then contradicted by the re-run.
+      const escalationCall = response.toolCalls.find(
+        (tc) => tc.function.name === AOI_REQUEST_CAPABILITIES_TOOL_NAME,
+      );
+      if (escalationCall) {
+        let escalationArgs: unknown = {};
+        try {
+          escalationArgs = JSON.parse(escalationCall.function.arguments);
+        } catch {
+          // malformed arguments are refused below
+        }
+        const requested = parseAoiRequestCapabilitiesParams(escalationArgs);
+        // Families the re-run could actually serve: research needs a Tavily key,
+        // image generation needs its config. Asking again for a tool that is not
+        // configured would hand the model the same gap twice with no way out.
+        const unsatisfiable = (requested?.families ?? []).filter(
+          (family) => (family === 'research' && !hasTavily) || (family === 'image' && !hasImageGen),
+        );
+        const satisfiable = (requested?.families ?? []).filter(
+          (family) => !unsatisfiable.includes(family),
+        );
+        // Only before anything has run: once a tool executed on the dialog route
+        // (list_apps, app_action) the re-run would lose that transcript and could
+        // repeat the action, so a later request is refused and the model finishes
+        // with what it already did.
+        const nothingRanYet = !dialogToolExecuted;
+        if (requested && capabilityEscalationAvailable && nothingRanYet && satisfiable.length > 0) {
+          console.info('[ChatPanel] Capability escalation requested; re-running on main route', {
+            families: satisfiable,
+            reason: requested.reason,
+          });
+          throwIfConversationAborted(options.signal);
+          return runConversation(history, cfg, dialogCfg, {
+            ...options,
+            understanding,
+            escalation: {
+              families: satisfiable,
+              reason: requested.reason,
+              ledgerEntry: runLedgerEntry,
+              iterationOffset: iterations,
+            },
+          });
+        }
+        const refusal = !requested
+          ? 'request_capabilities needs at least one valid family; answer with the tools you have.'
+          : options.escalation
+            ? 'capabilities were already requested once this turn; answer with the tools you have, and say plainly what you could not do.'
+            : !capabilityEscalationAvailable
+              ? 'request_capabilities is not offered on this route; the tools you have are all there is this turn.'
+              : !nothingRanYet
+                ? 'tools already ran this turn, so capabilities cannot be requested now; answer with what you have already done, and say what is missing.'
+                : `not configured in this session: ${unsatisfiable
+                    .map((family) =>
+                      family === 'research'
+                        ? 'research (no Tavily key)'
+                        : 'image (no image generation)',
+                    )
+                    .join(', ')}; tell the user what is missing instead of retrying.`;
+        // Refused: malformed families, or a second request on the re-run. Answer
+        // every call in the batch so the transcript stays well-formed, and let the
+        // model finish with what it has.
+        currentMessages = [
+          ...currentMessages,
+          {
+            role: 'assistant',
+            content: response.content,
+            tool_calls: response.toolCalls,
+            reasoning_content: response.reasoningContent,
+          },
+          ...response.toolCalls.map((tc) => ({
+            role: 'tool' as const,
+            tool_call_id: tc.id,
+            content:
+              tc.id === escalationCall.id
+                ? `error: ${refusal}`
+                : 'error: skipped because request_capabilities was refused in the same batch',
+          })),
+        ];
+        recordRunLedgerEvent({
+          type: 'tool_error',
+          iteration: iterations,
+          message: `request_capabilities refused: ${refusal}`.slice(0, 400),
+          toolNames: [AOI_REQUEST_CAPABILITIES_TOOL_NAME],
+        });
+        // A model that keeps asking after a refusal is the same stall as any other
+        // repeated batch; the loop guard has to see it or the turn burns its whole
+        // iteration budget on refusals.
+        // The respond_to_user in this batch was NOT delivered, so the guard must
+        // treat the batch as a stall candidate rather than a completed reply.
+        applyToolLoopGuard(response.toolCalls, false);
+        continue;
+      }
       const assistantMsg: ChatMessage = {
         role: 'assistant',
         content: response.content,
@@ -8775,6 +9218,9 @@ const ChatPanel: React.FC<{
         reasoning_content: response.reasoningContent,
       };
       currentMessages = [...currentMessages, assistantMsg];
+      // Past this point the batch's tools execute; a later request_capabilities
+      // would lose their transcript on the re-run, so it is refused from here on.
+      dialogToolExecuted = true;
 
       if (canParallelizeToolBatch(response.toolCalls)) {
         throwIfConversationAborted(options.signal);
@@ -9212,6 +9658,7 @@ const ChatPanel: React.FC<{
           );
           deliveredAssistantContent = content;
           deliveredToolCalls = deliveredPendingToolCalls;
+          deliveredSuggestedReplies = replies;
           pendingToolCallsRef.current = [];
           pendingResearchStartAck = null;
           recordRunLedgerEvent({
@@ -10591,6 +11038,7 @@ const ChatPanel: React.FC<{
         llmConfig: activeCfg,
       });
       finalizeRunLedger('completed', deliveredAssistantContent);
+      persistTurnRecord('delivered', deliveredAssistantContent);
     } else {
       const finalCompletionVerification = evaluateConversationCompletion('');
       const failureMessage =
@@ -10602,6 +11050,7 @@ const ChatPanel: React.FC<{
               pendingToolCalls: pendingToolCallsRef.current,
             });
       finalizeRunLedger('failed', failureMessage);
+      persistTurnRecord('failed', failureMessage);
       throw new Error(failureMessage);
     }
 
@@ -13684,6 +14133,9 @@ const SettingsModal: React.FC<{
   const [ttsPreloadCommonPhrases, setTtsPreloadCommonPhrases] = useState(
     conversationPreferences?.ttsPreloadCommonPhrases !== false,
   );
+  const [turnUnderstandingEnabled, setTurnUnderstandingEnabled] = useState(
+    conversationPreferences?.turnUnderstandingMode !== 'off',
+  );
   const [operatorVoicePolicy, setOperatorVoicePolicy] =
     useState<AoiOperatorVoicePolicy>(aoiOperatorVoicePolicy);
   const [openRouterModels, setOpenRouterModels] = useState<RuntimeModelOption[]>([]);
@@ -15365,6 +15817,24 @@ const SettingsModal: React.FC<{
                   <span className={styles.modelHint}>
                     Pre-generates the short fixed lines found in the current chat code, like app
                     open acknowledgements and memory confirmations, so they play with less delay.
+                  </span>
+                </div>
+
+                <div className={styles.field}>
+                  <label className={styles.label}>Read each message before answering</label>
+                  <button
+                    type="button"
+                    data-testid="aoi-turn-understanding-toggle"
+                    className={turnUnderstandingEnabled ? styles.saveBtn : styles.cancelBtn}
+                    onClick={() => setTurnUnderstandingEnabled((prev) => !prev)}
+                  >
+                    {turnUnderstandingEnabled ? 'Enabled' : 'Disabled'}
+                  </button>
+                  <span className={styles.modelHint}>
+                    One small model call per turn reads what you meant (a request, a question, a
+                    yes, a no) against the recent turns, so short replies like 그거 / 다시 / 응
+                    reach the right tools. Turn off to route by keyword rules only; the model can
+                    still ask for tools it is missing.
                   </span>
                 </div>
 
@@ -19703,7 +20173,7 @@ const SettingsModal: React.FC<{
                       {recentRunLedgerEntries.length > 0 ? (
                         <div className={styles.promptBudgetLog}>
                           {recentRunLedgerEntries.map((entry) => (
-                            <div key={entry.id}>
+                            <div key={entry.id} data-testid="aoi-run-ledger-entry">
                               <strong>
                                 {entry.status} · {entry.goal.summary}
                               </strong>
@@ -19715,9 +20185,24 @@ const SettingsModal: React.FC<{
                               <span>
                                 {' '}
                                 iter {entry.metrics.iterations} · tools{' '}
-                                {entry.metrics.toolCallCount} ·{' '}
-                                {new Date(entry.updatedAt).toLocaleTimeString()}
+                                {entry.metrics.toolCallCount}
+                                {typeof entry.promptTokensEstimate === 'number'
+                                  ? ` · ~${entry.promptTokensEstimate} tok`
+                                  : ''}
+                                {typeof entry.usageTotalTokens === 'number'
+                                  ? ` · used ${entry.usageTotalTokens}`
+                                  : ''}{' '}
+                                · {new Date(entry.updatedAt).toLocaleTimeString()}
                               </span>
+                              {typeof entry.routeReason === 'string' && entry.routeReason && (
+                                <span data-testid="aoi-run-ledger-route-reason">
+                                  {' '}
+                                  route: {entry.routeReason}
+                                  {entry.escalation && typeof entry.escalation === 'object'
+                                    ? ` (escalated from ${String(entry.escalation.fromRoute ?? '?')}: ${(Array.isArray(entry.escalation.families) ? entry.escalation.families : []).join(', ')})`
+                                    : ''}
+                                </span>
+                              )}
                             </div>
                           ))}
                         </div>
@@ -20261,6 +20746,7 @@ const SettingsModal: React.FC<{
                 ttsEnabled,
                 ttsPreloadCommonPhrases,
                 operatorVoicePolicy: normalizeAoiOperatorVoicePolicy(operatorVoicePolicy),
+                turnUnderstandingMode: turnUnderstandingEnabled ? 'on' : 'off',
               };
               const nextKiraProjectDefaults: NonNullable<KiraConfig['projectDefaults']> = {
                 ...(kiraConfig?.projectDefaults ?? {}),

@@ -828,7 +828,27 @@ describe('saveConfig()', () => {
       responseLanguageMode: 'english',
       ttsEnabled: true,
       ttsPreloadCommonPhrases: false,
+      turnUnderstandingMode: 'on',
     });
+  });
+
+  it('persists turn understanding off in conversationPreferences', async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ llm: MOCK_ANTHROPIC_CONFIG }),
+      } as unknown as Response)
+      .mockResolvedValueOnce({ ok: true } as Response);
+    globalThis.fetch = mockFetch;
+
+    await saveConfig(MOCK_OPENAI_CONFIG, undefined, undefined, undefined, undefined, {
+      responseLanguageMode: 'match-user',
+      turnUnderstandingMode: 'off',
+    });
+
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body as string);
+    expect(body.conversationPreferences.turnUnderstandingMode).toBe('off');
   });
 
   it('preserves conversationPreferences when saving the main LLM settings', async () => {
@@ -1354,6 +1374,58 @@ describe('chat()', () => {
       expect(body.messages[1].reasoning_content).toContain('reasoning_content');
       expect(body.thinking).toEqual({ type: 'disabled' });
       expect(body.reasoning).toEqual({ enabled: false });
+    });
+  });
+
+  describe('OpenRouter thinking control', () => {
+    const openRouterConfig: LLMConfig = {
+      provider: 'openrouter',
+      apiKey: 'or-key',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'qwen/qwen3.7-flash',
+    };
+
+    it('sends reasoning.enabled=false when the effort is none', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce(makeOpenAIResponse('ok'));
+      globalThis.fetch = mockFetch;
+
+      await chat([{ role: 'user', content: 'hi' }], [], {
+        ...openRouterConfig,
+        reasoningEffort: 'none',
+      });
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(body.reasoning).toEqual({ enabled: false });
+      expect(body.thinking).toBeUndefined();
+    });
+
+    it('leaves the provider default alone for any other effort or none at all', async () => {
+      const mockFetch = vi
+        .fn()
+        .mockResolvedValueOnce(makeOpenAIResponse('ok'))
+        .mockResolvedValueOnce(makeOpenAIResponse('ok'));
+      globalThis.fetch = mockFetch;
+
+      await chat([{ role: 'user', content: 'hi' }], [], openRouterConfig);
+      await chat([{ role: 'user', content: 'hi' }], [], {
+        ...openRouterConfig,
+        reasoningEffort: 'medium',
+      });
+
+      expect(JSON.parse(mockFetch.mock.calls[0][1].body as string).reasoning).toBeUndefined();
+      expect(JSON.parse(mockFetch.mock.calls[1][1].body as string).reasoning).toBeUndefined();
+    });
+
+    it('does not send the OpenRouter field to a plain OpenAI endpoint', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce(makeOpenAIResponse('ok'));
+      globalThis.fetch = mockFetch;
+
+      await chat([{ role: 'user', content: 'hi' }], [], {
+        ...MOCK_OPENAI_CONFIG,
+        reasoningEffort: 'none',
+      });
+
+      expect(JSON.parse(mockFetch.mock.calls[0][1].body as string).reasoning).toBeUndefined();
     });
   });
 

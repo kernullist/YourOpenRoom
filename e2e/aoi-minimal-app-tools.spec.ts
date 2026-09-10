@@ -98,7 +98,7 @@ test.describe('minimal app tools on every turn', () => {
       // The intent classifier runs first on this phrasing and is offered only its
       // own tool, so the branch has to key off what is actually available and
       // whether an action already went out -- never off the call index.
-      if (names.includes('resolve_music_intent')) {
+      if (names.includes('resolve_music_intent') || names.includes('understand_turn')) {
         await route.fulfill({
           json: { choices: [{ message: { content: null, tool_calls: [] } }] },
         });
@@ -185,7 +185,7 @@ test.describe('minimal app tools on every turn', () => {
     // classifier call is excluded: it is deliberately given one tool and nothing
     // else.
     const conversationCalls = toolNamesPerCall.filter(
-      (names) => !names.includes('resolve_music_intent'),
+      (names) => !names.includes('resolve_music_intent') && !names.includes('understand_turn'),
     );
     expect(conversationCalls.length).toBeGreaterThan(0);
     for (const names of conversationCalls) {

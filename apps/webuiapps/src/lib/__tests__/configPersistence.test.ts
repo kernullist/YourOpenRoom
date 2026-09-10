@@ -318,10 +318,11 @@ describe('conversation preference helpers', () => {
       responseLanguageMode: 'english',
       ttsEnabled: true,
       ttsPreloadCommonPhrases: false,
+      turnUnderstandingMode: 'on',
     });
   });
 
-  it('defaults preload to true when omitted', () => {
+  it('defaults preload to true and turn understanding to on when omitted', () => {
     saveConversationPreferences({
       responseLanguageMode: 'match-user',
       ttsEnabled: true,
@@ -331,6 +332,21 @@ describe('conversation preference helpers', () => {
       responseLanguageMode: 'match-user',
       ttsEnabled: true,
       ttsPreloadCommonPhrases: true,
+      turnUnderstandingMode: 'on',
     });
+  });
+
+  it('round-trips turn understanding off and normalizes unknown values to on', () => {
+    saveConversationPreferences({
+      responseLanguageMode: 'match-user',
+      turnUnderstandingMode: 'off',
+    });
+    expect(loadConversationPreferencesSync()?.turnUnderstandingMode).toBe('off');
+
+    localStorage.setItem(
+      'webuiapps-conversation-preferences',
+      JSON.stringify({ turnUnderstandingMode: 'sometimes' }),
+    );
+    expect(loadConversationPreferencesSync()?.turnUnderstandingMode).toBe('on');
   });
 });

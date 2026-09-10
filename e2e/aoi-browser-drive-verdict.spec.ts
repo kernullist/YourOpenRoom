@@ -113,6 +113,18 @@ async function driveBrowserRun(
   });
 
   await page.route('**/api/llm-proxy', async (route) => {
+    // The turn-understanding classifier (understand_turn) runs before the
+    // conversation call; answer it with no tool call so the turn falls back to the
+    // regex route and the counters below see only conversation calls.
+    const classifierProbe = route.request().postDataJSON() as {
+      tools?: Array<{ function: { name: string } }>;
+    };
+    if ((classifierProbe.tools ?? []).some((tool) => tool.function.name === 'understand_turn')) {
+      await route.fulfill({
+        json: { choices: [{ message: { content: null, tool_calls: [] } }] },
+      });
+      return;
+    }
     llmCalls += 1;
     const body = route.request().postDataJSON() as {
       messages?: { role: string; content?: string }[];
@@ -247,6 +259,18 @@ test.describe('browser-drive task stops on unproven acts', () => {
     await page.route('**/api/kira-automation/**', (route) => route.abort());
     await page.route(TASK_ROUTE, (route) => route.fulfill({ json: { ok: true, result } }));
     await page.route('**/api/llm-proxy', async (route) => {
+      // The turn-understanding classifier (understand_turn) runs before the
+      // conversation call; answer it with no tool call so the turn falls back to the
+      // regex route and the counters below see only conversation calls.
+      const classifierProbe = route.request().postDataJSON() as {
+        tools?: Array<{ function: { name: string } }>;
+      };
+      if ((classifierProbe.tools ?? []).some((tool) => tool.function.name === 'understand_turn')) {
+        await route.fulfill({
+          json: { choices: [{ message: { content: null, tool_calls: [] } }] },
+        });
+        return;
+      }
       llmCalls += 1;
       const body = route.request().postDataJSON() as {
         messages?: { role: string; content?: string }[];

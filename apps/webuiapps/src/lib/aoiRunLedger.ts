@@ -49,7 +49,10 @@ export type AoiRunLedgerEventType =
   | 'run_completed'
   | 'run_failed'
   | 'memory_archived'
-  | 'memory_restored';
+  | 'memory_restored'
+  | 'turn_understood'
+  | 'capability_escalated'
+  | 'clarification_asked';
 
 export interface AoiRunGoal {
   summary: string;
@@ -74,6 +77,24 @@ export interface AoiRunLedgerMetrics {
   lastToolNames: string[];
 }
 
+// The classifier's reading of the turn, as recorded. Kept as plain strings so
+// the ledger schema does not depend on the understanding module.
+export interface AoiRunLedgerUnderstanding {
+  source: 'classifier' | 'regex';
+  kind: string;
+  families: string[];
+  confidence: string;
+  refersToTurn: number | null;
+  referent: string | null;
+  latencyMs?: number;
+}
+
+export interface AoiRunLedgerEscalation {
+  fromRoute: 'dialog' | 'main';
+  families: string[];
+  reason: string;
+}
+
 export interface AoiRunLedgerEntry {
   version: 1;
   id: string;
@@ -88,6 +109,15 @@ export interface AoiRunLedgerEntry {
   events: AoiRunLedgerEvent[];
   metrics: AoiRunLedgerMetrics;
   finalMessage?: string;
+  // Which layer decided the route and why -- previously only in console.info, so
+  // routing accuracy could not be read back from the ledger.
+  routeReason?: string;
+  understanding?: AoiRunLedgerUnderstanding;
+  escalation?: AoiRunLedgerEscalation;
+  // Prompt size at the seed request, from the character estimate; and the
+  // provider-reported total across every model call of the run, when returned.
+  promptTokensEstimate?: number;
+  usageTotalTokens?: number;
 }
 
 export interface AoiRunLedgerData {
@@ -134,6 +164,9 @@ export function createAoiRunLedgerEntry(params: {
   includeAppTools: boolean;
   exposedToolNames: string[];
   createdAt?: number;
+  routeReason?: string;
+  understanding?: AoiRunLedgerUnderstanding;
+  promptTokensEstimate?: number;
 }): AoiRunLedgerEntry {
   const createdAt = params.createdAt ?? Date.now();
   const id = `aoi-run-${createdAt.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -164,7 +197,85 @@ export function createAoiRunLedgerEntry(params: {
       errorCount: 0,
       lastToolNames: [],
     },
+    ...(params.routeReason ? { routeReason: truncateSingleLine(params.routeReason, 160) } : {}),
+    ...(params.understanding ? { understanding: params.understanding } : {}),
+    ...(typeof params.promptTokensEstimate === 'number' && params.promptTokensEstimate >= 0
+      ? { promptTokensEstimate: Math.round(params.promptTokensEstimate) }
+      : {}),
   };
+}
+
+/**
+ * Re-point a running entry at the main route after the model asked for
+ * capabilities it did not have. One turn stays one run: the dialog attempt and
+ * the main re-run share the entry, and the escalation is recorded on it.
+ */
+export function escalateAoiRunLedgerEntry(
+  entry: AoiRunLedgerEntry,
+  params: {
+    families: string[];
+    reason: string;
+    modelId?: string;
+    includeAppTools: boolean;
+    exposedToolNames: string[];
+    routeReason: string;
+    createdAt?: number;
+    // The re-run's seed prompt; replaces the dialog attempt's estimate because
+    // the main-route prompt is the one that was actually paid for.
+    promptTokensEstimate?: number;
+  },
+): AoiRunLedgerEntry {
+  const families = dedupeNames(params.families);
+  const withEvent = appendAoiRunLedgerEvent(entry, {
+    type: 'capability_escalated',
+    message: truncateSingleLine(
+      `${entry.modelRoute} -> main for ${families.join(',')}${params.reason ? `: ${params.reason}` : ''}`,
+      240,
+    ),
+    toolNames: params.exposedToolNames,
+    createdAt: params.createdAt,
+  });
+  return {
+    ...withEvent,
+    modelRoute: 'main',
+    modelId: params.modelId ?? entry.modelId,
+    includeAppTools: params.includeAppTools,
+    exposedToolNames: dedupeNames(params.exposedToolNames),
+    routeReason: truncateSingleLine(params.routeReason, 160),
+    escalation: {
+      fromRoute: entry.modelRoute,
+      families,
+      reason: truncateSingleLine(params.reason, 160),
+    },
+    ...(typeof params.promptTokensEstimate === 'number' && params.promptTokensEstimate >= 0
+      ? { promptTokensEstimate: Math.round(params.promptTokensEstimate) }
+      : {}),
+  };
+}
+
+/**
+ * Accumulate provider-reported token usage onto the entry. Estimates are only
+ * set once (the seed request); usage adds up across the run's model calls.
+ */
+export function recordAoiRunLedgerTokens(
+  entry: AoiRunLedgerEntry,
+  params: { promptTokensEstimate?: number; usageTotalTokens?: number },
+): AoiRunLedgerEntry {
+  let next = entry;
+  if (
+    typeof params.promptTokensEstimate === 'number' &&
+    params.promptTokensEstimate >= 0 &&
+    typeof entry.promptTokensEstimate !== 'number'
+  ) {
+    next = { ...next, promptTokensEstimate: Math.round(params.promptTokensEstimate) };
+  }
+  if (typeof params.usageTotalTokens === 'number' && params.usageTotalTokens > 0) {
+    next = {
+      ...next,
+      usageTotalTokens: (next.usageTotalTokens ?? 0) + Math.round(params.usageTotalTokens),
+    };
+  }
+  return next;
 }
 
 export function appendAoiRunLedgerEvent(

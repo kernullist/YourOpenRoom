@@ -87,6 +87,18 @@ test.describe('Agent tool integration', () => {
   }) => {
     let llmCallCount = 0;
     await page.route('**/api/llm-proxy', async (route) => {
+      // The turn-understanding classifier (understand_turn) runs before the
+      // conversation call; answer it with no tool call so the turn falls back to the
+      // regex route and the counters below see only conversation calls.
+      const classifierProbe = route.request().postDataJSON() as {
+        tools?: Array<{ function: { name: string } }>;
+      };
+      if ((classifierProbe.tools ?? []).some((tool) => tool.function.name === 'understand_turn')) {
+        await route.fulfill({
+          json: { choices: [{ message: { content: null, tool_calls: [] } }] },
+        });
+        return;
+      }
       llmCallCount += 1;
 
       if (llmCallCount === 1) {
@@ -263,6 +275,20 @@ test.describe('Agent tool integration', () => {
 
       let llmCallCount = 0;
       await page.route('**/api/llm-proxy', async (route) => {
+        // The turn-understanding classifier (understand_turn) runs before the
+        // conversation call; answer it with no tool call so the turn falls back to the
+        // regex route and the counters below see only conversation calls.
+        const classifierProbe = route.request().postDataJSON() as {
+          tools?: Array<{ function: { name: string } }>;
+        };
+        if (
+          (classifierProbe.tools ?? []).some((tool) => tool.function.name === 'understand_turn')
+        ) {
+          await route.fulfill({
+            json: { choices: [{ message: { content: null, tool_calls: [] } }] },
+          });
+          return;
+        }
         llmCallCount += 1;
         if (llmCallCount === 1) {
           await route.fulfill({

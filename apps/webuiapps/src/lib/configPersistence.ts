@@ -68,11 +68,16 @@ export interface UserProfileConfig {
 
 export type ResponseLanguageMode = 'match-user' | 'english';
 
+// Whether each chat turn runs the small turn-understanding classifier before the
+// model call. 'on' is the default; 'off' leaves routing to the regex router only.
+export type AoiTurnUnderstandingMode = 'on' | 'off';
+
 export interface ConversationPreferencesConfig {
   responseLanguageMode?: ResponseLanguageMode;
   ttsEnabled?: boolean;
   ttsPreloadCommonPhrases?: boolean;
   operatorVoicePolicy?: AoiOperatorVoicePolicy;
+  turnUnderstandingMode?: AoiTurnUnderstandingMode;
 }
 
 export interface TavilyConfig {
@@ -367,6 +372,12 @@ export function normalizeResponseLanguageMode(
   return raw === 'english' ? 'english' : 'match-user';
 }
 
+export function normalizeAoiTurnUnderstandingMode(
+  raw: string | null | undefined,
+): AoiTurnUnderstandingMode {
+  return raw === 'off' ? 'off' : 'on';
+}
+
 export function loadConversationPreferencesSync(): ConversationPreferencesConfig | null {
   try {
     const raw = localStorage.getItem(CONVERSATION_PREFERENCES_STORAGE_KEY);
@@ -377,6 +388,7 @@ export function loadConversationPreferencesSync(): ConversationPreferencesConfig
       ttsEnabled: parsed?.ttsEnabled === true,
       ttsPreloadCommonPhrases: parsed?.ttsPreloadCommonPhrases !== false,
       ...(parsed?.operatorVoicePolicy ? { operatorVoicePolicy: parsed.operatorVoicePolicy } : {}),
+      turnUnderstandingMode: normalizeAoiTurnUnderstandingMode(parsed?.turnUnderstandingMode),
     };
   } catch {
     return null;
@@ -395,6 +407,7 @@ export function saveConversationPreferences(config: ConversationPreferencesConfi
       ttsEnabled: config.ttsEnabled === true,
       ttsPreloadCommonPhrases: config.ttsPreloadCommonPhrases !== false,
       ...(config.operatorVoicePolicy ? { operatorVoicePolicy: config.operatorVoicePolicy } : {}),
+      turnUnderstandingMode: normalizeAoiTurnUnderstandingMode(config.turnUnderstandingMode),
     }),
   );
 }
