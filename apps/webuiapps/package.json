@@ -36,7 +36,9 @@
     "measured-memory-recall:build": "vite build --config vite.measured-memory-recall.config.ts",
     "measured-memory-recall": "node dist-measured-memory-recall/aoiMeasuredMemoryRecall.js",
     "claim-sweep:build": "vite build --config vite.claim-sweep.config.ts",
-    "claim-sweep": "npm run claim-sweep:build && node dist-claim-sweep/aoiClaimSweep.js"
+    "claim-sweep": "npm run claim-sweep:build && node dist-claim-sweep/aoiClaimSweep.js",
+    "turn-understanding-eval:build": "vite build --config vite.turn-understanding-eval.config.ts",
+    "turn-understanding-eval": "node dist-turn-understanding-eval/aoiTurnUnderstandingEval.js"
   },
   "dependencies": {
     "framer-motion": "^12.34.0",
