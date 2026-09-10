@@ -452,7 +452,25 @@ function normalizeProactiveScoutBudgetState(
     version: 1,
     dayKey: sameDay ? dayKey : dayKeyForTimestamp(now),
     runsToday: sameDay ? clampNumber(raw.runsToday, 0, 0, 100_000) : 0,
-    runsThisSession: clampNumber(raw.runsThisSession, 0, 0, 100_000),
+    // The session counter rolls over with the day, and has to.
+    //
+    // Nothing else in the codebase ever set it back to zero -- it is read here,
+    // incremented after a scout, and compared against maxScoutRunsPerSession,
+    // and that is all. So the fifth scout of a long-lived session ended
+    // proactive briefing for that session permanently: across restarts, and
+    // across every following day while the daily budget reset to 0 of 3 and
+    // went unused.
+    //
+    // Measured on a real session: 500 consecutive wakeups recorded
+    // `scout_session_budget_exhausted` with runsToday 0 and runsThisSession 5,
+    // shownCount 0 across every delivery mode. Not one brief had ever reached
+    // the operator, so the readiness gate that waits for calibration labels
+    // could never open either.
+    //
+    // A per-session cap is still a real cap -- it holds within the day, which
+    // is what stops a burst -- but it can no longer outlive the day it was
+    // spent in.
+    runsThisSession: sameDay ? clampNumber(raw.runsThisSession, 0, 0, 100_000) : 0,
     updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : now,
   };
 }

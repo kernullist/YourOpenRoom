@@ -4938,3 +4938,62 @@ describe('buildAoiAutonomyReflectionMessages recurring-cluster grounding (P3.5)'
     expect(JSON.stringify(withoutGoals)).not.toContain('recurringClusters');
   });
 });
+
+describe('the proactive scout budget across a day boundary', () => {
+  /** Write a scheduler state whose scout budget was spent on a given day. */
+  function writeScoutBudget(root: string, dayKey: string, runsThisSession: number): void {
+    writeJson(join(root, 'aoi', 'default', 'aoi-autonomy', 'scheduler-state.json'), {
+      version: 1,
+      sessionPath: SESSION_PATH,
+      updatedAt: NOW,
+      proactiveScoutBudget: {
+        version: 1,
+        dayKey,
+        runsToday: 3,
+        runsThisSession,
+        updatedAt: NOW,
+      },
+    });
+  }
+
+  function dayKeyOf(timestamp: number): string {
+    const date = new Date(timestamp);
+    return [
+      String(date.getFullYear()),
+      String(date.getMonth() + 1).padStart(2, '0'),
+      String(date.getDate()).padStart(2, '0'),
+    ].join('-');
+  }
+
+  it('releases the session cap when the day rolls over', () => {
+    // Nothing ever set runsThisSession back to zero: it was read, incremented
+    // after a scout, and compared against the cap, and that was all. So the
+    // fifth scout of a long-lived session ended proactive briefing for that
+    // session for good -- across restarts, and across every following day while
+    // the daily budget reset to 0 of 3 and went unused.
+    //
+    // Measured on a real session: 500 consecutive wakeups recorded
+    // `scout_session_budget_exhausted` with runsToday 0 and runsThisSession 5,
+    // and shownCount 0 across every delivery mode.
+    const root = makeTempRoot();
+    const yesterday = NOW - 24 * 60 * 60 * 1000;
+    writeScoutBudget(root, dayKeyOf(yesterday), 5);
+
+    const budget = loadAoiAutonomySchedulerState(root, SESSION_PATH, NOW).proactiveScoutBudget;
+    expect(budget).toBeDefined();
+    expect(budget?.runsThisSession).toBe(0);
+    expect(budget?.runsToday).toBe(0);
+    expect(budget?.dayKey).toBe(dayKeyOf(NOW));
+  });
+
+  it('still holds the cap within the same day', () => {
+    // The point of a per-session cap is to stop a burst, and that has to keep
+    // working -- it just cannot outlive the day it was spent in.
+    const root = makeTempRoot();
+    writeScoutBudget(root, dayKeyOf(NOW), 5);
+
+    const budget = loadAoiAutonomySchedulerState(root, SESSION_PATH, NOW).proactiveScoutBudget;
+    expect(budget?.runsThisSession).toBe(5);
+    expect(budget?.runsToday).toBe(3);
+  });
+});
