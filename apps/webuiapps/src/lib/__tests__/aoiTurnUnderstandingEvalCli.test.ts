@@ -454,6 +454,8 @@ describe('toLivePrediction', () => {
       needsClarification: null,
       clarificationOptions: [],
       source: 'classifier',
+      musicTarget: null,
+      musicReference: null,
       latencyMs: 12,
     });
     expect(prediction).toEqual({
@@ -463,6 +465,8 @@ describe('toLivePrediction', () => {
       refersToTurn: 1,
       latencyMs: 12,
       source: 'classifier',
+      musicReference: null,
+      musicTarget: null,
     });
     const unknownTurn = toLivePrediction(CORPUS[1], {
       kind: 'action_request',
@@ -473,6 +477,8 @@ describe('toLivePrediction', () => {
       needsClarification: null,
       clarificationOptions: [],
       source: 'classifier',
+      musicTarget: null,
+      musicReference: null,
     });
     expect(unknownTurn.refersToTurn).toBeNull();
     expect(unknownTurn.latencyMs).toBeUndefined();

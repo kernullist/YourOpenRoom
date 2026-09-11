@@ -40,6 +40,12 @@ export type AoiTurnConfidence = 'high' | 'medium' | 'low';
 
 export type AoiTurnUnderstandingSource = 'classifier' | 'regex';
 
+// How a playback request points at its song: by naming it (none), by the
+// user's taste ("내가 좋아하는", "my favorite" -- taste), or by a pick Aoi already
+// offered (offered_pick). Read by the classifier; acted on by aoiMusicPreference.
+export type AoiMusicReference = 'none' | 'taste' | 'offered_pick';
+export const AOI_MUSIC_REFERENCES: readonly AoiMusicReference[] = ['none', 'taste', 'offered_pick'];
+
 export interface AoiTurnUnderstanding {
   kind: AoiTurnKind;
   families: AoiCapabilityFamily[];
@@ -49,6 +55,10 @@ export interface AoiTurnUnderstanding {
   needsClarification: string | null;
   clarificationOptions: string[];
   source: AoiTurnUnderstandingSource;
+  // Playback requests only: the exact words the user used for a title or
+  // artist (grounded in their message), and what the request points at.
+  musicTarget: string | null;
+  musicReference: AoiMusicReference | null;
   latencyMs?: number;
 }
 
@@ -68,6 +78,8 @@ const MAX_CLARIFICATION_CHARS = 200;
 const MAX_CLARIFICATION_OPTIONS = 3;
 const MAX_CLARIFICATION_OPTION_CHARS = 40;
 const MAX_REFERENT_CHARS = 120;
+const MAX_MUSIC_TARGET_CHARS = 120;
+
 const MAX_USER_MESSAGE_IN_PROMPT_CHARS = 400;
 // Thinking is OFF for this call. Measured on qwen3.7-flash over the 164-case
 // corpus (docs/aoi-turn-understanding-design.md 2.1): with the provider default
@@ -123,6 +135,17 @@ export function getAoiTurnUnderstandingToolDefinition(): ToolDef {
             type: 'string',
             description:
               'Only when confidence is low AND the request would change something (file, app, command, browser, host, binary): one short question in the language of the user message. Omit otherwise.',
+          },
+          music_target: {
+            type: 'string',
+            description:
+              'Playback requests only: the artist and/or title the user named, copied verbatim from the message and including the artist when they named one ("에스파 KISS N TELL"). Never the words that describe their taste (내가 좋아하는 노래, 자주 듣는, my favorite, the one I always play). Omit when they named neither an artist nor a title, or when the message is not about playing music.',
+          },
+          music_reference: {
+            type: 'string',
+            enum: [...AOI_MUSIC_REFERENCES],
+            description:
+              'Playback requests only. taste: they refer to what they like or usually listen to instead of naming a song (내가 좋아하는, 자주 듣는, my favorite, the one I always play), possibly with an artist in music_target. offered_pick: they mean a pick Aoi already offered. none: they named the song or artist themselves.',
           },
           clarification_options: {
             type: 'array',
@@ -188,6 +211,7 @@ export function buildAoiTurnUnderstandingMessages(params: {
         'A request to do something again, or to do it to the thing from an earlier turn, is action_request with the same families as that earlier turn.',
         'For refers_to_turn use the T-number of the turn as listed (T-1 is the previous turn). For referent copy an exact string that appears in that turn; if nothing exact applies, omit referent.',
         'Ask for clarification only when the request would change something and you genuinely cannot tell what. Never ask about chitchat or a question.',
+        'For a request to play music: music_target is the artist and/or title exactly as written, including the artist when named ("에스파 KISS N TELL 틀어줘" -> "에스파 KISS N TELL"; "에스파 내가 좋아하는 노래 틀어줘" -> "에스파"), and is omitted when neither an artist nor a title is named ("내가 자주 듣는 노래 틀어줘" -> no music_target). music_reference is taste when they point at what they like or usually listen to instead of naming a song, offered_pick when they mean something Aoi offered, none when they named the song.',
       ].join('\n'),
     },
     {
@@ -253,6 +277,8 @@ interface RawTurnUnderstanding {
   confidence?: unknown;
   needs_clarification?: unknown;
   clarification_options?: unknown;
+  music_target?: unknown;
+  music_reference?: unknown;
 }
 
 function cleanFamilies(raw: unknown): AoiCapabilityFamily[] | null {
@@ -365,6 +391,28 @@ export function parseAoiTurnUnderstandingToolCall(
   }
   const clarificationOptions = needsClarification ? cleanOptions(parsed.clarification_options) : [];
 
+  const musicReferenceRaw =
+    typeof parsed.music_reference === 'string' ? parsed.music_reference.trim().toLowerCase() : '';
+  const musicReference: AoiMusicReference | null = AOI_MUSIC_REFERENCES.includes(
+    musicReferenceRaw as AoiMusicReference,
+  )
+    ? (musicReferenceRaw as AoiMusicReference)
+    : null;
+  let musicTarget: string | null = null;
+  if (typeof parsed.music_target === 'string') {
+    const value = parsed.music_target.replace(/\s+/g, ' ').trim();
+    // Verbatim means verbatim: a target that does not appear in the user's own
+    // words is the model composing a title, which is the one thing this slot
+    // must never do.
+    if (
+      value.length >= 2 &&
+      value.length <= MAX_MUSIC_TARGET_CHARS &&
+      isGroundedAoiReferent(value, context.text, [])
+    ) {
+      musicTarget = value;
+    }
+  }
+
   return {
     kind,
     families,
@@ -374,6 +422,8 @@ export function parseAoiTurnUnderstandingToolCall(
     needsClarification,
     clarificationOptions,
     source: 'classifier',
+    musicTarget,
+    musicReference,
   };
 }
 
@@ -536,6 +586,8 @@ export function inferAoiTurnUnderstandingFromRegex(
     needsClarification: null,
     clarificationOptions: [],
     source: 'regex',
+    musicTarget: null,
+    musicReference: null,
   };
 }
 

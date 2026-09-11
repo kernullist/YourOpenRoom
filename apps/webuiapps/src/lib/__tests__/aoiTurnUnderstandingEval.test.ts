@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { AOI_CAPABILITY_FAMILIES, AOI_TURN_KINDS } from '../aoiTurnRecord';
+import { AOI_MUSIC_REFERENCES } from '../aoiTurnUnderstanding';
 import {
   AOI_TURN_UNDERSTANDING_CORPUS,
   type AoiTurnCorpusCase,
@@ -43,6 +44,13 @@ describe('corpus', () => {
       }
       if (testCase.gold.refersToTurn !== undefined) {
         expect(testCase.turns?.length ?? 0).toBeGreaterThanOrEqual(testCase.gold.refersToTurn);
+      }
+      // A music target is the user's own words, so it must appear in the text.
+      if (testCase.gold.music) {
+        expect(AOI_MUSIC_REFERENCES).toContain(testCase.gold.music.reference);
+        if (testCase.gold.music.target !== null) {
+          expect(testCase.text.toLowerCase()).toContain(testCase.gold.music.target.toLowerCase());
+        }
       }
       expect(testCase.tags.length).toBeGreaterThan(0);
     }
@@ -179,6 +187,76 @@ describe('evaluateAoiTurnUnderstanding', () => {
     );
   });
 
+  it('scores the playback slots only for classifier predictions', async () => {
+    const musicCases: AoiTurnCorpusCase[] = [
+      {
+        id: 'm1',
+        text: '에스파 내가 좋아하는 노래 틀어줘',
+        gold: {
+          kind: 'action_request',
+          families: ['app'],
+          route: 'main',
+          music: { reference: 'taste', target: '에스파' },
+        },
+        tags: ['music'],
+      },
+      {
+        id: 'm2',
+        text: 'play IVE LOVE DIVE',
+        gold: {
+          kind: 'action_request',
+          families: ['app'],
+          route: 'main',
+          music: { reference: 'none', target: 'IVE LOVE DIVE' },
+        },
+        tags: ['music'],
+      },
+      {
+        id: 'm3',
+        text: '내가 자주 듣는 노래 틀어줘',
+        gold: {
+          kind: 'action_request',
+          families: ['app'],
+          route: 'main',
+          music: { reference: 'taste', target: null },
+        },
+        tags: ['music'],
+      },
+    ];
+    const base = {
+      kind: 'action_request' as const,
+      families: ['app' as const],
+      route: 'main' as const,
+      refersToTurn: null,
+    };
+    const answers: Record<string, AoiTurnEvalPrediction> = {
+      // Read as a literal title: the one failure mode this slot exists to catch.
+      m1: {
+        ...base,
+        source: 'classifier',
+        musicReference: 'none',
+        musicTarget: '에스파 내가 좋아하는',
+      },
+      // Case and spacing of the target do not count against it.
+      m2: { ...base, source: 'classifier', musicReference: null, musicTarget: 'ive  love dive' },
+      // The regex reading has no slots; it is not scored on them.
+      m3: { ...base, source: 'regex' },
+    };
+    const report = await evaluateAoiTurnUnderstanding(
+      musicCases,
+      (testCase) => answers[testCase.id],
+    );
+    expect(report.routeAccuracy).toBe(1);
+    expect(report.musicCases).toBe(2);
+    expect(report.musicCorrect).toBe(1);
+    expect(report.failures.map((failure) => failure.id)).toEqual(['m1']);
+    expect(report.failures[0].wrong).toEqual(['music']);
+    expect(report.failures[0].expected.music).toEqual({ reference: 'taste', target: '에스파' });
+    const text = formatAoiTurnEvalReport(report, 'music');
+    expect(text).toContain('music slots 1/2');
+    expect(text).toContain('[music]');
+  });
+
   it('handles a perfect predictor and an empty corpus', async () => {
     const perfect = await evaluateAoiTurnUnderstanding(cases, (testCase) => ({
       kind: testCase.gold.kind,
@@ -207,8 +285,10 @@ describe('regex baseline over the corpus', () => {
     expect(report.kindAccuracy).toBeGreaterThanOrEqual(REGEX_KIND_FLOOR);
     expect(report.familiesAccuracy).toBeGreaterThanOrEqual(REGEX_FAMILIES_FLOOR);
     expect(report.underRoutedToDialog).toBeLessThanOrEqual(REGEX_UNDER_ROUTED_CEILING);
-    // Structural: the regex reading cannot resolve a reference at all.
+    // Structural: the regex reading cannot resolve a reference at all, and has
+    // no playback slots to score.
     expect(report.referenceCorrect).toBe(0);
+    expect(report.musicCases).toBe(0);
     // Chit-chat never leaves the dialog route under the regex router.
     expect(report.byKind.chitchat.routeCorrect).toBe(report.byKind.chitchat.total);
   });

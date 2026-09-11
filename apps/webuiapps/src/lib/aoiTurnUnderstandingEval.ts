@@ -14,7 +14,7 @@ import {
   type AoiTurnKind,
   type AoiTurnRecord,
 } from './aoiTurnRecord';
-import { inferAoiTurnUnderstandingFromRegex } from './aoiTurnUnderstanding';
+import { inferAoiTurnUnderstandingFromRegex, type AoiMusicReference } from './aoiTurnUnderstanding';
 import type {
   AoiTurnCorpusCase,
   AoiTurnCorpusTurn,
@@ -28,6 +28,9 @@ export interface AoiTurnEvalPrediction {
   refersToTurn: number | null;
   latencyMs?: number;
   source: 'classifier' | 'regex' | 'none';
+  // Playback slots; only a classifier prediction carries them.
+  musicReference?: AoiMusicReference | null;
+  musicTarget?: string | null;
 }
 
 export interface AoiTurnEvalFailure {
@@ -38,9 +41,10 @@ export interface AoiTurnEvalFailure {
     families: AoiCapabilityFamily[];
     route: 'dialog' | 'main';
     refersToTurn: number | null;
+    music: { reference: AoiMusicReference; target: string | null } | null;
   };
   predicted: AoiTurnEvalPrediction;
-  wrong: Array<'route' | 'kind' | 'families' | 'reference'>;
+  wrong: Array<'route' | 'kind' | 'families' | 'reference' | 'music'>;
 }
 
 export interface AoiTurnEvalBucket {
@@ -58,6 +62,10 @@ export interface AoiTurnEvalReport {
   familiesAccuracy: number;
   referenceCases: number;
   referenceCorrect: number;
+  // Playback cases with a music label, scored only for classifier predictions
+  // (the regex reading has no such slots).
+  musicCases: number;
+  musicCorrect: number;
   // Turns the gold labels dialog that the predictor sent to main: cost, not a miss.
   overRoutedToMain: number;
   // Turns the gold labels main that the predictor kept on dialog: a real miss.
@@ -201,6 +209,8 @@ export async function evaluateAoiTurnUnderstanding(
   let familiesCorrect = 0;
   let referenceCases = 0;
   let referenceCorrect = 0;
+  let musicCases = 0;
+  let musicCorrect = 0;
   let overRoutedToMain = 0;
   let underRoutedToDialog = 0;
   const byKind: Record<string, AoiTurnEvalBucket> = {};
@@ -228,6 +238,19 @@ export async function evaluateAoiTurnUnderstanding(
     if (familiesOk) {
       familiesCorrect += 1;
     }
+    const expectedMusic = testCase.gold.music ?? null;
+    let musicOk = true;
+    if (expectedMusic && predicted.source === 'classifier') {
+      musicCases += 1;
+      const normalize = (value: string | null | undefined) =>
+        (value ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
+      musicOk =
+        (predicted.musicReference ?? 'none') === expectedMusic.reference &&
+        normalize(predicted.musicTarget) === normalize(expectedMusic.target);
+      if (musicOk) {
+        musicCorrect += 1;
+      }
+    }
     if (expectedReference !== null) {
       referenceCases += 1;
       if (referenceOk) {
@@ -254,6 +277,9 @@ export async function evaluateAoiTurnUnderstanding(
     if (!referenceOk) {
       wrong.push('reference');
     }
+    if (!musicOk) {
+      wrong.push('music');
+    }
     if (wrong.length > 0) {
       failures.push({
         id: testCase.id,
@@ -263,6 +289,7 @@ export async function evaluateAoiTurnUnderstanding(
           families: testCase.gold.families,
           route: testCase.gold.route,
           refersToTurn: expectedReference,
+          music: expectedMusic,
         },
         predicted,
         wrong,
@@ -278,6 +305,8 @@ export async function evaluateAoiTurnUnderstanding(
     familiesAccuracy: ratio(familiesCorrect, cases.length),
     referenceCases,
     referenceCorrect,
+    musicCases,
+    musicCorrect,
     overRoutedToMain,
     underRoutedToDialog,
     byKind,
@@ -306,6 +335,9 @@ export function formatAoiTurnEvalReport(
   lines.push(`  kind ${pct(report.kindAccuracy)}  families ${pct(report.familiesAccuracy)}`);
   if (report.referenceCases > 0) {
     lines.push(`  references ${report.referenceCorrect}/${report.referenceCases}`);
+  }
+  if (report.musicCases > 0) {
+    lines.push(`  music slots ${report.musicCorrect}/${report.musicCases}`);
   }
   if (report.meanLatencyMs !== null) {
     lines.push(`  mean latency ${report.meanLatencyMs} ms`);

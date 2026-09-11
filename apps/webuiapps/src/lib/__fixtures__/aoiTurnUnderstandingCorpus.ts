@@ -12,6 +12,7 @@
 // English variants of the same intents.
 
 import type { AoiCapabilityFamily, AoiTurnKind, AoiTurnToolRecord } from '../aoiTurnRecord';
+import type { AoiMusicReference } from '../aoiTurnUnderstanding';
 
 export interface AoiTurnCorpusTurn {
   user: string;
@@ -29,6 +30,9 @@ export interface AoiTurnCorpusGold {
   route: 'dialog' | 'main';
   // Relative position of the referenced turn (1 = the previous turn).
   refersToTurn?: number;
+  // Playback requests: how the song is pointed at, and the exact words used for
+  // the title or artist (null when none were used).
+  music?: { reference: AoiMusicReference; target: string | null };
 }
 
 export interface AoiTurnCorpusCase {
@@ -142,6 +146,11 @@ const main = (
   route: 'main',
   ...(refersToTurn ? { refersToTurn } : {}),
 });
+const music = (
+  gold: AoiTurnCorpusGold,
+  reference: AoiMusicReference,
+  target: string | null,
+): AoiTurnCorpusGold => ({ ...gold, music: { reference, target } });
 
 export const AOI_TURN_UNDERSTANDING_CORPUS: readonly AoiTurnCorpusCase[] = [
   // --- chitchat -----------------------------------------------------------
@@ -271,6 +280,83 @@ export const AOI_TURN_UNDERSTANDING_CORPUS: readonly AoiTurnCorpusCase[] = [
   ]),
   c('app-14', '음악 꺼줘', main('action_request', ['app']), ['action', 'app', 'ko']),
   c('app-15', 'queue up some lo-fi', main('action_request', ['app']), ['action', 'app', 'en']),
+
+  // --- playback: what the song is pointed at ---------------------------------
+  c(
+    'music-01',
+    '에스파 KISS N TELL 틀어줘',
+    music(main('action_request', ['app']), 'none', '에스파 KISS N TELL'),
+    ['action', 'app', 'music', 'ko'],
+  ),
+  c(
+    'music-02',
+    '에스파 내가 좋아하는 노래 틀어줘',
+    music(main('action_request', ['app']), 'taste', '에스파'),
+    ['action', 'app', 'music', 'taste', 'ko'],
+  ),
+  c(
+    'music-03',
+    '내가 자주 듣는 노래 틀어줘',
+    music(main('action_request', ['app']), 'taste', null),
+    ['action', 'app', 'music', 'taste', 'ko'],
+  ),
+  c('music-04', '내가 좋아하는 곡 틀어줘', music(main('action_request', ['app']), 'taste', null), [
+    'action',
+    'app',
+    'music',
+    'taste',
+    'ko',
+  ]),
+  c(
+    'music-05',
+    '프로미스나인 내가 제일 좋아하는 곡으로 가자',
+    music(main('action_request', ['app']), 'taste', '프로미스나인'),
+    ['action', 'app', 'music', 'taste', 'ko'],
+  ),
+  c(
+    'music-06',
+    'play my favorite aespa song',
+    music(main('action_request', ['app']), 'taste', 'aespa'),
+    ['action', 'app', 'music', 'taste', 'en'],
+  ),
+  c(
+    'music-07',
+    'play the one I always listen to',
+    music(main('action_request', ['app']), 'taste', null),
+    ['action', 'app', 'music', 'taste', 'en'],
+  ),
+  c(
+    'music-08',
+    '에스파 신곡 틀어줘',
+    music(main('action_request', ['app']), 'none', '에스파 신곡'),
+    ['action', 'app', 'music', 'ko'],
+  ),
+  c(
+    'music-09',
+    '뉴진스 Supernatural 틀어줘',
+    music(main('action_request', ['app']), 'none', '뉴진스 Supernatural'),
+    ['action', 'app', 'music', 'ko'],
+  ),
+  c(
+    'music-10',
+    'play IVE LOVE DIVE',
+    music(main('action_request', ['app']), 'none', 'IVE LOVE DIVE'),
+    ['action', 'app', 'music', 'en'],
+  ),
+  c(
+    'music-11',
+    '아까 들었던 그 노래 다시 틀어줘',
+    music(main('action_request', ['app'], 1), 'none', null),
+    ['action', 'app', 'music', 'anaphora', 'ko'],
+    [MUSIC_PLAYED],
+  ),
+  c(
+    'music-12',
+    '응 그거 틀어줘',
+    music(main('confirmation', ['app'], 1), 'offered_pick', null),
+    ['confirmation', 'app', 'music', 'ko', 'context'],
+    [MUSIC_OFFER],
+  ),
 
   // --- files --------------------------------------------------------------
   c('file-01', 'src/lib/aoiRunLedger.ts 읽어줘', main('action_request', ['file']), [

@@ -438,6 +438,11 @@ import {
   type AoiTurnUnderstanding,
 } from '@/lib/aoiTurnUnderstanding';
 import {
+  buildAoiPreferredMusicAck,
+  decideAoiDirectMusicPlayback,
+  type AoiDirectMusicDecision,
+} from '@/lib/aoiMusicPreference';
+import {
   AOI_REQUEST_CAPABILITIES_TOOL_NAME,
   buildAoiRequestCapabilitiesPolicyPrompt,
   buildAoiTurnContextPromptBlock,
@@ -903,6 +908,24 @@ const TURN_CLASSIFIER_PROCESS_PROVIDERS: ReadonlySet<string> = new Set([
   'codex-cli',
   'codex-auth',
 ]);
+
+// The config the turn classifier runs with. A CLI or managed-auth main model
+// spawns a process per call and would usually outlive the classifier budget, so
+// the dialog model stands in when it is an API provider; otherwise no classifier.
+function resolveTurnClassifierConfig(
+  cfg: LLMConfig,
+  dialogCfg: DialogLlmConfig | null | undefined,
+): LLMConfig | null {
+  if (!TURN_CLASSIFIER_PROCESS_PROVIDERS.has(cfg.provider)) {
+    return cfg;
+  }
+  const dialogCandidate = resolveLlmOverride(cfg, dialogCfg);
+  return dialogCandidate &&
+    hasUsableLLMConfig(dialogCandidate) &&
+    !TURN_CLASSIFIER_PROCESS_PROVIDERS.has(dialogCandidate.provider)
+    ? dialogCandidate
+    : null;
+}
 const DEFAULT_CONVERSATION_ITERATION_LIMIT = 10;
 const CONFIRMED_FILE_TASK_RECOVERY_ITERATIONS = 6;
 const CONFIRMED_FILE_TASK_MAX_ITERATIONS = 20;
@@ -7584,6 +7607,9 @@ const ChatPanel: React.FC<{
       const playResolvedMusicIntent = async (
         intent: DirectMusicIntent,
         toolCallLabel: string,
+        // A taste-resolved play explains which memory it used; the default ack
+        // only knows the query.
+        ackBuilder?: (started: ReturnType<typeof parseStartedVideo>) => string,
       ): Promise<boolean> => {
         try {
           const result = await dispatchAgentAction({
@@ -7606,24 +7632,27 @@ const ChatPanel: React.FC<{
             });
             return true;
           }
-          const ack = buildMusicPlaybackAck({
-            query: intent.query,
-            started: parseStartedVideo(result),
-            lang: detectPreferredLanguage(
-              text,
-              normalizeResponseLanguageMode(
-                conversationPreferencesRef.current?.responseLanguageMode,
-              ),
-            ) as NudgeLang,
-            exactAck: (query) =>
-              buildDirectMusicAck(
-                query,
-                text,
-                normalizeResponseLanguageMode(
-                  conversationPreferencesRef.current?.responseLanguageMode,
-                ),
-              ),
-          });
+          const startedVideo = parseStartedVideo(result);
+          const ack = ackBuilder
+            ? ackBuilder(startedVideo)
+            : buildMusicPlaybackAck({
+                query: intent.query,
+                started: startedVideo,
+                lang: detectPreferredLanguage(
+                  text,
+                  normalizeResponseLanguageMode(
+                    conversationPreferencesRef.current?.responseLanguageMode,
+                  ),
+                ) as NudgeLang,
+                exactAck: (query) =>
+                  buildDirectMusicAck(
+                    query,
+                    text,
+                    normalizeResponseLanguageMode(
+                      conversationPreferencesRef.current?.responseLanguageMode,
+                    ),
+                  ),
+              });
           emitAssistantMessage({
             id: String(Date.now()),
             role: 'assistant',
@@ -7644,9 +7673,91 @@ const ChatPanel: React.FC<{
       };
 
       const directMusicIntent = parseDirectMusicIntent(text, chatHistory);
+      // The reading made here is handed to runConversation when the turn falls
+      // through, so the classifier is not paid for twice.
+      let preClassifiedUnderstanding: AoiTurnUnderstanding | null | undefined;
+      let forceTasteRecommendAutoplay = false;
       if (!hasImageAttachments && directMusicIntent) {
-        if (await playResolvedMusicIntent(directMusicIntent, 'direct:play_music')) {
-          return;
+        // A tapped chip and a request that names an offered pick are not language;
+        // they play as before. Everything else typed is read by the turn
+        // classifier first, so "내가 좋아하는" is looked up in the taste memory
+        // instead of being searched as words, and a sentence the parser misread as
+        // a playback request goes to the model instead.
+        const readBeforePlaying =
+          !isAoiMusicPlayChip(text.trim()) && collectMusicPickCandidates(chatHistory).length === 0;
+        let playbackDecision: AoiDirectMusicDecision = {
+          kind: 'play_literal',
+          intent: directMusicIntent,
+        };
+        if (readBeforePlaying) {
+          const classifierCfg = resolveTurnClassifierConfig(selectedConfig, liveDialogConfig);
+          const readingEnabled =
+            conversationPreferencesRef.current?.turnUnderstandingMode !== 'off' &&
+            classifierCfg !== null &&
+            supportsStructuredConversationTools(classifierCfg);
+          const readRunId = beginChatLoading('Reading the request', {
+            cancellable: false,
+            provider: selectedConfig.provider,
+            model: selectedConfig.model,
+          });
+          try {
+            preClassifiedUnderstanding = await classifyAoiTurn(
+              {
+                text,
+                records: aoiTurnRecordsRef.current,
+                recentTurnsBlock: buildAoiRecentTurnsPromptBlock(aoiTurnRecordsRef.current),
+                hasAttachments: false,
+                enabled: readingEnabled,
+              },
+              classifierCfg ?? selectedConfig,
+            );
+          } finally {
+            finishChatLoading(readRunId);
+          }
+          playbackDecision = decideAoiDirectMusicPlayback({
+            typed: directMusicIntent,
+            understanding: preClassifiedUnderstanding,
+            tasteState: musicTasteStateRef.current,
+          });
+          console.info('[ChatPanel] Direct playback read', {
+            decision: playbackDecision.kind,
+            reading: preClassifiedUnderstanding
+              ? `${preClassifiedUnderstanding.kind}/${preClassifiedUnderstanding.confidence}/${preClassifiedUnderstanding.musicReference ?? 'none'}`
+              : null,
+          });
+        }
+        if (playbackDecision.kind === 'play_literal') {
+          if (await playResolvedMusicIntent(playbackDecision.intent, 'direct:play_music')) {
+            return;
+          }
+        } else if (
+          playbackDecision.kind === 'play_remembered' ||
+          playbackDecision.kind === 'play_artist_fallback'
+        ) {
+          const tasteDecision = playbackDecision;
+          const ackLang = resolveNudgeLang();
+          if (
+            await playResolvedMusicIntent(
+              tasteDecision.intent,
+              `direct:play_music:${tasteDecision.kind}`,
+              (started) =>
+                buildAoiPreferredMusicAck({
+                  lang: ackLang,
+                  decision: tasteDecision,
+                  startedTitle: started?.title ?? null,
+                }),
+            )
+          ) {
+            return;
+          }
+        } else if (playbackDecision.kind === 'taste_recommend') {
+          // "The one I like" with nothing remembered yet: recommend from the taste
+          // profile and play it, rather than searching the user's words.
+          forceTasteRecommendAutoplay = true;
+        } else {
+          console.info('[ChatPanel] Direct playback deferred to the model', {
+            reason: playbackDecision.reason,
+          });
         }
       }
 
@@ -7824,9 +7935,11 @@ const ChatPanel: React.FC<{
       // Taste-backed chat music recommend / "play something" after specific-title
       // intents. Uses the same recommender as idle cards so free-form LLM guesses
       // are not used for bare "노래 추천해줘" / "아무거나 틀어줘" style requests.
-      const tasteChatIntent = !hasImageAttachments
-        ? parseAoiMusicTasteChatIntent(text)
-        : { kind: 'none' as const };
+      const tasteChatIntent = forceTasteRecommendAutoplay
+        ? { kind: 'recommend' as const, autoplay: true }
+        : !hasImageAttachments
+          ? parseAoiMusicTasteChatIntent(text)
+          : { kind: 'none' as const };
       if (tasteChatIntent.kind === 'recommend') {
         const now = Date.now();
         const taste = deriveTasteProfile(musicTasteStateRef.current);
@@ -7947,6 +8060,9 @@ const ChatPanel: React.FC<{
           signal: abortController.signal,
           onStatus: updateChatLoadingStatus,
           aoiTrendFollowUpContext,
+          ...(preClassifiedUnderstanding !== undefined
+            ? { understanding: preClassifiedUnderstanding }
+            : {}),
         });
       } catch (err) {
         if (isChatAbortError(err)) {
@@ -8067,20 +8183,7 @@ const ChatPanel: React.FC<{
     const previousTurnRecord = turnRecordsBefore[turnRecordsBefore.length - 1] ?? null;
     const recentTurnsBlock = buildAoiRecentTurnsPromptBlock(turnRecordsBefore);
     const latestTurnHasAttachments = Boolean(latestUserTurn?.attachments?.length);
-    // A CLI or managed-auth provider spawns a process per call, and the 8 s
-    // classifier budget would usually expire first: cost with no reading. Classify
-    // with the dialog model when it is an API provider, as the memory distiller
-    // does, otherwise skip the call.
-    const classifierCfg = TURN_CLASSIFIER_PROCESS_PROVIDERS.has(cfg.provider)
-      ? (() => {
-          const dialogCandidate = resolveLlmOverride(cfg, dialogCfg);
-          return dialogCandidate &&
-            hasUsableLLMConfig(dialogCandidate) &&
-            !TURN_CLASSIFIER_PROCESS_PROVIDERS.has(dialogCandidate.provider)
-            ? dialogCandidate
-            : null;
-        })()
-      : cfg;
+    const classifierCfg = resolveTurnClassifierConfig(cfg, dialogCfg);
     const turnUnderstandingEnabled =
       conversationPreferencesRef.current?.turnUnderstandingMode !== 'off' &&
       classifierCfg !== null &&

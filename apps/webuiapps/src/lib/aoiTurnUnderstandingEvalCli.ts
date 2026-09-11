@@ -391,6 +391,8 @@ export function toLivePrediction(
     refersToTurn,
     ...(typeof understanding.latencyMs === 'number' ? { latencyMs: understanding.latencyMs } : {}),
     source: 'classifier',
+    musicReference: understanding.musicReference,
+    musicTarget: understanding.musicTarget,
   };
 }
 

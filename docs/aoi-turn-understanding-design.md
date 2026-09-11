@@ -74,6 +74,25 @@ have done. `pnpm --filter webuiapps turn-understanding-eval [--reasoning-effort 
 Single runs, n=164 per column; the two thinking-on columns differ from each other by about the
 run-to-run noise one would expect at this size, so read them as one configuration measured twice.
 
+Re-measured 2026-09-11 after the playback slots (section 3.7) were added to the tool and the
+prompt, n=176 (the twelve playback cases included), thinking off, same model:
+
+| | First slot wording | Final slot wording (shipped) |
+| --- | --- | --- |
+| Route accuracy | 94.3% | 93.2% |
+| Under-routed / over-routed | 1 / 9 | 1 / 11 |
+| Kind / family accuracy | 94.9% / 93.2% | 95.5% / 90.9% |
+| References resolved | 26 / 32 | 28 / 32 |
+| Music slots (12 cases) | 4 / 12 | 10 / 12 |
+| Anaphora / confirmation / rejection route | 13/13, 13/13, 8/8 | 13/13, 13/13, 8/8 |
+| Calls that fell back | 0 | 0 |
+| Latency p50 / p90 / max | 1.23 s / 1.81 s / 2.72 s | 1.27 s / 1.93 s / 2.71 s |
+| Over the 8 s runtime budget | 0 / 176 | 0 / 176 |
+
+The extra prompt line did not move routing outside the run-to-run band seen above (92.7 to 94.3%
+across five single runs); the family figure moved by four cases between the two runs, which is the
+same band. The slot rewrite is what took music slots from 4 to 10.
+
 Re-measured after the change below shipped (2026-09-11, an unqualified `turn-understanding-eval`
 run, which now sends exactly what the runtime sends: `reasoning.enabled=false`, `temperature 0`):
 
@@ -236,6 +255,67 @@ are never clarified.
   and provider-reported `usageTotalTokens` summed over the run. The Settings ledger panel shows
   route reason, escalation, and tokens per run.
 
+### 3.7 Playback requests are read before they play (`aoiMusicPreference.ts`, 2026-09-11)
+
+The direct music parser used to own the whole sentence: everything in front of 틀어줘 became the
+YouTube query, so 에스파 내가 좋아하는 노래 틀어줘 searched the literal words while the taste memory
+held the aespa track the user had played. Extending the parser with another regex per phrasing was
+rejected ("이렇게 일일이 파서를 정규식으로 대응하려면 끝이 없을것 같아"); reading the sentence is
+language and belongs to the classifier, and the parser keeps only the mechanics.
+
+- `understand_turn` gained two slots. `music_target` is the exact words the user used for a
+  title or artist; the parser drops any value that does not appear verbatim in the message
+  (`isGroundedAoiReferent`), so the model cannot compose a title. `music_reference` is
+  `none` (they named it), `taste` (내가 좋아하는, 자주 듣는, my favorite, the one I always play,
+  with or without an artist), or `offered_pick` (they mean something Aoi offered).
+- In `executeSend`, a typed playback request the parser recognises is classified first (one
+  call, thinking off, the same budget as every other turn). A tapped play chip and a request that
+  names a pick already on the table are not language and still play with no classifier call, so
+  `aoi-music-bare-pick-replay` (0 model calls) and `aoi-music-offer-selection` (0 conversation
+  calls) hold. The reading is handed to `runConversation` when the turn falls through, so it is
+  never paid for twice.
+- `decideAoiDirectMusicPlayback` turns the reading into one of five actions. No reading (setting
+  off, timeout, CLI provider) keeps the parser's literal query, which is exactly the old behaviour.
+  A literal request plays the parser's query, not the classifier's target: on the first measurement
+  the target dropped the artist on two of four literal cases ("에스파 KISS N TELL 틀어줘" ->
+  "KISS N TELL"), and a bare title is how an unrelated upload with that title gets played (the
+  failure the subsumes-pick rule in `chatDirectActions` already guards). The slots decide what
+  kind of request it is; the typed words decide what is searched. A taste reference looks up the
+  newest remembered user play by that artist in `recentPlays`, matching across spellings through
+  an alias table (에스파 / aespa / エスパ are one row; Latin aliases match on token boundaries so
+  `ive` cannot match LOVE DIVE). Two structural guards sit in front of that lookup: a remembered
+  label that is contained in the present request is skipped (it is the literal search these words
+  ran last time, recorded as a play when its result autoplayed, and names no song), and a target
+  that is the whole of the parser's query isolated nothing and reads as no artist. A target longer
+  than the act ("에스파 내가 좋아하는 노래") is keyed on the act the alias table finds inside it. With
+  no remembered play by that artist it searches the artist alone and the ack says so and asks for
+  the song to remember; with no artist and no memory it falls into the existing taste-recommend
+  branch (which asks for a lane when nothing at all is known). A high-confidence reading that names
+  no app family and is either not a request (question, chitchat, meta) or a request for another
+  family ("발표 자료는 어제 만든 버전으로 해줘" matches the parser's "...으로 해줘" pattern and reads as
+  file) hands the turn to the model with the reading attached, instead of playing a misread; medium
+  confidence does not, because the parser's judgement is the floor.
+- The ack names the memory it used (전에 네가 들었던 에스파 곡으로 "…" 틀었어 / 기억해 둔 뉴진스 곡이
+  없어서 "뉴진스"로 찾아서 틀었어), in ko/ja/zh/en, so a wrong pick is visible and correctable, and
+  it is built from the dispatch result, never from the classifier's words.
+- The corpus gained twelve playback cases (`music-01`..`music-12`) with a `music` gold label;
+  the eval scores the slots as `music slots n/m` for classifier predictions only (the regex
+  reading has none), and a corpus test asserts every gold target appears in its text.
+- Measured 2026-09-11 (qwen3.7-flash, thinking off, `--tag music`). First prompt wording: 4/12,
+  reference right on 11/12 but the target carried the taste words ("에스파 내가 좋아하는 노래") on
+  five cases and dropped the artist on two literal cases. After the slot description and prompt
+  line were rewritten to "artist and/or title exactly as written, including the artist; omit when
+  neither is named": 9/12 on two consecutive runs, mean latency 1.6 s. The three left: music-05
+  ("프로미스나인 ... 곡으로 가자" is not read as playback at all, so the parser's literal query
+  plays), music-06 ("play my favorite aespa song" reads taste with no target, so the newest
+  remembered play of any artist plays, with an ack that names it), and music-12 (a confirmation
+  of an offered pick, which the runtime never classifies because a pick on the table goes to the
+  music classifier). In the full-corpus run with the final wording music-12 was read correctly and
+  the slots scored 10/12; the full-corpus numbers are in section 2.1.
+- The alias table is data about artist names, not a parser over the user's words; adding a row is
+  the only maintenance it needs. It is the one place a new act has to be taught before its Hangul
+  and Latin spellings match the same remembered play.
+
 ## 4. What did not change, on purpose
 
 - `aoiIntentInference` (SA2) still infers what the user is doing at the desk from git, activity,
@@ -251,8 +331,10 @@ are never clarified.
 Every e2e spec that mocks `/api/llm-proxy` now sees one extra request per turn, offered only the
 `understand_turn` tool. Mocks that key off the call index, or push every call into a list, skip it
 the way they already skip `resolve_music_intent`: check the request's `tools` and answer with no
-tool call, which makes the turn fall back to the regex route. `aoi-turn-understanding.spec.ts` is
-the spec that exercises the classifier itself.
+tool call, which makes the turn fall back to the regex route. Since 2026-09-11 a typed playback
+request the direct parser recognises makes that call too (section 3.7); a play chip and an offered
+pick do not. `aoi-turn-understanding.spec.ts` is the spec that exercises the classifier itself,
+including the taste-resolved and artist-fallback plays.
 
 ## 5. Operational notes
 
@@ -296,3 +378,8 @@ the spec that exercises the classifier itself.
   built.
 - Family-scoped tool narrowing (removing tools the regex would include) is deliberately off. It
   saves tokens and risks misses; revisit once the live numbers are in.
+- The playback slots (section 3.7) are measured on the corpus (`--tag music`) but not yet on real
+  turns; the direct-action turn record carries `play_music(play_remembered)` /
+  `play_music(play_artist_fallback)` so the ledger panel can show which memory path ran.
+- Taste lookup keys on the artist only. "에스파 발라드 중에 내가 좋아하는 거" resolves to the newest
+  aespa play regardless of mood; a genre or mood filter over remembered plays is not built.

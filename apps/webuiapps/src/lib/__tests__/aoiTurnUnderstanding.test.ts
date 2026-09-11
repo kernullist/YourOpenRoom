@@ -186,7 +186,45 @@ describe('parseAoiTurnUnderstandingToolCall', () => {
       needsClarification: null,
       clarificationOptions: [],
       source: 'classifier',
+      musicTarget: null,
+      musicReference: null,
     });
+  });
+
+  it('reads the playback slots only when they are grounded and valid', () => {
+    const playback = { text: '에스파 내가 좋아하는 노래 틀어줘', records: [] };
+    expect(
+      parseAoiTurnUnderstandingToolCall(
+        {
+          kind: 'action_request',
+          families: ['app'],
+          confidence: 'high',
+          music_target: '에스파',
+          music_reference: 'Taste',
+        },
+        playback,
+      ),
+    ).toMatchObject({ musicTarget: '에스파', musicReference: 'taste' });
+    // A composed title is not in the user's words and is dropped; an unknown
+    // reference value reads as null, not as a guess.
+    expect(
+      parseAoiTurnUnderstandingToolCall(
+        {
+          kind: 'action_request',
+          families: ['app'],
+          confidence: 'high',
+          music_target: 'KISS N TELL',
+          music_reference: 'playlist',
+        },
+        playback,
+      ),
+    ).toMatchObject({ musicTarget: null, musicReference: null });
+    expect(
+      parseAoiTurnUnderstandingToolCall(
+        { kind: 'chitchat', families: ['none'], confidence: 'high', music_target: 7 },
+        playback,
+      ),
+    ).toMatchObject({ musicTarget: null, musicReference: null });
   });
 
   it('reads refers_to_turn as a T-n position, never as an absolute turn index', () => {

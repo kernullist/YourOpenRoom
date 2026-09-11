@@ -14,6 +14,29 @@ import { test, expect, type Page, type Route } from '@playwright/test';
 
 const CONFIG_KEY = 'webuiapps-llm-config';
 const PREFERENCES_KEY = 'webuiapps-conversation-preferences';
+const MUSIC_TASTE_KEY = 'aoi-music-taste-v1';
+
+// A remembered user play, in the label shape the YouTube app reports
+// ("title - channel"). Only the artist has to be recognisable.
+const REMEMBERED_AESPA_PLAY = "aespa エスパ 'KISS N TELL' MV - SMTOWN";
+const REMEMBERED_AESPA_QUERY = "aespa エスパ 'KISS N TELL' MV";
+
+function tasteWithPlays(recentPlays: string[]) {
+  return { version: 1, answers: {}, recentSearches: [], recentPlays, lastAskedAt: 0 };
+}
+
+function youtubeResult(title: string) {
+  return {
+    id: `vid-${title.length}`,
+    title,
+    channel: 'SMTOWN',
+    duration: '3:12',
+    views: '12,345,678 views',
+    published: '2 weeks ago',
+    thumbnail: '',
+    url: `https://www.youtube.com/watch?v=vid-${title.length}`,
+  };
+}
 
 const PRIOR_REPLY = '읽었어. 런 레저 엔트리를 만들고 이벤트를 누적하는 모듈이야.';
 const REFERENCED_PATH = 'src/lib/aoiRunLedger.ts';
@@ -103,13 +126,20 @@ async function setup(
     classifierAnswer: Record<string, unknown> | null;
     withPriorRecords: boolean;
     turnUnderstandingOff?: boolean;
+    // Seeds this browser's taste memory. The server copy is hidden from the app
+    // and its write-back swallowed, so the shared e2e home never learns these
+    // plays and the test does not depend on what other specs played.
+    tasteState?: Record<string, unknown>;
     youtubeResults?: Array<Record<string, unknown>>;
     conversation: (call: number, toolNames: string[]) => unknown;
   },
 ): Promise<void> {
   await page.addInitScript(
-    ({ configKey, preferencesKey, turnUnderstandingOff }) => {
+    ({ configKey, preferencesKey, turnUnderstandingOff, tasteKey, tasteState }) => {
       localStorage.clear();
+      if (tasteState) {
+        localStorage.setItem(tasteKey, JSON.stringify(tasteState));
+      }
       localStorage.setItem(
         configKey,
         JSON.stringify({
@@ -130,6 +160,8 @@ async function setup(
       configKey: CONFIG_KEY,
       preferencesKey: PREFERENCES_KEY,
       turnUnderstandingOff: options.turnUnderstandingOff === true,
+      tasteKey: MUSIC_TASTE_KEY,
+      tasteState: options.tasteState ?? null,
     },
   );
   await page.route('**/api/session-data**', async (route: Route) => {
@@ -198,12 +230,21 @@ async function setup(
       json: options.conversation(capture.conversationCalls.length, toolNames),
     });
   });
-  if (options.turnUnderstandingOff) {
+  if (options.turnUnderstandingOff || options.tasteState) {
     // The server config is the source of truth for conversation preferences (the
     // app overwrites the localStorage copy with it on load), so the switch has to
-    // be in what /api/llm-config returns.
+    // be in what /api/llm-config returns. The taste memory is merged from the same
+    // file, so a seeded memory hides the server copy and swallows the write-back.
     await page.route('**/api/llm-config**', async (route: Route) => {
       if (route.request().method() !== 'GET') {
+        if (options.tasteState) {
+          await route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: '{"ok":true}',
+          });
+          return;
+        }
         await route.continue();
         return;
       }
@@ -214,11 +255,16 @@ async function setup(
       } catch {
         json = {};
       }
-      json.conversationPreferences = {
-        ...((json.conversationPreferences as Record<string, unknown> | undefined) ?? {}),
-        responseLanguageMode: 'match-user',
-        turnUnderstandingMode: 'off',
-      };
+      if (options.turnUnderstandingOff) {
+        json.conversationPreferences = {
+          ...((json.conversationPreferences as Record<string, unknown> | undefined) ?? {}),
+          responseLanguageMode: 'match-user',
+          turnUnderstandingMode: 'off',
+        };
+      }
+      if (options.tasteState) {
+        delete json.aoiMusicTaste;
+      }
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -462,29 +508,29 @@ test.describe('turn understanding', () => {
     const title = "aespa 'KISS N TELL' MV";
     await setup(page, capture, {
       withPriorRecords: false,
-      classifierAnswer: { kind: 'action_request', families: ['app'], confidence: 'high' },
+      // The classifier reads the request before it plays: a named title, no
+      // reference to taste, so the parser's literal query stands.
+      classifierAnswer: {
+        kind: 'action_request',
+        families: ['app'],
+        confidence: 'high',
+        music_target: '에스파 KISS N TELL',
+        music_reference: 'none',
+      },
       conversation: () => respondChoice('SHOULD NOT RUN'),
-      youtubeResults: [
-        {
-          id: 'vid-mv',
-          title,
-          channel: 'SMTOWN',
-          duration: '3:12',
-          views: '12,345,678 views',
-          published: '2 weeks ago',
-          thumbnail: '',
-          url: 'https://www.youtube.com/watch?v=vid-mv',
-        },
-      ],
+      youtubeResults: [youtubeResult(title)],
     });
     await page.goto('/');
     const SENT = '에스파 KISS N TELL 틀어줘';
     await send(page, SENT);
 
-    // The direct parser dispatched the play; no model call of any kind was made.
+    // One classifier read, then the direct parser dispatched the play; no
+    // conversation call was made.
     await expect(page.getByTestId('app-window-3')).toBeVisible({ timeout: 30_000 });
     await expect(page.getByTestId('yt-player-title')).toHaveText(title, { timeout: 30_000 });
-    expect(capture.classifierCalls).toBe(0);
+    await expect(page.getByTestId('yt-search-input')).toHaveValue('에스파 KISS N TELL');
+    expect(capture.classifierCalls).toBe(1);
+    expect(capture.classifierPrompts[0]).toContain(`User message: "${SENT}"`);
     expect(capture.conversationCalls).toHaveLength(0);
 
     // But the turn is on record, so "그 노래 다시" on the next turn has a referent.
@@ -501,5 +547,129 @@ test.describe('turn understanding', () => {
     });
     expect(String(direct.routeReason)).toContain('direct action: play_music');
     expect((direct.tools as Array<{ name: string }>)[0].name).toBe('play_music');
+  });
+
+  test('"the one I like" by an artist plays the remembered track, not the words', async ({
+    page,
+  }) => {
+    const capture = emptyCapture();
+    await setup(page, capture, {
+      withPriorRecords: false,
+      tasteState: tasteWithPlays([REMEMBERED_AESPA_PLAY]),
+      classifierAnswer: {
+        kind: 'action_request',
+        families: ['app'],
+        confidence: 'high',
+        music_target: '에스파',
+        music_reference: 'taste',
+      },
+      conversation: () => respondChoice('SHOULD NOT RUN'),
+      youtubeResults: [youtubeResult(REMEMBERED_AESPA_QUERY)],
+    });
+    await page.goto('/');
+    const SENT = '에스파 내가 좋아하는 노래 틀어줘';
+    await send(page, SENT);
+
+    // The search is the remembered aespa title, not "에스파 내가 좋아하는", and the
+    // ack says which memory it used.
+    await expect(page.getByTestId('app-window-3')).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId('yt-search-input')).toHaveValue(REMEMBERED_AESPA_QUERY, {
+      timeout: 30_000,
+    });
+    await expect(page.getByTestId('yt-player-title')).toHaveText(REMEMBERED_AESPA_QUERY, {
+      timeout: 30_000,
+    });
+    await expect(page.getByTestId('chat-messages')).toContainText(
+      `전에 네가 들었던 에스파 곡으로 "${REMEMBERED_AESPA_QUERY}" 틀었어`,
+      { timeout: 30_000 },
+    );
+    expect(capture.classifierCalls).toBe(1);
+    expect(capture.conversationCalls).toHaveLength(0);
+
+    // The record says which memory path ran, so the next turn (and the ledger
+    // panel) can tell a remembered play from a literal search.
+    await expect.poll(() => capture.turnRecordPosts.length, { timeout: 15_000 }).toBeGreaterThan(0);
+    const turns = capture.turnRecordPosts[capture.turnRecordPosts.length - 1].turns as Array<
+      Record<string, unknown>
+    >;
+    const direct = turns[turns.length - 1];
+    expect(direct).toMatchObject({ userMessage: SENT, route: 'main', outcome: 'delivered' });
+    expect((direct.tools as Array<{ name: string; args: string }>)[0]).toMatchObject({
+      name: 'play_music',
+      args: 'play_remembered',
+    });
+  });
+
+  test('with nothing remembered by that artist the search is the artist and the ack says so', async ({
+    page,
+  }) => {
+    const capture = emptyCapture();
+    const started = "NewJeans (뉴진스) 'Supernatural' Official MV";
+    await setup(page, capture, {
+      withPriorRecords: false,
+      tasteState: tasteWithPlays([REMEMBERED_AESPA_PLAY]),
+      classifierAnswer: {
+        kind: 'action_request',
+        families: ['app'],
+        confidence: 'high',
+        music_target: '뉴진스',
+        music_reference: 'taste',
+      },
+      conversation: () => respondChoice('SHOULD NOT RUN'),
+      youtubeResults: [youtubeResult(started)],
+    });
+    await page.goto('/');
+    const SENT = '뉴진스 내가 좋아하는 노래 틀어줘';
+    await send(page, SENT);
+
+    await expect(page.getByTestId('app-window-3')).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId('yt-search-input')).toHaveValue('뉴진스', { timeout: 30_000 });
+    await expect(page.getByTestId('chat-messages')).toContainText(
+      `기억해 둔 뉴진스 곡이 없어서 "뉴진스"로 찾아서 "${started}" 틀었어`,
+      { timeout: 30_000 },
+    );
+    expect(capture.classifierCalls).toBe(1);
+    expect(capture.conversationCalls).toHaveLength(0);
+    await expect.poll(() => capture.turnRecordPosts.length, { timeout: 15_000 }).toBeGreaterThan(0);
+    const turns = capture.turnRecordPosts[capture.turnRecordPosts.length - 1].turns as Array<
+      Record<string, unknown>
+    >;
+    expect((turns[turns.length - 1].tools as Array<{ args: string }>)[0].args).toBe(
+      'play_artist_fallback',
+    );
+  });
+
+  test('a sentence the parser misreads as playback goes to the model on a confident other reading', async ({
+    page,
+  }) => {
+    const capture = emptyCapture();
+    await setup(page, capture, {
+      withPriorRecords: false,
+      // "...으로 해줘" matches the parser's playback pattern; the classifier reads
+      // a file request, so nothing plays and the turn runs on main with files.
+      classifierAnswer: { kind: 'action_request', families: ['file'], confidence: 'high' },
+      conversation: () => respondChoice('어제 만든 버전으로 바꿨어.'),
+      youtubeResults: [youtubeResult('SHOULD NOT PLAY')],
+    });
+    await page.goto('/');
+    const SENT = '발표 자료는 어제 만든 버전으로 해줘';
+    await send(page, SENT);
+
+    await expect(page.getByTestId('chat-messages')).toContainText('어제 만든 버전으로 바꿨어', {
+      timeout: 30_000,
+    });
+    await expect(page.getByTestId('app-window-3')).toHaveCount(0);
+    // The reading made before the parser was consulted is reused; the classifier
+    // is not called a second time for the conversation.
+    expect(capture.classifierCalls).toBe(1);
+    expect(capture.conversationCalls).toHaveLength(1);
+    expect(capture.conversationCalls[0].toolNames).toContain('ide_read_file');
+    expect(capture.conversationCalls[0].systemText).toContain('Reading of the latest user message');
+    await expect
+      .poll(() => latestRuns(capture, SENT).length, { timeout: 15_000 })
+      .toBeGreaterThan(0);
+    expect(String(latestRuns(capture, SENT)[0].routeReason)).toContain(
+      'classifier: action_request needs file',
+    );
   });
 });

@@ -24,6 +24,8 @@ function reading(over: Partial<AoiTurnUnderstanding> = {}): AoiTurnUnderstanding
     needsClarification: over.needsClarification ?? null,
     clarificationOptions: over.clarificationOptions ?? [],
     source: over.source ?? 'classifier',
+    musicTarget: over.musicTarget ?? null,
+    musicReference: over.musicReference ?? null,
   };
 }
 
