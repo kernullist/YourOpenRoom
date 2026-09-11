@@ -76,11 +76,93 @@ function Invoke-Build
     return $LASTEXITCODE
 }
 
+# The installed scheduled task (Install-AoiDesktopCapture.ps1) runs THIS exe from
+# THIS directory, so a rebuild while the helper is up fails at link time with
+# LNK1104 (the output file is locked). Stop a running instance first, remember
+# whether the task owned it, and start the task again after a successful link.
+$taskName = 'AoiDesktopCapture'
+$taskWasRunning = $false
+$helperWasRunning = $false
+$running = @(Get-Process -Name 'aoi_desktop_capture' -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -and ([IO.Path]::GetFullPath($_.Path) -ieq [IO.Path]::GetFullPath($out)) })
+if ($running.Count -gt 0)
+{
+    $helperWasRunning = $true
+    $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    if ($null -ne $task -and $task.State -eq 'Running')
+    {
+        $taskWasRunning = $true
+        Write-Host "[build] stopping the '$taskName' task so the exe can be replaced."
+        Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    }
+    # Remember how the first instance was started (Start-App.ps1 launches it
+    # directly with --hide-console --session ...), so it can be restarted the same
+    # way once the new exe is in place.
+    $restartArgs = $null
+    try
+    {
+        $cim = Get-CimInstance Win32_Process -Filter "ProcessId = $($running[0].Id)" -ErrorAction Stop
+        if ($cim -and $cim.CommandLine)
+        {
+            $cmd = [string]$cim.CommandLine
+            $exeToken = if ($cmd.StartsWith('"')) { $cmd.Substring(0, $cmd.IndexOf('"', 1) + 1) } else { ($cmd -split ' ', 2)[0] }
+            $restartArgs = $cmd.Substring($exeToken.Length).Trim()
+        }
+    }
+    catch
+    {
+        $restartArgs = $null
+    }
+    foreach ($proc in $running)
+    {
+        Write-Host "[build] stopping running helper (pid $($proc.Id))."
+        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+    }
+    $deadline = (Get-Date).AddSeconds(10)
+    while ((Get-Date) -lt $deadline)
+    {
+        $still = Get-Process -Name 'aoi_desktop_capture' -ErrorAction SilentlyContinue |
+            Where-Object { $_.Path -and ([IO.Path]::GetFullPath($_.Path) -ieq [IO.Path]::GetFullPath($out)) }
+        if (-not $still) { break }
+        Start-Sleep -Milliseconds 200
+    }
+}
+
 Write-Host "[build] $clLine"
 $code = Invoke-Build -CommandLine $clLine
 if ($code -ne 0)
 {
-    throw "Build failed (exit $code)."
+    $hint = ''
+    if (Get-Process -Name 'aoi_desktop_capture' -ErrorAction SilentlyContinue)
+    {
+        $hint = " aoi_desktop_capture.exe is still running, so the linker cannot replace it; stop it (or the '$taskName' task) and re-run."
+    }
+    throw "Build failed (exit $code).$hint"
+}
+
+if ($taskWasRunning)
+{
+    Write-Host "[build] restarting the '$taskName' task."
+    Start-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+}
+elseif ($helperWasRunning)
+{
+    if ($null -ne $restartArgs)
+    {
+        Write-Host "[build] restarting the helper the way it was running: $restartArgs"
+        if ([string]::IsNullOrWhiteSpace($restartArgs))
+        {
+            [void](Start-Process -FilePath $out -WorkingDirectory $PSScriptRoot -WindowStyle Hidden)
+        }
+        else
+        {
+            [void](Start-Process -FilePath $out -ArgumentList $restartArgs -WorkingDirectory $PSScriptRoot -WindowStyle Hidden)
+        }
+    }
+    else
+    {
+        Write-Host "[build] the helper was running outside the '$taskName' task and has been stopped; Start-App.ps1 starts it again."
+    }
 }
 
 # cl drops the intermediate .obj next to the source; clean it up.

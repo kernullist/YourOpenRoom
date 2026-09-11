@@ -137,10 +137,11 @@ do
                 }
                 catch
                 {
-                    # Non-fatal: the native helper needs the MSVC toolchain. The
-                    # client + daemon bundles above are what the app itself needs;
-                    # the capture helper is an optional add-on.
-                    Write-Warning ("Capture helper build failed (needs MSVC): {0}" -f $_.Exception.Message)
+                    # Non-fatal: the client + daemon bundles above are what the app
+                    # itself needs; the capture helper is an optional add-on. The
+                    # message names the real cause -- build.ps1 says when MSVC is
+                    # missing and when the exe was locked by a running helper.
+                    Write-Warning ("Capture helper build failed: {0}" -f $_.Exception.Message)
                     $script:ExitCode = 1
                 }
             }
