@@ -74,6 +74,7 @@ function buildStallPrompt(signature: string, remainingIterations: number): strin
     `Repeated batch: ${signature.slice(0, 280)}`,
     'Stop rediscovering the same paths. Do NOT call the same file_list/file_read again unless the previous result was a hard error with a corrected path.',
     'If evidence is incomplete, answer with what you already know and name the remaining gap.',
+    'Report only what actually completed. A step you did not finish -- a file written but its app not yet notified, an action not yet dispatched -- is remaining work; say so, never describe it as done.',
     remainingIterations <= 1
       ? 'This is the final model turn. You MUST call respond_to_user now.'
       : `You have about ${remainingIterations} model/tool iteration(s) left. Call respond_to_user in this turn.`,
@@ -87,6 +88,7 @@ function buildBudgetPrompt(remainingIterations: number): string {
       ? 'This is the final model turn. You MUST call respond_to_user now with the best answer available.'
       : `You have about ${remainingIterations} model/tool iteration(s) left. Prefer respond_to_user over more exploration.`,
     'Do not spend the remaining budget only on file_list/file_read rediscovery.',
+    'Report only what actually completed. A step you did not finish -- a file written but its app not yet notified, an action not yet dispatched -- is remaining work; say so, never describe it as done.',
   ].join('\n');
 }
 

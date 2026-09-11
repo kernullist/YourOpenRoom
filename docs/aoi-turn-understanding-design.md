@@ -357,6 +357,55 @@ What shipped:
 - E2E: the classifier request is asserted to carry the override's endpoint and model while the
   conversation request keeps the main model's.
 
+### 3.9 Written data reaches its app, and a report is not a request (2026-09-11)
+
+The first turn on DeepSeek flash as the main model showed the shape of the next failure. A
+YouTube `PLAY_VIDEO` report arrived as a turn with the full 59-tool set and the instruction "read
+its meta.yaml and respond accordingly"; the model made twelve tool calls, wrote
+`apps/diary/data/entries/mission-list-2026-09-11.json` (success), focused the Diary window, ran
+into the loop guard's budget message, and told the user the entry was on the page. The file was
+real. The Diary showed "No diaries yet", because its meta.yaml protocol is write-then-dispatch
+`CREATE_ENTRY {filePath}` and the dispatch never came; an app re-reads its data only at startup.
+The app-action claim contract did not fire: it arms on a user request for playback or open, this
+"user message" was a synthetic report, and "써넣었어" is not a claim shape it knows.
+
+Two rules, both structural, neither reading prose:
+
+- **Written data reaches its app** (`aoiAppMutationSync.ts`). After a successful `file_write`,
+  `file_patch`, or `file_delete` under `apps/<app>/data/` while that app's window is open, the
+  runtime plans the sync from the app's declared actions (a `CREATE_`/`UPDATE_`/`DELETE_` action
+  whose params are a file path or an id, else a parameterless `REFRESH_`/`SYNC_STATE`; the app's
+  own state file, a file directly under the data root, takes only the parameterless kind, since
+  CREATE_ENTRY on state.json would have the Diary read state as an entry), dispatches it,
+  records it in the run ledger as `app sync <app> <ACTION>(<path>) -> <result>`, and appends a note
+  to the tool result so the model knows what ran. `respond_to_user` is then checked per written
+  file: a file written while its app was open, with no successful sync covering it (runtime or
+  model; a record action covers the file its params name, a whole-app refresh covers all), fails
+  the postcondition and the correction names the exact call. The obligation is decided at write
+  time: a file written while the app was closed owes nothing, because the app re-reads it when it
+  opens, even when the model opens it later in the same turn (and a dispatch would open its
+  window). A failed attempt is reported through the transcript rather than re-demanded; a file
+  with no plan cannot block. This is the meta.yaml header's own rule, enforced by the runtime
+  instead of hoped for from the model. The adversarial pass found the three cases this wording
+  encodes: state.json planned as CREATE_ENTRY, one synced file passing for two written, and a
+  write-then-open turn demanding a sync the open already made.
+- **A report is not a request** (`aoiAppEventTurn.ts`). A turn whose message starts with
+  `[User performed action in …]` keeps the conversation tools and the app tools a reaction can
+  need (`list_apps`, `app_action`, schema/state/intent readers, memory) and loses everything that
+  writes files, runs commands, drives the host or browser, or searches. The prompt says so in
+  place of the meta.yaml line, with the one exception kept: a game reports the user's move and
+  Aoi answers with her own through `app_action`. The classifier is not called on these turns.
+  Initiative has its own path in this project (the autonomy loop, proposals, the L1-L4 gates,
+  approval); a reaction turn with file tools bypassed all of it.
+- The loop guard's stall and budget messages now end with: report only what completed; a step
+  not finished is remaining work, never described as done.
+
+E2E (`aoi-app-data-sync.spec.ts`): a scripted model writes a diary entry and claims it is there
+without dispatching; the open Diary shows the entry, the ledger carries
+`app sync diary CREATE_ENTRY`, and no correction round was needed. A user search in YouTube
+becomes an event turn whose request carries `respond_to_user` and `app_action` but no
+`file_write`, `host_process_spawn_preview`, or `search_web`, and no classifier call.
+
 ## 4. What did not change, on purpose
 
 - `aoiIntentInference` (SA2) still infers what the user is doing at the desk from git, activity,

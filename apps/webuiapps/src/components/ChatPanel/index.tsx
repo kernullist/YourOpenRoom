@@ -444,6 +444,24 @@ import {
 } from '@/lib/aoiMusicPreference';
 import { resolveTurnClassifierConfig } from '@/lib/aoiTurnClassifierConfig';
 import {
+  buildAoiAppEventTurnPolicyPrompt,
+  isAoiAppEventMessage,
+  scopeToolsForAoiAppEventTurn,
+} from '@/lib/aoiAppEventTurn';
+import {
+  buildAoiAppMutationSyncCorrectionPrompt,
+  buildAoiAppMutationSyncFailureMessage,
+  createAoiAppMutationSyncEvidence,
+  formatAoiAppSyncNoteForModel,
+  observeAoiAppDataWrite,
+  observeAoiAppSyncDispatch,
+  parseAoiAppDataPath,
+  planAoiAppSyncDispatch,
+  verifyAoiAppMutationSyncContract,
+  AOI_APP_DATA_WRITE_TOOLS,
+  type AoiAppMutationSyncEvidence,
+} from '@/lib/aoiAppMutationSync';
+import {
   AOI_REQUEST_CAPABILITIES_TOOL_NAME,
   buildAoiRequestCapabilitiesPolicyPrompt,
   buildAoiTurnContextPromptBlock,
@@ -2655,7 +2673,7 @@ Music follow-up rule:
 - Always honor the "Music taste (learned)" block below when recommending music. Prefer those personal searches/plays over generic viral hits.
 - When recommending, include an explicit line: YouTube 검색어: \`exact query\` so play-follow-ups can open the same query.
 
-When you receive "[User performed action in ... (appName: xxx)]", the appName is already provided. Read its meta.yaml to understand available actions, then respond accordingly. For games, respond with your own move — think strategically.`;
+${buildAoiAppEventTurnPolicyPrompt()}`;
     } else {
       // These turns carry list_apps + app_action but not the file/IDE/workspace
       // set, so the policy has to be stated at that exact scope. Nothing used to
@@ -8196,7 +8214,7 @@ const ChatPanel: React.FC<{
               records: turnRecordsBefore,
               recentTurnsBlock,
               hasAttachments: latestTurnHasAttachments,
-              enabled: turnUnderstandingEnabled,
+              enabled: turnUnderstandingEnabled && !isAoiAppEventMessage(latestUserMessage),
             },
             classifierCfg ?? cfg,
             { signal: options.signal },
@@ -8492,7 +8510,7 @@ const ChatPanel: React.FC<{
     // on the re-run: one escalation per turn.
     const capabilityEscalationAvailable =
       toolCallRuntimeAvailable && useDialogModel && !options.escalation;
-    const tools = toolCallRuntimeAvailable
+    const candidateTools = toolCallRuntimeAvailable
       ? useDialogModel
         ? [
             getRespondToUserToolDef(),
@@ -8542,6 +8560,30 @@ const ChatPanel: React.FC<{
               : getMinimalAppToolDefinitions()),
           ]
       : [];
+    // An app event report ("[User performed action in …]") is something the user
+    // did, not a request. The turn reacts to it with the conversation tools and
+    // the app tools a reaction can need (a game answers a move through
+    // app_action); nothing that writes files, runs commands, drives the host, or
+    // searches. Initiative goes through proposals, not through a reaction turn.
+    const appEventTurn = isAoiAppEventMessage(latestUserMessage);
+    const tools =
+      appEventTurn && !useDialogModel
+        ? scopeToolsForAoiAppEventTurn(
+            candidateTools,
+            new Set(
+              [
+                getRespondToUserToolDef(),
+                getFinishTargetToolDef(),
+                ...getMemoryToolDefinitions(),
+                getListAppsToolDefinition(),
+                getAppActionToolDefinition(),
+                ...getAppSchemaToolDefinitions(),
+                ...getAppStateToolDefinitions(),
+                ...getAppIntentToolDefinitions(),
+              ].map((tool) => tool.function.name),
+            ),
+          )
+        : candidateTools;
     const selectedToolNames = tools.map((tool) => tool.function.name);
     const capabilityPrompt = toolCallRuntimeAvailable
       ? buildAoiCapabilityPrompt(selectedToolNames)
@@ -8558,6 +8600,7 @@ const ChatPanel: React.FC<{
       buildAoiRegisteredSkillToolsCatalog(resolveAoiRegisteredSkillTools(aoiSkillsRef.current));
     const mcpPluginPrompt = buildAoiMcpPluginPrompt(aoiMcpPluginsRef.current);
     console.info('[ChatPanel] Tool selection', {
+      appEventTurn,
       latestUserMessage,
       useDialogModel,
       routeReason: turnRoute.reason,
@@ -8859,6 +8902,90 @@ const ChatPanel: React.FC<{
     let pendingResearchStartAck: string | null = null;
     let fileTaskEvidence = createAoiFileTaskEvidence();
     let appActionClaimEvidence: AoiAppActionClaimEvidence = createAoiAppActionClaimEvidence();
+    let appMutationSyncEvidence: AoiAppMutationSyncEvidence = createAoiAppMutationSyncEvidence();
+    // After a successful write under apps/<app>/data/ whose window is open, the
+    // runtime finishes the app's protocol itself: it plans the declared sync
+    // action (CREATE_ENTRY with the file path, DELETE_NOTE with the id, ...) and
+    // dispatches it, then tells the model what ran. A closed app re-reads its
+    // data when it opens, so nothing is dispatched for it (dispatch would open
+    // the window). Returns the note to append to the tool result, or ''.
+    const syncAppAfterDataWrite = async (
+      toolName: string,
+      params: Record<string, unknown>,
+      result: string,
+    ): Promise<string> => {
+      if (!AOI_APP_DATA_WRITE_TOOLS.has(toolName)) {
+        return '';
+      }
+      const before = appMutationSyncEvidence.writes.length;
+      const filePath = String(params.file_path ?? params.path ?? params.file ?? '');
+      // The obligation is decided now, at write time: an app that is closed
+      // re-reads the file when it opens, even if the model opens it later in
+      // this same turn.
+      const openAppIds = new Set(getWindows().map((win) => win.appId));
+      appMutationSyncEvidence = observeAoiAppDataWrite(
+        appMutationSyncEvidence,
+        {
+          tool: toolName,
+          filePath,
+          result,
+          appWindowOpen: (() => {
+            const parsedApp = APP_REGISTRY.find(
+              (entry) => entry.appName.toLowerCase() === parseAoiAppDataPath(filePath)?.appName,
+            );
+            return parsedApp ? openAppIds.has(parsedApp.appId) : false;
+          })(),
+        },
+        APP_REGISTRY,
+      );
+      if (appMutationSyncEvidence.writes.length === before) {
+        return '';
+      }
+      const write = appMutationSyncEvidence.writes[appMutationSyncEvidence.writes.length - 1];
+      const targetApp = APP_REGISTRY.find((entry) => entry.appId === write.appId);
+      if (!targetApp || !write.appWindowOpenAtWrite) {
+        return '';
+      }
+      const plan = planAoiAppSyncDispatch(write, targetApp);
+      if (!plan) {
+        return '';
+      }
+      pendingToolCallsRef.current.push(`${targetApp.appName}/${plan.actionType}`);
+      let dispatchResult: string;
+      try {
+        dispatchResult = await dispatchAgentAction({
+          app_id: targetApp.appId,
+          action_type: plan.actionType,
+          params: plan.params,
+        });
+      } catch (error) {
+        dispatchResult = `error: ${error instanceof Error ? error.message : String(error)}`;
+      }
+      appMutationSyncEvidence = observeAoiAppSyncDispatch(appMutationSyncEvidence, {
+        appId: targetApp.appId,
+        actionType: plan.actionType,
+        params: plan.params,
+        result: dispatchResult,
+        source: 'runtime',
+      });
+      console.info('[ChatPanel] App data sync after write', {
+        app: targetApp.appName,
+        actionType: plan.actionType,
+        params: plan.params,
+        result: dispatchResult.slice(0, 120),
+      });
+      recordRunLedgerEvent({
+        type: 'tool_result',
+        iteration: iterations,
+        message:
+          `app sync ${targetApp.appName} ${plan.actionType}(${write.appRelativePath}) -> ${dispatchResult}`.slice(
+            0,
+            400,
+          ),
+        toolNames: [`${targetApp.appName}/${plan.actionType}`],
+      });
+      return formatAoiAppSyncNoteForModel(targetApp.appName, plan, write, dispatchResult);
+    };
     let outcomeFeedbackEvidence: AoiOutcomeFeedbackEvidence | null = null;
     const applyToolLoopGuard = (
       toolCalls: Array<{ function: { name: string; arguments?: string } }>,
@@ -8986,7 +9113,18 @@ const ChatPanel: React.FC<{
         assistantContent,
         declaredActions: declaredAppActions,
       });
-      const issues = [...fileTask.issues, ...outcomeFeedback.issues, ...appActionClaim.issues];
+      // App data written this turn must have reached the open app (runtime sync
+      // or a model dispatch) before the reply that describes it goes out.
+      const appMutationSync = verifyAoiAppMutationSyncContract({
+        evidence: appMutationSyncEvidence,
+        apps: APP_REGISTRY,
+      });
+      const issues = [
+        ...fileTask.issues,
+        ...outcomeFeedback.issues,
+        ...appActionClaim.issues,
+        ...appMutationSync.issues,
+      ];
       const correctionPrompt = [
         !fileTask.passed ? buildAoiFileTaskCorrectionPrompt(fileTask, fileTaskEvidence) : '',
         !outcomeFeedback.passed
@@ -8999,17 +9137,27 @@ const ChatPanel: React.FC<{
               appActionClaimEvidence,
             )
           : '',
+        !appMutationSync.passed ? buildAoiAppMutationSyncCorrectionPrompt(appMutationSync) : '',
       ]
         .filter(Boolean)
         .join('\n');
       return {
-        passed: fileTask.passed && outcomeFeedback.passed && appActionClaim.passed,
-        enforced: fileTask.enforced || outcomeFeedback.enforced || appActionClaim.enforced,
+        passed:
+          fileTask.passed &&
+          outcomeFeedback.passed &&
+          appActionClaim.passed &&
+          appMutationSync.passed,
+        enforced:
+          fileTask.enforced ||
+          outcomeFeedback.enforced ||
+          appActionClaim.enforced ||
+          appMutationSync.enforced,
         issues,
         correctionPrompt,
         fileTask,
         outcomeFeedback,
         appActionClaim,
+        appMutationSync,
       };
     };
     const buildConversationFailureMessage = (
@@ -9022,6 +9170,9 @@ const ChatPanel: React.FC<{
           : '',
         !verification.appActionClaim.passed
           ? buildAoiAppActionClaimFailureMessage(verification.appActionClaim)
+          : '',
+        !verification.appMutationSync.passed
+          ? buildAoiAppMutationSyncFailureMessage(verification.appMutationSync)
           : '',
       ].filter(Boolean);
       return failures.join(' | ');
@@ -9355,10 +9506,11 @@ const ChatPanel: React.FC<{
                       executeFileTool(tc.function.name, params),
                     )
                   : await executeFileTool(tc.function.name, params);
+              const syncNote = await syncAppAfterDataWrite(tc.function.name, params, result);
               return {
                 toolCallId: tc.id,
                 pendingSummary: `${tc.function.name}(${JSON.stringify(params).slice(0, 60)})`,
-                summarizedResult: summarizeToolResultForModel(tc.function.name, result),
+                summarizedResult: summarizeToolResultForModel(tc.function.name, result) + syncNote,
               };
             }
 
@@ -9874,6 +10026,11 @@ const ChatPanel: React.FC<{
               tool: tc.function.name,
               resultPreview: result.slice(0, 200),
             });
+            const syncNote = await syncAppAfterDataWrite(
+              tc.function.name,
+              params as Record<string, unknown>,
+              result,
+            );
             if (
               !/^error:/i.test(result) &&
               ['file_write', 'file_patch', 'file_delete'].includes(tc.function.name)
@@ -9883,7 +10040,8 @@ const ChatPanel: React.FC<{
                 fileMutatedSinceDiagnostics = true;
               }
             }
-            const summarizedResult = summarizeAndRecordToolResult(tc.function.name, params, result);
+            const summarizedResult =
+              summarizeAndRecordToolResult(tc.function.name, params, result) + syncNote;
             currentMessages = [
               ...currentMessages,
               { role: 'tool', content: summarizedResult, tool_call_id: tc.id },
@@ -10998,6 +11156,13 @@ const ChatPanel: React.FC<{
               appId: resolved.appId,
               actionType: resolved.actionType,
               result,
+            });
+            appMutationSyncEvidence = observeAoiAppSyncDispatch(appMutationSyncEvidence, {
+              appId: resolved.appId,
+              actionType: resolved.actionType,
+              params: dispatchParams,
+              result,
+              source: 'model',
             });
             clearToolCache();
             const resultForModel = describeAppActionResultForModel({
