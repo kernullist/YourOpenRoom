@@ -442,6 +442,7 @@ import {
   decideAoiDirectMusicPlayback,
   type AoiDirectMusicDecision,
 } from '@/lib/aoiMusicPreference';
+import { resolveTurnClassifierConfig } from '@/lib/aoiTurnClassifierConfig';
 import {
   AOI_REQUEST_CAPABILITIES_TOOL_NAME,
   buildAoiRequestCapabilitiesPolicyPrompt,
@@ -786,6 +787,8 @@ import {
   type AoiEmbeddingConfig,
   type ConversationPreferencesConfig,
   type DialogLlmConfig,
+  type ClassifierLlmConfig,
+  saveClassifierLlmConfig,
   type IdaPeConfig,
   type KiraAgentApiStyle,
   type KiraAgentProvider,
@@ -903,29 +906,6 @@ interface ConversationRunOptions {
 
 const MAX_PROMPT_BUDGET_ENTRIES = 10;
 // Providers that run a local process per chat() call. See classifierCfg.
-const TURN_CLASSIFIER_PROCESS_PROVIDERS: ReadonlySet<string> = new Set([
-  'claude-cli',
-  'codex-cli',
-  'codex-auth',
-]);
-
-// The config the turn classifier runs with. A CLI or managed-auth main model
-// spawns a process per call and would usually outlive the classifier budget, so
-// the dialog model stands in when it is an API provider; otherwise no classifier.
-function resolveTurnClassifierConfig(
-  cfg: LLMConfig,
-  dialogCfg: DialogLlmConfig | null | undefined,
-): LLMConfig | null {
-  if (!TURN_CLASSIFIER_PROCESS_PROVIDERS.has(cfg.provider)) {
-    return cfg;
-  }
-  const dialogCandidate = resolveLlmOverride(cfg, dialogCfg);
-  return dialogCandidate &&
-    hasUsableLLMConfig(dialogCandidate) &&
-    !TURN_CLASSIFIER_PROCESS_PROVIDERS.has(dialogCandidate.provider)
-    ? dialogCandidate
-    : null;
-}
 const DEFAULT_CONVERSATION_ITERATION_LIMIT = 10;
 const CONFIRMED_FILE_TASK_RECOVERY_ITERATIONS = 6;
 const CONFIRMED_FILE_TASK_MAX_ITERATIONS = 20;
@@ -3446,6 +3426,7 @@ const ChatPanel: React.FC<{
   const [currentModelUsageStatus, setCurrentModelUsageStatus] =
     useState<CurrentModelUsageStatus | null>(null);
   const [dialogLlmConfig, setDialogLlmConfig] = useState<DialogLlmConfig | null>(null);
+  const [classifierLlmConfig, setClassifierLlmConfig] = useState<ClassifierLlmConfig | null>(null);
   const [idaPeConfig, setIdaPeConfig] = useState<IdaPeConfig | null>(null);
   const [kiraConfig, setKiraConfig] = useState<KiraConfig | null>(null);
   const [aoiEmbeddingConfig, setAoiEmbeddingConfig] = useState<AoiEmbeddingConfig | null>(null);
@@ -4333,6 +4314,7 @@ const ChatPanel: React.FC<{
         if (persisted?.dialogLlm) {
           setDialogLlmConfig(persisted.dialogLlm);
         }
+        setClassifierLlmConfig(persisted?.classifierLlm ?? null);
         if (persisted?.idaPe) {
           setIdaPeConfig(persisted.idaPe);
         }
@@ -4611,6 +4593,7 @@ const ChatPanel: React.FC<{
       loadPersistedConfig().catch(() => null),
     ]);
     const latestDialogConfig = persisted?.dialogLlm ?? null;
+    const latestClassifierConfig = persisted?.classifierLlm ?? null;
     const latestKiraConfig = persisted?.kira ?? null;
     const latestUserProfile = persisted
       ? (persisted.userProfile ?? null)
@@ -4625,6 +4608,8 @@ const ChatPanel: React.FC<{
     }
     setDialogLlmConfig(latestDialogConfig);
     dialogLlmConfigRef.current = latestDialogConfig;
+    setClassifierLlmConfig(latestClassifierConfig);
+    classifierLlmConfigRef.current = latestClassifierConfig;
     setKiraConfig(latestKiraConfig);
     setUserProfile(latestUserProfile);
     userProfileRef.current = latestUserProfile;
@@ -4636,6 +4621,7 @@ const ChatPanel: React.FC<{
     return {
       mainConfig: latestMainConfig ?? configRef.current,
       dialogConfig: latestDialogConfig,
+      classifierConfig: latestClassifierConfig,
     };
   }, []);
 
@@ -4650,6 +4636,8 @@ const ChatPanel: React.FC<{
     createAoiLocalEmbeddingBrowserProvider();
   const dialogLlmConfigRef = useRef(dialogLlmConfig);
   dialogLlmConfigRef.current = dialogLlmConfig;
+  const classifierLlmConfigRef = useRef(classifierLlmConfig);
+  classifierLlmConfigRef.current = classifierLlmConfig;
   const imageGenConfigRef = useRef(imageGenConfig);
   imageGenConfigRef.current = imageGenConfig;
   const tavilyConfigRef = useRef(tavilyConfig);
@@ -6853,8 +6841,11 @@ const ChatPanel: React.FC<{
           () => undefined,
         );
       }
-      const { mainConfig: liveMainConfig, dialogConfig: liveDialogConfig } =
-        await refreshConversationConfigs();
+      const {
+        mainConfig: liveMainConfig,
+        dialogConfig: liveDialogConfig,
+        classifierConfig: liveClassifierConfig,
+      } = await refreshConversationConfigs();
       const outgoingUserMessage: ChatMessage = {
         role: 'user',
         content: messageText,
@@ -7690,7 +7681,11 @@ const ChatPanel: React.FC<{
           intent: directMusicIntent,
         };
         if (readBeforePlaying) {
-          const classifierCfg = resolveTurnClassifierConfig(selectedConfig, liveDialogConfig);
+          const classifierCfg = resolveTurnClassifierConfig(
+            selectedConfig,
+            liveDialogConfig,
+            liveClassifierConfig,
+          );
           const readingEnabled =
             conversationPreferencesRef.current?.turnUnderstandingMode !== 'off' &&
             classifierCfg !== null &&
@@ -8183,7 +8178,11 @@ const ChatPanel: React.FC<{
     const previousTurnRecord = turnRecordsBefore[turnRecordsBefore.length - 1] ?? null;
     const recentTurnsBlock = buildAoiRecentTurnsPromptBlock(turnRecordsBefore);
     const latestTurnHasAttachments = Boolean(latestUserTurn?.attachments?.length);
-    const classifierCfg = resolveTurnClassifierConfig(cfg, dialogCfg);
+    const classifierCfg = resolveTurnClassifierConfig(
+      cfg,
+      dialogCfg,
+      classifierLlmConfigRef.current,
+    );
     const turnUnderstandingEnabled =
       conversationPreferencesRef.current?.turnUnderstandingMode !== 'off' &&
       classifierCfg !== null &&
@@ -13195,6 +13194,7 @@ const ChatPanel: React.FC<{
         <SettingsModal
           config={config}
           dialogConfig={dialogLlmConfig}
+          classifierConfig={classifierLlmConfig}
           idaPeConfig={idaPeConfig}
           kiraConfig={kiraConfig}
           userProfile={userProfile}
@@ -13307,6 +13307,7 @@ const ChatPanel: React.FC<{
             c,
             igc,
             dcfg,
+            ccfg,
             nextIdaPeConfig,
             nextKiraConfig,
             nextUserProfile,
@@ -13318,6 +13319,11 @@ const ChatPanel: React.FC<{
           ) => {
             setConfig(c);
             setDialogLlmConfig(dcfg);
+            setClassifierLlmConfig(ccfg);
+            classifierLlmConfigRef.current = ccfg;
+            void saveClassifierLlmConfig(ccfg).catch((error) => {
+              console.warn('[ChatPanel] Failed to save classifier model config', error);
+            });
             setIdaPeConfig(nextIdaPeConfig);
             setKiraConfig(nextKiraConfig);
             setUserProfile(nextUserProfile);
@@ -13926,6 +13932,7 @@ const AoiStrategicOutputsSection: React.FC<{
 const SettingsModal: React.FC<{
   config: LLMConfig | null;
   dialogConfig: DialogLlmConfig | null;
+  classifierConfig: ClassifierLlmConfig | null;
   idaPeConfig: IdaPeConfig | null;
   kiraConfig: KiraConfig | null;
   userProfile: UserProfileConfig | null;
@@ -14049,6 +14056,7 @@ const SettingsModal: React.FC<{
     _config: LLMConfig,
     _igConfig: ImageGenConfig | null,
     _dialogConfig: DialogLlmConfig | null,
+    _classifierConfig: ClassifierLlmConfig | null,
     _idaPeConfig: IdaPeConfig | null,
     _kiraConfig: KiraConfig | null,
     _userProfile: UserProfileConfig | null,
@@ -14062,6 +14070,7 @@ const SettingsModal: React.FC<{
 }> = ({
   config,
   dialogConfig,
+  classifierConfig,
   idaPeConfig,
   kiraConfig,
   userProfile,
@@ -14348,6 +14357,21 @@ const SettingsModal: React.FC<{
   );
   const [dialogManualModelMode, setDialogManualModelMode] = useState(false);
   const [dialogModelSearch, setDialogModelSearch] = useState('');
+  // Turn classifier model: an API provider with its own key, or nothing (the
+  // classifier then follows the main model). CLI providers are not offered.
+  const [classifierEnabled, setClassifierEnabled] = useState(
+    Boolean(classifierConfig?.model?.trim() && classifierConfig?.baseUrl?.trim()),
+  );
+  const [classifierProvider, setClassifierProvider] = useState<LLMProvider>(
+    classifierConfig?.provider || 'openrouter',
+  );
+  const [classifierApiKey, setClassifierApiKey] = useState(classifierConfig?.apiKey || '');
+  const [classifierBaseUrl, setClassifierBaseUrl] = useState(
+    classifierConfig?.baseUrl || getDefaultProviderConfig('openrouter').baseUrl,
+  );
+  const [classifierModel, setClassifierModel] = useState(classifierConfig?.model || '');
+  const [classifierManualModelMode, setClassifierManualModelMode] = useState(false);
+  const [classifierModelSearch, setClassifierModelSearch] = useState('');
   const [idaPeMode, setIdaPeMode] = useState<'prescan-only' | 'mcp-http'>(
     idaPeConfig?.mode || 'prescan-only',
   );
@@ -15269,6 +15293,14 @@ const SettingsModal: React.FC<{
     setDialogManualModelMode(false);
   };
 
+  const handleClassifierProviderChange = (p: LLMProvider) => {
+    setClassifierProvider(p);
+    const defaults = getDefaultProviderConfig(p);
+    setClassifierBaseUrl(defaults.baseUrl);
+    setClassifierModel(defaults.model);
+    setClassifierManualModelMode(false);
+  };
+
   const updateKiraWorker = (id: string, patch: Partial<KiraRoleDraft>) => {
     setKiraWorkers((prev) =>
       prev.map((worker) => (worker.id === id ? { ...worker, ...patch } : worker)),
@@ -15353,6 +15385,29 @@ const SettingsModal: React.FC<{
   );
   const isPresetDialogModel = dialogModelOptions.includes(dialogModel);
   const showDialogDropdown = !dialogManualModelMode && dialogModelOptions.length > 0;
+  const classifierModelOptions = getProviderModelOptions(classifierProvider, runtimeModels);
+  const classifierModelSearchShown = classifierModelOptions.length >= MODEL_SEARCH_MIN_OPTIONS;
+  const visibleClassifierModelOptions = useMemo(
+    () =>
+      filterModelIds(
+        classifierModelOptions,
+        classifierModelSearchShown ? classifierModelSearch : '',
+        {
+          labelOf: (id) => formatModelLabel(classifierProvider, id),
+          keep: classifierModel,
+        },
+      ),
+    [
+      classifierModelOptions,
+      classifierModelSearchShown,
+      classifierModelSearch,
+      formatModelLabel,
+      classifierProvider,
+      classifierModel,
+    ],
+  );
+  const isPresetClassifierModel = classifierModelOptions.includes(classifierModel);
+  const showClassifierDropdown = !classifierManualModelMode && classifierModelOptions.length > 0;
   const ttsLastWarmLabel = ttsStatusSnapshot.lastWarmAt
     ? new Date(ttsStatusSnapshot.lastWarmAt).toLocaleTimeString()
     : 'Not yet';
@@ -16675,6 +16730,169 @@ const SettingsModal: React.FC<{
                         />
                       </div>
                     ) : null}
+                  </>
+                )}
+              </div>
+
+              <div className={styles.settingsSectionCard} data-testid="classifier-model-card">
+                <div className={styles.settingsSectionTitle}>Turn Classifier Model</div>
+                <div className={styles.field}>
+                  <label className={styles.label}>
+                    Read each turn with a different model than the main one
+                  </label>
+                  <button
+                    type="button"
+                    className={classifierEnabled ? styles.saveBtn : styles.cancelBtn}
+                    onClick={() => setClassifierEnabled((prev) => !prev)}
+                    data-testid="classifier-model-toggle"
+                  >
+                    {classifierEnabled ? 'Enabled' : 'Disabled'}
+                  </button>
+                  <span className={styles.modelHint}>
+                    The turn classifier decides the route, the tool families, and what an earlier
+                    turn is being referred to. Off, it follows the main model. Thinking is always
+                    off for this call, so a small fast model is the right fit.
+                  </span>
+                </div>
+
+                {classifierEnabled && (
+                  <>
+                    <div className={styles.field}>
+                      <label className={styles.label}>Provider</label>
+                      <select
+                        className={styles.select}
+                        value={classifierProvider}
+                        onChange={(e) =>
+                          handleClassifierProviderChange(e.target.value as LLMProvider)
+                        }
+                        data-testid="classifier-provider-select"
+                      >
+                        {MODEL_PROVIDER_OPTIONS.filter(
+                          (option) =>
+                            !isLoginCliProvider(option.value) && !isCodexAuthProvider(option.value),
+                        ).map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className={styles.field}>
+                      <label className={styles.label}>API Key</label>
+                      <input
+                        className={styles.fieldInput}
+                        type="password"
+                        value={classifierApiKey}
+                        onChange={(e) => setClassifierApiKey(e.target.value)}
+                        placeholder={getProviderApiKeyPlaceholder(
+                          classifierProvider,
+                          'Required unless the provider is the main model\u2019s',
+                        )}
+                        data-testid="classifier-api-key"
+                      />
+                      <span className={styles.modelHint}>
+                        A different provider needs its own key here; without one the classifier
+                        falls back to the main model.
+                      </span>
+                    </div>
+
+                    <div className={styles.field}>
+                      <label className={styles.label}>Base URL</label>
+                      <input
+                        className={styles.fieldInput}
+                        value={classifierBaseUrl}
+                        onChange={(e) => setClassifierBaseUrl(e.target.value)}
+                      />
+                    </div>
+
+                    <div className={styles.field}>
+                      <label className={styles.label}>Model</label>
+                      {showClassifierDropdown && classifierModelSearchShown ? (
+                        <input
+                          type="search"
+                          className={`${styles.fieldInput} ${styles.modelSearchInput}`}
+                          value={classifierModelSearch}
+                          onChange={(e) => setClassifierModelSearch(e.target.value)}
+                          placeholder={`Search ${classifierModelOptions.length} models`}
+                        />
+                      ) : null}
+                      <div className={styles.modelSelectorWrapper}>
+                        {showClassifierDropdown ? (
+                          <>
+                            <select
+                              className={styles.select}
+                              value={classifierModel}
+                              onChange={(e) => {
+                                setClassifierModel(e.target.value);
+                                setClassifierManualModelMode(false);
+                              }}
+                              data-testid="classifier-model-select"
+                            >
+                              {!classifierModel.trim() ? (
+                                <option value="">Select a model</option>
+                              ) : null}
+                              {classifierModel.trim() && !isPresetClassifierModel ? (
+                                <option value={classifierModel}>{classifierModel} (custom)</option>
+                              ) : null}
+                              {visibleClassifierModelOptions.map((m) => (
+                                <option key={m} value={m}>
+                                  {formatModelLabel(classifierProvider, m)}
+                                </option>
+                              ))}
+                            </select>
+                            <button
+                              type="button"
+                              onClick={() => setClassifierManualModelMode(true)}
+                              className={styles.manualToggleBtn}
+                              title="Enter custom model name"
+                            >
+                              <Pencil size={14} />
+                            </button>
+                            {classifierProvider === 'openrouter' ? (
+                              <button
+                                type="button"
+                                onClick={() => void refreshOpenRouterModels()}
+                                className={styles.manualToggleBtn}
+                                title="Refresh OpenRouter models"
+                                disabled={openRouterModelsStatus === 'loading'}
+                              >
+                                <RotateCcw size={14} />
+                              </button>
+                            ) : null}
+                          </>
+                        ) : (
+                          <>
+                            <input
+                              className={styles.fieldInput}
+                              value={classifierModel}
+                              onChange={(e) => setClassifierModel(e.target.value)}
+                              placeholder="e.g. qwen/qwen3.7-flash"
+                              data-testid="classifier-model-input"
+                            />
+                            {classifierModelOptions.length > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => setClassifierManualModelMode(false)}
+                                className={styles.manualToggleBtn}
+                                title="Back to model list"
+                              >
+                                <List size={14} />
+                              </button>
+                            )}
+                          </>
+                        )}
+                      </div>
+                      {classifierProvider === 'openrouter' ? (
+                        <span className={styles.modelHint}>{openRouterStatusHint}</span>
+                      ) : null}
+                      <span className={styles.modelHint}>
+                        Measured 2026-09-11 on the 176-case corpus with thinking off:
+                        qwen/qwen3.7-flash routed 93% of turns correctly with one miss; DeepSeek
+                        flash read kind and family better but under-routed eleven turns on medium
+                        confidence.
+                      </span>
+                    </div>
                   </>
                 )}
               </div>
@@ -20836,6 +21054,15 @@ const SettingsModal: React.FC<{
                         : {}),
                     }
                   : null;
+              const classifierCfg: ClassifierLlmConfig | null =
+                classifierEnabled && classifierModel.trim() && classifierBaseUrl.trim()
+                  ? {
+                      provider: classifierProvider,
+                      model: classifierModel.trim(),
+                      baseUrl: classifierBaseUrl.trim(),
+                      ...(classifierApiKey.trim() ? { apiKey: classifierApiKey.trim() } : {}),
+                    }
+                  : null;
               const nextIdaPeConfig: IdaPeConfig | null = {
                 mode: idaPeMode,
                 ...(idaPeBackendUrl.trim() ? { backendUrl: idaPeBackendUrl.trim() } : {}),
@@ -20878,6 +21105,7 @@ const SettingsModal: React.FC<{
                 llmCfg,
                 igCfg,
                 dialogCfg,
+                classifierCfg,
                 nextIdaPeConfig,
                 nextKiraConfig,
                 nextUserProfile,

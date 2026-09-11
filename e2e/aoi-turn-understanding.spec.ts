@@ -44,6 +44,11 @@ const REFERENCED_PATH = 'src/lib/aoiRunLedger.ts';
 interface Capture {
   classifierCalls: number;
   classifierPrompts: string[];
+  // Where each classifier call was sent (x-llm-target-url) and which model it
+  // asked for, so a classifier override can be told apart from the main model.
+  classifierTargets: string[];
+  classifierModels: string[];
+  conversationModels: string[];
   conversationCalls: Array<{ toolNames: string[]; systemText: string }>;
   turnRecordGets: number;
   ledgerPosts: Array<Record<string, unknown>>;
@@ -130,6 +135,9 @@ async function setup(
     // and its write-back swallowed, so the shared e2e home never learns these
     // plays and the test does not depend on what other specs played.
     tasteState?: Record<string, unknown>;
+    // A classifier model override, served from /api/llm-config like the rest of
+    // the persisted config.
+    classifierLlm?: Record<string, unknown>;
     youtubeResults?: Array<Record<string, unknown>>;
     conversation: (call: number, toolNames: string[]) => unknown;
   },
@@ -198,12 +206,15 @@ async function setup(
   });
   await page.route('**/api/llm-proxy', async (route: Route) => {
     const body = route.request().postDataJSON() as {
+      model?: string;
       messages?: Array<{ role: string; content: string }>;
       tools?: Array<{ function: { name: string } }>;
     };
     const toolNames = (body?.tools ?? []).map((tool) => tool.function.name);
     if (toolNames.includes('understand_turn')) {
       capture.classifierCalls += 1;
+      capture.classifierTargets.push(route.request().headers()['x-llm-target-url'] ?? '');
+      capture.classifierModels.push(body.model ?? '');
       capture.classifierPrompts.push(
         (body.messages ?? []).map((message) => message.content).join('\n'),
       );
@@ -226,11 +237,12 @@ async function setup(
       return;
     }
     capture.conversationCalls.push({ toolNames, systemText });
+    capture.conversationModels.push(body.model ?? '');
     await route.fulfill({
       json: options.conversation(capture.conversationCalls.length, toolNames),
     });
   });
-  if (options.turnUnderstandingOff || options.tasteState) {
+  if (options.turnUnderstandingOff || options.tasteState || options.classifierLlm) {
     // The server config is the source of truth for conversation preferences (the
     // app overwrites the localStorage copy with it on load), so the switch has to
     // be in what /api/llm-config returns. The taste memory is merged from the same
@@ -265,6 +277,13 @@ async function setup(
       if (options.tasteState) {
         delete json.aoiMusicTaste;
       }
+      if (options.classifierLlm) {
+        json.classifierLlm = options.classifierLlm;
+      } else {
+        // Whatever an earlier spec or a real session left in the shared home
+        // must not decide where this spec's classifier calls go.
+        delete json.classifierLlm;
+      }
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -284,6 +303,9 @@ function emptyCapture(): Capture {
   return {
     classifierCalls: 0,
     classifierPrompts: [],
+    classifierTargets: [],
+    classifierModels: [],
+    conversationModels: [],
     conversationCalls: [],
     ledgerPosts: [],
     turnRecordPosts: [],
@@ -378,6 +400,45 @@ test.describe('turn understanding', () => {
       outcome: 'delivered',
     });
     expect(turns[1].families as string[]).toContain('file');
+  });
+
+  test('the classifier runs on its own configured model while the conversation stays on the main one', async ({
+    page,
+  }) => {
+    const capture = emptyCapture();
+    await setup(page, capture, {
+      withPriorRecords: true,
+      classifierLlm: {
+        provider: 'openrouter',
+        apiKey: 'sk-classifier',
+        baseUrl: 'https://mock-classifier.test/api/v1',
+        model: 'classifier/reader',
+      },
+      classifierAnswer: {
+        kind: 'action_request',
+        families: ['file'],
+        refers_to_turn: 1,
+        referent: REFERENCED_PATH,
+        confidence: 'high',
+      },
+      conversation: () => respondChoice('다시 읽었어.'),
+    });
+    await page.goto('/');
+    await waitForTurnRecords(page, capture);
+    await send(page, '그거 다시 읽어줘');
+
+    await expect(page.getByTestId('chat-messages')).toContainText('다시 읽었어', {
+      timeout: 30_000,
+    });
+    // One classifier call, addressed to the override's endpoint and model.
+    expect(capture.classifierCalls).toBe(1);
+    expect(capture.classifierTargets[0]).toMatch(/^https:\/\/mock-classifier\.test\/api\/v1\//);
+    expect(capture.classifierModels[0]).toBe('classifier/reader');
+    // The conversation itself still ran on the main model, on the main route
+    // the classifier pulled it to.
+    expect(capture.conversationCalls).toHaveLength(1);
+    expect(capture.conversationModels[0]).toBe('gpt-4');
+    expect(capture.conversationCalls[0].toolNames).toContain('ide_read_file');
   });
 
   test('a dialog-route model asks for capabilities and the turn is re-run on main with them', async ({

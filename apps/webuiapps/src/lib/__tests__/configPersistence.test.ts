@@ -6,8 +6,11 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
+  KNOWN_CONFIG_KEYS,
   loadPersistedConfig,
   loadConversationPreferencesSync,
+  resetPersistedConfigVersion,
+  saveClassifierLlmConfig,
   saveConversationPreferences,
   savePersistedConfig,
   type PersistedConfig,
@@ -348,5 +351,72 @@ describe('conversation preference helpers', () => {
       JSON.stringify({ turnUnderstandingMode: 'sometimes' }),
     );
     expect(loadConversationPreferencesSync()?.turnUnderstandingMode).toBe('on');
+  });
+});
+
+describe('saveClassifierLlmConfig', () => {
+  const existing = {
+    llm: {
+      provider: 'deepseek',
+      apiKey: 'sk-d',
+      baseUrl: 'https://api.deepseek.com',
+      model: 'deepseek-v4-flash',
+    },
+    classifierLlm: {
+      provider: 'openrouter',
+      model: 'old/model',
+      baseUrl: 'https://openrouter.ai/api/v1',
+    },
+    conversationPreferences: { responseLanguageMode: 'match-user' },
+  };
+
+  function mockReadThenWrite() {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        headers: { get: () => '"v7"' },
+        json: async () => existing,
+      } as unknown as Response)
+      .mockResolvedValueOnce({ ok: true, headers: { get: () => '"v8"' } } as unknown as Response);
+    globalThis.fetch = mockFetch;
+    resetPersistedConfigVersion();
+    return mockFetch;
+  }
+
+  it('is a known persisted block', () => {
+    expect(KNOWN_CONFIG_KEYS).toContain('classifierLlm');
+  });
+
+  it('writes the override over the current file and keeps every other block', async () => {
+    const mockFetch = mockReadThenWrite();
+    await saveClassifierLlmConfig({
+      provider: 'openrouter',
+      apiKey: 'sk-or',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'qwen/qwen3.7-flash',
+    });
+    const write = mockFetch.mock.calls[1];
+    expect(write[1].method).toBe('POST');
+    expect(write[1].headers['If-Match']).toBe('"v7"');
+    const body = JSON.parse(write[1].body as string);
+    expect(body.classifierLlm).toEqual({
+      provider: 'openrouter',
+      apiKey: 'sk-or',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'qwen/qwen3.7-flash',
+    });
+    expect(body.llm).toEqual(existing.llm);
+    expect(body.conversationPreferences).toEqual(existing.conversationPreferences);
+  });
+
+  it('clears the block on null or an empty object', async () => {
+    for (const cleared of [null, {}]) {
+      const mockFetch = mockReadThenWrite();
+      await saveClassifierLlmConfig(cleared);
+      const body = JSON.parse(mockFetch.mock.calls[1][1].body as string);
+      expect(body.classifierLlm).toBeUndefined();
+      expect(body.llm).toEqual(existing.llm);
+    }
   });
 });

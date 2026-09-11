@@ -58,6 +58,12 @@ export interface OpenVscodeConfig {
 
 export interface DialogLlmConfig extends Partial<LLMConfig> {}
 
+// The model the turn-understanding classifier runs on when it should not
+// follow the main model. Blank fields inherit from the main config when the
+// provider matches, as with dialogLlm. Resolution and the reasons for it live
+// in aoiTurnClassifierConfig.ts.
+export interface ClassifierLlmConfig extends Partial<LLMConfig> {}
+
 export interface AppConfig {
   title?: string;
 }
@@ -296,6 +302,7 @@ export interface AoiMusicPersistedState {
 export interface PersistedConfig {
   llm?: LLMConfig;
   dialogLlm?: DialogLlmConfig;
+  classifierLlm?: ClassifierLlmConfig;
   imageGen?: ImageGenConfig;
   album?: AlbumConfig;
   kira?: KiraConfig;
@@ -324,6 +331,7 @@ const CONVERSATION_PREFERENCES_STORAGE_KEY = 'webuiapps-conversation-preferences
 export const KNOWN_CONFIG_KEYS = [
   'llm',
   'dialogLlm',
+  'classifierLlm',
   'imageGen',
   'album',
   'kira',
@@ -571,6 +579,25 @@ export async function saveAoiEmbeddingConfig(
  * other persisted field. An empty allow-list clears the block. The list is
  * normalized (deduped by id, host-validated lazily by consumers) on write.
  */
+/**
+ * Write or clear the classifier model override. Read-modify-write against the
+ * current file, so a settings save landing at the same time is not clobbered.
+ */
+export async function saveClassifierLlmConfig(config: ClassifierLlmConfig | null): Promise<void> {
+  await updatePersistedConfig(
+    (existing) => {
+      const next: PersistedConfig = { ...existing };
+      if (config && Object.keys(config).length > 0) {
+        next.classifierLlm = config;
+      } else {
+        delete next.classifierLlm;
+      }
+      return next;
+    },
+    { createIfMissing: true },
+  );
+}
+
 export async function saveAoiMcpConnectorsConfig(
   config: Partial<AoiMcpConnectorsConfig> | null,
 ): Promise<void> {

@@ -316,6 +316,47 @@ language and belongs to the classifier, and the parser keeps only the mechanics.
   the only maintenance it needs. It is the one place a new act has to be taught before its Hangul
   and Latin spellings match the same remembered play.
 
+### 3.8 The classifier model is its own setting (`aoiTurnClassifierConfig.ts`, 2026-09-11)
+
+The classifier used to follow the main model unconditionally (dialog model standing in for a CLI
+main model). Measuring DeepSeek flash through the official endpoint showed why that coupling is
+wrong: as a reader it beats qwen3.7-flash on every slot, as a router it loses, and the two are the
+same call.
+
+| classifier, thinking off, n=176 | qwen3.7-flash (OpenRouter) | deepseek-flash (official) | deepseek-flash, thinking on |
+| --- | --- | --- | --- |
+| Route accuracy / under-routed | 93.2-94.3% / 1 | 88.6% / 11 | 90.3% / 8 |
+| Kind / family accuracy | 95.5% / 90.9% | 98.9% / 96.6% | 97.7% / 94.9% |
+| References / music slots | 28/32 / 10/12 | 30/32 / 12/12 | 32/32 / 11/12 |
+| Confidence high / medium / low | 165 / 3 / 8 | 136 / 24 / 16 | 143 / 19 / 14 |
+| Latency p50 / p90 | 1.27 s / 1.93 s | 1.07 s / 1.45 s | 1.46 s / 2.38 s |
+
+Nine of DeepSeek's eleven under-routed turns are medium-confidence readings with the right kind
+and family ("delete the temp folder", "리서치 시작해", "일러스트 하나 만들어줘"); the route rule
+needs high. Letting medium pull to main would put it at about 93.7% with qwen unchanged. That rule
+change is not made here; it needs the over-routing side measured on gold-dialog mediums first.
+
+As a main model the picture inverts. On the real captured dialog-route body (12 Korean
+conversational turns) qwen answered with `respond_to_user` 0/6 times at 31-57 s p50 with thinking
+on; official DeepSeek flash 8/12 at 4.8 s. On the main-route body (54 tools, ~19.8k prompt tokens)
+both are poor (DeepSeek 2/12 on, 1/12 off), a prompt problem rather than a model one. DeepSeek
+thinks by default when no reasoning effort is sent, so the effort should be set explicitly.
+
+What shipped:
+
+- `classifierLlm` in the persisted config, a `Turn Classifier Model` card in Settings > Models
+  beside Dialog Model (API providers only; provider, key, endpoint, model). Blank fields inherit
+  from the main model when the provider matches, as dialogLlm does.
+- `resolveTurnClassifierConfig(main, dialog, classifier)`: the explicit override wins when it can
+  be called (endpoint, model, an API provider, and a key unless the provider is a local server);
+  otherwise the previous behaviour, main model or dialog fallback for a CLI main. A remote
+  override with no key is ignored rather than tried, because a classifier that 401s on every turn
+  is indistinguishable from one that is off.
+- Both call sites (the pre-playback read in `executeSend` and `runConversation`) resolve through
+  it; the live config is re-read on every send like the dialog config.
+- E2E: the classifier request is asserted to carry the override's endpoint and model while the
+  conversation request keeps the main model's.
+
 ## 4. What did not change, on purpose
 
 - `aoiIntentInference` (SA2) still infers what the user is doing at the desk from git, activity,
@@ -378,6 +419,9 @@ including the taste-resolved and artist-fallback plays.
   built.
 - Family-scoped tool narrowing (removing tools the regex would include) is deliberately off. It
   saves tokens and risks misses; revisit once the live numbers are in.
+- Medium-confidence readings do not pull a turn to main (section 3.8). With DeepSeek flash as the
+  classifier that is the whole routing gap; measure over-routing on gold-dialog mediums before
+  relaxing the rule.
 - The playback slots (section 3.7) are measured on the corpus (`--tag music`) but not yet on real
   turns; the direct-action turn record carries `play_music(play_remembered)` /
   `play_music(play_artist_fallback)` so the ledger panel can show which memory path ran.
