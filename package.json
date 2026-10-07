@@ -26,8 +26,9 @@
     "prepare": "husky install",
     "pretty": "prettier --write ./{apps,packages}/**/*.{ts,tsx,js,jsx,md,json,less,scss,css,html} --no-error-on-unmatched-pattern",
     "lint": "eslint ./{apps,packages}/**/*.{ts,tsx,js,jsx} --fix --color --quiet --no-error-on-unmatched-pattern",
+    "lint:ci": "eslint ./{apps,packages}/**/*.{ts,tsx,js,jsx} --color --quiet --no-error-on-unmatched-pattern",
     "build": "turbo run build",
-    "dev": "turbo run dev",
+    "dev": "turbo run dev --env-mode=loose",
     "clean": "turbo run clean",
     "release": "echo 'Configure your own release pipeline'",
     "test:e2e": "playwright test",
@@ -118,8 +119,8 @@
   },
   "lint-staged": {
     "*.{ts,tsx}": [
-      "pnpm run pretty",
-      "pnpm run lint"
+      "prettier --write",
+      "eslint --fix --quiet"
     ]
   }
 }

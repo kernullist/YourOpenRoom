@@ -37,14 +37,50 @@ interface Props {
 
 type ResizeHandle = 'top' | 'left' | 'top-right' | 'bottom-right';
 
+/**
+ * Contains a crash to its own window. There was no error boundary anywhere, so
+ * one app throwing during render (e.g. on an agent-written file it did not
+ * expect) unmounted the entire React tree -- shell, chat and every other window.
+ */
+export class WindowErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { error: Error | null }
+> {
+  state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: Error): { error: Error } {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo): void {
+    console.error('[AppWindow] App crashed while rendering', error, info.componentStack);
+  }
+
+  render(): React.ReactNode {
+    if (this.state.error) {
+      return (
+        <div className={styles.loading} role="alert" data-testid="app-window-error">
+          <p>This app hit an error and was stopped: {this.state.error.message}</p>
+          <button type="button" onClick={() => this.setState({ error: null })}>
+            Reload app
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 const WindowContent = memo(({ appId }: { appId: number }) => {
   const AppComp = APP_COMPONENTS[appId];
   if (!AppComp) return null;
 
   return (
-    <Suspense fallback={<div className={styles.loading}>Loading...</div>}>
-      <AppComp />
-    </Suspense>
+    <WindowErrorBoundary>
+      <Suspense fallback={<div className={styles.loading}>Loading...</div>}>
+        <AppComp />
+      </Suspense>
+    </WindowErrorBoundary>
   );
 });
 

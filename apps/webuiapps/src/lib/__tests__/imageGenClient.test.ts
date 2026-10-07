@@ -126,3 +126,13 @@ describe('saveImageGenConfig()', () => {
     expect(JSON.parse(localStorage.getItem(CONFIG_KEY)!)).toEqual(MOCK_IG_CONFIG);
   });
 });
+
+describe('saveImageGenConfig(null)', () => {
+  it('removes a cleared config so a removed key does not come back', async () => {
+    const { saveImageGenConfig, loadImageGenConfigSync } = await import('../imageGenClient');
+    saveImageGenConfig({ provider: 'openai', apiKey: 'sk-old', model: 'x', baseUrl: '' } as never);
+    expect(loadImageGenConfigSync()).not.toBeNull();
+    saveImageGenConfig(null);
+    expect(loadImageGenConfigSync()).toBeNull();
+  });
+});

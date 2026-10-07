@@ -2512,6 +2512,13 @@ export function recordAoiProactiveBriefDeliveryFieldEvents(
   return events;
 }
 
+const DECIDED_PROACTIVE_BRIEF_STATUSES: ReadonlySet<string> = new Set([
+  'accepted',
+  'dismissed',
+  'archived',
+  'blocked',
+]);
+
 export function upsertAoiProactiveBriefCandidate(
   sessionsDir: string,
   value: unknown,
@@ -2530,10 +2537,18 @@ export function upsertAoiProactiveBriefCandidate(
   const existingCandidate = existingEntry
     ? loadCandidateById(sessionsDir, candidate.sessionPath, existingEntry.id, now)
     : null;
+  // A re-scout of the same brief refreshes its content but must not undo what
+  // the user decided about it: the scout always submits status 'candidate', and
+  // overwriting a dismissed/archived/blocked (or accepted) brief brought it back.
+  const decidedStatus =
+    existingCandidate && DECIDED_PROACTIVE_BRIEF_STATUSES.has(existingCandidate.status)
+      ? existingCandidate.status
+      : null;
   const storedCandidate: AoiProactiveBriefCandidate = {
     ...candidate,
     id: existingEntry?.id ?? candidate.id,
     dedupeKey,
+    ...(decidedStatus ? { status: decidedStatus } : {}),
     createdAt: existingCandidate?.createdAt ?? existingEntry?.createdAt ?? candidate.createdAt,
     updatedAt: now,
   };

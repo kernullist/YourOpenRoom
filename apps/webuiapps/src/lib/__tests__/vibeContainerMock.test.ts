@@ -208,6 +208,55 @@ describe('dispatchAgentAction – event-driven listener wait', () => {
     expect(received).toEqual(['SELECT_DATE', 'CREATE_ENTRY']);
   });
 
+  it('overlapping dispatches to two apps both get their own answers', async () => {
+    // Each dispatch used to wrap sendAgentMessage and restore its own original
+    // when done. With two in flight the first to finish unhooked the second,
+    // which then reported a timeout although its app had answered.
+    const BROWSER_APP_ID = 17;
+    const manager = initVibeApp();
+    for (const [appId, delayMs] of [
+      [DIARY_APP_ID, 50],
+      [BROWSER_APP_ID, 300],
+    ] as const) {
+      manager.onAgentMessage((payload: { content: string }) => {
+        const action = JSON.parse(payload.content);
+        if (action.app_id !== appId || action.action_type === 'OPEN_APP') return;
+        setTimeout(
+          () =>
+            manager.sendAgentMessage({
+              id: 0,
+              event_type: 1,
+              app_action: action,
+              action_result: `done:${appId}`,
+            } as never),
+          delayMs,
+        );
+      });
+    }
+    for (const appId of [DIARY_APP_ID, BROWSER_APP_ID]) {
+      await dispatchAgentAction({
+        app_id: 1,
+        action_type: 'OPEN_APP',
+        params: { app_id: String(appId) },
+      });
+    }
+
+    const fast = dispatchAgentAction({
+      app_id: DIARY_APP_ID,
+      action_type: 'SELECT_DATE',
+      params: {},
+    });
+    const slow = dispatchAgentAction({
+      app_id: BROWSER_APP_ID,
+      action_type: 'REFRESH',
+      params: {},
+    });
+    await vi.advanceTimersByTimeAsync(400);
+
+    expect(await fast).toBe(`done:${DIARY_APP_ID}`);
+    expect(await slow).toBe(`done:${BROWSER_APP_ID}`);
+  });
+
   it('auto-opens window for non-OS action when window is not open', async () => {
     // Skip OPEN_APP — dispatch directly to an app whose window is not open
     const manager = initVibeApp();

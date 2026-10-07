@@ -49,6 +49,26 @@ export function getAoiHostBridgeConsentLink(
   return AOI_HOST_BRIDGE_CONSENT_LINKS.find((link) => link.capabilityKey === capabilityKey) ?? null;
 }
 
+/**
+ * Should the settings panel grant session consent for this source on its own?
+ *
+ * Only when nobody has decided yet: not enabled, and no consent reason or review
+ * time on record. The panel used to re-enable every linked source on each open,
+ * which undid an operator's explicit Disable/Clear for the session and stamped a
+ * review time nobody performed.
+ */
+export function needsAoiHostBridgeConsentRepair(
+  source: { enabled?: boolean; consentReason?: string; lastReviewedAt?: number } | undefined,
+): boolean {
+  if (!source) {
+    return true;
+  }
+  if (source.enabled === true) {
+    return false;
+  }
+  return !source.consentReason && !(typeof source.lastReviewedAt === 'number');
+}
+
 /** Patch for updateAoiEnvironmentSource when linking kill-switch enable/disable. */
 export function buildAoiHostBridgeLinkedSourcePatch(
   link: AoiHostBridgeConsentLink,

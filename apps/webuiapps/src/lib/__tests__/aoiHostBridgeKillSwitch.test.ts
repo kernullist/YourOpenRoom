@@ -3,7 +3,9 @@ import * as os from 'os';
 import { join } from 'path';
 import { afterAll, describe, expect, it } from 'vitest';
 
+import { AOI_DESKTOP_CAPTURE_CAPABILITY } from '../aoiDesktopInput';
 import {
+  AOI_HOST_BRIDGE_OPT_OUT_CAPABILITIES,
   clearAoiHostBridgePanic,
   DEFAULT_AOI_HOST_BRIDGE_KILL_SWITCH_STATE,
   engageAoiHostBridgePanic,
@@ -81,6 +83,17 @@ describe('kill-switch state transitions', () => {
   it('rejects malformed keys', () => {
     const state = setAoiHostBridgeCapability(null, 'BadKey!', true, 1000);
     expect(state.entries).toEqual({});
+  });
+
+  it('records the off decision for an opt-out key instead of forgetting it', () => {
+    // Absent means "follow the master switch" for an opt-out; deleting the key
+    // on disable would make switching screenshots off impossible to store.
+    const off = setAoiHostBridgeCapability(null, AOI_DESKTOP_CAPTURE_CAPABILITY, false, 1000);
+    expect(off.entries[AOI_DESKTOP_CAPTURE_CAPABILITY]).toBe(false);
+    const persisted = normalizeAoiHostBridgeKillSwitchState(JSON.parse(JSON.stringify(off)));
+    expect(persisted.entries[AOI_DESKTOP_CAPTURE_CAPABILITY]).toBe(false);
+    // The literal in the kill-switch module is the capability the route checks.
+    expect(AOI_HOST_BRIDGE_OPT_OUT_CAPABILITIES).toContain(AOI_DESKTOP_CAPTURE_CAPABILITY);
   });
 
   it('caps the number of enabled entries', () => {

@@ -401,6 +401,12 @@ const BrowserReaderPage: React.FC = () => {
     },
     [deleteFromCloud, history, saveFile, syncToCloud],
   );
+  // The fetch effect below calls the LATEST persistHistoryEntry through this ref.
+  // Depending on it directly looped: each successful load set history, which
+  // recreated this callback, which re-ran the effect and fetched the page again --
+  // one proxy request and one history write per cycle, forever.
+  const persistHistoryEntryRef = useRef(persistHistoryEntry);
+  persistHistoryEntryRef.current = persistHistoryEntry;
 
   const navigateTo = useCallback(
     async (rawUrl: string, reason: 'manual' | 'bookmark' | 'agent' | 'history' = 'manual') => {
@@ -512,7 +518,7 @@ const BrowserReaderPage: React.FC = () => {
         if (cancelled) return;
         setErrorText(null);
         setPageSnapshot(snapshot);
-        await persistHistoryEntry(snapshot.finalUrl, snapshot.title);
+        await persistHistoryEntryRef.current(snapshot.finalUrl, snapshot.title);
       })
       .catch((error) => {
         if (cancelled) return;
@@ -526,7 +532,7 @@ const BrowserReaderPage: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [currentUrl, persistHistoryEntry]);
+  }, [currentUrl]);
 
   useEffect(() => {
     if (!flashText) return;
@@ -743,6 +749,7 @@ const BrowserReaderPage: React.FC = () => {
               value={inputUrl}
               onChange={(e) => setInputUrl(e.target.value)}
               placeholder={t('placeholder')}
+              data-testid="browser-address-input"
             />
             <button type="submit">{t('go')}</button>
           </form>

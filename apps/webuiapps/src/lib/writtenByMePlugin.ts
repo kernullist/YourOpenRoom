@@ -7,6 +7,7 @@ import { basename, extname, join, resolve, sep } from 'path';
 import { Readable } from 'stream';
 import { callAoiMainTextModel, getAoiLlmStatus, loadAoiMainLlmConfig } from './dewdropCanvasPlugin';
 import type { LLMConfig } from './llmModels';
+import { serverSelfOrigin } from './serverSelfOrigin';
 
 const STATIC_PREFIX = '/written-by-me';
 const API_PREFIX = '/api/written-by-me';
@@ -208,17 +209,6 @@ function isPathInsideRoot(root: string, target: string): boolean {
 
 function getString(value: unknown): string {
   return typeof value === 'string' ? value : '';
-}
-
-function getHeaderString(value: string | string[] | undefined): string {
-  if (Array.isArray(value)) return value[0] || '';
-  return value || '';
-}
-
-function getRequestOrigin(req: IncomingMessage): string {
-  const forwardedProto = getHeaderString(req.headers['x-forwarded-proto']).trim();
-  const host = getHeaderString(req.headers.host).trim() || '127.0.0.1:3000';
-  return `${forwardedProto || 'http'}://${host}`;
 }
 
 function getStaticRoot(sourceRoot: string): string {
@@ -863,7 +853,7 @@ export function writtenByMePlugin(options: PluginOptions = {}): Plugin {
     const { skillMd, strategy, batches } = await analyzeWithBatching(
       getModules(),
       config,
-      getRequestOrigin(req),
+      serverSelfOrigin(req),
       texts,
       getString(body.preferredLanguage).trim() || 'auto',
       logEvent,
@@ -1052,7 +1042,7 @@ Return ONLY the translated text with no additional commentary.`;
         logEvent('info', `Translation started (${text.length} chars)`);
         const translated = await callAoiMainTextModel(
           config,
-          getRequestOrigin(req),
+          serverSelfOrigin(req),
           prompt,
           Math.min(MAX_OUTPUT_TOKENS, 4096),
         );
@@ -1184,7 +1174,7 @@ Return ONLY the translated text with no additional commentary.`;
         logEvent('info', `Convert started (${combined.length} chars, target=${targetLanguage})`);
         const converted = await callAoiMainTextModel(
           config,
-          getRequestOrigin(req),
+          serverSelfOrigin(req),
           prompt,
           Math.min(MAX_OUTPUT_TOKENS, 4096),
         );

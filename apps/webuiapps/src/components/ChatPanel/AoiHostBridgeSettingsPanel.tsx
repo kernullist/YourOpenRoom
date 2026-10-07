@@ -37,9 +37,10 @@ import {
   AOI_HOST_BRIDGE_CONSENT_LINKS,
   buildAoiHostBridgeLinkedSourcePatch,
   getAoiHostBridgeConsentLink,
+  needsAoiHostBridgeConsentRepair,
 } from '@/lib/aoiHostBridgeConsent';
 import { listAoiHostReadRootPresets, listAoiHostSpawnPresets } from '@/lib/aoiHostBridgePresets';
-import { updateAoiEnvironmentSource } from '@/lib/aoiAutonomyClient';
+import { fetchAoiEnvironmentSources, updateAoiEnvironmentSource } from '@/lib/aoiAutonomyClient';
 
 import styles from './index.module.scss';
 
@@ -253,9 +254,24 @@ export const AoiHostBridgeSettingsPanel: React.FC<AoiHostBridgeSettingsPanelProp
       const enabledKeys = new Set(nextStatus.killSwitch.enabledCapabilities);
       const path = sessionPath.trim();
       if (path && !nextStatus.killSwitch.globalPanic) {
+        // Read the session's sources first: only a source nobody has decided on is
+        // repaired. Re-enabling an explicitly disabled one would override consent.
+        let sources:
+          | { id: string; enabled?: boolean; consentReason?: string; lastReviewedAt?: number }[]
+          | null = null;
+        try {
+          sources = (await fetchAoiEnvironmentSources(path)).registry.sources ?? [];
+        } catch {
+          // Without the registry nothing can be judged safe to grant; skip repair.
+          sources = null;
+        }
         const repaired: string[] = [];
-        for (const link of AOI_HOST_BRIDGE_CONSENT_LINKS) {
+        for (const link of sources ? AOI_HOST_BRIDGE_CONSENT_LINKS : []) {
           if (!enabledKeys.has(link.capabilityKey)) {
+            continue;
+          }
+          const current = sources?.find((source) => source.id === link.sourceId);
+          if (!needsAoiHostBridgeConsentRepair(current)) {
             continue;
           }
           try {

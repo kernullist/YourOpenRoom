@@ -51,4 +51,35 @@ describe('validateWorkspaceCommand()', () => {
       error: 'node commands are limited to version checks in safe mode.',
     });
   });
+
+  it('rejects flags that write or read outside the workspace', () => {
+    // These ran with no approval: allowWorkspaceCommands defaults to true.
+    for (const command of [
+      'git diff --output=C:/Users/u/.gitconfig',
+      'git log --OUTPUT ../../x',
+      'git show HEAD --output=x',
+      'git diff --no-index C:/Windows/win.ini README.md',
+      'pnpm exec vite build --outDir C:/Users/u/Documents --emptyOutDir',
+      'pnpm exec vite build --emptyOutDir=true',
+      'pnpm exec eslint . -o ../report.txt',
+      'pnpm exec eslint . --output-file=../report.txt',
+      'pnpm exec vitest run --outputFile=../x.json',
+    ]) {
+      expect(validateWorkspaceCommand(command).ok, command).toBe(false);
+    }
+  });
+
+  it('allows git branch only for listing', () => {
+    expect(validateWorkspaceCommand('git branch').ok).toBe(true);
+    expect(validateWorkspaceCommand('git branch -a -v').ok).toBe(true);
+    expect(validateWorkspaceCommand('git branch --show-current').ok).toBe(true);
+    for (const command of [
+      'git branch -D main',
+      'git branch -m old new',
+      'git branch -f main HEAD~1',
+      'git branch new-feature',
+    ]) {
+      expect(validateWorkspaceCommand(command).ok, command).toBe(false);
+    }
+  });
 });

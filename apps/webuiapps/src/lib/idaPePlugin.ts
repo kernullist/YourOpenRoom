@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import * as fs from 'fs';
 import type { IncomingMessage, ServerResponse } from 'http';
 import * as os from 'os';
-import { dirname, join, resolve } from 'path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import type { Plugin } from 'vite';
 import { getOrCreateMcpHttpClient } from './idaMcpHttpClient';
 import type {
@@ -1137,6 +1137,19 @@ function buildAnalysisRecord(sampleId: string, parsed: ParsedPe): PeAnalysisReco
   };
 }
 
+// Real-path containment: resolves symlinks and junctions on both sides, so a
+// link inside the root cannot point the check at a file outside it.
+export function isRealPathInside(root: string, candidate: string): boolean {
+  try {
+    const realRoot = fs.realpathSync(root);
+    const realCandidate = fs.realpathSync(candidate);
+    const rel = relative(realRoot, realCandidate);
+    return rel !== '' && rel !== '..' && !rel.startsWith('..' + sep) && !isAbsolute(rel);
+  } catch {
+    return false;
+  }
+}
+
 function buildCachePath(cacheRoot: string, sha: string, fileName: string): string {
   return join(cacheRoot, sha, fileName);
 }
@@ -1839,6 +1852,24 @@ export function idaPePlugin(options: IdaPePluginOptions): Plugin {
     ? resolve(options.cacheRoot, 'ida-artifacts')
     : ANALYSIS_CACHE_ROOT;
 
+  // The headless backend opens samplePath with open_binary and returns its
+  // disassembly and decompilation, so it gets the same containment as
+  // /analyses. IDA Pro only reads the file to match it against the IDB that is
+  // already open, and a current-IDB sample lives wherever the user keeps it.
+  const refuseHeadlessSampleOutsideRoot = (
+    res: ServerResponse,
+    backend: Awaited<ReturnType<typeof getCompatibleMcpBackend>>,
+    samplePath: string,
+  ): boolean => {
+    if (backend?.kind === 'ida-pro-mcp' || isRealPathInside(sampleRoot, samplePath)) {
+      return false;
+    }
+    sendJson(res, 403, {
+      error: 'samplePath must be a sample uploaded through /api/ida-pe/samples.',
+    });
+    return true;
+  };
+
   return {
     name: 'ida-pe-plugin',
     configureServer(server) {
@@ -1901,6 +1932,14 @@ export function idaPePlugin(options: IdaPePluginOptions): Plugin {
           }
           if (!fs.existsSync(samplePath) || !fs.statSync(samplePath).isFile()) {
             sendJson(res, 404, { error: 'Sample file not found on disk' });
+            return;
+          }
+          // Only samples uploaded through /api/ida-pe/samples live here. Without
+          // the check this route read ANY file on disk and returned its strings.
+          if (!isRealPathInside(sampleRoot, samplePath)) {
+            sendJson(res, 403, {
+              error: 'samplePath must be a sample uploaded through /api/ida-pe/samples.',
+            });
             return;
           }
 
@@ -2009,6 +2048,9 @@ export function idaPePlugin(options: IdaPePluginOptions): Plugin {
           const limit = Number.parseInt(url.searchParams.get('limit') || '100', 10);
           const regex = (url.searchParams.get('regex') || '').trim();
           const backend = await getCompatibleMcpBackend(options.configFile);
+          if (refuseHeadlessSampleOutsideRoot(res, backend, samplePath)) {
+            return;
+          }
           const result =
             backend?.kind === 'ida-pro-mcp'
               ? await getIdaProFunctions(options.configFile, samplePath, {
@@ -2043,6 +2085,9 @@ export function idaPePlugin(options: IdaPePluginOptions): Plugin {
           }
 
           const backend = await getCompatibleMcpBackend(options.configFile);
+          if (refuseHeadlessSampleOutsideRoot(res, backend, samplePath)) {
+            return;
+          }
           const detail =
             backend?.kind === 'ida-pro-mcp'
               ? await getIdaProFunctionDetail(

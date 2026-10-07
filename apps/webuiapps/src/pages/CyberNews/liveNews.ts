@@ -126,6 +126,23 @@ export async function fetchLiveNews(limit = LIVE_NEWS_LIMIT): Promise<{
   };
 }
 
+/**
+ * The URL when it is http(s), otherwise ''. Feed items and agent-written article
+ * files supply sourceUrl, and React still renders a `javascript:` href -- one
+ * click on "Open original" would run it on this app's origin.
+ */
+export function safeExternalUrl(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim()) {
+    return '';
+  }
+  try {
+    const parsed = new URL(value.trim());
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.toString() : '';
+  } catch {
+    return '';
+  }
+}
+
 export function toLiveArticle(item: LiveNewsItem, fetchedAt: string): Article {
   return {
     id: buildLiveArticleId(item),
@@ -136,7 +153,7 @@ export function toLiveArticle(item: LiveNewsItem, fetchedAt: string): Article {
     imageUrl: item.imageUrl || '',
     publishedAt: formatIsoDate(item.publishedAt),
     sourceName: item.sourceName || extractSourceHost(item.url),
-    sourceUrl: item.url,
+    sourceUrl: safeExternalUrl(item.url),
     isLive: true,
     fetchedAt: formatIsoDate(fetchedAt),
   };

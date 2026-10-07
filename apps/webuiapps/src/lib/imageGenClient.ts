@@ -72,7 +72,16 @@ export function loadImageGenConfigSync(): ImageGenConfig | null {
   }
 }
 
-export function saveImageGenConfig(config: ImageGenConfig): void {
+/**
+ * Persist the image-generation config, or remove it when `null`. Saving was
+ * skipped for a cleared config, so the old key stayed in localStorage and the
+ * sync/async loaders brought a removed secret back on the next reload.
+ */
+export function saveImageGenConfig(config: ImageGenConfig | null): void {
+  if (!config) {
+    localStorage.removeItem(CONFIG_KEY);
+    return;
+  }
   localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
 }
 

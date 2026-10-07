@@ -197,7 +197,17 @@ export const useAgentActionListener = (
           manager.sendAgentMessage(responseEvent as any);
         };
 
-        const result = handlerRef.current(action);
+        // A handler that throws synchronously (bad param, JSON.parse) is an
+        // answer too. Inside the parse try below it was logged as a parse failure
+        // and never answered, so the agent waited 10-20 s for a "timeout".
+        let result: ReturnType<typeof handlerRef.current>;
+        try {
+          result = handlerRef.current(action);
+        } catch (err) {
+          console.error('[AgentAction] Handler error:', err);
+          sendResult(`error: ${err instanceof Error ? err.message : String(err)}`);
+          return;
+        }
         if (result instanceof Promise) {
           result.then(sendResult).catch((err) => {
             console.error('[AgentAction] Handler error:', err);

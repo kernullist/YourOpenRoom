@@ -49,7 +49,7 @@ useEffect(() => {
 **state.json** (optional): Stores temporary state (playback progress, drafts, preferences, etc.), used for session recovery and cross-device sync.
 - App should start normally when state.json does not exist (fall back to default state)
 - Agent can modify App runtime state by writing to state.json
-- When state.json is enabled, **`SYNC_STATE` Action must be implemented** (see `data-interaction.md` Section 2.6)
+- When state.json is enabled, **`SYNC_STATE` Action must be implemented** (see `data-interaction.md` Section 2.4)
 
 ---
 

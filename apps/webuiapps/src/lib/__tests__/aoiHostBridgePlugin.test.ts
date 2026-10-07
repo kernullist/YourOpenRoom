@@ -1709,6 +1709,53 @@ describe('kill preview -> approve -> execute (injected impls)', () => {
     expect(exec.status).toBe(200);
     expect(killedPid).toBe(4321);
   });
+
+  it('never kills the process serving the bridge or its parent, even when allowlisted', async () => {
+    // The kill policy has always supported a self-protection list; the routes
+    // never passed one, so allowlisting node.exe was enough to offer the
+    // daemon's own pid for termination.
+    const { home, sessionsDir, token } = makeDaemonHome();
+    saveAoiHostBridgeKillSwitchState(
+      home,
+      setAoiHostBridgeCapability(null, 'os_process_kill', true, 1500),
+    );
+    for (const pid of [process.pid, process.ppid]) {
+      const body = {
+        pid,
+        expectedImageName: 'node.exe',
+        killAllowlistImages: ['node.exe'],
+      };
+      const preview = await resolveAoiHostBridgeRoute({
+        method: 'POST',
+        route: '/kill/preview',
+        body,
+        token,
+        openroomHome: home,
+        sessionsDir,
+        now: 2000,
+      });
+      const shown = (preview.payload as { preview: { blockReasons: string[] } }).preview;
+      expect(shown.blockReasons).toContain('protected_pid');
+
+      let killCalls = 0;
+      const exec = await resolveAoiHostBridgeRoute({
+        method: 'POST',
+        route: '/kill/execute',
+        body,
+        token,
+        openroomHome: home,
+        sessionsDir,
+        now: 2100,
+        readProcessImpl: () => ({ imageName: 'node.exe' }),
+        killImpl: () => {
+          killCalls += 1;
+          return true;
+        },
+      });
+      expect(exec.status).not.toBe(200);
+      expect(killCalls).toBe(0);
+    }
+  });
 });
 
 describe('delete preview -> approve -> execute (injected recycle)', () => {
@@ -2548,6 +2595,50 @@ describe('desktop-input', () => {
     });
   });
 
+  it('lets an explicit os_desktop_capture=false stop screenshots but nothing else', async () => {
+    // The operator who wants Computer-Use without pictures turns capture off on
+    // its own. That explicit false has to win over the master switch, while an
+    // untouched capture key (the default) keeps following the master.
+    const { home, sessionsDir, token } = makeDaemonHome();
+    await withHelperPath(__filename, async () => {
+      const reply = { ok: true, windows: [], pngBase64: 'AAAA' };
+      saveAoiHostBridgeKillSwitchState(
+        home,
+        setAoiHostBridgeCapability(
+          setAoiHostBridgeCapability(null, 'os_computer_use', true, 4000),
+          'os_desktop_capture',
+          false,
+          4001,
+        ),
+      );
+
+      const capture = fakeHelper(reply);
+      const blocked = await callDesktopInput(
+        home,
+        sessionsDir,
+        token,
+        { op: 'capture', hwnd: '0x1a2b' },
+        capture.spawn,
+      );
+      expect(blocked.status).toBe(403);
+      expect((blocked.payload as { detail: string[] }).detail).toContain(
+        'capability_disabled:os_desktop_capture',
+      );
+      expect(capture.seen).toHaveLength(0);
+
+      const list = fakeHelper(reply);
+      const listed = await callDesktopInput(
+        home,
+        sessionsDir,
+        token,
+        { op: 'list_windows' },
+        list.spawn,
+      );
+      expect(listed.status).toBe(200);
+      expect(list.seen).toHaveLength(1);
+    });
+  });
+
   it('says the helper is not installed rather than pretending it acted', async () => {
     const { home, sessionsDir, token } = makeDaemonHome();
     await withHelperPath(join(home, 'no-such-helper.exe'), async () => {
@@ -2796,6 +2887,26 @@ describe('createAoiHostBridgeMiddleware loopback token trust', () => {
     const res = await runMiddleware(middleware, { remoteAddress: '127.0.0.1' });
     expect(res.status).toBe(200);
     expect(res.body).toContain('"ok":true');
+  });
+
+  it('does not lend the token to a cross-site page on the same machine', async () => {
+    // The browser is a loopback client too: a page on another site posting here
+    // (or a rebound DNS name) used to be authenticated by socket address alone.
+    const { sessionsDir } = makeDaemonHome();
+    const middleware = createAoiHostBridgeMiddleware({ sessionsDir, trustLoopbackToken: true });
+    const crossSite: Record<string, string>[] = [
+      { host: 'localhost:3000', origin: 'https://evil.example', 'sec-fetch-site': 'cross-site' },
+      { host: 'rebind.evil.example:3000', origin: 'http://rebind.evil.example:3000' },
+    ];
+    for (const headers of crossSite) {
+      const res = await runMiddleware(middleware, { remoteAddress: '127.0.0.1', headers });
+      expect(res.status).toBe(401);
+    }
+    const sameOrigin = await runMiddleware(middleware, {
+      remoteAddress: '127.0.0.1',
+      headers: { host: 'localhost:3000', origin: 'http://localhost:3000' },
+    });
+    expect(sameOrigin.status).toBe(200);
   });
 
   it('rejects a non-loopback caller with no token even when trust is on', async () => {

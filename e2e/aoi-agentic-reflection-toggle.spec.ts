@@ -26,6 +26,11 @@ test.describe('Chat settings – Aoi agentic reflection toggle', () => {
     const toggle = modal.locator('[data-testid="aoi-agentic-reflection-toggle"]');
     const neighbour = modal.locator('[data-testid="aoi-field-shadow-capture-toggle"]');
     await expect(toggle).toHaveText(/^(On|Off)$/);
+    // The toggles stay disabled until the policy has loaded, and the label shown
+    // before that is a placeholder: reading it then made `before` wrong whenever
+    // an earlier spec had left the stored value at On.
+    await expect(toggle).toBeEnabled();
+    await expect(neighbour).toBeEnabled();
 
     const before = (await toggle.textContent())?.trim() ?? '';
     const neighbourBefore = (await neighbour.textContent())?.trim() ?? '';

@@ -81,6 +81,60 @@ describe('chatHistoryStorage', () => {
     });
   });
 
+  describe('loadChatHistoryResult', () => {
+    // A failed read must not look like "no conversation": the caller seeded a
+    // prologue for any null and autosave then wrote it over the transcript.
+    it('separates a missing file from a failed read', async () => {
+      const { loadChatHistoryResult } = await import('../chatHistoryStorage');
+
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({}) });
+      expect(await loadChatHistoryResult(SESSION_PATH)).toEqual({ status: 'missing' });
+      // Not found is not a failed read: there is no transcript to protect.
+      fetchMock.mockResolvedValueOnce({ ok: false, status: 404 });
+      expect(await loadChatHistoryResult(SESSION_PATH)).toEqual({ status: 'missing' });
+
+      const data = makeSavedData();
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(data) });
+      expect(await loadChatHistoryResult(SESSION_PATH)).toEqual({ status: 'ok', data });
+
+      fetchMock.mockResolvedValueOnce({ ok: false, status: 500 });
+      expect(await loadChatHistoryResult(SESSION_PATH)).toEqual({
+        status: 'error',
+        error: 'HTTP 500',
+      });
+
+      fetchMock.mockRejectedValueOnce(new Error('network down'));
+      expect((await loadChatHistoryResult(SESSION_PATH)).status).toBe('error');
+
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.reject(new SyntaxError('Unexpected end of JSON input')),
+      });
+      expect((await loadChatHistoryResult(SESSION_PATH)).status).toBe('error');
+
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ version: 9 }) });
+      expect((await loadChatHistoryResult(SESSION_PATH)).status).toBe('error');
+
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([1]) });
+      expect((await loadChatHistoryResult(SESSION_PATH)).status).toBe('error');
+    });
+
+    it('retries a failed read and stops at the first definite answer', async () => {
+      const { loadChatHistoryWithRetry } = await import('../chatHistoryStorage');
+      const data = makeSavedData();
+      fetchMock
+        .mockResolvedValueOnce({ ok: false, status: 500 })
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(data) });
+      expect(await loadChatHistoryWithRetry(SESSION_PATH, 3, 1)).toEqual({ status: 'ok', data });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      fetchMock.mockReset();
+      fetchMock.mockResolvedValue({ ok: false, status: 503 });
+      expect((await loadChatHistoryWithRetry(SESSION_PATH, 3, 1)).status).toBe('error');
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+  });
+
   describe('saveChatHistory', () => {
     it('POSTs to API with expected payload', async () => {
       fetchMock.mockResolvedValueOnce({ ok: true });

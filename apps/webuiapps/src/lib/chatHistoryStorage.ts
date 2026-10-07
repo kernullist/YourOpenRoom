@@ -101,19 +101,72 @@ function apiUrl(sessionPath: string, file: string): string {
   return `${API_PATH}?path=${encodeURIComponent(`${sessionPath}/chat/${file}`)}`;
 }
 
-export async function loadChatHistory(sessionPath: string): Promise<ChatHistoryData | null> {
+export type ChatHistoryLoadResult =
+  | { status: 'ok'; data: ChatHistoryData }
+  | { status: 'missing' }
+  | { status: 'error'; error: string };
+
+/**
+ * Load chat.json and say WHICH kind of "nothing" it was.
+ *
+ * loadChatHistory returns null for a missing file, a 500, a network error and a
+ * half-written (unparseable) file alike, and the caller seeded a fresh prologue
+ * for every one of them -- which the 500 ms autosave then wrote over the real
+ * transcript. Only `missing` means there is no conversation to protect. The
+ * session-data API answers a missing file with exactly `{}`; a 404 from another
+ * backend says the same, and nothing exists there to overwrite.
+ */
+export async function loadChatHistoryResult(sessionPath: string): Promise<ChatHistoryLoadResult> {
+  let res: Response;
   try {
-    const res = await fetch(apiUrl(sessionPath, 'chat.json'));
-    if (res.ok) {
-      const data: ChatHistoryData = await res.json();
-      if (data && data.version === 1) {
-        return data;
-      }
-    }
-  } catch {
-    // API not available
+    res = await fetch(apiUrl(sessionPath, 'chat.json'));
+  } catch (error) {
+    return { status: 'error', error: error instanceof Error ? error.message : String(error) };
   }
-  return null;
+  if (res.status === 404) {
+    return { status: 'missing' };
+  }
+  if (!res.ok) {
+    return { status: 'error', error: `HTTP ${res.status}` };
+  }
+  let data: unknown;
+  try {
+    data = await res.json();
+  } catch (error) {
+    return { status: 'error', error: error instanceof Error ? error.message : String(error) };
+  }
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    if ((data as { version?: unknown }).version === 1) {
+      return { status: 'ok', data: data as ChatHistoryData };
+    }
+    if (Object.keys(data).length === 0) {
+      return { status: 'missing' };
+    }
+  }
+  return { status: 'error', error: 'chat.json has an unknown format' };
+}
+
+export async function loadChatHistory(sessionPath: string): Promise<ChatHistoryData | null> {
+  const result = await loadChatHistoryResult(sessionPath);
+  return result.status === 'ok' ? result.data : null;
+}
+
+/**
+ * loadChatHistoryResult, retried on `error` a couple of times: on Windows a read
+ * can fail with EBUSY/EPERM while an indexer or sync client holds the file, and
+ * a second tab can catch a write half done. Missing and ok are final.
+ */
+export async function loadChatHistoryWithRetry(
+  sessionPath: string,
+  attempts = 3,
+  delayMs = 400,
+): Promise<ChatHistoryLoadResult> {
+  let result = await loadChatHistoryResult(sessionPath);
+  for (let attempt = 1; attempt < attempts && result.status === 'error'; attempt += 1) {
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs * attempt));
+    result = await loadChatHistoryResult(sessionPath);
+  }
+  return result;
 }
 
 /** @deprecated kept for backward compat, always returns null now */

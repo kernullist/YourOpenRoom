@@ -1,7 +1,7 @@
 import type { ToolDef } from './llmClient';
 
 import * as idb from './diskStorage';
-import { listRecentMutations, popLastMutation, recordFileMutation } from './toolMutationHistory';
+import { listRecentMutations, popLastMutation } from './toolMutationHistory';
 
 const TOOL_NAME = 'undo_last_action';
 
@@ -50,12 +50,9 @@ export async function executeUndoTool(): Promise<string> {
     });
   }
 
-  recordFileMutation({
-    tool_name: 'undo_last_action',
-    file_path: filePath,
-    before_content: mutation.after_content,
-    after_content: mutation.before_content,
-  });
+  // The undo is NOT recorded as a reversible mutation. Pushing its inverse back
+  // onto the same stack meant the next undo popped it and re-applied the change
+  // just undone: "undo my last two changes" undid nothing and reported success.
 
   return JSON.stringify({
     undone_mutation_id: mutation.id,

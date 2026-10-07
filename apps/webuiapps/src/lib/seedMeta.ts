@@ -5,6 +5,7 @@
 
 import * as idb from './diskStorage';
 import { getSourceDirToAppName } from './appRegistry';
+import { getSessionPath } from './sessionPath';
 
 // Eager import — inlined as strings at build time
 const metaFiles: Record<string, string> = import.meta.glob(
@@ -19,12 +20,29 @@ const metaFiles: Record<string, string> = import.meta.glob(
 
 const DIR_TO_APP_NAME = getSourceDirToAppName();
 
-let seeded = false;
+// Per session path: storage is scoped to the active session, so a one-shot
+// module flag left a switched-to character/mod (and a session just reset, which
+// deletes its directory) with no meta.yaml for the agent's required first read.
+// Keeping the in-flight promise also lets a second caller wait for the first
+// write instead of returning before it lands.
+const seededSessions = new Map<string, Promise<void>>();
 
-export async function seedMetaFiles(): Promise<void> {
-  if (seeded) return;
-  seeded = true;
+export function seedMetaFiles(options: { force?: boolean } = {}): Promise<void> {
+  const sessionPath = getSessionPath();
+  const existing = seededSessions.get(sessionPath);
+  if (existing && !options.force) {
+    return existing;
+  }
+  const seeding = writeMetaFiles().catch((error) => {
+    // A failed write must be retried by the next caller, not remembered.
+    seededSessions.delete(sessionPath);
+    throw error;
+  });
+  seededSessions.set(sessionPath, seeding);
+  return seeding;
+}
 
+async function writeMetaFiles(): Promise<void> {
   const files: Array<{ path: string; name: string; content: string }> = [];
 
   for (const [filePath, content] of Object.entries(metaFiles)) {

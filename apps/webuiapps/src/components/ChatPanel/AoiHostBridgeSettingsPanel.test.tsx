@@ -13,7 +13,7 @@ function jsonResponse(body: unknown, ok = true): Response {
 
 // A URL-dispatched fetch mock so the panel's parallel initial loads all resolve
 // regardless of order.
-function installFetch(statusBody: Record<string, unknown>) {
+function installFetch(statusBody: Record<string, unknown>, sources: unknown[] = []) {
   const fetchMock = vi.fn((url: string, init?: RequestInit) => {
     const target = String(url);
     if (target.includes('/killswitch')) {
@@ -73,7 +73,7 @@ function installFetch(statusBody: Record<string, unknown>) {
         jsonResponse({
           ok: true,
           sessionPath: 'aoi/default',
-          registry: { version: 1, sessionPath: 'aoi/default', sources: [], updatedAt: 1 },
+          registry: { version: 1, sessionPath: 'aoi/default', sources, updatedAt: 1 },
         }),
       );
     }
@@ -196,5 +196,57 @@ describe('AoiHostBridgeSettingsPanel', () => {
     });
     render(<AoiHostBridgeSettingsPanel />);
     await waitFor(() => expect(screen.getByTestId('aoi-host-no-token')).toBeTruthy());
+  });
+});
+
+describe('AoiHostBridgeSettingsPanel session consent repair', () => {
+  const enabledStatus = {
+    tokenConfigured: true,
+    killSwitch: { globalPanic: false, enabledCapabilities: ['process_activity'], updatedAt: 1 },
+  };
+
+  function consentWrites(fetchMock: { mock: { calls: unknown[][] } }): unknown[] {
+    return fetchMock.mock.calls.filter(
+      (call) =>
+        String(call[0]).includes('/sources') &&
+        (call[1] as { method?: string } | undefined)?.method === 'POST' &&
+        String((call[1] as { body?: string } | undefined)?.body || '').includes('process-activity'),
+    );
+  }
+
+  it('does not re-grant a session source the operator disabled', async () => {
+    const fetchMock = installFetch(enabledStatus, [
+      { id: 'process-activity', enabled: false, consentReason: 'Disabled by operator' },
+    ]);
+    render(<AoiHostBridgeSettingsPanel sessionPath="aoi/default" />);
+    await screen.findByTestId('aoi-host-cap-process_activity');
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/sources'))).toBe(true),
+    );
+    expect(consentWrites(fetchMock)).toHaveLength(0);
+  });
+
+  it('still grants consent for a source nobody has decided on', async () => {
+    const fetchMock = installFetch(enabledStatus, [{ id: 'process-activity', enabled: false }]);
+    render(<AoiHostBridgeSettingsPanel sessionPath="aoi/default" />);
+    await waitFor(() => expect(consentWrites(fetchMock).length).toBeGreaterThan(0));
+  });
+
+  it('grants nothing when the session sources cannot be read', async () => {
+    // Without the registry there is no way to tell an undecided source from one
+    // the operator disabled, so the repair must not guess.
+    const routes = installFetch(enabledStatus, []);
+    const fetchMock = vi.fn((url: string, init?: RequestInit) =>
+      String(url).includes('/sources')
+        ? Promise.resolve(jsonResponse({ ok: false, error: 'unavailable' }, false))
+        : routes(url, init),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    render(<AoiHostBridgeSettingsPanel sessionPath="aoi/default" />);
+    await screen.findByTestId('aoi-host-cap-process_activity');
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/sources'))).toBe(true),
+    );
+    expect(consentWrites(fetchMock)).toHaveLength(0);
   });
 });

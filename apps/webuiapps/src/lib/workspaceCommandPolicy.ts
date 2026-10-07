@@ -26,13 +26,45 @@ const DISALLOWED_ARGS = new Set([
   'dlx',
 ]);
 const SAFE_GIT_COMMANDS = new Set(['status', 'diff', 'show', 'log', 'branch', 'rev-parse']);
+// Flags that make an otherwise read-only command write or read OUTSIDE the
+// workspace, matched by name with or without "=value": git diff/log/show
+// --output=<any path>, git diff --no-index <a> <b> (reads any two files),
+// vite build --outDir <dir> --emptyOutDir (empties it), eslint -o/--output-file,
+// vitest --outputFile.
+const DISALLOWED_FLAG_NAMES = new Set([
+  '--output',
+  '--output-file',
+  '--outputfile',
+  '-o',
+  '--outdir',
+  '--out-dir',
+  '--outfile',
+  '--emptyoutdir',
+  '--empty-out-dir',
+  '--no-index',
+]);
+// `git branch <name>` creates a branch and -d/-m/-f/-u rewrite refs; only
+// listing is read-only.
+const SAFE_GIT_BRANCH_FLAGS = new Set([
+  '-a',
+  '-r',
+  '-v',
+  '-vv',
+  '--all',
+  '--remotes',
+  '--verbose',
+  '--show-current',
+  '--list',
+  '--no-color',
+]);
 
 function hasShellMetacharacters(value: string): boolean {
   return SHELL_METACHAR_REGEX.test(value);
 }
 
 function isDisallowedArg(value: string): boolean {
-  return DISALLOWED_ARGS.has(value.toLowerCase());
+  const lower = value.toLowerCase();
+  return DISALLOWED_ARGS.has(lower) || DISALLOWED_FLAG_NAMES.has(lower.split('=')[0]);
 }
 
 export function tokenizeCommand(command: string): string[] {
@@ -93,6 +125,16 @@ function validateGitArgs(args: string[]): WorkspaceCommandValidationResult {
 
   if (args.some((arg) => isDisallowedArg(arg) || hasShellMetacharacters(arg))) {
     return { ok: false, error: 'Unsafe git arguments were rejected.' };
+  }
+
+  if (
+    subcommand === 'branch' &&
+    !args.slice(1).every((arg) => SAFE_GIT_BRANCH_FLAGS.has(arg.toLowerCase()))
+  ) {
+    return {
+      ok: false,
+      error: 'git branch is limited to listing (-a, -r, -v, --show-current, --list) in safe mode.',
+    };
   }
 
   return {

@@ -84,6 +84,16 @@ const windowOpenSnapshots = new Map<number, WindowOpenSnapshot>();
 type ReadyResolver = () => void;
 const listenerReadyResolvers: ReadyResolver[] = [];
 
+// In-flight agent dispatches, keyed by action_id, settled by sendAgentMessage.
+const pendingAgentActionResults = new Map<number, (actionResult: string) => void>();
+// Monotonic: Date.now() alone gave two dispatches in the same millisecond the
+// same id, so one app's answer could settle the other dispatch.
+let lastAgentActionId = 0;
+function allocateAgentActionId(): number {
+  lastAgentActionId = Math.max(lastAgentActionId + 1, Date.now());
+  return lastAgentActionId;
+}
+
 function notifyListenerAdded() {
   const resolvers = listenerReadyResolvers.splice(0);
   resolvers.forEach((r) => r());
@@ -232,44 +242,37 @@ export async function dispatchAgentAction(action: {
     const fullAction = {
       ...action,
       params: translatedParams,
-      action_id: action.action_id ?? Date.now(),
+      action_id: action.action_id ?? allocateAgentActionId(),
       timestamp_ms: Date.now(),
       trigger_by: 2, // Agent
     };
 
     let resolved = false;
-    const originalSend = mockManager.sendAgentMessage;
     const timeout = setTimeout(
       () => {
         if (!resolved) {
           resolved = true;
-          // Restore the patched sendAgentMessage on timeout too. The success path
-          // restores it at resolve; without this a timed-out dispatch leaks its
-          // monkeypatch layer and later dispatches nest on the stale patch.
-          mockManager.sendAgentMessage = originalSend;
+          pendingAgentActionResults.delete(fullAction.action_id);
           resolve('timeout: no response from app');
         }
       },
       needsListenerWait ? 20000 : 10000,
     );
 
-    mockManager.sendAgentMessage = (event: unknown) => {
-      const evt = event as { action_result?: string; app_action?: { action_id?: number } };
-      if (evt.action_result !== undefined && evt.app_action?.action_id === fullAction.action_id) {
-        if (!resolved) {
-          resolved = true;
-          clearTimeout(timeout);
-          let result = evt.action_result || 'done';
-          if (Object.keys(extraInfo).length > 0) {
-            result += ' ' + JSON.stringify(extraInfo);
-          }
-          resolve(result);
-        }
-        mockManager.sendAgentMessage = originalSend;
-        return;
+    // One registry entry per dispatch, settled by sendAgentMessage. Each dispatch
+    // used to wrap mockManager.sendAgentMessage and restore "its" original when
+    // done -- with two in flight, the first to finish restored the bare function
+    // and unhooked the second, which then timed out although the app had acted.
+    pendingAgentActionResults.set(fullAction.action_id, (actionResult) => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timeout);
+      let result = actionResult || 'done';
+      if (Object.keys(extraInfo).length > 0) {
+        result += ' ' + JSON.stringify(extraInfo);
       }
-      originalSend(event);
-    };
+      resolve(result);
+    });
 
     const dispatch = () => {
       if (resolved) return;
@@ -366,6 +369,17 @@ const mockManager = {
   // Agent messages
   sendAgentMessage: (event: unknown) => {
     logger.info('MockVibe', 'sendAgentMessage:', event);
+    // An app answering an agent dispatch: settle that dispatch and stop here.
+    const answer = event as { action_result?: string; app_action?: { action_id?: number } };
+    const answeredId = answer.app_action?.action_id;
+    if (answer.action_result !== undefined && typeof answeredId === 'number') {
+      const settle = pendingAgentActionResults.get(answeredId);
+      if (settle) {
+        pendingAgentActionResults.delete(answeredId);
+        settle(answer.action_result);
+        return;
+      }
+    }
     // When the toggle is off, discard user-triggered actions (keep Agent's action_result callbacks)
     if (!isReportUserActionsEnabled()) {
       const evt = event as { action_result?: string; app_action?: { trigger_by?: number } };

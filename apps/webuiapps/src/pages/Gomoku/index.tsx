@@ -753,10 +753,14 @@ const GomokuApp: React.FC = () => {
   );
 
   const handleSurrender = useCallback(
-    (fromAgent = false) => {
+    (fromAgent = false, surrenderingColor?: StoneColor) => {
       if (gameState.phase !== 'playing') return;
 
-      const winner = gameState.agentColor!;
+      // The side that gives up loses. The user's button surrenders the human side;
+      // an agent SURRENDER names its side in `color`. Taking agentColor as the
+      // winner unconditionally recorded the agent's own resignation as its win.
+      const loser = surrenderingColor ?? gameState.humanColor!;
+      const winner: StoneColor = loser === 'black' ? 'white' : 'black';
 
       setGameState({
         ...gameState,
@@ -837,9 +841,14 @@ const GomokuApp: React.FC = () => {
         }
 
         case ActionTypes.SURRENDER: {
-          const color = action.params?.color as StoneColor;
-          if (!color) return 'error: missing color param';
-          handleSurrender(true);
+          const color = action.params?.color;
+          if (color !== 'black' && color !== 'white') {
+            return 'error: color must be "black" or "white"';
+          }
+          if (gameState.phase !== 'playing') {
+            return 'error: no game in progress';
+          }
+          handleSurrender(true, color);
           return 'success';
         }
 

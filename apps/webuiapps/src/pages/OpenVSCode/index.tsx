@@ -1522,6 +1522,11 @@ const OpenVSCodePage: React.FC = () => {
     }
   }, [activeTab, loadDirectory, saveFileContent, tree]);
 
+  const saveCurrentFileRef = useRef(saveCurrentFile);
+  useEffect(() => {
+    saveCurrentFileRef.current = saveCurrentFile;
+  }, [saveCurrentFile]);
+
   const saveAllFiles = useCallback(async () => {
     const changedTabs = openTabsRef.current.filter(
       (tab) => normalizeEditorContent(tab.content) !== normalizeEditorContent(tab.savedContent),
@@ -2717,8 +2722,11 @@ const OpenVSCodePage: React.FC = () => {
       editor.onDidChangeCursorSelection(() => {
         syncEditorSelection(editor);
       });
+      // Monaco keeps the command registered at mount, so it must read the save
+      // function through a ref: the closure saved that render's tab and content,
+      // reverting the file to what it held when it was opened.
       editor.addCommand(monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.KeyS, () => {
-        void saveCurrentFile();
+        void saveCurrentFileRef.current();
       });
       editor.addCommand(monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.KeyP, () => {
         setShowCommandPalette(true);
@@ -2730,7 +2738,7 @@ const OpenVSCodePage: React.FC = () => {
       }
       syncEditorSelection(editor);
     },
-    [revealLine, saveCurrentFile, syncEditorSelection],
+    [revealLine, syncEditorSelection],
   );
 
   const openSearchResult = useCallback(
@@ -3478,9 +3486,11 @@ const OpenVSCodePage: React.FC = () => {
             false,
           );
           const save = parseActionBoolean(action.params?.save, true);
+          // replaceOnce, not String.replace: a string replacement expands $& $' $` $$
+          // in new_text, so patching in "echo $'\n'" or "'$$'" saved corrupted text.
           const nextContent = replaceAll
             ? currentContent.split(oldText).join(newText)
-            : currentContent.replace(oldText, newText);
+            : replaceOnce(currentContent, oldText, newText);
           const result = await setActiveFileContentFromAgent(nextContent, { save });
           return result.ok
             ? JSON.stringify({ ...result, occurrences, replaced: replaceAll ? occurrences : 1 })

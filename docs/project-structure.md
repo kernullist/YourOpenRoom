@@ -279,19 +279,17 @@ ChatPanel의 시스템 프롬프트는 앱 조작 절차를 강하게 규정한�
 
 ## 8. 앱 구현 패턴: `src/pages`
 
-각 앱은 `src/pages/<AppName>` 아래에 존재한다. 현재 포함된 앱은 다음과 같다.
+각 앱은 `src/pages/<AppName>` 아래에 존재한다. 현재 포함된 디렉터리는 다음과 같다(2026-10 기준
+29개, `appRegistry.ts`의 `sourceDir`와 대응).
 
-- `Twitter`
-- `MusicApp`
-- `Diary`
-- `Album`
-- `FreeCell`
-- `Email`
-- `Gomoku`
-- `Chess`
-- `EvidenceVault`
-- `CyberNews`
-- `Home`
+- 일상·콘텐츠: `Twitter`, `MusicApp`(YouTube), `Diary`, `Album`, `Email`, `Calendar`, `Notes`,
+  `BrowserReader`, `CyberNews`, `RoomShop`, `HabitGarden`
+- 게임: `Gomoku`, `Chess`, `FreeCell`
+- 작업·자동화: `Kira`, `OpenVSCode`(Aoi's IDE), `DriveConsole`, `MissionControl`, `HostSentinel`,
+  `SignalDesk`, `EvidenceVault`, `DewdropCanvas`, `WrittenByMe`
+- Aoi 자체: `AoiResearch`, `AoiMemoryDashboard`
+- 리버스 엔지니어링: `PeAnalyzer`, `IdaLab`, `GhidraLab`
+- 기타: `Home`(앱이 아닌 기본 페이지)
 
 대표적인 앱 디렉터리 내부 패턴:
 

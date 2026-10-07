@@ -140,7 +140,10 @@ import {
   loadAoiAutonomyCapabilitySettings,
   writeAoiAutonomyCapabilitiesConfigToFile,
 } from './aoiAutonomyCapabilitySettings';
-import { describeAoiEnvOnlyAutonomyGates } from './aoiAutonomyEnvOnlyGates';
+import {
+  describeAoiEnvOnlyAutonomyGates,
+  isNetworkCeilingBlocking,
+} from './aoiAutonomyEnvOnlyGates';
 // Import the model id from the pure core, never from aoiLocalEmbedding: that one
 // pulls node:crypto in and has broken the client bundle here before.
 import { AOI_LOCAL_EMBEDDING_MODEL } from './aoiLocalEmbeddingCore';
@@ -192,8 +195,11 @@ import {
   DEFAULT_DIRECT_CHAT_BUDGET_WINDOW_MS,
   loadAoiDirectChatBudgetState,
   recordAoiDirectChatOffer,
+  resolveAoiDirectChatCeiling,
   saveAoiDirectChatBudgetState,
 } from './aoiDirectChatBudget';
+import { resolveAoiLlmTokenCeiling } from './aoiAutonomyLlmBudget';
+import { resolveAoiScoutNetworkCeiling } from './aoiScoutNetworkBudget';
 import {
   buildAoiOperatorHealthReplayScenarios,
   buildAoiOperatorHealthState,
@@ -224,6 +230,7 @@ import type {
   AoiVoiceRenderDecision,
 } from './aoiAutonomyTypes';
 import type { LLMConfig } from './llmModels';
+import { serverSelfOrigin } from './serverSelfOrigin';
 
 const API_PREFIX = '/api/aoi-autonomy';
 const MAX_BODY_BYTES = 128 * 1024;
@@ -615,14 +622,64 @@ function getWakeupBudgetFromBody(value: unknown): Partial<AoiAutonomyWakeupBudge
   return value as Partial<AoiAutonomyWakeupBudget>;
 }
 
-function getHeaderString(value: string | string[] | undefined): string {
-  return Array.isArray(value) ? value[0] || '' : value || '';
+const HTTP_WAKEUP_DAILY_BUDGET_KEYS = [
+  'llmDailyTokenBudget',
+  'scoutNetworkDailyBudget',
+  'directChatDailyBudget',
+] as const;
+
+export type AoiHttpWakeupDailyBudgetKey = (typeof HTTP_WAKEUP_DAILY_BUDGET_KEYS)[number];
+
+/**
+ * The daily budgets the server itself runs with: the AOI_AUTONOMY_*_DAILY_*
+ * env values the background runner reads, else the module defaults. A value
+ * <= 0 is the operator's explicit "unlimited".
+ */
+export function resolveAoiServerWakeupDailyBudgets(
+  env: Record<string, string | undefined>,
+): Record<AoiHttpWakeupDailyBudgetKey, number> {
+  const fromEnv = resolveAoiAutonomyBackgroundConfigFromEnv(env);
+  return {
+    llmDailyTokenBudget: resolveAoiLlmTokenCeiling(fromEnv.llmDailyTokenBudget),
+    scoutNetworkDailyBudget: resolveAoiScoutNetworkCeiling(fromEnv.scoutNetworkDailyBudget),
+    directChatDailyBudget: resolveAoiDirectChatCeiling(fromEnv.directChatDailyBudget),
+  };
 }
 
-function getRequestOrigin(req: IncomingMessage): string {
-  const forwardedProto = getHeaderString(req.headers['x-forwarded-proto']).trim();
-  const host = getHeaderString(req.headers.host).trim() || '127.0.0.1:3000';
-  return `${forwardedProto || 'http'}://${host}`;
+/**
+ * What an HTTP /wakeup body may actually ask for.
+ *
+ * The body used to be passed straight through, so `allowNetwork: true` ignored both
+ * the session policy and the AOI_AUTONOMY_BACKGROUND_ALLOW_NETWORK hard-off ("blocks
+ * all autonomy network access, whatever the policy says"), a 0 daily budget meant
+ * "unlimited", any larger budget raised the server's, and capability opt-ins came
+ * from the client. Network is now the intersection the background runner uses
+ * (ceiling AND policy AND request), a daily budget can only be at or below the
+ * server's own, and capability opt-ins are the server's to decide.
+ */
+export function sanitizeAoiWakeupBudgetFromHttp(
+  requested: Partial<AoiAutonomyWakeupBudget> | undefined,
+  gates: {
+    policyAllowsNetwork: boolean;
+    ceilingPermitsNetwork: boolean;
+    serverDailyBudgets: Record<AoiHttpWakeupDailyBudgetKey, number>;
+  },
+): Partial<AoiAutonomyWakeupBudget> {
+  const budget: Partial<AoiAutonomyWakeupBudget> = { ...(requested ?? {}) };
+  budget.allowNetwork =
+    requested?.allowNetwork === true && gates.policyAllowsNetwork && gates.ceilingPermitsNetwork;
+  for (const key of HTTP_WAKEUP_DAILY_BUDGET_KEYS) {
+    const value = budget[key];
+    const serverBudget = gates.serverDailyBudgets[key];
+    const asked = typeof value === 'number' && Number.isFinite(value) && value > 0;
+    // A missing, 0 (= unlimited) or invalid request gets the server's budget; a
+    // smaller one is honoured. Only an unlimited server budget lets a request
+    // name its own number.
+    budget[key] = !asked ? serverBudget : serverBudget <= 0 ? value : Math.min(value, serverBudget);
+  }
+  delete budget.goalSynthesisEnabled;
+  delete budget.idleConfidenceSurgeEnabled;
+  return budget;
 }
 
 function recordAoiTimelineBestEffort(record: () => void): void {
@@ -1695,8 +1752,20 @@ export async function handleAoiAutonomyRequest(
         });
         return true;
       }
+      const wakeupBudget = sanitizeAoiWakeupBudgetFromHttp(getWakeupBudgetFromBody(body.budget), {
+        policyAllowsNetwork: loadAoiAutonomyPolicy(sessionsDir, sessionPath).allowNetwork === true,
+        ceilingPermitsNetwork: !isNetworkCeilingBlocking(
+          process.env.AOI_AUTONOMY_BACKGROUND_ALLOW_NETWORK,
+        ),
+        serverDailyBudgets: resolveAoiServerWakeupDailyBudgets(process.env),
+      });
+      // An llmConfig is only honoured when the wakeup may use the network at all;
+      // otherwise the reflection would still send memories to its baseUrl.
       const llmConfig =
-        body.llmConfig && typeof body.llmConfig === 'object' && !Array.isArray(body.llmConfig)
+        wakeupBudget.allowNetwork === true &&
+        body.llmConfig &&
+        typeof body.llmConfig === 'object' &&
+        !Array.isArray(body.llmConfig)
           ? (body.llmConfig as LLMConfig)
           : undefined;
       const result = await runAoiAutonomyWakeup({
@@ -1711,7 +1780,7 @@ export async function handleAoiAutonomyRequest(
         sourceIds: Array.isArray(body.sourceIds)
           ? body.sourceIds.filter((item): item is string => typeof item === 'string')
           : undefined,
-        budget: getWakeupBudgetFromBody(body.budget),
+        budget: wakeupBudget,
         quietMode: typeof body.quietMode === 'boolean' ? body.quietMode : undefined,
         userIdleMs: typeof body.userIdleMs === 'number' ? body.userIdleMs : undefined,
         ...(typeof body.language === 'string'
@@ -3560,7 +3629,7 @@ export async function handleAoiAutonomyRequest(
         const result = await executeAoiProposal({
           sessionsDir,
           configFile,
-          serverOrigin: getRequestOrigin(req),
+          serverOrigin: serverSelfOrigin(req),
           workspaceRoot,
           sessionPath,
           proposalId: String(body.proposalId ?? ''),
@@ -3639,7 +3708,7 @@ export function aoiCapabilityStoreId(configFile: string, sessionsDir: string): s
   // Both paths, because they are configured independently: two processes can
   // share a config.json while writing different memory stores.
   return createHash('sha256')
-    .update(`${resolve(configFile)} ${resolve(sessionsDir)}`)
+    .update(`${resolve(configFile)}\0${resolve(sessionsDir)}`)
     .digest('hex')
     .slice(0, 16);
 }

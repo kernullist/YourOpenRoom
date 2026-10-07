@@ -100,4 +100,4 @@ App registered: src/lib/appRegistry.ts (appId: {N})
 
 ## After Completion
 
-Update workflow.json, mark 05-integration as completed. Entire workflow complete.
+Update workflow.json, mark 06-integration as completed. Entire workflow complete.

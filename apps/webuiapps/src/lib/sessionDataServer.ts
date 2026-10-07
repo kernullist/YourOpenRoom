@@ -2,6 +2,32 @@ import * as fs from 'fs';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { dirname, join, resolve } from 'path';
 
+// Temp file + rename, so a crash mid-write or a reader in another process (a
+// second tab, the daemon) never sees a truncated chat.json or memory file --
+// every loader treats unparseable JSON as missing, which used to make a whole
+// transcript or memory silently disappear. Windows can refuse the rename while
+// another process holds the target (EPERM/EBUSY); fall back to a direct write
+// then rather than fail the save.
+export function writeFileAtomic(filePath: string, data: string | Buffer): void {
+  const tempPath = `${filePath}.${process.pid}.${Date.now().toString(36)}.tmp`;
+  try {
+    fs.writeFileSync(tempPath, data);
+    fs.renameSync(tempPath, filePath);
+  } catch (error) {
+    try {
+      fs.rmSync(tempPath, { force: true });
+    } catch {
+      // best effort
+    }
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'EPERM' || code === 'EBUSY' || code === 'EACCES') {
+      fs.writeFileSync(filePath, data);
+      return;
+    }
+    throw error;
+  }
+}
+
 // Durable session-data file store over ~/.openroom/sessions, factored out of the
 // Vite sessionDataPlugin so the SAME handler can be mounted by BOTH the Vite dev
 // server and the standalone autonomy daemon (the P0a factory pattern -- no forked
@@ -129,9 +155,9 @@ function handleSessionData(
           ct.startsWith('video/') ||
           ct === 'application/octet-stream'
         ) {
-          fs.writeFileSync(filePath, buf);
+          writeFileAtomic(filePath, buf);
         } else {
-          fs.writeFileSync(filePath, buf.toString(), 'utf-8');
+          writeFileAtomic(filePath, buf.toString());
         }
         if (safePath.includes('/memory/') || safePath.endsWith('/chat/chat.json')) {
           console.info('[SessionData] Wrote file', {

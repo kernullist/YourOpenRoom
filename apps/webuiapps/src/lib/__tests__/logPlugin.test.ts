@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, type MockedFunction } from 'vites
 import type { PathLike } from 'fs';
 import type * as fsType from 'fs';
 import type { IncomingMessage, ServerResponse } from 'http';
+import { dirname, join } from 'path';
 import { formatLogLine, generateLogFileName, createLogMiddleware } from '../logPlugin';
 
 // ============ formatLogLine ============
@@ -173,6 +174,22 @@ describe('createLogMiddleware', () => {
 
     expect(fsMock.mkdirSync).toHaveBeenCalledWith('/tmp/logs', { recursive: true });
     expect(fsMock.appendFileSync).toHaveBeenCalledOnce();
+  });
+
+  it('creates the log directory from a native (backslash on Windows) path', () => {
+    // vite.config builds the path with path.join, so on Windows it has no '/'
+    // at all; splitting on '/' produced mkdirSync('') and a 400 for every log.
+    fsMock = makeFsMock(false);
+    const logFile = join('D:', 'repo', 'logs', 'debug.log');
+    const middleware = createLogMiddleware(logFile, fsMock);
+    const body = JSON.stringify({ level: 'info', tag: 'T', args: [], ts: Date.now() });
+    const { res, writeHead } = makeRes();
+
+    middleware(makeReq('POST', body), res, vi.fn());
+
+    expect(fsMock.mkdirSync).toHaveBeenCalledWith(dirname(logFile), { recursive: true });
+    expect(fsMock.appendFileSync).toHaveBeenCalledOnce();
+    expect(writeHead).toHaveBeenCalledWith(204);
   });
 
   it('logs 目录已存在时不调用 mkdirSync', () => {

@@ -19,6 +19,8 @@ import { aoiAutonomyPlugin } from './src/lib/aoiAutonomyPlugin';
 import { isAoiAutonomyLoopLockHeldByThisProcess } from './src/lib/aoiAutonomyLoopLock';
 import { createAoiHostBridgeMiddleware } from './src/lib/aoiHostBridgePlugin';
 import { createSessionDataMiddleware } from './src/lib/sessionDataServer';
+import { createDevApiRequestGuard } from './src/lib/devApiRequestGuard';
+import { fetchPublicUrl, PublicUrlRejectedError } from './src/lib/publicUrlFetch';
 import { aoiResearchPlugin } from './src/lib/aoiResearchPlugin';
 import { generateLogFileName, createLogMiddleware } from './src/lib/logPlugin';
 import { appGeneratorPlugin } from './src/lib/appGeneratorPlugin';
@@ -830,17 +832,34 @@ function browserReaderProxyPlugin(): Plugin {
             return;
           }
 
+          // Public hosts only, re-checked on every redirect hop: this proxy is
+          // what the agent's read_url tool calls, so without the check it could
+          // read loopback services, the LAN, or a cloud metadata endpoint.
           const controller = new AbortController();
           const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-          const fetchRes = await fetch(target.toString(), {
-            redirect: 'follow',
-            signal: controller.signal,
-            headers: {
-              'user-agent':
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123 Safari/537.36',
-              accept: 'text/html,application/xhtml+xml',
-            },
-          }).finally(() => clearTimeout(timer));
+          let fetched: { response: Response; finalUrl: string };
+          try {
+            fetched = await fetchPublicUrl(target, {
+              init: {
+                signal: controller.signal,
+                headers: {
+                  'user-agent':
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123 Safari/537.36',
+                  accept: 'text/html,application/xhtml+xml',
+                },
+              },
+            });
+          } catch (error) {
+            if (error instanceof PublicUrlRejectedError) {
+              res.writeHead(403, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: error.message, reason: error.reason }));
+              return;
+            }
+            throw error;
+          } finally {
+            clearTimeout(timer);
+          }
+          const fetchRes = fetched.response;
 
           const contentType = fetchRes.headers.get('content-type') || 'text/html; charset=utf-8';
           if (!contentType.toLowerCase().includes('text/html')) {
@@ -848,17 +867,22 @@ function browserReaderProxyPlugin(): Plugin {
             res.end(
               JSON.stringify({
                 error: `Unsupported content type: ${contentType}`,
-                finalUrl: fetchRes.url,
+                finalUrl: fetched.finalUrl,
               }),
             );
             return;
           }
 
           const html = await fetchRes.text();
-          const finalUrl = fetchRes.url || target.toString();
+          const finalUrl = fetched.finalUrl;
           res.writeHead(fetchRes.status, {
             'Content-Type': 'text/html; charset=utf-8',
             'X-Final-Url': finalUrl,
+            // The body is a third party's page served from OUR origin. Sandbox it
+            // as a document (matching the in-app iframe's sandbox) so that opening
+            // this URL directly cannot run that page's script as OpenRoom and
+            // reach the same-origin /api routes. fetch() readers are unaffected.
+            'Content-Security-Policy': 'sandbox allow-forms allow-popups allow-scripts',
           });
           res.end(injectBaseHref(html, finalUrl));
         } catch (err) {
@@ -1988,7 +2012,7 @@ function localAoiStoreId(): string {
   // independently: a daemon can share this config.json while writing a different
   // memory store, and relaying to it would run the pass on the wrong files.
   return createHash('sha256')
-    .update(`${resolve(LLM_CONFIG_FILE)} ${resolve(SESSIONS_DIR)}`)
+    .update(`${resolve(LLM_CONFIG_FILE)}\0${resolve(SESSIONS_DIR)}`)
     .digest('hex')
     .slice(0, 16);
 }
@@ -4191,6 +4215,36 @@ function openroomResetPlugin(): Plugin {
   };
 }
 
+// Every /api route is mounted from a configureServer hook, which Vite runs BEFORE
+// its own host check -- so its DNS-rebinding protection never covered them, and
+// no route checked Origin. This plugin registers the shared guard ahead of all of
+// them, on the dev server and on `vite preview` (which mounts some of the same
+// routes). See devApiRequestGuard.ts for what it refuses and why.
+function devApiRequestGuardPlugin(): Plugin {
+  const toAllowedHosts = (configured: unknown): readonly string[] | true =>
+    configured === true
+      ? true
+      : Array.isArray(configured)
+        ? configured.filter((host): host is string => typeof host === 'string')
+        : [];
+  let serverAllowedHosts: readonly string[] | true = [];
+  let previewAllowedHosts: readonly string[] | true = [];
+  return {
+    name: 'openroom-dev-api-request-guard',
+    enforce: 'pre',
+    configResolved(resolved) {
+      serverAllowedHosts = toAllowedHosts(resolved.server.allowedHosts);
+      previewAllowedHosts = toAllowedHosts(resolved.preview.allowedHosts);
+    },
+    configureServer(server) {
+      server.middlewares.use(createDevApiRequestGuard({ allowedHosts: serverAllowedHosts }));
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(createDevApiRequestGuard({ allowedHosts: previewAllowedHosts }));
+    },
+  };
+}
+
 const config = ({ mode }: ConfigEnv): UserConfigExport => {
   const env = loadEnv(mode, process.cwd(), '');
   const normalizedMode = mode.toLowerCase();
@@ -4222,6 +4276,8 @@ const config = ({ mode }: ConfigEnv): UserConfigExport => {
   };
   const skipLegacy = env.VITE_SKIP_LEGACY !== 'false';
   const plugins: PluginOption[] = [
+    // MUST stay first: it has to run before every /api route below.
+    devApiRequestGuardPlugin(),
     llmConfigPlugin(),
     aoiDaemonHealthProxyPlugin(),
     aoiDaemonCapabilitiesProxyPlugin(),
@@ -4376,7 +4432,12 @@ const config = ({ mode }: ConfigEnv): UserConfigExport => {
     },
     base: getBase(),
     server: {
-      host: true,
+      // Loopback by default (Start-App.ps1 already passes --host 127.0.0.1).
+      // The /api routes have no auth of their own -- GET /api/llm-config returns
+      // every API key, others write files and run package scripts -- so binding
+      // every interface handed them to anyone on the same network. Set
+      // OPENROOM_DEV_HOST=0.0.0.0 to opt in to LAN access deliberately.
+      host: process.env.OPENROOM_DEV_HOST || '127.0.0.1',
       // Overridable so the Playwright suite can launch its own isolated server
       // on a dedicated port instead of reusing (or colliding with) a
       // developer's real dev server on 3000. strictPort only in that mode so a

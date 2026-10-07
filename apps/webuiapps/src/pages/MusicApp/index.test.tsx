@@ -14,6 +14,9 @@ const reportActionMock = vi.fn();
 // nowPlaying snapshot.
 const writeFileMock = vi.fn(async () => {});
 let capturedAgentHandler: ((action: unknown) => Promise<string>) | null = null;
+// The handler from the FIRST render, i.e. before state.json was applied: what a
+// cold-open agent action actually runs.
+let firstAgentHandler: ((action: unknown) => Promise<string>) | null = null;
 // Controls what the mocked NAS returns for /state.json. Empty => the app falls
 // back to DEFAULT_STATE (one empty "My Playlist"); a test can set a JSON string
 // to exercise the SYNC_STATE / init restore path.
@@ -31,6 +34,7 @@ vi.mock('@/lib', () => ({
   fetchVibeInfo: vi.fn(async () => ({})),
   useAgentActionListener: (_appId: number, handler: (action: unknown) => Promise<string>) => {
     capturedAgentHandler = handler;
+    firstAgentHandler ??= handler;
   },
   ActionTriggerBy: { User: 'user', Agent: 'agent' },
 }));
@@ -157,6 +161,7 @@ beforeEach(() => {
   playerCtorSpy.mockClear();
   setLoopSpy.mockClear();
   capturedAgentHandler = null;
+  firstAgentHandler = null;
   mockStateContent = '';
   playVideoAtSpy.mockClear();
   fetchYoutubeSearchResultsMock.mockReset();
@@ -367,6 +372,31 @@ describe('YouTubeApp – in-app viewer UX', () => {
 
     await waitFor(() => expect(screen.getByTestId('yt-results-popup')).toBeTruthy());
     expect(screen.getByTestId('yt-popup-title').textContent).toBe('Queue Mix');
+  });
+
+  it('OPEN_SEARCH on a cold open keeps the saved playlists in state.json', async () => {
+    // The handler that receives a cold-open action was created before state.json
+    // was applied. Its submitSearch -> persistState used to build on that
+    // render's DEFAULT_STATE and saved it, wiping the user's playlists.
+    mockStateContent = stateWithPlaylist(QUEUE_PLAYLIST);
+    render(<YouTubeApp />);
+    await waitFor(() => expect(firstAgentHandler).toBeTruthy());
+    const coldHandler = firstAgentHandler!;
+
+    let result: string | undefined;
+    await act(async () => {
+      result = await coldHandler({ action_type: 'OPEN_SEARCH', params: { query: 'jazz cafe' } });
+    });
+    expect(result).toBe('success');
+
+    await waitFor(() => expect(writeFileMock).toHaveBeenCalled());
+    const stateWrites = (writeFileMock.mock.calls as unknown[][]).filter((call) =>
+      String(call[0]).includes('state.json'),
+    );
+    const last = stateWrites[stateWrites.length - 1]?.[1] as unknown;
+    const saved = typeof last === 'string' ? JSON.parse(last) : last;
+    expect(saved.searchQuery).toBe('jazz cafe');
+    expect(saved.playlists.map((playlist: { id: string }) => playlist.id)).toContain('pl-queue');
   });
 
   it('PLAY_LAST_PLAYLIST plays the active My Playlist when lastPlayed is unset', async () => {

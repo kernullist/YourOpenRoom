@@ -18,15 +18,21 @@ jobs:
 
       - uses: pnpm/action-setup@v4
 
+      # undici 8 (apps/webuiapps) requires Node >= 22.19.
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
 
+      # lint:ci has no --fix: `pnpm run lint` rewrites fixable errors in the runner,
+      # so they could never fail the job.
       - name: Lint
-        run: pnpm run lint
+        run: pnpm run lint:ci
+
+      - name: Typecheck
+        run: pnpm --filter @openroom/webuiapps typecheck
 
       - name: Build
         run: pnpm build
@@ -34,8 +40,17 @@ jobs:
       # P5.1: enforce the Aoi field acceptance gate. It classifies the changed files,
       # runs the field-grounded acceptance pack, and exits non-zero when a required gate
       # fails (docs-only / no-autonomy changes are skipped -> exit 0).
+      #
+      # Base ref per event: on a push to main, origin/main already contains HEAD, so
+      # `--base origin/main` diffed nothing and the gate skipped every push. A push
+      # compares against the commit before it; a PR against its target branch.
       - name: Aoi field acceptance gate
+        env:
+          FIELD_CI_BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
         run: |
           git fetch --no-tags origin main
+          if [ "${{ github.event_name }}" = "pull_request" ]; then git fetch --no-tags origin "${{ github.base_ref }}"; fi
+          base="$FIELD_CI_BASE"
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then base="HEAD~1"; fi
           pnpm --filter @openroom/webuiapps field-ci:build
-          pnpm --filter @openroom/webuiapps field-ci -- --base origin/main
+          pnpm --filter @openroom/webuiapps field-ci -- --base "$base"

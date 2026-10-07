@@ -141,6 +141,16 @@ const IMPACT_INFO: Record<EvidenceImpact, { label: string; color: string; icon: 
     mixed: { label: 'COMPLEX', color: '#FAEA5F', icon: <Sparkles size={14} /> },
   };
 
+// Lookups for fields an agent writes into evidence files. The validators accept any
+// string, and indexing a map with an unknown key returned undefined -- the next
+// `.color` threw during render and, with no error boundary, unmounted the whole
+// desktop. Own-property check so keys like "constructor" cannot hit the prototype.
+export function lookup<V>(map: Record<string, V>, key: unknown, fallbackKey: string): V {
+  return typeof key === 'string' && Object.prototype.hasOwnProperty.call(map, key)
+    ? map[key]
+    : map[fallbackKey];
+}
+
 // ============ Sub-Components ============
 
 /** Evidence Card */
@@ -148,9 +158,9 @@ const EvidenceCard: React.FC<{
   evidence: EvidenceFile;
   onClick: () => void;
 }> = React.memo(({ evidence, onClick }) => {
-  const typeIcon = TYPE_ICONS[evidence.type];
-  const categoryInfo = CATEGORY_INFO[evidence.category];
-  const impactInfo = IMPACT_INFO[evidence.impact];
+  const typeIcon = lookup(TYPE_ICONS, evidence.type, 'document');
+  const categoryInfo = lookup(CATEGORY_INFO, evidence.category, 'other');
+  const impactInfo = lookup(IMPACT_INFO, evidence.impact, 'neutral');
 
   return (
     <motion.div
@@ -214,7 +224,7 @@ const EvidenceDetail: React.FC<{
   evidence: EvidenceFile;
   onClose: () => void;
 }> = React.memo(({ evidence, onClose }) => {
-  const impactInfo = IMPACT_INFO[evidence.impact];
+  const impactInfo = lookup(IMPACT_INFO, evidence.impact, 'neutral');
 
   return (
     <motion.div
@@ -239,7 +249,9 @@ const EvidenceDetail: React.FC<{
               <ChevronLeft size={18} />
             </button>
             <div>
-              <div className={styles.detailTypeLabel}>{TYPE_NAMES[evidence.type]}</div>
+              <div className={styles.detailTypeLabel}>
+                {lookup(TYPE_NAMES, evidence.type, 'document')}
+              </div>
               <div className={styles.detailTitle}>{evidence.title}</div>
             </div>
           </div>

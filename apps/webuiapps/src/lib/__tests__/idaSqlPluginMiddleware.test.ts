@@ -537,6 +537,11 @@ describe('ida-sql execute paths', () => {
   function withIdaExe(fixture: Fixture): string {
     const idaPath = join(fixture.home, 'ida.exe');
     fs.writeFileSync(idaPath, 'stub');
+    // GUI previews are blocked until the idasql plugin is found. Install a stub
+    // in the IDA directory itself so the fixture does not depend on whether the
+    // machine running the suite has the real plugin under %APPDATA% or IDAUSR.
+    fs.mkdirSync(join(fixture.home, 'plugins'), { recursive: true });
+    fs.writeFileSync(join(fixture.home, 'plugins', 'idasql.dll'), 'MZ');
     const current = loadIdaSqlConfig(fixture.configFile);
     saveIdaSqlConfig(fixture.configFile, { ...current, idaExePath: idaPath });
     return idaPath;

@@ -278,6 +278,26 @@ const YouTubeApp: React.FC = () => {
   // Live-derived from the player state (see the sync effect below); persisted
   // so the agent surface can read the current video title from state.json.
   const [nowPlaying, setNowPlaying] = useState<NowPlayingState | null>(null);
+  // What persistState builds on, read through a ref instead of the render
+  // closure. An agent action handled during a cold open runs a callback captured
+  // BEFORE state.json was applied; building on that closure saved DEFAULT_STATE
+  // (no playlists, no favorites) over the user's file. Kept current on every
+  // render, when cloud state is applied, and after every persist.
+  const latestAppStateRef = useRef<AppState | null>(null);
+  latestAppStateRef.current = {
+    searchQuery,
+    recentSearches,
+    favoriteTopics,
+    playlists,
+    activePlaylistId,
+    lastPlayedPlaylistId,
+    lastPlayedPlaylistMode,
+    sidebarOpen,
+    resultsAutoHide,
+    loopPlayback,
+    playerZoom,
+    nowPlaying,
+  };
   const [resultListHidden, setResultListHidden] = useState(false);
   const resultListAutoHiddenRef = useRef(false);
   const previousResultsAutoHideRef = useRef(false);
@@ -324,6 +344,13 @@ const YouTubeApp: React.FC = () => {
     setResultsAutoHide(normalized.resultsAutoHide);
     setLoopPlayback(normalized.loopPlayback);
     setPlayerZoom(clampPlayerZoom(normalized.playerZoom));
+    // Synchronously, not on the next render: waitForInit can resolve before that
+    // render commits, and a persist in between must build on the cloud state.
+    latestAppStateRef.current = {
+      ...normalized,
+      playerZoom: clampPlayerZoom(normalized.playerZoom),
+      nowPlaying: latestAppStateRef.current?.nowPlaying ?? null,
+    };
     // nowPlaying is intentionally NOT restored: the live player is its only
     // source of truth. The sync effect below rewrites it right away, so a
     // stale persisted claim (app closed mid-playback) self-heals on reload
@@ -343,7 +370,7 @@ const YouTubeApp: React.FC = () => {
 
   const persistState = useCallback(
     (updater: (prev: AppState) => AppState) => {
-      const currentState: AppState = {
+      const currentState: AppState = latestAppStateRef.current ?? {
         searchQuery,
         recentSearches,
         favoriteTopics,
@@ -358,6 +385,7 @@ const YouTubeApp: React.FC = () => {
         nowPlaying,
       };
       const nextState = updater(currentState);
+      latestAppStateRef.current = nextState;
       setSearchQuery(nextState.searchQuery);
       setRecentSearches(nextState.recentSearches);
       setFavoriteTopics(nextState.favoriteTopics);

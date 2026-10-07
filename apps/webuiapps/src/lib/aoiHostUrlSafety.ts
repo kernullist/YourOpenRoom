@@ -28,8 +28,12 @@ function isPrivateIpv4Octets(a: number, b: number): boolean {
 // The WHATWG URL parser compresses a mapped literal to HEX (127.0.0.1 becomes
 // "::ffff:7f00:1", 192.168.1.1 becomes "::ffff:c0a8:101"), so a dotted
 // "::ffff:127." prefix check is dead code and the compressed form escapes it.
+// IPv6 forms that carry an IPv4 address: IPv4-mapped (::ffff:a.b.c.d), the
+// deprecated IPv4-compatible form (::a.b.c.d), and the NAT64 well-known prefix
+// (64:ff9b::a.b.c.d). The WHATWG URL parser rewrites the dotted tail to hex
+// (::ffff:7f00:1), so both spellings are handled.
 function mappedIpv4Octets(host: string): { a: number; b: number } | null {
-  const mapped = host.match(/^::ffff:(.+)$/i);
+  const mapped = host.match(/^(?:::ffff:|::|64:ff9b::)(.+)$/i);
   if (!mapped) {
     return null;
   }
@@ -47,11 +51,45 @@ function mappedIpv4Octets(host: string): { a: number; b: number } | null {
 }
 
 /**
+ * The IPv4 address carried inside an IPv4-mapped (::ffff:), IPv4-compatible (::)
+ * or NAT64 (64:ff9b::) IPv6 address, in dotted form -- or null when there is none.
+ * Accepts both the dotted tail and the hex tail the URL parser rewrites it to
+ * ("::ffff:7f00:1"), which is the form a check written for "::ffff:a.b.c.d" misses.
+ */
+export function extractEmbeddedIpv4(ipv6: string): string | null {
+  const host = ipv6
+    .trim()
+    .toLowerCase()
+    .replace(/^\[(.*)\]$/, '$1');
+  const match = host.match(/^(?:::ffff:|::|64:ff9b::)(.+)$/);
+  if (!match) {
+    return null;
+  }
+  const tail = match[1];
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(tail)) {
+    return tail;
+  }
+  const hex = tail.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (!hex) {
+    return null;
+  }
+  const high = Number.parseInt(hex[1], 16);
+  const low = Number.parseInt(hex[2], 16);
+  return [high >> 8, high & 0xff, low >> 8, low & 0xff].join('.');
+}
+
+/**
  * True for loopback / private / link-local / metadata / CGNAT hosts that must
  * never be opened by host-browser or browser-drive navigations (SSRF surface).
  */
 export function isAoiPrivateOrLocalHostname(hostname: string): boolean {
-  const host = hostname.trim().toLowerCase().replace(/\.$/, '');
+  // URL.hostname keeps the brackets on IPv6 ("[::ffff:7f00:1]"). Strip them here
+  // rather than trusting every caller to, or the prefix checks below never match.
+  const host = hostname
+    .trim()
+    .toLowerCase()
+    .replace(/^\[(.*)\]$/, '$1')
+    .replace(/\.$/, '');
   if (!host) {
     return true;
   }

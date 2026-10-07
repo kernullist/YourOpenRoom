@@ -9,6 +9,7 @@ import {
   resolveAoiResearchRunTimeoutMs,
   startAoiResearchRun,
   validateAoiResearchSourceUrl,
+  isPrivateOrLocalIp,
   validateAoiResearchReport,
   type AoiResearchRunPaths,
   type AoiResearchTavilyConfig,
@@ -143,6 +144,25 @@ describe('Aoi research URL safety', () => {
       ok: true,
       normalizedUrl: 'https://example.com/page',
     });
+  });
+
+  it('rejects IPv4-mapped IPv6 literals in the hex form the URL parser produces', async () => {
+    // new URL('http://[::ffff:127.0.0.1]/') has hostname [::ffff:7f00:1]; the
+    // old check only decoded the dotted tail, so loopback and the metadata
+    // endpoint passed as public -- directly or as a redirect target.
+    for (const raw of [
+      'http://[::ffff:127.0.0.1]/',
+      'http://[::ffff:169.254.169.254]/latest/meta-data',
+      'http://[::127.0.0.1]/',
+      'http://[64:ff9b::10.0.0.1]/',
+    ]) {
+      await expect(validateAoiResearchSourceUrl(raw), raw).resolves.toMatchObject({
+        ok: false,
+        errorCode: 'private_network_rejected',
+      });
+    }
+    expect(isPrivateOrLocalIp('::ffff:7f00:1')).toBe(true);
+    expect(isPrivateOrLocalIp('::ffff:808:808')).toBe(false);
   });
 });
 

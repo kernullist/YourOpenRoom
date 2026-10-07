@@ -22,6 +22,7 @@ import {
   type AoiKiraAutomationMemoryContext,
 } from './aoiMemoryShared';
 import { batchConcurrent } from './fileApi';
+import { extractStatedUserName } from './chatDirectOpenIntents';
 import { recordAoiDistillerAttempt, type AoiDistillerAttempt } from './aoiMemoryDistillerHealth';
 import { resolveAoiPreferenceContext } from './aoiPreferenceMemory';
 import {
@@ -213,14 +214,6 @@ function sanitizeIdPart(value: string): string {
 function normalizeProjectKey(value: string | undefined): string | undefined {
   if (!value?.trim()) return undefined;
   return sanitizeIdPart(value.trim().toLowerCase());
-}
-
-function normalizeExtractedName(value: string): string {
-  return value
-    .trim()
-    .replace(/[.!?,。]+$/g, '')
-    .replace(/(이야|예요|이에요|입니다|야)$/u, '')
-    .trim();
 }
 
 function isValidScope(value: unknown): value is AoiMemoryScope {
@@ -581,8 +574,10 @@ export function normalizeAoiMemoryCandidate(
 }
 
 function conflictKeyForContent(content: string): string | null {
-  const normalized = content.toLowerCase();
-  if (/the user's name is\b/.test(normalized) || /user name\b/.test(normalized)) {
+  const normalized = content.toLowerCase().trim();
+  // Anchored: "The user's Git user name is kernullist." is not the user's name,
+  // and the unanchored /user name\b/ let it supersede the real one.
+  if (/^the user'?s name is\b/.test(normalized)) {
     return 'user.name';
   }
   if (/preferred name\b/.test(normalized)) {
@@ -732,26 +727,21 @@ export function extractHeuristicAoiMemoryCandidates(params: {
 
   const candidates: AoiMemoryCandidate[] = [];
 
-  const namePatterns = [
-    /(?:내 이름은|제 이름은)\s*([A-Za-z가-힣0-9_-]{2,40})/u,
-    /(?:나는|전|저는)\s*([A-Za-z가-힣0-9_-]{2,40})(?:이야|예요|이에요|야)\b/u,
-    /(?:my name is|i am|i'm)\s+([A-Za-z][A-Za-z0-9 _-]{1,40})/i,
-  ];
-  for (const pattern of namePatterns) {
-    const match = user.match(pattern);
-    const name = normalizeExtractedName(match?.[1] ?? '');
-    if (name) {
-      candidates.push({
-        type: 'fact',
-        scope: 'user',
-        content: `The user's name is ${name}.`,
-        importance: 0.95,
-        confidence: 0.9,
-        tags: ['identity'],
-        entities: [name],
-      });
-      break;
-    }
+  // Only names stated outright ("my name is", "call me", "내 이름은"). The old
+  // "i am|i'm" pattern turned "I'm working on the kernel driver today" into a
+  // 0.95-importance identity fact that superseded the user's real name, on every
+  // turn; the shared extractor is the one the chat panel uses.
+  const name = extractStatedUserName(user);
+  if (name) {
+    candidates.push({
+      type: 'fact',
+      scope: 'user',
+      content: `The user's name is ${name}.`,
+      importance: 0.95,
+      confidence: 0.9,
+      tags: ['identity'],
+      entities: [name],
+    });
   }
 
   const preferencePatterns = [

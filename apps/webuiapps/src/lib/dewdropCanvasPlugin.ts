@@ -8,6 +8,7 @@ import {
   applyOpenAiResponsesRuntimeOptions,
   normalizeProviderModelId,
 } from './llmModels';
+import { serverSelfOrigin } from './serverSelfOrigin';
 
 const STATIC_PREFIX = '/dewdrop-canvas';
 const API_PREFIX = '/api/dewdrop-canvas';
@@ -275,11 +276,6 @@ function getString(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
-function getHeaderString(value: string | string[] | undefined): string {
-  if (Array.isArray(value)) return value[0] || '';
-  return value || '';
-}
-
 function normalizeProvider(value: unknown): 'gemini' | 'deepseek' | 'openrouter' | 'simulator' {
   if (value === 'deepseek' || value === 'openrouter' || value === 'simulator') {
     return value;
@@ -488,12 +484,6 @@ export function getAoiLlmStatus(configFile: string): Record<string, unknown> {
 function formatFallbackReason(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return message.trim().slice(0, 500);
-}
-
-function getRequestOrigin(req: IncomingMessage): string {
-  const forwardedProto = getHeaderString(req.headers['x-forwarded-proto']).trim();
-  const host = getHeaderString(req.headers.host).trim() || '127.0.0.1:3000';
-  return `${forwardedProto || 'http'}://${host}`;
 }
 
 async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
@@ -1235,7 +1225,7 @@ async function handleDewdropApi(
       try {
         const resultText = await callAoiMainTextModel(
           aoiConfig,
-          getRequestOrigin(req),
+          serverSelfOrigin(req),
           buildRecommendPrompt(memos, lang),
           300,
           true,
@@ -1301,7 +1291,7 @@ async function handleDewdropApi(
       try {
         const text = await callAoiMainTextModel(
           aoiConfig,
-          getRequestOrigin(req),
+          serverSelfOrigin(req),
           buildSynthesizePrompt(textA, textB, lang),
           600,
         );
@@ -1350,7 +1340,7 @@ async function handleDewdropApi(
       try {
         const enhanced = await callAoiMainTextModel(
           aoiConfig,
-          getRequestOrigin(req),
+          serverSelfOrigin(req),
           buildEnhancePrompt(text, lang),
           600,
         );

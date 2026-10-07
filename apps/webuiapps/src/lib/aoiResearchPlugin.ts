@@ -22,6 +22,7 @@ import {
   type AoiResearchRunSummary,
   type AoiResearchStartRequest,
 } from './aoiResearchTypes';
+import { serverSelfOrigin } from './serverSelfOrigin';
 
 const API_PREFIX = '/api/aoi-research';
 const MAX_BODY_BYTES = 256 * 1024;
@@ -52,16 +53,6 @@ function isPathInsideRoot(root: string, target: string): boolean {
   const resolvedTarget = resolve(target);
   const diff = relative(resolvedRoot, resolvedTarget);
   return diff === '' || (!diff.startsWith('..') && !isAbsolute(diff));
-}
-
-function getHeaderString(value: string | string[] | undefined): string {
-  return Array.isArray(value) ? value[0] || '' : value || '';
-}
-
-function getRequestOrigin(req: IncomingMessage): string {
-  const forwardedProto = getHeaderString(req.headers['x-forwarded-proto']).trim();
-  const host = getHeaderString(req.headers.host).trim() || '127.0.0.1:3000';
-  return `${forwardedProto || 'http'}://${host}`;
 }
 
 export function normalizeAoiResearchSessionPath(value: unknown): string | null {
@@ -580,7 +571,7 @@ async function handleAoiResearchRequest(
       const paths = resolveRunPaths(sessionsDir, sessionPath, runId);
       const runPromise = startAoiResearchRun({
         configFile,
-        serverOrigin: getRequestOrigin(req),
+        serverOrigin: serverSelfOrigin(req),
         sessionPath,
         runId,
         paths,

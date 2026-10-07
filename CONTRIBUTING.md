@@ -5,7 +5,7 @@ Thank you for your interest in contributing! This guide will help you get starte
 ## Getting Started
 
 1. Fork the repository
-2. Clone your fork: `git clone https://github.com/YOUR_USERNAME/OpenRoom.git`
+2. Clone your fork: `git clone https://github.com/YOUR_USERNAME/YourOpenRoom.git`
 3. Install dependencies: `pnpm install`
 4. Start the dev server: `pnpm dev`
 5. Create a feature branch: `git checkout -b feat/my-feature`

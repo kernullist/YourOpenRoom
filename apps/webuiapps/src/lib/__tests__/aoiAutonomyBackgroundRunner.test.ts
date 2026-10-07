@@ -315,3 +315,44 @@ describe('startAoiAutonomyBackgroundRunner', () => {
     expect(runWakeup).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('startAoiAutonomyBackgroundRunner stop()', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('waits for a running cycle even when an interval fired during it', async () => {
+    // An interval firing mid-cycle used to replace inFlight with a no-op promise,
+    // so stop() resolved -- and the lock was released -- while the cycle wrote.
+    vi.useFakeTimers();
+    let finishCycle: () => void = () => {};
+    const runWakeup = vi.fn(
+      () =>
+        new Promise<ReturnType<typeof wakeupOk>>((resolve) => {
+          finishCycle = () => resolve(wakeupOk());
+        }),
+    );
+    const handle = startAoiAutonomyBackgroundRunner({
+      sessionsDir: '/sessions',
+      configFile: '/config.json',
+      intervalMs: 60_000,
+      listSessions: () => ['s/a'],
+      loadPolicy: () => policy(true),
+      runWakeup,
+    });
+    await vi.advanceTimersByTimeAsync(60_000); // first cycle starts and hangs
+    expect(runWakeup).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(60_000); // interval fires while it runs
+
+    let stopped = false;
+    const stopping = handle.stop().then(() => {
+      stopped = true;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(stopped).toBe(false);
+
+    finishCycle();
+    await stopping;
+    expect(stopped).toBe(true);
+  });
+});

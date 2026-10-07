@@ -90,14 +90,31 @@ describe('runAoiFieldCiGateCli (P5.1)', () => {
   });
 
   it('runs the gate for an autonomy-core change and prints the report', () => {
-    const getChangedFiles = vi.fn(() => ['src/lib/aoiAutonomyEvaluation.ts']);
+    // Repo-relative, as `git diff --name-only` prints it. The package-relative
+    // path this test used before classified as non_autonomy, so the required
+    // path never ran.
+    const getChangedFiles = vi.fn(() => ['apps/webuiapps/src/lib/aoiAutonomyEvaluation.ts']);
     const { deps, logs } = makeDeps({ getChangedFiles });
     const code = runAoiFieldCiGateCli(deps);
     expect(getChangedFiles).toHaveBeenCalledOnce();
-    // A required change either passes (0) or fails the gate (1) -- never the run-error 2.
-    expect([AOI_FIELD_CI_EXIT_OK, AOI_FIELD_CI_EXIT_GATE_FAILED]).toContain(code);
-    // The formatted report was emitted to stdout.
-    expect(logs.join('\n')).toMatch(/field/i);
+    expect(code).toBe(AOI_FIELD_CI_EXIT_OK);
+    expect(logs.join('\n')).toContain('field acceptance gate passed');
+  });
+
+  it('refuses an empty diff instead of reporting a skipped gate', () => {
+    const { deps, errors } = makeDeps({ getChangedFiles: () => [] });
+    expect(runAoiFieldCiGateCli(deps)).toBe(AOI_FIELD_CI_EXIT_RUN_ERROR);
+    expect(errors.some((line) => line.includes('no changed files'))).toBe(true);
+  });
+
+  it('refuses an empty or missing --base value', () => {
+    for (const argv of [['--base='], ['--base'], ['--base', '--other']]) {
+      const getChangedFiles = vi.fn(() => ['README.md']);
+      const { deps, errors } = makeDeps({ argv, getChangedFiles });
+      expect(runAoiFieldCiGateCli(deps), argv.join(' ')).toBe(AOI_FIELD_CI_EXIT_RUN_ERROR);
+      expect(getChangedFiles).not.toHaveBeenCalled();
+      expect(errors.join('\n')).toContain('--base');
+    }
   });
 
   it('exits with the run-error code when changed-file discovery throws', () => {

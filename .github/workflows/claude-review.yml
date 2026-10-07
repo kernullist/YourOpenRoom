@@ -31,6 +31,10 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         env:
           ANTHROPIC_BASE_URL: https://api.minimax.io/anthropic
+          # The PR that triggered this run. Without it the prompt resolved the number
+          # with `gh pr list ... '.[0]'`, i.e. the NEWEST open PR, so with two open
+          # PRs the review read and commented on the wrong one.
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         with:
           anthropic_api_key: ${{ secrets.MINIMAX_API_KEY }}
           show_full_output: true
@@ -47,7 +51,7 @@ jobs:
 
             IMPORTANT: After completing your review, you MUST post your findings as a PR comment.
             Steps to post: 1) Write review to /tmp/review.md using the Write tool, 2) Run: gh pr comment $PR_NUMBER --body-file /tmp/review.md
-            Get the PR number first via: gh pr list --state open --json number --jq '.[0].number'
+            $PR_NUMBER is already set to the pull request that triggered this run; do not look it up.
           claude_args: '--model MiniMax-M2.5 --max-turns 20 --allowedTools "Bash(git:*),Bash(gh:*),Read,Glob,Grep,WebFetch,Write"'
 
   interactive:

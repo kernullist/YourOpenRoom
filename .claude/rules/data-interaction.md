@@ -25,7 +25,7 @@ import { AppLifecycle } from '@gui/vibe-container';
 | **Operation** | Execute method directly | Execute → refresh Repo if data mismatch → retry once | `PLAY_TRACK`, `SET_VOLUME` |
 | **Data Mutation** | Agent has already written data | Directly refresh corresponding Repo | `CREATE_TRACK`, `DELETE_TRACK` |
 | **Refresh** | Reload Repo data | Optional navigation → refresh Repo | `REFRESH_TRACKS` |
-| **System** | System-level sync | See 2.6 SYNC_STATE | `SYNC_STATE` |
+| **System** | System-level sync | See 2.4 SYNC_STATE | `SYNC_STATE` |
 
 ### 2.2 Reporting & Listening
 
@@ -129,7 +129,6 @@ const state = JSON.parse(await api.readFile('/state.json'));
 > // ❌ Wrong: JSON.parse on an object throws SyntaxError (silently swallowed by catch)
 > const data = JSON.parse(result.content);
 > ```
-```
 
 ### 2.5 constants.ts Organization
 
@@ -158,7 +157,8 @@ await api.deleteFile('/posts/001.json');
 import { createFileSystemStore, createAppFileApi } from '@/lib';
 const store = createFileSystemStore(createAppFileApi('myApp'));
 await store.initFromCloud();
-const node = store.getByPath('/data/posts/001.json');
+// Store paths are already relative to apps/myApp/data -- no extra /data level.
+const node = store.getByPath('/posts/001.json');
 ```
 
 ### 3.3 React Hooks
@@ -171,7 +171,8 @@ import { useFileSystem, useFilePath, useFolderChildren } from '@/lib';
 
 - Do not concatenate `/nas/{AppName}` | Do not directly call `getClientComManager()` low-level methods
 - Multi-file reads must use `batchConcurrent` (see `concurrent-execution.md`)
-- Batch writes use `putTextFiles` | Components should prefer React Hooks
+- Batch writes use `putTextFiles` with full session paths (`apps/{appName}/data/...`): unlike
+  `createAppFileApi`, it is NOT app-relative | Components should prefer React Hooks
 
 ---
 

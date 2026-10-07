@@ -57,26 +57,52 @@ export function resolveAoiFieldCiBaseRef(
 ): string {
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
-    if (arg === '--base' && index + 1 < argv.length) {
-      return argv[index + 1];
+    // An empty base diffed HEAD...HEAD (nothing changed, gate skipped, exit 0) and a
+    // trailing --base silently fell back to HEAD~1 -- both easy to produce from a CI
+    // expression that evaluates to "". Refuse instead of guessing.
+    if (arg === '--base') {
+      const value = argv[index + 1]?.trim();
+      if (!value || value.startsWith('--')) {
+        throw new Error('--base needs a git ref.');
+      }
+      return value;
     }
     if (arg.startsWith('--base=')) {
-      return arg.slice('--base='.length);
+      const value = arg.slice('--base='.length).trim();
+      if (!value) {
+        throw new Error('--base= needs a git ref.');
+      }
+      return value;
     }
   }
-  return env.AOI_FIELD_CI_BASE ?? 'HEAD~1';
+  return env.AOI_FIELD_CI_BASE?.trim() || 'HEAD~1';
 }
 
 // Orchestrate one CI-gate run and RETURN the exit code (never calls process.exit). All
 // I/O is injected, so this is the unit-testable heart of the CLI.
 export function runAoiFieldCiGateCli(deps: AoiFieldCiGateCliDeps): number {
-  const baseRef = resolveAoiFieldCiBaseRef(deps.argv, deps.env);
+  let baseRef: string;
+  try {
+    baseRef = resolveAoiFieldCiBaseRef(deps.argv, deps.env);
+  } catch (error) {
+    deps.logError(`[aoi-field-ci] ${error instanceof Error ? error.message : String(error)}`);
+    return AOI_FIELD_CI_EXIT_RUN_ERROR;
+  }
   let changedFiles: readonly string[];
   try {
     changedFiles = deps.getChangedFiles(baseRef);
   } catch (error) {
     deps.logError(
       `[aoi-field-ci] failed to resolve changed files from base '${baseRef}': ${String(error)}`,
+    );
+    return AOI_FIELD_CI_EXIT_RUN_ERROR;
+  }
+  // No changes at all means the base was wrong (on a push to main, origin/main
+  // already contains HEAD), not that the change was docs-only. Reporting that as a
+  // skipped gate made every push pass without checking anything.
+  if (changedFiles.length === 0) {
+    deps.logError(
+      `[aoi-field-ci] no changed files between '${baseRef}' and HEAD; refusing to skip the gate. Pass the commit the change started from as --base.`,
     );
     return AOI_FIELD_CI_EXIT_RUN_ERROR;
   }

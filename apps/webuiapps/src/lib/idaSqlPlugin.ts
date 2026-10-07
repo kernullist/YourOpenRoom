@@ -29,6 +29,7 @@ import {
   loadAoiHostBridgeToken,
   verifyAoiHostBridgeToken,
 } from './aoiHostBridgeAuth';
+import { evaluateDevApiRequest } from './devApiRequestGuard';
 import { evaluateAoiHostBridgeGate } from './aoiHostBridgeGate';
 import {
   loadAoiHostBridgeKillSwitchState,
@@ -1629,7 +1630,14 @@ export function createIdaSqlMiddleware(options: IdaSqlPluginOptions): IdaSqlMidd
     const method = req.method ?? 'GET';
     const tokenHeader = req.headers[AOI_HOST_BRIDGE_AUTH_HEADER];
     let token = Array.isArray(tokenHeader) ? (tokenHeader[0] ?? null) : (tokenHeader ?? null);
-    if (!token && options.trustLoopbackToken && isLoopbackRequest(req)) {
+    // Loopback alone is not the operator -- their browser is loopback too. Same
+    // cross-site refusal as the host bridge before lending the token.
+    if (
+      !token &&
+      options.trustLoopbackToken &&
+      isLoopbackRequest(req) &&
+      evaluateDevApiRequest(req).allowed
+    ) {
       token = loadAoiHostBridgeToken(openroomHome);
     }
 

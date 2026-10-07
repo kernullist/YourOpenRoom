@@ -236,7 +236,23 @@ function editableToConfig(
   };
 }
 
-let nextTargetId = 100;
+/**
+ * The next free target id. Ids must be unique across the WHOLE mod --
+ * completed_targets is one flat list and finishTarget skips ids already in it -- so
+ * this looks at every stage and at completed ids. A module counter that restarted
+ * at 100 on each page load handed out ids that already existed, and a story whose
+ * new target reused a completed id could never advance.
+ */
+export function nextModTargetId(
+  stages: readonly { targets: readonly { id: number }[] }[],
+  completedTargets: readonly number[] = [],
+): number {
+  const ids = [
+    ...stages.flatMap((stage) => stage.targets.map((target) => target.id)),
+    ...completedTargets,
+  ];
+  return ids.length > 0 ? Math.max(...ids) + 1 : 1;
+}
 
 const ModEditor: React.FC<{
   entry: ModEntry;
@@ -259,7 +275,7 @@ const ModEditor: React.FC<{
       {
         stage_name: `Stage ${stages.length + 1}`,
         stage_description: '',
-        targets: [{ id: nextTargetId++, description: '' }],
+        targets: [{ id: nextModTargetId(stages, currentState.completed_targets), description: '' }],
       },
     ]);
   };
@@ -276,7 +292,10 @@ const ModEditor: React.FC<{
 
   const handleAddTarget = (stageIndex: number) => {
     const updated = [...stages];
-    updated[stageIndex].targets.push({ id: nextTargetId++, description: '' });
+    updated[stageIndex].targets.push({
+      id: nextModTargetId(stages, currentState.completed_targets),
+      description: '',
+    });
     setStages(updated);
   };
 

@@ -194,6 +194,29 @@ describe('Aoi proactive brief candidate storage', () => {
     ]);
   });
 
+  it('keeps a decided status when the scout refreshes the same brief', () => {
+    // The scout always submits status 'candidate'; overwriting brought dismissed
+    // or unsafe-blocked briefs back as active cards on the next scout.
+    for (const decided of ['dismissed', 'archived', 'blocked', 'accepted'] as const) {
+      const root = makeTempRoot();
+      upsertAoiProactiveBriefCandidate(root, makeCandidate({ status: decided }), 1200);
+      const refreshed = upsertAoiProactiveBriefCandidate(
+        root,
+        makeCandidate({ id: 'aoi-brief-test-rescout', status: 'candidate', updatedAt: 1300 }),
+        1300,
+      );
+      expect(refreshed.created, decided).toBe(false);
+      expect(refreshed.candidate.status, decided).toBe(decided);
+    }
+    // An undecided brief still takes the refreshed status.
+    const root = makeTempRoot();
+    upsertAoiProactiveBriefCandidate(root, makeCandidate({ status: 'shown' }), 1200);
+    expect(
+      upsertAoiProactiveBriefCandidate(root, makeCandidate({ status: 'candidate' }), 1300).candidate
+        .status,
+    ).toBe('candidate');
+  });
+
   it('expires stale candidates without deleting their audit files', () => {
     const root = makeTempRoot();
     const upserted = upsertAoiProactiveBriefCandidate(

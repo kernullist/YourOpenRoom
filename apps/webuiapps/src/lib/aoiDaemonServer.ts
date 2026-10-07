@@ -24,6 +24,7 @@ import { createAoiHostBridgeMiddleware, type AoiHostBridgeMiddleware } from './a
 import { createIdaSqlMiddleware, type IdaSqlMiddleware } from './idaSqlPlugin';
 import { ensureAoiHostBridgeToken } from './aoiHostBridgeAuth';
 import { createSessionDataMiddleware, type SessionDataMiddleware } from './sessionDataServer';
+import { createDevApiRequestGuard } from './devApiRequestGuard';
 import {
   createAoiDaemonHealthHooks,
   createAoiDaemonHealthTracker,
@@ -191,7 +192,16 @@ export async function startAoiDaemon(options: AoiDaemonOptions): Promise<AoiDaem
   // before listen() resolves and the sync boot block finishes assigning it).
   let requestShutdown: () => void = () => {};
 
+  // The autonomy, research and session-data routes below carry no token, and the
+  // browser is a loopback client too: refuse cross-site requests and rebound
+  // Host names before any of them runs (same gate as the dev server's /api).
+  const requestGuard = createDevApiRequestGuard({ pathPrefixes: ['/'] });
+
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+    requestGuard(req, res, () => handleDaemonRequest(req, res));
+  });
+
+  const handleDaemonRequest = (req: IncomingMessage, res: ServerResponse): void => {
     // Cheap, session-less readiness probe answered before any autonomy routing.
     if (isHealthzRequest(req)) {
       writeHealth(res, health.snapshot(Date.now()));
@@ -223,7 +233,7 @@ export async function startAoiDaemon(options: AoiDaemonOptions): Promise<AoiDaem
         });
       });
     });
-  });
+  };
 
   // Bind first, so a port conflict fails before the loop is ever started (no
   // dangling interval to clean up on a failed boot).

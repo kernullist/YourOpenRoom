@@ -580,7 +580,9 @@ const Shell: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    seedMetaFiles();
+    seedMetaFiles().catch((error) => {
+      console.warn('[Shell] Seeding app meta files failed; the next caller retries', error);
+    });
   }, []);
 
   // Pause user action reporting while upload or mod generation is in progress

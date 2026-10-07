@@ -30,6 +30,7 @@ import {
   LEGACY_SEED_IDS,
   LIVE_ARTICLE_PREFIX,
   LIVE_NEWS_LIMIT,
+  safeExternalUrl,
   shouldRefreshLiveArticles,
   toLiveArticle,
 } from './liveNews';
@@ -300,10 +301,10 @@ const ArticleDetail: React.FC<ArticleDetailProps> = ({ article, onBack }) => {
           {article.sourceName && <span className={styles.articleSource}>{article.sourceName}</span>}
           <span className={styles.newsListDate}>{formatDate(article.publishedAt)}</span>
         </div>
-        {article.sourceUrl && (
+        {safeExternalUrl(article.sourceUrl) && (
           <a
             className={styles.articleSourceLink}
-            href={article.sourceUrl}
+            href={safeExternalUrl(article.sourceUrl)}
             target="_blank"
             rel="noreferrer"
           >

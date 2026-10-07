@@ -717,7 +717,12 @@ export function buildAoiPreviewOnlyFileWorkPreparedActionPlan(
       required: true,
       approvalRequiredBeforeRun: true,
       summary: 'Validation commands are planned but not run during preview preparation.',
-      commands: dedupeStrings(input.validationCommands ?? [], DEFAULT_VALIDATION_COMMANDS),
+      // An explicit [] means "no command" (save_memory passes it); only an absent
+      // list gets the defaults. Defaulting [] turned a memory save into a
+      // command-capable work order that needed approval for `pnpm test`.
+      commands: input.validationCommands
+        ? dedupeStrings(input.validationCommands, [])
+        : DEFAULT_VALIDATION_COMMANDS,
       expectedEvidenceRefs: ['workspace:validation', ...evidenceRefs.slice(0, 4)],
     }),
     nonGoals: [

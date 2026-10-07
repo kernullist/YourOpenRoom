@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { createServer, type Server } from 'http';
 import { join } from 'path';
-import { createSessionDataMiddleware } from '../sessionDataServer';
+import { createSessionDataMiddleware, writeFileAtomic } from '../sessionDataServer';
 
 const tempRoots: string[] = [];
 const servers: Server[] = [];
@@ -79,6 +79,26 @@ describe('createSessionDataMiddleware', () => {
     const get = await fetch(dataUrl(base, rel));
     expect(get.status).toBe(200);
     expect(await get.json()).toEqual(body);
+  });
+
+  it('writes a binary body byte-for-byte and serves it back', async () => {
+    const dir = makeTempDir();
+    const base = await bootServer(dir);
+    const rel = 'apps/album/data/photo.png';
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff, 0x80]);
+
+    const post = await fetch(dataUrl(base, rel), {
+      method: 'POST',
+      headers: { 'Content-Type': 'image/png' },
+      body: bytes,
+    });
+    expect(post.status).toBe(200);
+    // A text write would have mangled 0xff/0x80 into U+FFFD.
+    expect([...fs.readFileSync(join(dir, rel))]).toEqual([...bytes]);
+
+    const get = await fetch(dataUrl(base, rel));
+    expect(get.headers.get('content-type')).toBe('image/png');
+    expect([...new Uint8Array(await get.arrayBuffer())]).toEqual([...bytes]);
   });
 
   it('returns {} for a missing file', async () => {
@@ -167,5 +187,24 @@ describe('createSessionDataMiddleware', () => {
     const base = await bootServer(dir);
     const res = await fetch(`${base}/api/session-data-typo?path=x`);
     expect(res.status).toBe(404);
+  });
+});
+
+describe('writeFileAtomic', () => {
+  it('replaces the file in one step and leaves no temp file behind', () => {
+    const dir = makeTempDir();
+    const target = join(dir, 'chat.json');
+    fs.writeFileSync(target, '{"version":1,"old":true}');
+    writeFileAtomic(target, '{"version":1,"new":true}');
+    expect(fs.readFileSync(target, 'utf-8')).toBe('{"version":1,"new":true}');
+    expect(fs.readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+    writeFileAtomic(join(dir, 'blob.bin'), Buffer.from([1, 2, 3]));
+    expect([...fs.readFileSync(join(dir, 'blob.bin'))]).toEqual([1, 2, 3]);
+  });
+
+  it('cleans up and rethrows when the directory does not exist', () => {
+    const dir = makeTempDir();
+    expect(() => writeFileAtomic(join(dir, 'missing', 'x.json'), '{}')).toThrow();
+    expect(fs.readdirSync(dir)).toEqual([]);
   });
 });

@@ -6,6 +6,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'http';
 import type * as fsType from 'fs';
+import { dirname } from 'path';
 
 export interface LogBody {
   level: string;
@@ -48,7 +49,9 @@ type FsLike = Pick<typeof fsType, 'appendFileSync' | 'existsSync' | 'mkdirSync'>
  * Accepts POST requests with LogBody JSON, appends formatted lines to logFile.
  */
 export function createLogMiddleware(logFile: string, fsModule: FsLike) {
-  const logDir = logFile.split('/').slice(0, -1).join('/');
+  // path.dirname, not a '/' split: on Windows the path uses backslashes, the
+  // split found no directory, and mkdirSync('') failed every request with 400.
+  const logDir = dirname(logFile);
 
   return (req: IncomingMessage, res: ServerResponse, _next: () => void) => {
     if (req.method !== 'POST') {

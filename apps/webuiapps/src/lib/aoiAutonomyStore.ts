@@ -288,12 +288,36 @@ function listJsonFiles<T>(directory: string): T[] {
     if (!fs.existsSync(directory)) {
       return [];
     }
-    return fs
+    // Newest first BEFORE the cap. readdir returns names in lexical order and these
+    // ids are time-prefixed, so slicing first kept the 200 OLDEST records: once a
+    // session passed 200 decisions every new accept was invisible (proposals stuck
+    // at missing_fresh_acceptance), dismissals stopped counting toward cooldowns,
+    // and new dispatches were never seen. Only the kept files are read.
+    const files = fs
       .readdirSync(directory, { withFileTypes: true })
       .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
-      .map((entry) => readJson<T>(join(directory, entry.name)))
-      .filter((item): item is T => item !== null)
-      .slice(0, MAX_LIST_ITEMS);
+      .map((entry) => {
+        const filePath = join(directory, entry.name);
+        let mtimeMs = 0;
+        try {
+          mtimeMs = fs.statSync(filePath).mtimeMs;
+        } catch {
+          // Vanished between readdir and stat; it sorts last and fails to read.
+        }
+        return { filePath, name: entry.name, mtimeMs };
+      })
+      .sort((a, b) => b.mtimeMs - a.mtimeMs || b.name.localeCompare(a.name));
+    const items: T[] = [];
+    for (const file of files) {
+      if (items.length >= MAX_LIST_ITEMS) {
+        break;
+      }
+      const item = readJson<T>(file.filePath);
+      if (item !== null) {
+        items.push(item);
+      }
+    }
+    return items;
   } catch {
     return [];
   }

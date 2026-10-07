@@ -388,6 +388,21 @@ describe('Aoi proactive brief scout', () => {
     ]);
   });
 
+  it('drops sources on IPv4-mapped and NAT64 private addresses', () => {
+    // The URL parser rewrites ::ffff:127.0.0.1 to ::ffff:7f00:1, which a check
+    // written for the dotted form let through.
+    const sources = normalizeAoiProactiveBriefSearchResults({
+      retrievedAt: 10_000,
+      results: [
+        { title: 'Loopback in disguise', url: 'http://[::ffff:127.0.0.1]/a', content: 'x' },
+        { title: 'NAT64 private range', url: 'http://[64:ff9b::10.0.0.1]/b', content: 'x' },
+        { title: 'Public IPv6 host', url: 'https://[2606:4700::1111]/c', content: 'x' },
+      ],
+    });
+
+    expect(sources.map((source) => source.host)).toEqual(['2606:4700::1111']);
+  });
+
   it('applies source host controls before storing a candidate', async () => {
     const root = makeTempRoot();
     saveProfile(root);

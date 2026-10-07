@@ -104,7 +104,6 @@ router.post("/upload", async (req, res) =>
 
     try
     {
-        log("info", `Analysis started: ${texts.length} sources, ${totalChars} total chars`);
             const results = [];
             for (const file of req.files)
             {

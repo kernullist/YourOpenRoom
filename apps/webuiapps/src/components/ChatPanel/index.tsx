@@ -64,6 +64,13 @@ import {
   parseStartedVideo,
   type StartedVideo,
 } from '@/lib/chatDirectActions';
+import {
+  extractNameMemory,
+  isDirectIdeOpenIntent,
+  isDirectKiraOpenIntent,
+  isDirectPeAnalystOpenIntent,
+  isDirectYouTubeOpenIntent,
+} from '@/lib/chatDirectOpenIntents';
 import { classifyMusicIntent, shouldClassifyMusicIntent } from '@/lib/aoiMusicIntentClassifier';
 import {
   buildIdleMusicCardLine,
@@ -832,7 +839,7 @@ import {
   type AoiTtsStatusSnapshot,
 } from '@/lib/aoiTts';
 import {
-  loadChatHistory,
+  loadChatHistoryWithRetry,
   loadChatHistorySync,
   saveChatHistory,
   clearChatHistory,
@@ -2146,26 +2153,6 @@ function buildDefaultImagePrompt(
   }
 }
 
-function extractNameMemory(text: string): string | null {
-  const trimmed = text.trim();
-
-  const patterns = [
-    /(?:내 이름은|제 이름은)\s*([A-Za-z가-힣0-9_-]{2,30})/u,
-    /(?:나는|전|저는)\s*([A-Za-z가-힣0-9_-]{2,30})(?:이야|예요|이에요|야)\b/u,
-    /(?:my name is|i am|i'm)\s+([A-Za-z][A-Za-z0-9 _-]{1,30})/i,
-  ];
-
-  for (const pattern of patterns) {
-    const match = trimmed.match(pattern);
-    const candidate = match?.[1]?.trim();
-    if (candidate) {
-      return `The user's name is ${candidate}.`;
-    }
-  }
-
-  return null;
-}
-
 function mapMemoryCategoryToAoiType(category: string | undefined): AoiMemoryType {
   switch (category) {
     case 'preference':
@@ -2233,22 +2220,6 @@ function buildDirectMusicAck(
   }
 }
 
-function isDirectYouTubeOpenIntent(text: string): boolean {
-  const normalized = text.trim().toLowerCase();
-  if (!normalized) return false;
-
-  const patterns = [
-    /\b(?:youtube|you tube|music app)\b.*(?:open|launch|run|start|show)/i,
-    /\b(?:open|launch|run|start|show).*(?:youtube|you tube|music app)\b/i,
-    /유튜브.*(?:실행해|열어줘|띄워줘|켜줘|보여줘)/,
-    /(?:실행해|열어줘|띄워줘|켜줘|보여줘).*(?:유튜브|youtube|뮤직 앱|music app)/,
-    /youtube 실행해/i,
-    /유튜브 실행해/i,
-  ];
-
-  return patterns.some((pattern) => pattern.test(text));
-}
-
 function buildYouTubeOpenAck(
   userText: string,
   responseLanguageMode: ResponseLanguageMode = 'match-user',
@@ -2266,27 +2237,6 @@ function buildYouTubeOpenAck(
   }
 }
 
-function isDirectKiraOpenIntent(text: string): boolean {
-  const normalized = text.trim().toLowerCase();
-  if (!normalized) return false;
-
-  const patterns = [
-    /\bkira\b.*(?:open|launch|run|start|show)/i,
-    /(?:open|launch|run|start|show).*\bkira\b/i,
-    /\b(?:project management|manage the project|project board|task board|kanban|work board)\b/i,
-    /\b(?:show|open|launch|run|start).*(?:project board|task board|kanban|work board)\b/i,
-    /키라.*(?:실행해|열어줘|띄워줘|켜줘|보여줘)/,
-    /(?:실행해|열어줘|띄워줘|켜줘|보여줘).*(?:키라|kira)/,
-    /kira 실행해/i,
-    /키라 띄워줘/,
-    /프로젝트.*(?:관리하자|관리해|관리하고 싶어|보여줘|보자|확인하자|열어줘|띄워줘)/,
-    /(?:작업|할 일|업무).*(?:관리하자|관리해|보여줘|보자|확인하자|열어줘|띄워줘)/,
-    /칸반.*(?:열어줘|보여줘|실행해|띄워줘)/,
-  ];
-
-  return patterns.some((pattern) => pattern.test(text));
-}
-
 function buildKiraOpenAck(
   userText: string,
   responseLanguageMode: ResponseLanguageMode = 'match-user',
@@ -2302,22 +2252,6 @@ function buildKiraOpenAck(
     default:
       return "I'll open Kira for you.";
   }
-}
-
-function isDirectIdeOpenIntent(text: string): boolean {
-  const normalized = text.trim().toLowerCase();
-  if (!normalized) return false;
-
-  const patterns = [
-    /\baoi'?s ide\b.*(?:open|launch|run|start|show)/i,
-    /\bide\b.*(?:open|launch|run|start|show)/i,
-    /\bcode editor\b.*(?:open|launch|run|start|show)/i,
-    /\b(?:open|launch|run|start|show).*(?:aoi'?s ide|ide|code editor)\b/i,
-    /(?:아오이.?ide|ide|에디터|코드 에디터).*(?:실행해|열어줘|띄워줘|켜줘|보여줘)/,
-    /(?:실행해|열어줘|띄워줘|켜줘|보여줘).*(?:아오이.?ide|ide|에디터|코드 에디터)/,
-  ];
-
-  return patterns.some((pattern) => pattern.test(text));
 }
 
 function buildIdeOpenAck(
@@ -3120,35 +3054,6 @@ Rules:
   }
 }
 
-function isDirectPeAnalystOpenIntent(text: string): boolean {
-  const normalized = text.trim().toLowerCase();
-  if (!normalized) return false;
-
-  const patterns = [
-    /\bpe analyst\b.*(?:open|launch|run|start|show)/i,
-    /\bpe analyzer\b.*(?:open|launch|run|start|show)/i,
-    /\bpe analysis\b.*(?:open|launch|run|start|show)/i,
-    /\b(?:open|launch|run|start|show).*(?:pe analyst|pe analyzer|pe analysis)\b/i,
-    /\b(?:analyze|analysis|reverse|triage|inspect|review).*(?:a\s+)?pe\b/i,
-    /\b(?:want to|wanna|would like to|let'?s)\s+(?:analyze|inspect|review).*(?:a\s+)?pe\b/i,
-    /\bpe\b.*(?:analyze|analysis|reverse|triage|inspect|review)/i,
-    /(?:pe 분석기|pe 분석|분석기).*(?:실행해|열어줘|띄워줘|켜줘|보여줘)/,
-    /(?:실행해|열어줘|띄워줘|켜줘|보여줘).*(?:pe 분석기|pe 분석|분석기)/,
-    /pe.*분석하고 싶어/,
-    /pe.*분석하자/,
-    /pe.*분석해보자/,
-    /pe.*분석할래/,
-    /pe.*분석 좀 해줘/,
-    /분석하고 싶어.*pe/,
-    /분석하자.*pe/,
-    /분석해보자.*pe/,
-    /pe analyst 열어줘/i,
-    /pe analyzer 열어줘/i,
-  ];
-
-  return patterns.some((pattern) => pattern.test(text));
-}
-
 function buildPeAnalystOpenAck(
   userText: string,
   responseLanguageMode: ResponseLanguageMode = 'match-user',
@@ -3812,6 +3717,9 @@ const ChatPanel: React.FC<{
 
   // Debounced save
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The session whose chat.json could not be read (500, lock, half-written file).
+  // Autosave is held for it so a failed read never becomes an overwrite.
+  const chatHistoryLoadFailedSessionRef = useRef<string | null>(null);
 
   useEffect(() => {
     saveAoiAutonomyPanelSettings(aoiAutonomyPanelSettings);
@@ -3852,9 +3760,15 @@ const ChatPanel: React.FC<{
   useEffect(() => {
     if (messages.length === 0 && chatHistory.length === 0) return;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    // Captured now: if the session switches before the timer fires, these
+    // messages belong to the old session and must not land in the new one's file.
+    const scheduledSessionPath = sessionPathRef.current;
     saveTimerRef.current = setTimeout(() => {
+      if (sessionPathRef.current !== scheduledSessionPath) return;
+      // The saved transcript could not be read; writing now would replace it.
+      if (chatHistoryLoadFailedSessionRef.current === scheduledSessionPath) return;
       saveChatHistory(
-        sessionPathRef.current,
+        scheduledSessionPath,
         messagesRef.current,
         chatHistoryRef.current,
         suggestedRepliesRef.current,
@@ -4176,7 +4090,30 @@ const ChatPanel: React.FC<{
     // spec) sends a message while the persisted transcript is still in flight,
     // the restore below must not clobber that live conversation.
     const baselineMessageIds = new Set(messagesRef.current.map((msg) => msg.id));
-    loadChatHistory(sessionPath).then(async (data) => {
+    loadChatHistoryWithRetry(sessionPath).then(async (loadResult) => {
+      if (loadResult.status === 'error') {
+        // Keep whatever is on disk: no prologue seed (autosave would write it
+        // over the transcript), and autosave stays held for this session.
+        chatHistoryLoadFailedSessionRef.current = sessionPath;
+        console.warn('[ChatPanel] Could not read the saved conversation; not saving over it', {
+          sessionPath,
+          error: loadResult.error,
+        });
+        setMessages([
+          {
+            id: 'chat-history-load-error',
+            role: 'assistant',
+            content:
+              'The saved conversation could not be loaded, so nothing will be saved over it. Reload to try again.',
+            ephemeral: true,
+          },
+        ]);
+        return;
+      }
+      if (chatHistoryLoadFailedSessionRef.current === sessionPath) {
+        chatHistoryLoadFailedSessionRef.current = null;
+      }
+      const data = loadResult.status === 'ok' ? loadResult.data : null;
       const loadedMessages = (data?.messages ?? []) as CharacterDisplayMessage[];
       const loadedHistory = data?.chatHistory ?? [];
       const hasSavedConversation = hasPersistedConversation(data);
@@ -4507,8 +4444,9 @@ const ChatPanel: React.FC<{
     // Re-seed prologue and opening replies
     await seedPrologue();
 
-    // Re-seed meta files
-    await seedMetaFiles();
+    // Re-seed meta files. Forced: the reset deleted this session's directory, so
+    // the "already seeded" record for the same path no longer holds.
+    await seedMetaFiles({ force: true });
   }, [modCollection, seedPrologue]);
 
   const handleResetSessionHistory = useCallback(async () => {
@@ -7116,11 +7054,16 @@ const ChatPanel: React.FC<{
 
       if (!hasImageAttachments && isDirectKiraOpenIntent(text)) {
         try {
-          await dispatchAgentAction({
+          // dispatchAgentAction resolves (never rejects) on failure, so a closed
+          // or unresponsive app has to be caught here or the ack below lies.
+          const openResult = await dispatchAgentAction({
             app_id: KIRA_APP_ID,
             action_type: 'OPEN_APP',
             params: { app_id: String(KIRA_APP_ID) },
           });
+          if (isFailedAgentActionResult(openResult)) {
+            throw new Error(openResult || 'OPEN_APP returned no result');
+          }
           const ack = buildKiraOpenAck(
             text,
             normalizeResponseLanguageMode(conversationPreferencesRef.current?.responseLanguageMode),
@@ -7145,11 +7088,14 @@ const ChatPanel: React.FC<{
 
       if (!hasImageAttachments && isDirectIdeOpenIntent(text)) {
         try {
-          await dispatchAgentAction({
+          const openResult = await dispatchAgentAction({
             app_id: IDE_APP_ID,
             action_type: 'OPEN_APP',
             params: { app_id: String(IDE_APP_ID) },
           });
+          if (isFailedAgentActionResult(openResult)) {
+            throw new Error(openResult || 'OPEN_APP returned no result');
+          }
           const ack = buildIdeOpenAck(
             text,
             normalizeResponseLanguageMode(conversationPreferencesRef.current?.responseLanguageMode),
@@ -7174,11 +7120,14 @@ const ChatPanel: React.FC<{
 
       if (!hasImageAttachments && isDirectPeAnalystOpenIntent(text)) {
         try {
-          await dispatchAgentAction({
+          const openResult = await dispatchAgentAction({
             app_id: PE_ANALYST_APP_ID,
             action_type: 'OPEN_APP',
             params: { app_id: String(PE_ANALYST_APP_ID) },
           });
+          if (isFailedAgentActionResult(openResult)) {
+            throw new Error(openResult || 'OPEN_APP returned no result');
+          }
           const ack = buildPeAnalystOpenAck(
             text,
             normalizeResponseLanguageMode(conversationPreferencesRef.current?.responseLanguageMode),
@@ -7545,11 +7494,14 @@ const ChatPanel: React.FC<{
 
       if (!hasImageAttachments && isDirectYouTubeOpenIntent(text)) {
         try {
-          await dispatchAgentAction({
+          const openResult = await dispatchAgentAction({
             app_id: YOUTUBE_APP_ID,
             action_type: 'OPEN_APP',
             params: { app_id: String(YOUTUBE_APP_ID) },
           });
+          if (isFailedAgentActionResult(openResult)) {
+            throw new Error(openResult || 'OPEN_APP returned no result');
+          }
           const ack = buildYouTubeOpenAck(
             text,
             normalizeResponseLanguageMode(conversationPreferencesRef.current?.responseLanguageMode),
@@ -9801,16 +9753,29 @@ const ChatPanel: React.FC<{
             latestDiagnosticsParams &&
             fileMutatedSinceDiagnostics
           ) {
-            const verificationResult = await executeDiagnosticsTool(latestDiagnosticsParams);
-            latestDiagnosticsHadIssues = diagnosticsResultHasIssues(verificationResult);
             fileMutatedSinceDiagnostics = false;
+            let verificationNote: string;
+            try {
+              const verificationResult = await executeDiagnosticsTool(latestDiagnosticsParams);
+              latestDiagnosticsHadIssues = diagnosticsResultHasIssues(verificationResult);
+              verificationNote = latestDiagnosticsHadIssues
+                ? `Auto-fix verification reran structured_diagnostics after file changes and still found issues: ${summarizeToolResultForModel('structured_diagnostics', verificationResult)}. Continue fixing before responding.`
+                : `Auto-fix verification reran structured_diagnostics after file changes and the diagnostics are now clean: ${summarizeToolResultForModel('structured_diagnostics', verificationResult)}. You may now respond to the user.`;
+            } catch (error) {
+              // A diagnostics failure must not abort the turn; say so and let the
+              // model answer with what it has.
+              verificationNote = `Auto-fix verification could not rerun structured_diagnostics: ${error instanceof Error ? error.message : String(error)}. Respond to the user and mention that verification did not run.`;
+            }
+            // The intercepted respond_to_user call still needs its own tool
+            // result: providers reject a request whose assistant tool_calls
+            // entry has no matching tool message, so a system note here made
+            // the very next chat() call fail.
             currentMessages = [
               ...currentMessages,
               {
-                role: 'system',
-                content: latestDiagnosticsHadIssues
-                  ? `Auto-fix verification reran structured_diagnostics after file changes and still found issues: ${summarizeToolResultForModel('structured_diagnostics', verificationResult)}. Continue fixing before responding.`
-                  : `Auto-fix verification reran structured_diagnostics after file changes and the diagnostics are now clean: ${summarizeToolResultForModel('structured_diagnostics', verificationResult)}. You may now respond to the user.`,
+                role: 'tool',
+                content: verificationNote,
+                tool_call_id: tc.id,
               },
             ];
             continue;
@@ -13215,8 +13180,27 @@ const ChatPanel: React.FC<{
                 </div>
                 <div className={styles.modelHint}>{hostSpawnApproval.program}</div>
                 {hostSpawnApproval.args.length > 0 ? (
-                  <div className={styles.modelHint}>
-                    args: {hostSpawnApproval.args.join(' ').slice(0, 200)}
+                  // Every argument, in full: this is what the operator approves.
+                  // A truncated line let a harmless-looking prefix hide the part
+                  // that actually runs (e.g. `-c "..."` after 200 chars of flags).
+                  <div className={styles.modelHint} data-testid="host-spawn-approval-args">
+                    args ({hostSpawnApproval.args.length}):
+                    <ol
+                      style={{
+                        margin: '4px 0 0',
+                        paddingLeft: 20,
+                        maxHeight: 160,
+                        overflowY: 'auto',
+                        overflowWrap: 'anywhere',
+                        whiteSpace: 'pre-wrap',
+                      }}
+                    >
+                      {hostSpawnApproval.args.map((arg, index) => (
+                        <li key={index}>
+                          <code>{arg}</code>
+                        </li>
+                      ))}
+                    </ol>
                   </div>
                 ) : null}
                 {hostSpawnApproval.allowlistId ? (
@@ -13513,7 +13497,7 @@ const ChatPanel: React.FC<{
               nextKiraConfig,
               nextTavilyConfig,
             );
-            if (igc) saveImageGenConfig(igc);
+            saveImageGenConfig(igc);
             saveUserProfileConfig(nextUserProfile);
             saveConversationPreferences(nextConversationPreferences);
             saveToolSafetyPolicy(nextToolSafetyPolicy);
@@ -14482,10 +14466,15 @@ const SettingsModal: React.FC<{
   const [tavilyBaseUrl, setTavilyBaseUrl] = useState(
     tavilyConfig?.baseUrl || DEFAULT_TAVILY_BASE_URL,
   );
+  // Same rule as the save path (login CLI, Codex Auth, or a base URL). Codex Auth
+  // saves with baseUrl '' and is active at runtime, but this check left it out:
+  // Settings reopened showing "Disabled" and the next Save deleted the config.
   const [dialogEnabled, setDialogEnabled] = useState(
     Boolean(
       dialogConfig?.model?.trim() &&
-      ((dialogConfig.provider && isLoginCliProvider(dialogConfig.provider)) ||
+      ((dialogConfig.provider &&
+        (isLoginCliProvider(dialogConfig.provider) ||
+          isCodexAuthProvider(dialogConfig.provider))) ||
         dialogConfig?.baseUrl?.trim()),
     ),
   );

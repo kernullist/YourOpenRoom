@@ -23,6 +23,7 @@ import {
   loadAoiHostBridgeToken,
   verifyAoiHostBridgeToken,
 } from './aoiHostBridgeAuth';
+import { evaluateDevApiRequest } from './devApiRequestGuard';
 import {
   AOI_COMPUTER_USE_CAPABILITY,
   AOI_HOST_BRIDGE_DEFAULT_ENABLED_CAPABILITIES,
@@ -49,6 +50,7 @@ import {
   buildAoiBrowserDriveUploadGate,
 } from './aoiBrowserDriveUploadGate';
 import {
+  AOI_DESKTOP_CAPTURE_CAPABILITY,
   AOI_DESKTOP_INPUT_FOREGROUND_CAPABILITY,
   parseAoiDesktopInputRequest,
   runAoiDesktopInput,
@@ -2038,7 +2040,11 @@ async function resolveAoiHostBridgeRouteInner(
         ...(expectedStartTime !== undefined ? { expectedStartTime } : {}),
         requestedAt: params.now,
       },
-      context: { killAllowlistImages, aoiSpawnedPids },
+      context: {
+        killAllowlistImages,
+        aoiSpawnedPids,
+        protectedPids: collectAoiHostBridgeProtectedPids(),
+      },
       now: params.now,
     });
     if (policy.allowed) {
@@ -2102,6 +2108,7 @@ async function resolveAoiHostBridgeRouteInner(
     const context = {
       killAllowlistImages,
       aoiSpawnedPids: collectAoiSpawnedPids(params.openroomHome, params.now),
+      protectedPids: collectAoiHostBridgeProtectedPids(),
     };
     const request = {
       pid: Number.isFinite(pid) ? pid : -1,
@@ -2483,18 +2490,17 @@ async function resolveAoiHostBridgeRouteInner(
     // shows everything on it and cannot be redacted.
     // Capture is part of Computer-Use, so the master covers it. An operator who
     // wants the rest without screenshots can still turn os_desktop_capture off
-    // explicitly, and that explicit false wins.
-    if (
-      request?.op === 'capture' &&
-      !isAoiHostBridgeCapabilityEnabled(killSwitch, AOI_COMPUTER_USE_CAPABILITY)
-    ) {
+    // explicitly, and that explicit false wins. Only an explicit false counts:
+    // the key is not default-on, so asking isAoiHostBridgeCapabilityEnabled about
+    // it would block capture for everyone who never touched it.
+    if (request?.op === 'capture' && killSwitch.entries[AOI_DESKTOP_CAPTURE_CAPABILITY] === false) {
       return {
         status: 403,
         payload: {
           ok: false,
           error: 'blocked',
           denyReasons: ['capability_disabled'],
-          detail: [`capability_disabled:${AOI_COMPUTER_USE_CAPABILITY}`],
+          detail: [`capability_disabled:${AOI_DESKTOP_CAPTURE_CAPABILITY}`],
         },
       };
     }
@@ -2661,6 +2667,15 @@ function collectAoiSpawnedPids(openroomHome: string, now: number): number[] {
   return loadAoiHostSpawnedPids(openroomHome, now);
 }
 
+// The process serving the bridge and the one that launched it (the dev runner
+// or the daemon supervisor). Killing either takes the bridge -- and with it the
+// kill switch -- down mid-request, so they are protected even when the caller
+// allowlists their image. Children are left out on purpose: the processes Aoi
+// spawned are the ones it is meant to be able to stop.
+function collectAoiHostBridgeProtectedPids(): number[] {
+  return [process.pid, process.ppid].filter((pid) => Number.isInteger(pid) && pid > 0);
+}
+
 // --- HTTP middleware (thin adapter) ------------------------------------------
 
 export type AoiHostBridgeMiddleware = (
@@ -2744,7 +2759,16 @@ export function createAoiHostBridgeMiddleware(
     const method = req.method ?? 'GET';
     const tokenHeader = req.headers[AOI_HOST_BRIDGE_AUTH_HEADER];
     let token = Array.isArray(tokenHeader) ? (tokenHeader[0] ?? null) : (tokenHeader ?? null);
-    if (!token && options.trustLoopbackToken && isAoiHostBridgeLoopbackRequest(req)) {
+    // A loopback socket is not proof of the operator: a page in their browser
+    // is a loopback client too. Lend the token only to requests that are not
+    // cross-site (the dev server's guard refuses those already; this keeps the
+    // fallback safe wherever it is mounted).
+    if (
+      !token &&
+      options.trustLoopbackToken &&
+      isAoiHostBridgeLoopbackRequest(req) &&
+      evaluateDevApiRequest(req).allowed
+    ) {
       token = loadAoiHostBridgeToken(openroomHome);
     }
 

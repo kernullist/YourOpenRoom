@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildAoiHostBridgeLinkedSourcePatch,
   getAoiHostBridgeConsentLink,
+  needsAoiHostBridgeConsentRepair,
 } from '../aoiHostBridgeConsent';
 
 describe('aoiHostBridgeConsent', () => {
@@ -35,5 +36,22 @@ describe('aoiHostBridgeConsent', () => {
 
   it('returns null for an unknown capability', () => {
     expect(getAoiHostBridgeConsentLink('nope')).toBeNull();
+  });
+});
+
+describe('needsAoiHostBridgeConsentRepair', () => {
+  it('repairs only a source nobody has decided on', () => {
+    expect(needsAoiHostBridgeConsentRepair(undefined)).toBe(true);
+    expect(needsAoiHostBridgeConsentRepair({ enabled: false })).toBe(true);
+  });
+
+  it('leaves an explicit decision alone, and does not rewrite an enabled one', () => {
+    // An operator who disabled the session source must not be re-granted on the
+    // next settings open.
+    expect(
+      needsAoiHostBridgeConsentRepair({ enabled: false, consentReason: 'Disabled by operator' }),
+    ).toBe(false);
+    expect(needsAoiHostBridgeConsentRepair({ enabled: false, lastReviewedAt: 1000 })).toBe(false);
+    expect(needsAoiHostBridgeConsentRepair({ enabled: true })).toBe(false);
   });
 });

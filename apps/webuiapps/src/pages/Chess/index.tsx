@@ -124,7 +124,7 @@ function cloneBoard(board: Board): Board {
 }
 
 /** Check if a square is attacked by the specified color */
-function isAttackedBy(board: Board, r: number, c: number, byColor: Color): boolean {
+export function isAttackedBy(board: Board, r: number, c: number, byColor: Color): boolean {
   const opp = byColor;
   // Knight attacks
   const knightDeltas: Pos[] = [
@@ -206,8 +206,11 @@ function isAttackedBy(board: Board, r: number, c: number, byColor: Color): boole
     }
   }
 
-  // Pawn attacks
-  const pawnDir = opp === 'w' ? -1 : 1;
+  // Pawn attacks. White pawns advance toward row 0 (pseudoMoves uses dir -1), so
+  // a white pawn attacking (r, c) stands one row BELOW it, at r + 1; a black one
+  // at r - 1. The signs were inverted, so a pawn never gave check: the king could
+  // step next to one, and a pawn mate was scored as stalemate.
+  const pawnDir = opp === 'w' ? 1 : -1;
   for (const dc of [-1, 1]) {
     const nr = r + pawnDir,
       nc = c + dc;

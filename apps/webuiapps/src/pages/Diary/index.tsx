@@ -4,6 +4,7 @@ import { motion, AnimatePresence, type Variants } from 'framer-motion';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
+import { rehypeAllowlist } from '@/lib/rehypeAllowlist';
 import { initVibeApp, AppLifecycle } from '@gui/vibe-container';
 import {
   useFileSystem,
@@ -310,7 +311,9 @@ const renderDiaryContent = (content: string) => {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
-      rehypePlugins={[rehypeRaw]}
+      // rehypeAllowlist MUST follow rehypeRaw: raw HTML in an entry (agent-written
+      // or pasted) otherwise renders as live iframes, scripts and handlers.
+      rehypePlugins={[rehypeRaw, rehypeAllowlist]}
       components={markdownComponents}
     >
       {processed}

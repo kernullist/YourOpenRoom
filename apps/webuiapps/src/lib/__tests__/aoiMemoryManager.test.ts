@@ -1390,3 +1390,40 @@ describe('loadAoiRecentMemoryEpisodes() (R3.1)', () => {
     expect(await loadAoiRecentMemoryEpisodes('aoi/default')).toEqual([]);
   });
 });
+
+describe('identity memories', () => {
+  it('does not read "I am / I\'m ..." as a name', () => {
+    // These used to become 0.95-importance identity facts on every turn.
+    for (const userMessage of [
+      "I'm working on the kernel driver today",
+      'I am going to bed now',
+      "I'm tired",
+    ]) {
+      const candidates = extractHeuristicAoiMemoryCandidates({ userMessage });
+      expect(
+        candidates.some((candidate) => candidate.content.startsWith("The user's name is")),
+        userMessage,
+      ).toBe(false);
+    }
+    const named = extractHeuristicAoiMemoryCandidates({ userMessage: 'Hi, my name is Kim.' });
+    expect(named.some((candidate) => candidate.content === "The user's name is Kim.")).toBe(true);
+  });
+
+  it('keeps the real name when a fact only mentions a "user name"', () => {
+    const existing = [
+      makeMemory({
+        id: 'mem-name',
+        type: 'fact',
+        content: "The user's name is Kim.",
+        normalizedContent: "the user's name is kim.",
+      }),
+    ];
+    const merged = mergeAoiMemoryCandidates(
+      existing,
+      [{ type: 'fact', content: "The user's Git user name is kernullist.", confidence: 0.9 }],
+      { sessionPath: 'aoi/default', episodeId: 'ep-9', now: 200 },
+    );
+    const name = merged.memories.find((memory) => memory.id === 'mem-name');
+    expect(name?.status).toBe('active');
+  });
+});

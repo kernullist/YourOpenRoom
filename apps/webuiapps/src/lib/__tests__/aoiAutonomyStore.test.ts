@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   appendAoiObservation,
   appendAoiOutcomeSignalRecord,
+  appendAoiProposalDecision,
   appendAoiReflection,
   applyAoiProposalDecision,
   applyAoiProposalFeedback,
@@ -1050,5 +1051,49 @@ describe('recordAoiOperatorFeedbackLabelAction user_correction emission (P1.1)',
     const root = makeTempRoot();
     recordLabel(root, 'unsafe', 'system');
     expect(loadAoiOutcomeSignalRecords(root, SESSION, 2000)).toHaveLength(0);
+  });
+});
+
+describe('store listings past the 200-record cap', () => {
+  it('returns the NEWEST decisions, so a fresh accept is never invisible', () => {
+    const sessionsDir = fs.mkdtempSync(join(os.tmpdir(), 'aoi-store-cap-'));
+    try {
+      const sessionPath = 'aoi/default';
+      const start = 1_800_000_000_000;
+      for (let index = 0; index < 250; index += 1) {
+        const id = `aoi-decision-${String(index).padStart(4, '0')}`;
+        appendAoiProposalDecision(sessionsDir, {
+          version: 1,
+          id,
+          proposalId: `aoi-proposal-${index}`,
+          sessionPath,
+          cooldownKey: `key-${index}`,
+          action: 'accept',
+          actor: 'user',
+          createdAt: start + index,
+          previousStatus: 'active',
+          nextStatus: 'accepted',
+        });
+        const file = join(
+          sessionsDir,
+          ...sessionPath.split('/'),
+          'aoi-autonomy',
+          'decisions',
+          `${id}.json`,
+        );
+        if (fs.existsSync(file)) {
+          const at = new Date(start + index * 1000);
+          fs.utimesSync(file, at, at);
+        }
+      }
+
+      const decisions = loadAoiProposalDecisions(sessionsDir, sessionPath);
+      expect(decisions).toHaveLength(200);
+      // Before the fix this was decision 0199: the 200 oldest were kept.
+      expect(decisions[0].id).toBe('aoi-decision-0249');
+      expect(decisions.some((decision) => decision.id === 'aoi-decision-0000')).toBe(false);
+    } finally {
+      fs.rmSync(sessionsDir, { recursive: true, force: true });
+    }
   });
 });

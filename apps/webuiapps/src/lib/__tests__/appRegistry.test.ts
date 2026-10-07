@@ -12,6 +12,7 @@ import {
   parseOsTargetAppId,
   resetActionsCache,
   resolveAppAction,
+  parseMetaYamlActions,
 } from '../appRegistry';
 
 afterEach(() => {
@@ -130,5 +131,30 @@ describe('appRegistry app identity helpers', () => {
     expect(parsed.app.app_name).toBe('aoiresearch');
     expect(parsed.requested_action).toBe('NOT_A_REAL_ACTION');
     expect(parsed.supported_actions).toContain('OPEN_APP_WINDOW');
+  });
+});
+
+describe('parseMetaYamlActions with Windows line endings', () => {
+  const metaLf = [
+    'app_id: 16',
+    'actions:',
+    '  - type: CREATE_NOTE',
+    '    name: Create Note',
+    '    description: Refresh after writing a note',
+    '    params:',
+    '      - name: filePath',
+    '        type: string',
+    '        description: The note file path',
+    '        required: true',
+    '',
+  ].join('\n');
+
+  it('parses a CRLF file exactly like the LF one', () => {
+    // core.autocrlf checkouts seed meta.yaml with \r\n; one-line descriptions
+    // used to parse as '' (action) or as the param's own name.
+    const lf = parseMetaYamlActions(metaLf);
+    const crlf = parseMetaYamlActions(metaLf.replace(/\n/g, '\r\n'));
+    expect(crlf).toEqual(lf);
+    expect(crlf[0]?.description).toBe('Refresh after writing a note');
   });
 });

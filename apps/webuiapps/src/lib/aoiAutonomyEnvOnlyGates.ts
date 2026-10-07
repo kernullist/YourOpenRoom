@@ -89,7 +89,7 @@ function isHardOff(value: string | undefined): boolean {
 
 // Mirrors parseBoolEnvTristate in aoiAutonomyBackgroundRunner: unset (or empty)
 // means no ceiling, a truthy value permits, and anything else is a hard block.
-function isNetworkCeilingBlocking(value: string | undefined): boolean {
+export function isNetworkCeilingBlocking(value: string | undefined): boolean {
   if (value === undefined || value.trim() === '') {
     return false;
   }

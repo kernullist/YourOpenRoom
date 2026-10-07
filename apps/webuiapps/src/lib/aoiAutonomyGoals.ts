@@ -1047,7 +1047,9 @@ export function activateAoiGoalFromProposal(params: {
     (goal) =>
       goal.status !== 'abandoned' &&
       goal.status !== 'completed' &&
-      (goal.sourceRefs.some((ref) => sourceRefs.includes(ref)) ||
+      (goal.sourceRefs.some(
+        (ref) => !isPlaceholderGoalSourceRef(ref) && sourceRefs.includes(ref),
+      ) ||
         overlapScore(goal.userIntentSummary, userIntentSummary) >= 0.75),
   );
   if (duplicate) {
@@ -1148,9 +1150,22 @@ function observationRefs(observation: AoiObservation): string[] {
   ];
 }
 
+// Refs every goal created from a chat message carries, and every tick's chat
+// observation repeats. Matching on them made ANY later message count as progress
+// on every such goal (or block it on 'need input'), and made a second requested
+// goal a 'duplicate' of the first. Real refs and text overlap still match.
+const PLACEHOLDER_GOAL_SOURCE_REFS: ReadonlySet<string> = new Set([
+  'observation:latest-user-message',
+  'chat:latest-user-message',
+]);
+
+function isPlaceholderGoalSourceRef(ref: string): boolean {
+  return PLACEHOLDER_GOAL_SOURCE_REFS.has(ref);
+}
+
 function observationMatchesGoal(observation: AoiObservation, goal: AoiGoal): boolean {
   const refs = new Set(observationRefs(observation));
-  if (goal.sourceRefs.some((ref) => refs.has(ref))) {
+  if (goal.sourceRefs.some((ref) => !isPlaceholderGoalSourceRef(ref) && refs.has(ref))) {
     return true;
   }
   if (refs.has(`goal:${goal.id}`) || [...refs].some((ref) => ref.startsWith(`goal:${goal.id}/`))) {

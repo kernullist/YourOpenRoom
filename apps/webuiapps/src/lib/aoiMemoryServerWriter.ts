@@ -238,8 +238,10 @@ function normalizeAoiMemoryCandidate(candidate: AoiMemoryCandidate): AoiMemoryCa
 }
 
 function conflictKeyForContent(content: string): string | null {
-  const normalized = content.toLowerCase();
-  if (/the user's name is\b/.test(normalized) || /user name\b/.test(normalized)) {
+  const normalized = content.toLowerCase().trim();
+  // Anchored, matching aoiMemoryManager: a fact that merely mentions a "user name"
+  // (a Git or service account) must not supersede the user's actual name.
+  if (/^the user'?s name is\b/.test(normalized)) {
     return 'user.name';
   }
   if (/preferred name\b/.test(normalized)) {

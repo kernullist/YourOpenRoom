@@ -445,6 +445,36 @@ describe('Aoi autonomy goals', () => {
     expect(loadAoiActiveGoals(root, SESSION_PATH)[0].plan.steps[0].status).toBe('done');
   });
 
+  it('does not count an unrelated chat message as progress on a user goal', () => {
+    // Every chat goal and every tick's chat observation share the placeholder
+    // ref observation:latest-user-message; matching on it advanced the goal on
+    // any message at all.
+    const root = makeTempRoot();
+    makeGoal(root);
+    const result = updateAoiGoalProgressFromObservations({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      observations: [
+        makeObservation({
+          id: 'latest-user-message',
+          source: 'chat',
+          summary: 'What should I cook for dinner tonight?',
+          payloadRef: 'chat:latest-user-message',
+        }),
+      ],
+      now: NOW + 2000,
+    });
+    expect(result.events.some((event) => event.kind === 'progress')).toBe(false);
+    expect(loadAoiActiveGoals(root, SESSION_PATH)[0].plan.steps[0].status).toBe('pending');
+  });
+
+  it('activates a second, unrelated user goal instead of returning the first', () => {
+    const root = makeTempRoot();
+    const first = makeGoal(root);
+    const second = makeGoal(root, '이것도 목표로 관리하자. 가족 사진 앨범 정리를 끝까지 하자.');
+    expect(second.id).not.toBe(first.id);
+    expect(loadAoiActiveGoals(root, SESSION_PATH)).toHaveLength(2);
+  });
   it('does not close a goal from completion wording without a canonical validated outcome', () => {
     const root = makeTempRoot();
     const goal = makeGoal(root);

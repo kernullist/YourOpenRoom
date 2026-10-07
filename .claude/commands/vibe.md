@@ -156,7 +156,7 @@ Build status: pnpm build passed
 Changed files: Added {N} / Modified {M} / Deleted {K}
 ```
 
-After the change is completed, restore the `workflow.json` mode to `create` and restore stages to the 5 creation mode stages (all `completed`), so that the next change can be correctly identified.
+After the change is completed, restore the `workflow.json` mode to `create` and restore stages to the 6 creation mode stages (all `completed`), so that the next change can be correctly identified.
 
 ## Error Handling
 

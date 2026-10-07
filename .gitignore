@@ -121,4 +121,5 @@ docs/*
 !docs/kira-codex-grade-worker-reviewer-plan.md
 !docs/kira-remaining-work-items.md
 !docs/aoi-music-intent-design.md
+!docs/code-review-2026-10.md
 .worktrees/

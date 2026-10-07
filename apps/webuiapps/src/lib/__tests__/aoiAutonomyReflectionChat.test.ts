@@ -1,3 +1,9 @@
+// @vitest-environment node
+//
+// The adapter is server-only: it calls the provider with Node's fetch. Under
+// happy-dom the global AbortController is happy-dom's, and Node 22+'s fetch
+// rejects a signal that is not a native AbortSignal, so the real-HTTP cases
+// failed on the test environment rather than on the code.
 import * as fs from 'fs';
 import * as http from 'http';
 import * as os from 'os';

@@ -277,6 +277,13 @@ export function startAoiAutonomyBackgroundRunner(
   };
 
   const startTick = (): void => {
+    // Only a tick that will actually run replaces inFlight. An interval firing
+    // while a cycle is still running used to overwrite it with tick()'s instant
+    // no-op promise, so stop() resolved -- and the caller released the loop lock
+    // and exited -- in the middle of a cycle that was still writing.
+    if (running || stopped) {
+      return;
+    }
     inFlight = tick();
   };
 

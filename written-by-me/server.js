@@ -4,21 +4,25 @@ const fs = require("fs");
 const path = require("path");
 const { EventEmitter } = require("events");
 const express = require("express");
-const cors = require("cors");
 const { listModels, AI_PROVIDER } = require("./services/ai");
 
 const app = express();
 
-if (!process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY === "sk-your-deepseek-api-key")
+// Claude CLI mode needs no key (README: "Required for API mode" only).
+if (AI_PROVIDER !== "claude_cli" &&
+    (!process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY === "sk-your-deepseek-api-key"))
 {
-    console.error("[ERROR] OPENAI_API_KEY not set. Copy .env.example to .env and fill in your API key (DeepSeek or OpenAI-compatible).");
+    console.error("[ERROR] OPENAI_API_KEY not set. Copy .env.example to .env and fill in your API key (DeepSeek or OpenAI-compatible), or set AI_PROVIDER=claude_cli.");
     process.exit(1);
 }
 
 fs.mkdirSync(path.join(__dirname, "uploads"), { recursive: true });
 fs.mkdirSync(path.join(__dirname, "output"), { recursive: true });
 
-app.use(cors());
+// No CORS middleware: the UI is served from this same origin (public/). cors()
+// with defaults answered every origin with `*`, so any website could drive
+// fetch-url, translate and the analyze routes -- spending the user's API key or
+// their local Claude login -- and read the results.
 app.use(express.json({ limit: "50mb" }));
 app.use(express.static(path.join(__dirname, "public"), {
     etag: false,
@@ -137,9 +141,11 @@ app.use("/api", uploadRoutes);
 app.use("/api", analyzeRoutes);
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () =>
+// Loopback unless HOST says otherwise: the routes have no auth.
+const HOST = process.env.HOST || "127.0.0.1";
+app.listen(PORT, HOST, () =>
 {
-    console.log(`[WrittenByMe] Server running at http://localhost:${PORT}`);
+    console.log(`[WrittenByMe] Server running at http://${HOST === "127.0.0.1" ? "localhost" : HOST}:${PORT}`);
     console.log(`[WrittenByMe] Provider: ${AI_PROVIDER === "claude_cli" ? "Claude CLI" : (process.env.OPENAI_BASE_URL || "https://api.deepseek.com/v1")}`);
     console.log(`[WrittenByMe] Model: ${process.env.AI_MODEL || "deepseek-chat"}`);
 });

@@ -35,6 +35,7 @@ import {
   loadAoiHostBridgeToken,
   verifyAoiHostBridgeToken,
 } from './aoiHostBridgeAuth';
+import { evaluateDevApiRequest } from './devApiRequestGuard';
 import { evaluateAoiHostBridgeGate } from './aoiHostBridgeGate';
 import {
   loadAoiHostBridgeKillSwitchState,
@@ -78,6 +79,7 @@ import {
   type GhidraLabConfigView,
 } from './ghidraLabTypes';
 import type { LLMConfig } from './llmModels';
+import { serverSelfOrigin } from './serverSelfOrigin';
 
 export const GHIDRA_LAB_API_PREFIX = '/api/ghidra-lab';
 export const GHIDRA_LAB_APPROVAL_TTL_MS = 5 * 60 * 1000;
@@ -1254,12 +1256,6 @@ function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
   });
 }
 
-function getRequestOrigin(req: IncomingMessage): string {
-  const forwardedProto = String(req.headers['x-forwarded-proto'] ?? '').trim();
-  const host = String(req.headers.host ?? '').trim() || '127.0.0.1:3000';
-  return `${forwardedProto || 'http'}://${host}`;
-}
-
 export function createGhidraLabMiddleware(options: GhidraLabPluginOptions): GhidraLabMiddleware {
   const sessionsDir = resolve(options.sessionsDir);
   const openroomHome = resolve(options.openroomHome || resolve(sessionsDir, '..'));
@@ -1274,7 +1270,14 @@ export function createGhidraLabMiddleware(options: GhidraLabPluginOptions): Ghid
     const method = req.method ?? 'GET';
     const tokenHeader = req.headers[AOI_HOST_BRIDGE_AUTH_HEADER];
     let token = Array.isArray(tokenHeader) ? (tokenHeader[0] ?? null) : (tokenHeader ?? null);
-    if (!token && options.trustLoopbackToken && isLoopbackRequest(req)) {
+    // Loopback alone is not the operator -- their browser is loopback too. Same
+    // cross-site refusal as the host bridge before lending the token.
+    if (
+      !token &&
+      options.trustLoopbackToken &&
+      isLoopbackRequest(req) &&
+      evaluateDevApiRequest(req).allowed
+    ) {
       token = loadAoiHostBridgeToken(openroomHome);
     }
 
@@ -1290,7 +1293,7 @@ export function createGhidraLabMiddleware(options: GhidraLabPluginOptions): Ghid
         token,
         openroomHome,
         configFile,
-        serverOrigin: getRequestOrigin(req),
+        serverOrigin: serverSelfOrigin(req),
         now: Date.now(),
       });
       writeJson(res, result.status, result.payload);

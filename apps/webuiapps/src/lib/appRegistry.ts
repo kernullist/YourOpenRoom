@@ -780,7 +780,11 @@ function withCommonAppActions(app: AppStaticDef, actions: AppActionDef[]): AppAc
  * Parse action definitions from meta.yaml
  * Standard array format: actions: [{ type, name, description, params: [{ name, type, ... }] }]
  */
-function parseMetaYamlActions(yamlContent: string): AppActionDef[] {
+export function parseMetaYamlActions(rawYamlContent: string): AppActionDef[] {
+  // CRLF first: a Windows checkout (core.autocrlf) seeds meta.yaml with \r\n, and
+  // the line patterns below end in `(.+)$` without the m flag, which cannot match
+  // before a \r -- every inline action and param description parsed as empty.
+  const yamlContent = rawYamlContent.replace(/\r\n?/g, '\n');
   const actions: AppActionDef[] = [];
 
   // Check for actions: [] (inline empty)

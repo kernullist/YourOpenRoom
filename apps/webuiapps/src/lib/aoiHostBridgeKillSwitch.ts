@@ -57,6 +57,16 @@ export function isAoiHostBridgeCapabilityDefaultEnabled(key: string): boolean {
   return DEFAULT_ENABLED_CAPABILITIES.has(key);
 }
 
+// Keys that carve something OUT of a default-on capability rather than grant
+// anything: absent means "follow the master switch", and only an explicit false
+// changes behaviour. os_desktop_capture is the one today -- Computer-Use covers
+// window capture, and an operator who wants it without screenshots turns this
+// off. Its off decision has to be recorded like a default-on key's, because
+// deleting the key would mean "follow the master" again.
+export const AOI_HOST_BRIDGE_OPT_OUT_CAPABILITIES: readonly string[] = ['os_desktop_capture'];
+
+const OPT_OUT_CAPABILITIES: ReadonlySet<string> = new Set(AOI_HOST_BRIDGE_OPT_OUT_CAPABILITIES);
+
 const HOST_BRIDGE_DIR = 'host-bridge';
 const KILL_SWITCH_FILE = 'killswitch.json';
 // Bound the enable map so a corrupt/hostile file can never balloon the store.
@@ -130,10 +140,11 @@ export function setAoiHostBridgeCapability(
       return base;
     }
     entries[key] = true;
-  } else if (isAoiHostBridgeCapabilityDefaultEnabled(key)) {
+  } else if (isAoiHostBridgeCapabilityDefaultEnabled(key) || OPT_OUT_CAPABILITIES.has(key)) {
     // Record the OFF decision rather than forgetting the key. For a default-on
-    // capability, absent means on -- so deleting it here would quietly turn the
-    // feature back on the moment the operator switched it off.
+    // capability (and for an opt-out carved out of one), absent means on -- so
+    // deleting it here would quietly turn the feature back on the moment the
+    // operator switched it off.
     entries[key] = false;
   } else {
     // Everything else is off when absent, so dropping the key keeps the store

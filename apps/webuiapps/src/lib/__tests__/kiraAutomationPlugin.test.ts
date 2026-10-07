@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import { execFileSync } from 'child_process';
-import { dirname, join } from 'path';
+import { dirname, join, resolve } from 'path';
 import { describe, expect, it } from 'vitest';
 import {
   buildDefaultValidationCommands,
@@ -60,6 +60,19 @@ import {
   isRecoverableAutomationLockMessage,
   isRecoverableLockError,
   isSafeCommandAllowed,
+  isAbortError,
+  collectEnvironmentCommandIssues,
+  canonicalizeKiraToolPath,
+  integrateApprovedWorktreeChanges,
+  rollBackFailedNoCommitPick,
+  autoCommitApprovedWork,
+  isStrandedIntegrationSkip,
+  isDecompositionChildWork,
+  validationCommandReferencesExistingFiles,
+  collectPatchValidationIssues,
+  executeTool,
+  buildRunnerCommand,
+  normalizeEnvironmentContract,
   loadProjectDiscoveryAnalysis,
   parseGitStatusPorcelain,
   parseProjectDiscoveryAnalysis,
@@ -4067,6 +4080,98 @@ describe('isSafeCommandAllowed()', () => {
     expect(isSafeCommandAllowed('pnpm add zod')).toBe(false);
     expect(isSafeCommandAllowed('curl https://example.com')).toBe(false);
   });
+
+  it('refuses a second command smuggled into an allowed prefix', () => {
+    // The raw string runs under powershell -Command / bash -lc, so substitution
+    // and a raw newline both execute; normalizeWhitespace used to hide newlines.
+    expect(isSafeCommandAllowed('pytest $(ri -r -fo ..\\..\\Documents)')).toBe(false);
+    expect(isSafeCommandAllowed('pytest `id`')).toBe(false);
+    expect(isSafeCommandAllowed('pytest ${HOME}')).toBe(false);
+    expect(isSafeCommandAllowed('pytest @(ri x)')).toBe(false);
+    expect(isSafeCommandAllowed('git status\nri -r -fo C:\\x')).toBe(false);
+    expect(isSafeCommandAllowed('git status\r\nri x')).toBe(false);
+  });
+
+  it('keeps the read-only list read-only', () => {
+    expect(isSafeCommandAllowed('git branch -D feature-x')).toBe(false);
+    expect(isSafeCommandAllowed('git branch -f main HEAD~3')).toBe(false);
+    expect(isSafeCommandAllowed('git branch new-branch')).toBe(false);
+    expect(isSafeCommandAllowed('git diff --output=C:/Users/u/.gitconfig')).toBe(false);
+    expect(isSafeCommandAllowed('git log --output ../../x')).toBe(false);
+    expect(isSafeCommandAllowed('rg --pre sh foo .')).toBe(false);
+    expect(isSafeCommandAllowed('rg --pre-glob "*.x" foo')).toBe(false);
+    expect(isSafeCommandAllowed('git branch')).toBe(true);
+    expect(isSafeCommandAllowed('git branch --show-current')).toBe(true);
+    expect(isSafeCommandAllowed('git branch -a -v')).toBe(true);
+    expect(isSafeCommandAllowed('git log --oneline -5')).toBe(true);
+  });
+});
+
+describe('isAbortError()', () => {
+  it('treats only real aborts as cancels', () => {
+    // A failing command whose line contains "aborted" is a failure, not a cancel;
+    // reading it as a cancel left the work in_progress and restarted it forever.
+    expect(
+      isAbortError(new Error('Command failed with exit code 1: vitest src/upload/aborted.test.ts')),
+    ).toBe(false);
+    const abort = new Error('Work was canceled or deleted.');
+    abort.name = 'AbortError';
+    expect(isAbortError(abort)).toBe(true);
+    expect(isAbortError('aborted')).toBe(false);
+  });
+});
+
+describe('collectEnvironmentCommandIssues()', () => {
+  const localOnly = { secretsPolicy: 'local-only' };
+
+  it('does not read a path that contains env as an environment dump', () => {
+    for (const command of [
+      'git diff --check -- src/env.ts',
+      'pnpm exec vitest src/config/env.test.ts',
+      'git diff -- .env.example src/vite-env.d.ts',
+      'pnpm run set-version',
+    ]) {
+      expect(collectEnvironmentCommandIssues(localOnly, command), command).toEqual([]);
+    }
+  });
+
+  it('still blocks commands that print the environment', () => {
+    for (const command of ['env', 'printenv', 'set', 'Get-ChildItem Env:', 'echo $env:API_KEY']) {
+      expect(collectEnvironmentCommandIssues(localOnly, command).length, command).toBe(1);
+    }
+  });
+});
+
+describe('canonicalizeKiraToolPath()', () => {
+  const root = resolve(os.tmpdir(), 'kira-canonical-root');
+
+  it('gives guards the resolved project-relative path', () => {
+    // The protected-path checks used to see "src/../.git/config" verbatim, so
+    // .git/** never matched while ensureInsideRoot let the write through.
+    expect(canonicalizeKiraToolPath(root, 'src/../.git/config')).toEqual({
+      ok: true,
+      relativePath: '.git/config',
+    });
+    expect(canonicalizeKiraToolPath(root, join(root, 'src', 'a.ts'))).toEqual({
+      ok: true,
+      relativePath: 'src/a.ts',
+    });
+    expect(canonicalizeKiraToolPath(root, './x/../.env')).toEqual({
+      ok: true,
+      relativePath: '.env',
+    });
+  });
+
+  it('turns a root escape into an error result instead of a throw', () => {
+    const result = canonicalizeKiraToolPath(root, '../outside.txt');
+    expect(result.ok).toBe(false);
+  });
+
+  it.runIf(process.platform === 'win32')('refuses Windows name aliases', () => {
+    expect(canonicalizeKiraToolPath(root, 'secrets./a.txt').ok).toBe(false);
+    expect(canonicalizeKiraToolPath(root, '.env:stream').ok).toBe(false);
+    expect(canonicalizeKiraToolPath(root, 'notes /a.txt').ok).toBe(false);
+  });
 });
 
 describe('buildIssueSignature()', () => {
@@ -4526,5 +4631,348 @@ describe('resolveUnexpectedAutomationFailure()', () => {
       userMessage:
         'Kira blocked: "Fix search layout" 작업이 예기치 않은 오류로 중단되어 같은 실패를 반복하지 않도록 멈췄어요.',
     });
+  });
+});
+
+describe('integrateApprovedWorktreeChanges()', { timeout: GIT_BACKED_TEST_TIMEOUT_MS }, () => {
+  function git(cwd: string, args: string[]): string {
+    return execFileSync('git', args, { cwd, encoding: 'utf-8' }).trim();
+  }
+
+  function makeRepoWithWorktree() {
+    const base = fs.mkdtempSync(join(os.tmpdir(), 'kira-integrate-'));
+    const primaryRoot = join(base, 'primary');
+    const worktreePath = join(base, 'worktree');
+    fs.mkdirSync(primaryRoot);
+    git(primaryRoot, ['init', '-q']);
+    git(primaryRoot, ['config', 'user.email', 'kira@test.local']);
+    git(primaryRoot, ['config', 'user.name', 'Kira Test']);
+    git(primaryRoot, ['config', 'core.autocrlf', 'false']);
+    fs.writeFileSync(join(primaryRoot, 'a.txt'), 'base\n');
+    git(primaryRoot, ['add', 'a.txt']);
+    git(primaryRoot, ['commit', '-q', '-m', 'base']);
+    git(primaryRoot, ['worktree', 'add', '-q', '-b', 'kira-attempt', worktreePath]);
+    return {
+      base,
+      primaryRoot,
+      worktreePath,
+      workspace: {
+        primaryRoot,
+        projectRoot: worktreePath,
+        isolated: true,
+        worktreePath,
+        branchName: 'kira-attempt',
+      },
+    };
+  }
+
+  it('rolls the user checkout back when the no-commit cherry-pick conflicts', async () => {
+    const repo = makeRepoWithWorktree();
+    try {
+      fs.writeFileSync(join(repo.worktreePath, 'a.txt'), 'worktree change\n');
+      fs.writeFileSync(join(repo.worktreePath, 'b.txt'), 'new file from the attempt\n');
+      // The user commits a conflicting change while Kira works.
+      fs.writeFileSync(join(repo.primaryRoot, 'a.txt'), 'primary change\n');
+      git(repo.primaryRoot, ['commit', '-q', '-am', 'user change']);
+
+      const result = await integrateApprovedWorktreeChanges(
+        repo.workspace,
+        ['a.txt', 'b.txt'],
+        'kira attempt',
+      );
+
+      expect(result.status).toBe('failed');
+      expect(result.message).toContain('restored');
+      // No conflict markers, nothing staged, no stray file from the pick.
+      expect(git(repo.primaryRoot, ['status', '--porcelain'])).toBe('');
+      expect(fs.readFileSync(join(repo.primaryRoot, 'a.txt'), 'utf-8')).toBe('primary change\n');
+      expect(fs.existsSync(join(repo.primaryRoot, 'b.txt'))).toBe(false);
+    } finally {
+      fs.rmSync(repo.base, { recursive: true, force: true });
+    }
+  });
+
+  it('integrates a clean pick and reports when there was nothing to integrate', async () => {
+    const repo = makeRepoWithWorktree();
+    try {
+      expect(
+        await integrateApprovedWorktreeChanges(
+          { ...repo.workspace, isolated: false },
+          ['a.txt'],
+          'x',
+        ),
+      ).toMatchObject({ status: 'skipped', noChanges: true });
+      expect(await integrateApprovedWorktreeChanges(repo.workspace, [], 'x')).toMatchObject({
+        status: 'skipped',
+        noChanges: true,
+      });
+
+      fs.writeFileSync(join(repo.worktreePath, 'a.txt'), 'worktree change\n');
+      const result = await integrateApprovedWorktreeChanges(repo.workspace, ['a.txt'], 'attempt');
+      expect(result.status).toBe('integrated');
+      expect(fs.readFileSync(join(repo.primaryRoot, 'a.txt'), 'utf-8')).toBe('worktree change\n');
+    } finally {
+      fs.rmSync(repo.base, { recursive: true, force: true });
+    }
+  });
+
+  it('says so when the rollback itself fails', async () => {
+    const notARepo = fs.mkdtempSync(join(os.tmpdir(), 'kira-rollback-'));
+    try {
+      expect(await rollBackFailedNoCommitPick(notARepo, ['a.txt'])).toContain('failed');
+    } finally {
+      fs.rmSync(notARepo, { recursive: true, force: true });
+    }
+  });
+
+  it('names the target files a rollback could not restore', async () => {
+    const repo = makeRepoWithWorktree();
+    try {
+      // `git reset --merge` keeps untracked files, so a file the pick created
+      // stays behind and the comment must not claim a clean checkout.
+      fs.writeFileSync(join(repo.primaryRoot, 'b.txt'), 'left over\n');
+      const message = await rollBackFailedNoCommitPick(repo.primaryRoot, ['a.txt', 'b.txt']);
+      expect(message).toContain('still has changes in: b.txt');
+      expect(await rollBackFailedNoCommitPick(repo.primaryRoot, ['a.txt'])).toContain('restored');
+    } finally {
+      fs.rmSync(repo.base, { recursive: true, force: true });
+    }
+  });
+
+  it('reports nothing to integrate when the reported files are unchanged in the worktree', async () => {
+    const repo = makeRepoWithWorktree();
+    try {
+      // Without noChanges this skip read as "approved change stranded" and the
+      // work was blocked although there was nothing to integrate.
+      const result = await integrateApprovedWorktreeChanges(repo.workspace, ['a.txt'], 'x');
+      expect(result).toMatchObject({ status: 'skipped', noChanges: true });
+      expect(result.message).toContain('No stageable changed files');
+      expect(git(repo.primaryRoot, ['log', '--oneline']).split('\n')).toHaveLength(1);
+    } finally {
+      fs.rmSync(repo.base, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('autoCommitApprovedWork() skips', { timeout: GIT_BACKED_TEST_TIMEOUT_MS }, () => {
+  function git(cwd: string, args: string[]): string {
+    return execFileSync('git', args, { cwd, encoding: 'utf-8' }).trim();
+  }
+
+  function makeRepo(): string {
+    const root = fs.mkdtempSync(join(os.tmpdir(), 'kira-autocommit-'));
+    git(root, ['init', '-q']);
+    git(root, ['config', 'user.email', 'kira@test.local']);
+    git(root, ['config', 'user.name', 'Kira Test']);
+    git(root, ['config', 'core.autocrlf', 'false']);
+    fs.writeFileSync(join(root, 'a.txt'), 'base\n');
+    git(root, ['add', 'a.txt']);
+    git(root, ['commit', '-q', '-m', 'base']);
+    return root;
+  }
+
+  function workspace(root: string) {
+    return {
+      primaryRoot: root,
+      projectRoot: root,
+      isolated: false,
+      worktreePath: root,
+      branchName: 'main',
+    };
+  }
+
+  // noChanges decides whether the caller may delete the worktree, so it must be
+  // set exactly when there was nothing to commit.
+  it('marks only the skips with nothing to commit as noChanges', async () => {
+    const root = makeRepo();
+    try {
+      expect(await autoCommitApprovedWork(workspace(root), [], 'x')).toMatchObject({
+        status: 'skipped',
+        noChanges: true,
+      });
+      // Reported but identical to HEAD: nothing to lose.
+      expect(await autoCommitApprovedWork(workspace(root), ['a.txt'], 'x')).toMatchObject({
+        status: 'skipped',
+        noChanges: true,
+      });
+
+      fs.writeFileSync(join(root, 'a.txt'), 'approved change\n');
+      const disabled = await autoCommitApprovedWork(workspace(root), ['a.txt'], 'x', {
+        autoCommit: false,
+      });
+      expect(disabled.status).toBe('skipped');
+      expect(disabled.noChanges).toBeUndefined();
+
+      fs.writeFileSync(join(root, 'b.txt'), 'unrelated\n');
+      git(root, ['add', 'b.txt']);
+      const preStaged = await autoCommitApprovedWork(workspace(root), ['a.txt'], 'x');
+      expect(preStaged).toMatchObject({ status: 'skipped' });
+      expect(preStaged.message).toContain('unrelated staged changes');
+      expect(preStaged.noChanges).toBeUndefined();
+      // Both of those left the approved change uncommitted.
+      expect(fs.readFileSync(join(root, 'a.txt'), 'utf-8')).toBe('approved change\n');
+      expect(git(root, ['log', '--oneline']).split('\n')).toHaveLength(1);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('isStrandedIntegrationSkip()', () => {
+  it('keeps the worktree only for a skip that left the approved change in it', () => {
+    // Auto-commit turned off mid-run: the change exists only in the worktree.
+    expect(isStrandedIntegrationSkip({ status: 'skipped' }, true)).toBe(true);
+    expect(isStrandedIntegrationSkip({ status: 'skipped', noChanges: true }, true)).toBe(false);
+    // In the primary checkout the change is already where the user works.
+    expect(isStrandedIntegrationSkip({ status: 'skipped' }, false)).toBe(false);
+    expect(isStrandedIntegrationSkip({ status: 'committed' }, true)).toBe(false);
+    expect(isStrandedIntegrationSkip({ status: 'failed' }, true)).toBe(false);
+  });
+});
+
+describe('executeTool()', () => {
+  function makeProject(): string {
+    const root = fs.mkdtempSync(join(os.tmpdir(), 'kira-tool-'));
+    fs.writeFileSync(join(root, 'a.txt'), 'price = X;\n');
+    return root;
+  }
+
+  it('canonicalizes the path once before the tool reads it', async () => {
+    const root = makeProject();
+    try {
+      expect(await executeTool(root, 'read_file', { path: 'sub/../a.txt' }, false)).toBe(
+        'price = X;\n',
+      );
+      // An escape is a tool error the model can correct, not a thrown exception.
+      const escaped = await executeTool(root, 'read_file', { path: '../outside.txt' }, false);
+      expect(escaped.startsWith('error: ')).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('inserts an edit_file replacement verbatim, $-patterns included', async () => {
+    const root = makeProject();
+    try {
+      const result = await executeTool(
+        root,
+        'edit_file',
+        { path: 'a.txt', find: 'X', replace: "fmt(v, '$&', '$$', '$`')" },
+        true,
+      );
+      expect(result.startsWith('error')).toBe(false);
+      // A string replacement expanded $& to "X" and $` to the text before it.
+      expect(fs.readFileSync(join(root, 'a.txt'), 'utf-8')).toBe(
+        "price = fmt(v, '$&', '$$', '$`');\n",
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('buildRunnerCommand()', () => {
+  it('splices the quoted command into the remote template without $-expansion', () => {
+    const remote = normalizeEnvironmentContract({
+      runner: 'remote-command',
+      remoteCommand: 'ssh box {command}',
+    });
+    const built = buildRunnerCommand("echo '$&' $'", remote);
+    expect(built.startsWith('ssh box ')).toBe(true);
+    expect(built).toContain('$&');
+    // String replacement turned $& back into the matched "{command}".
+    expect(built).not.toContain('{command}');
+    expect(buildRunnerCommand('npm test')).toBe('npm test');
+    expect(() =>
+      buildRunnerCommand(
+        'npm test',
+        normalizeEnvironmentContract({ runner: 'remote-command', remoteCommand: 'ssh box' }),
+      ),
+    ).toThrow(/placeholder/);
+  });
+});
+
+describe('isDecompositionChildWork()', () => {
+  it('never lets a split child split again', () => {
+    // Children embed the parent brief, so they inherit every signal that split
+    // the parent; re-splitting them multiplied works (4 -> 16 -> 64).
+    expect(isDecompositionChildWork({ description: 'Ship it', decomposedFrom: 'work-1' })).toBe(
+      true,
+    );
+    expect(
+      isDecompositionChildWork({
+        description:
+          '# Brief\nUI pass\n\n# Parent work\n- Big feature\n\n# Parent acceptance target\n...',
+      }),
+    ).toBe(true);
+    expect(isDecompositionChildWork({ description: '# Goal\nShip the parent work' })).toBe(false);
+    expect(isDecompositionChildWork({ description: '' })).toBe(false);
+  });
+});
+
+describe('validation command plumbing', { timeout: GIT_BACKED_TEST_TIMEOUT_MS }, () => {
+  it('does not add pytest to a non-Python repo just because it has tests/', () => {
+    const root = fs.mkdtempSync(join(os.tmpdir(), 'kira-validate-'));
+    try {
+      fs.writeFileSync(join(root, 'package.json'), '{"scripts":{"typecheck":"tsc --noEmit"}}');
+      fs.mkdirSync(join(root, 'tests'));
+      fs.writeFileSync(join(root, 'tests', 'app.spec.ts'), '');
+      expect(buildDefaultValidationCommands(root, ['src/app.ts'])).not.toContain(
+        'python -m pytest',
+      );
+      // A real Python signal still brings pytest in.
+      fs.writeFileSync(join(root, 'conftest.py'), '');
+      expect(buildDefaultValidationCommands(root, ['src/app.ts'])).toContain('python -m pytest');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reads .tsx and .json paths in validation commands whole', () => {
+    const root = fs.mkdtempSync(join(os.tmpdir(), 'kira-validate-'));
+    try {
+      fs.mkdirSync(join(root, 'src'));
+      fs.writeFileSync(join(root, 'src', 'App.test.tsx'), '');
+      fs.writeFileSync(join(root, 'tsconfig.json'), '{}');
+      expect(
+        validationCommandReferencesExistingFiles(root, 'pnpm vitest run src/App.test.tsx'),
+      ).toBe(true);
+      expect(validationCommandReferencesExistingFiles(root, 'tsc -p tsconfig.json')).toBe(true);
+      expect(
+        validationCommandReferencesExistingFiles(root, 'pnpm vitest run src/Missing.tsx'),
+      ).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports what git diff --check finds instead of swallowing it', async () => {
+    const root = fs.mkdtempSync(join(os.tmpdir(), 'kira-diffcheck-'));
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: root });
+      execFileSync('git', ['config', 'user.email', 'kira@test.local'], { cwd: root });
+      execFileSync('git', ['config', 'user.name', 'Kira Test'], { cwd: root });
+      execFileSync('git', ['config', 'core.autocrlf', 'false'], { cwd: root });
+      fs.writeFileSync(join(root, 'a.txt'), 'clean\n');
+      execFileSync('git', ['add', 'a.txt'], { cwd: root });
+      execFileSync('git', ['commit', '-q', '-m', 'base'], { cwd: root });
+      fs.writeFileSync(join(root, 'a.txt'), 'trailing space   \n');
+      const issues = await collectPatchValidationIssues(root, ['a.txt']);
+      expect(issues.some((issue) => issue.includes('git diff --check reported'))).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('still reports conflict markers in a project that is not a git repository', async () => {
+    const root = fs.mkdtempSync(join(os.tmpdir(), 'kira-nogit-'));
+    try {
+      fs.writeFileSync(join(root, 'a.txt'), '<<<<<<< ours\nx\n=======\ny\n>>>>>>> theirs\n');
+      expect(await collectPatchValidationIssues(root, ['a.txt'])).toEqual([
+        'Merge conflict markers detected in a.txt.',
+      ]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

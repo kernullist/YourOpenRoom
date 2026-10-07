@@ -1,6 +1,7 @@
 import * as dns from 'dns/promises';
 import * as fs from 'fs';
 import { isIP } from 'net';
+import { extractEmbeddedIpv4 } from './aoiHostUrlSafety';
 import { dirname } from 'path';
 import { callAoiMainTextModel, loadAoiMainLlmConfig } from './dewdropCanvasPlugin';
 import type { LLMConfig } from './llmModels';
@@ -1621,8 +1622,10 @@ function isPrivateIPv6(ip: string): boolean {
   if (/^fe[89ab]/.test(normalized)) {
     return true;
   }
-  if (normalized.startsWith('::ffff:')) {
-    const embedded = normalized.slice('::ffff:'.length);
+  // The URL parser rewrites ::ffff:127.0.0.1 to ::ffff:7f00:1, so the embedded
+  // address has to be decoded from either spelling (and the :: / 64:ff9b:: forms).
+  const embedded = extractEmbeddedIpv4(normalized);
+  if (embedded) {
     return isPrivateIPv4(embedded);
   }
   return false;

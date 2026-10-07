@@ -4,7 +4,7 @@ import { execFile as execFileCallback, spawn, spawnSync } from 'child_process';
 import { createHash } from 'crypto';
 import { tmpdir } from 'os';
 import { promisify } from 'util';
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import type { Plugin } from 'vite';
 import {
   applyDeepSeekChatRuntimeOptions,
@@ -84,6 +84,8 @@ export interface WorkTask {
   status: KiraTaskStatus;
   assignee: string;
   clarification?: WorkClarificationState;
+  // Set on works created by auto-decomposition: the id of the work they split from.
+  decomposedFrom?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -1736,8 +1738,10 @@ const COMMON_DEV_SERVER_PORTS = [5173, 3000, 4173, 5174, 8080];
 const SECRET_ENV_NAME_PATTERN = /(?:token|secret|key|password|credential|auth|cookie)/i;
 const NETWORK_COMMAND_PATTERN =
   /\b(?:gh|git\s+(?:fetch|pull|push|clone)|npm\s+publish|pnpm\s+publish|yarn\s+publish)\b|https?:\/\//i;
+// Command position only: \b also fires inside paths ("src/env.ts", ".env.example",
+// "vite-env.d.ts"), which blocked ordinary validation commands as env disclosure.
 const ENV_DISCLOSURE_COMMAND_PATTERN =
-  /\b(?:printenv|set|env|Get-ChildItem\s+Env:|gci\s+Env:|\$env:)\b/i;
+  /(?:^|[\s;&|(])(?:printenv|set|env)(?=\s|$)|(?:Get-ChildItem|gci|dir|ls)\s+Env:|\$env:/i;
 const DOCUMENTATION_FILE_PATTERN = /\.(?:md|mdx|txt|rst)$/i;
 const RUNTIME_PROBE_TIMEOUT_MS = 450;
 const COMMAND_TIMEOUT_MS = 90_000;
@@ -1833,6 +1837,8 @@ const DEFAULT_KIRA_EXECUTION_POLICY: KiraExecutionPolicy = {
   protectedPaths: [
     '.env',
     '.env.*',
+    // Exact `.git` too: in a worktree it is a gitdir FILE, which `.git/**` misses.
+    '.git',
     '.git/**',
     '.kira/project-settings.json',
     '**/*.pem',
@@ -1861,6 +1867,7 @@ const DEFAULT_KIRA_EXECUTION_POLICY: KiraExecutionPolicy = {
       pathPatterns: [
         '.env',
         '.env.*',
+        '.git',
         '.git/**',
         '.kira/project-settings.json',
         '**/*.pem',
@@ -1977,7 +1984,10 @@ const SAFE_COMMAND_PATTERNS = [
     'i',
   ),
   /^node\s+--test\b/i,
-  /^git\s+(status|diff|show|rev-parse|branch|log)\b/i,
+  /^git\s+(status|diff|show|rev-parse|log)\b/i,
+  // Listing only: "git branch <name>" creates a branch and -D/-m/-f rewrite the
+  // user's refs (worktrees share them with the main checkout).
+  /^git\s+branch(?:\s+(?:-a|-r|-v|-vv|--all|--remotes|--verbose|--show-current|--list|--no-color))*$/i,
   /^rg(?:\s|$)/i,
   /^go\s+(?:test|vet)\b/i,
   /^cargo\s+(?:test|check|clippy|fmt)\b/i,
@@ -1989,6 +1999,13 @@ const DANGEROUS_COMMAND_PATTERNS = [
   /\b(?:invoke-expression|iex|start-process|curl|wget|invoke-webrequest)\b/i,
   /\bgit\s+(?:reset|checkout|clean)\b/i,
   /[|;&><]/,
+  // Command and variable substitution run a second command inside an allowed
+  // one: "pytest $(...)" in bash and PowerShell, backticks in bash, @(...) in
+  // PowerShell, ${...} expansion.
+  /`|\$\(|\$\{|@\(/,
+  // Write anywhere: git diff/log/show --output=<path>. Run anything: rg --pre.
+  /(?:^|\s)--output(?:=|\s|$)/i,
+  /(?:^|\s)--pre(?:-glob)?(?:=|\s|$)/i,
 ];
 const SKIPPED_TOOL_TRAVERSAL_DIRECTORIES = new Set([
   '.git',
@@ -3843,11 +3860,11 @@ function createWorkerAttemptState(
   };
 }
 
-function isAbortError(error: unknown): boolean {
-  if (error instanceof Error) {
-    return error.name === 'AbortError' || /aborted/i.test(error.message);
-  }
-  return false;
+export function isAbortError(error: unknown): boolean {
+  // By name only. Command and provider errors carry their command line or body
+  // in the message ("vitest src/upload/aborted.test.ts"), and matching /aborted/
+  // there turned an ordinary failure into a silent cancel that restarted forever.
+  return error instanceof Error && error.name === 'AbortError';
 }
 
 function createAbortError(message = 'Work was canceled or deleted.'): Error {
@@ -5489,6 +5506,35 @@ function ensureInsideRoot(root: string, candidatePath: string): string {
   return resolvedCandidate;
 }
 
+// The project-relative form every guard compares against. ensureInsideRoot
+// resolves "src/../.git/config" to <root>/.git/config, but the protected-path,
+// dirty-file and execution-policy checks used to see the raw string -- so `..`,
+// an absolute path, or a Windows alias got past them while the write still
+// landed on the protected file.
+export function canonicalizeKiraToolPath(
+  projectRoot: string,
+  rawPath: string,
+): { ok: true; relativePath: string } | { ok: false; error: string } {
+  let absolutePath: string;
+  try {
+    absolutePath = ensureInsideRoot(projectRoot, rawPath);
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+  const relativePath = relative(resolve(projectRoot), absolutePath).split(sep).join('/') || '.';
+  // Windows strips a trailing dot or space from a name and reads "name:stream" as
+  // an alternate data stream, so "secrets." or ".env:x" reach a file the
+  // patterns never named.
+  if (
+    process.platform === 'win32' &&
+    relativePath !== '.' &&
+    relativePath.split('/').some((segment) => /[.\s]$/.test(segment) || segment.includes(':'))
+  ) {
+    return { ok: false, error: 'Path segment ends with a dot or space, or names a stream.' };
+  }
+  return { ok: true, relativePath };
+}
+
 function containsCorruptionMarker(content: string): boolean {
   return /rest of file unchanged/i.test(content);
 }
@@ -5498,6 +5544,9 @@ export function hasMergeConflictMarkers(content: string): boolean {
 }
 
 export function isSafeCommandAllowed(command: string): boolean {
+  // A raw newline starts a second command in both shells the runner uses, and
+  // normalizeWhitespace would hide it from every pattern below.
+  if (/[\r\n]/.test(command)) return false;
   const normalized = normalizeWhitespace(command);
   if (!normalized) return false;
   if (DANGEROUS_COMMAND_PATTERNS.some((pattern) => pattern.test(normalized))) {
@@ -5514,7 +5563,10 @@ function isToolAllowedByScope(
   return state.toolScope.has(toolName);
 }
 
-function collectEnvironmentCommandIssues(environmentInput: unknown, command: string): string[] {
+export function collectEnvironmentCommandIssues(
+  environmentInput: unknown,
+  command: string,
+): string[] {
   const environment = normalizeEnvironmentContract(environmentInput);
   const normalized = normalizeWhitespace(command);
   const issues: string[] = [];
@@ -6416,7 +6468,7 @@ function searchProjectFiles(root: string, query: string): string[] {
   return results;
 }
 
-async function executeTool(
+export async function executeTool(
   projectRoot: string,
   toolName: string,
   args: Record<string, unknown>,
@@ -6426,6 +6478,16 @@ async function executeTool(
 ): Promise<string> {
   if (!isToolAllowedByScope(toolName, attemptState)) {
     return `error: tool ${toolName} is not allowed by the active Kira subagent contract`;
+  }
+  // Canonicalize the path ONCE, before the policy check and every per-tool guard
+  // below read it; a path that escapes the root is a tool error the model can
+  // correct, not an exception that ends the attempt.
+  if (typeof args.path === 'string' && args.path.trim()) {
+    const canonical = canonicalizeKiraToolPath(projectRoot, args.path);
+    if (!canonical.ok) {
+      return `error: ${canonical.error}`;
+    }
+    args = { ...args, path: canonical.relativePath };
   }
   const policyEvaluation = evaluateExecutionPolicy(
     attemptState?.executionPolicy ?? DEFAULT_KIRA_EXECUTION_POLICY,
@@ -6545,7 +6607,11 @@ async function executeTool(
       if (!replaceAll && occurrences > 1) {
         return `error: target text matched ${occurrences} times; refine the find text or set replace_all=true`;
       }
-      const next = replaceAll ? current.split(find).join(replace) : current.replace(find, replace);
+      // A function replacement inserts `replace` verbatim; a string one expands
+      // $& $' $` $$, so "formatPrice(v, '$')" used to splice the rest of the file in.
+      const next = replaceAll
+        ? current.split(find).join(replace)
+        : current.replace(find, () => replace);
       if (containsCorruptionMarker(next)) {
         return 'error: refusing to write placeholder or corruption marker text';
       }
@@ -6937,7 +7003,7 @@ function quoteShellArgument(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
-function buildRunnerCommand(command: string, environment?: KiraEnvironmentContract): string {
+export function buildRunnerCommand(command: string, environment?: KiraEnvironmentContract): string {
   const contract = normalizeEnvironmentContract(environment);
   if (contract.runner === 'local') return command;
   if (contract.runner === 'cloud') {
@@ -6950,7 +7016,10 @@ function buildRunnerCommand(command: string, environment?: KiraEnvironmentContra
       'Remote-command runner requires environment.remoteCommand with a {command} placeholder.',
     );
   }
-  return contract.remoteCommand.replace('{command}', quoteShellArgument(command));
+  // Function replacement: a quoted command can contain $' or $& (PowerShell and
+  // bash both use $), which a string replacement would expand.
+  const quoted = quoteShellArgument(command);
+  return contract.remoteCommand.replace('{command}', () => quoted);
 }
 
 function buildShellCommandInvocation(
@@ -10553,14 +10622,19 @@ export function buildDefaultValidationCommands(
     }
   }
 
+  // A `tests/` directory alone is not a Python signal: TS/Playwright projects
+  // have one too, and an unconditional pytest failed (missing, or collected
+  // nothing) and blocked every attempt in those repos.
   const hasPythonSignals =
     changedExtensions.has('.py') ||
-    projectHasFile(projectRoot, 'pytest.ini') ||
-    projectHasFile(projectRoot, 'pyproject.toml') ||
-    projectHasDirectory(projectRoot, 'tests');
+    ['pytest.ini', 'pyproject.toml', 'setup.cfg', 'setup.py', 'conftest.py', 'tox.ini'].some(
+      (marker) => projectHasFile(projectRoot, marker),
+    );
   if (
     hasPythonSignals &&
-    (projectHasFile(projectRoot, 'pytest.ini') || projectHasDirectory(projectRoot, 'tests'))
+    (projectHasFile(projectRoot, 'pytest.ini') ||
+      projectHasFile(projectRoot, 'conftest.py') ||
+      projectHasDirectory(projectRoot, 'tests'))
   ) {
     commands.push('python -m pytest');
   }
@@ -11601,15 +11675,18 @@ function filterExistingDiscoveryFiles(projectRoot: string | undefined, files: st
   });
 }
 
-function validationCommandReferencesExistingFiles(
+export function validationCommandReferencesExistingFiles(
   projectRoot: string | undefined,
   command: string,
 ): boolean {
   if (!projectRoot || !fs.existsSync(projectRoot)) return true;
 
+  // Longest extensions first and a word boundary: with `ts|tsx` and no boundary,
+  // "src/App.test.tsx" matched as "src/App.test.ts" and "tsconfig.json" as
+  // "tsconfig.js" -- files that do not exist, so valid findings were blocked.
   const referencedFiles =
     command.match(
-      /[A-Za-z0-9_.@/-]+\.(?:test|spec)?\.?(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|cs|md|mdx|json|ya?ml)/g,
+      /[A-Za-z0-9_.@/-]+\.(?:test|spec)?\.?(?:tsx|ts|jsx|js|mjs|cjs|py|go|rs|cs|mdx|md|json|ya?ml)\b/g,
     ) ?? [];
   if (referencedFiles.length === 0) return true;
 
@@ -14351,7 +14428,7 @@ async function collectHighRiskAttemptIssues(
   return issues;
 }
 
-async function collectPatchValidationIssues(
+export async function collectPatchValidationIssues(
   projectRoot: string,
   filesChanged: string[],
 ): Promise<string[]> {
@@ -14372,19 +14449,22 @@ async function collectPatchValidationIssues(
 
   try {
     await runGitCommand(projectRoot, ['rev-parse', '--is-inside-work-tree']);
-    const diffCheck = await runGitCommand(projectRoot, [
-      'diff',
-      '--check',
-      '--',
-      ...normalizedFiles,
-    ]);
-    if (diffCheck.trim()) {
-      issues.push(
-        `git diff --check reported patch problems:\n${truncateForReview(diffCheck, 500)}`,
-      );
-    }
   } catch {
-    // Non-git projects or unavailable git diff checks are ignored here.
+    // Non-git projects have no diff check.
+    return issues;
+  }
+  let diffCheck = '';
+  try {
+    diffCheck = await runGitCommand(projectRoot, ['diff', '--check', '--', ...normalizedFiles]);
+  } catch (error) {
+    // `git diff --check` exits non-zero exactly WHEN it finds problems, so the
+    // report arrives as a rejection carrying stdout. Reading only the resolved
+    // value meant a whitespace or conflict-marker problem was never reported.
+    const stdout = (error as { stdout?: unknown }).stdout;
+    diffCheck = typeof stdout === 'string' ? stdout : '';
+  }
+  if (diffCheck.trim()) {
+    issues.push(`git diff --check reported patch problems:\n${truncateForReview(diffCheck, 500)}`);
   }
 
   return issues;
@@ -16626,14 +16706,21 @@ export function resolveUnexpectedAutomationFailure(
   };
 }
 
-async function autoCommitApprovedWork(
+export async function autoCommitApprovedWork(
   workspace: KiraWorkspaceSession,
   filesChanged: string[],
   commitMessage: string,
   defaultProjectSettings: Partial<KiraProjectSettings> = {},
   integrationLockPath?: string,
   preAcquiredIntegrationLockOwner?: string,
-): Promise<{ status: 'committed' | 'skipped' | 'failed'; message: string; commitHash?: string }> {
+): Promise<{
+  status: 'committed' | 'skipped' | 'failed';
+  message: string;
+  commitHash?: string;
+  // Set only when there was nothing to integrate. Every other skip in an
+  // isolated worktree leaves the approved change there, uncommitted.
+  noChanges?: true;
+}> {
   const projectRoot = workspace.projectRoot;
   const projectSettings = loadProjectSettings(workspace.primaryRoot, defaultProjectSettings);
   if (!projectSettings.autoCommit) {
@@ -16642,7 +16729,11 @@ async function autoCommitApprovedWork(
 
   const normalizedFiles = normalizePathList(filesChanged, 200);
   if (normalizedFiles.length === 0) {
-    return { status: 'skipped', message: 'No changed files were reported for this work.' };
+    return {
+      status: 'skipped',
+      message: 'No changed files were reported for this work.',
+      noChanges: true,
+    };
   }
 
   try {
@@ -16673,12 +16764,14 @@ async function autoCommitApprovedWork(
     projectLocalFiles,
     await getGitWorktreeEntries(projectRoot),
   );
+  // None of the reported files differs from HEAD, so there is nothing to lose.
   if (targetFiles.length === 0) {
     return {
       status: 'skipped',
       message: `No stageable project-local files were eligible for auto-commit.${formatIgnoredIntegrationPaths(
         ignoredFiles,
       )}`,
+      noChanges: true,
     };
   }
 
@@ -16697,6 +16790,7 @@ async function autoCommitApprovedWork(
       return {
         status: 'skipped',
         message: 'There were no stageable changes for the reported files.',
+        noChanges: true,
       };
     }
 
@@ -17160,35 +17254,78 @@ async function ensurePrimaryWorktreeCanIntegrate(
   return null;
 }
 
-async function integrateApprovedWorktreeChanges(
+// A skip that is not "nothing to integrate" leaves the approved change only in
+// the isolated worktree; the caller must keep that worktree and block the work.
+export function isStrandedIntegrationSkip(
+  result: { status: string; noChanges?: true },
+  isolated: boolean,
+): boolean {
+  return result.status === 'skipped' && isolated && !result.noChanges;
+}
+
+// Undo a failed `cherry-pick --no-commit` in the primary checkout and say what
+// state it is in now, so the comment never claims a clean tree that is not.
+export async function rollBackFailedNoCommitPick(
+  primaryRoot: string,
+  targetFiles: readonly string[],
+): Promise<string> {
+  try {
+    await runGitCommand(primaryRoot, ['reset', '--merge']);
+  } catch (error) {
+    return `Rolling back the primary worktree failed (${
+      error instanceof Error ? error.message : String(error)
+    }). It may still contain conflict markers: run "git reset --merge" there before continuing.`;
+  }
+  const leftover = getDirtyWorktreePaths(await getGitWorktreeEntries(primaryRoot)).filter((path) =>
+    targetFiles.includes(path),
+  );
+  return leftover.length > 0
+    ? `The primary worktree still has changes in: ${leftover.join(', ')}. Check them before continuing.`
+    : 'The primary worktree was restored to its state before the integration attempt.';
+}
+
+export async function integrateApprovedWorktreeChanges(
   workspace: KiraWorkspaceSession,
   filesChanged: string[],
   commitMessage: string,
   integrationLockPath?: string,
   preAcquiredIntegrationLockOwner?: string,
-): Promise<{ status: 'integrated' | 'skipped' | 'failed'; message: string; commitHash?: string }> {
+): Promise<{
+  status: 'integrated' | 'skipped' | 'failed';
+  message: string;
+  commitHash?: string;
+  // Nothing was left to integrate; any other skip leaves the change in the worktree.
+  noChanges?: true;
+}> {
   if (!workspace.isolated) {
     return {
       status: 'skipped',
       message: 'The approved attempt already ran in the primary worktree.',
+      noChanges: true,
     };
   }
 
   const projectLocalFiles = normalizePathList(filesChanged, 200);
   if (projectLocalFiles.length === 0) {
-    return { status: 'skipped', message: 'No changed files were reported for integration.' };
+    return {
+      status: 'skipped',
+      message: 'No changed files were reported for integration.',
+      noChanges: true,
+    };
   }
 
   const { targetFiles, ignoredFiles } = filterStageableChangedFiles(
     projectLocalFiles,
     await getGitWorktreeEntries(workspace.projectRoot),
   );
+  // None of the reported files differs from HEAD, so there is nothing to lose.
   if (targetFiles.length === 0) {
     return {
       status: 'skipped',
       message: `No stageable changed files were available to integrate.${formatIgnoredIntegrationPaths(
         ignoredFiles,
       )}`,
+      noChanges: true,
     };
   }
 
@@ -17225,7 +17362,11 @@ async function integrateApprovedWorktreeChanges(
     await runGitCommand(workspace.projectRoot, ['add', '--', ...targetFiles]);
     const staged = await runGitCommand(workspace.projectRoot, ['diff', '--cached', '--name-only']);
     if (!staged.trim()) {
-      return { status: 'skipped', message: 'No staged changes were available to integrate.' };
+      return {
+        status: 'skipped',
+        message: 'No staged changes were available to integrate.',
+        noChanges: true,
+      };
     }
     await runGitCommand(workspace.projectRoot, ['commit', '-m', commitMessage]);
     const commitHash = await runGitCommand(workspace.projectRoot, ['rev-parse', '--short', 'HEAD']);
@@ -17233,16 +17374,18 @@ async function integrateApprovedWorktreeChanges(
     try {
       await runGitCommand(workspace.primaryRoot, ['cherry-pick', '--no-commit', commitHash]);
     } catch (error) {
-      try {
-        await runGitCommand(workspace.primaryRoot, ['cherry-pick', '--abort']);
-      } catch {
-        // Preserve the original cherry-pick error below.
-      }
+      // `--no-commit` writes no CHERRY_PICK_HEAD, so `cherry-pick --abort` has
+      // nothing to abort and used to fail silently -- leaving conflict markers and
+      // the pick's staged files in the USER's checkout. `reset --merge` restores
+      // every path the pick touched (unmerged or staged) to HEAD and keeps unrelated
+      // local edits; the preflight above already proved the target files were clean.
+      const rollback = await rollBackFailedNoCommitPick(workspace.primaryRoot, targetFiles);
       return {
         status: 'failed',
         message: [
           'Cherry-pick integration failed.',
           error instanceof Error ? error.message : String(error),
+          rollback,
           'The winning Kira worktree was kept for manual conflict recovery.',
         ].join('\n\n'),
         commitHash: commitHash || undefined,
@@ -19651,6 +19794,21 @@ function shouldAutoDecomposeWork(recommendation: WorkDecompositionRecommendation
   );
 }
 
+/**
+ * Was this work produced by auto-decomposition? Such a work is never split
+ * again: its description embeds the whole parent brief, so it inherits every
+ * signal that split the parent, and splitting it re-split each child in turn
+ * (4 -> 16 -> 64 works from one brief, each costing LLM calls). The description
+ * marker covers works saved by a client that does not keep `decomposedFrom`.
+ */
+export function isDecompositionChildWork(
+  work: Pick<WorkTask, 'description'> & {
+    decomposedFrom?: string;
+  },
+): boolean {
+  return Boolean(work.decomposedFrom) || /^# Parent work\s*$/m.test(work.description ?? '');
+}
+
 function createWorksFromDecomposition(
   options: KiraAutomationPluginOptions,
   sessionPath: string,
@@ -19698,6 +19856,7 @@ function createWorksFromDecomposition(
       ].join('\n'),
       status: 'todo',
       assignee: '',
+      decomposedFrom: parentWork.id,
       createdAt: now,
       updatedAt: now,
     };
@@ -20120,7 +20279,15 @@ async function processWorkWithMultipleWorkers(params: {
         },
       );
 
-      if (integrationResult.status === 'failed') {
+      // A skip that is not "nothing to integrate" leaves the approved change only in
+      // the selected worktree (e.g. auto-commit was turned off mid-run). Treat it like
+      // a failure: keep that worktree and block, instead of marking done and
+      // deleting every worktree below.
+      const integrationStranded = isStrandedIntegrationSkip(
+        integrationResult,
+        selectedAttempt.workspace.isolated,
+      );
+      if (integrationResult.status === 'failed' || integrationStranded) {
         updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
           ...current,
           status: 'blocked',
@@ -20130,8 +20297,10 @@ async function processWorkWithMultipleWorkers(params: {
           taskType: 'work',
           author: runtime.reviewerAuthor,
           body: buildKiraStatusComment({
-            status: 'Integration failed',
-            summary: `Approved attempt ${selectedAttempt.attemptNo}, but integration failed.`,
+            status: integrationStranded ? 'Integration skipped' : 'Integration failed',
+            summary: integrationStranded
+              ? `Approved attempt ${selectedAttempt.attemptNo} was not integrated; its worktree was kept.`
+              : `Approved attempt ${selectedAttempt.attemptNo}, but integration failed.`,
             details: [`Integration result:\n${integrationResult.message}`],
             issues: [integrationResult.message],
             solutions: buildOperatorFixSolutions(),
@@ -20397,6 +20566,7 @@ async function processWork(
     projectSettings,
   );
   if (
+    !isDecompositionChildWork(work) &&
     initialContextScan.decomposition &&
     shouldAutoDecomposeWork(initialContextScan.decomposition)
   ) {
@@ -21666,6 +21836,41 @@ async function processWork(
           type: 'needs_attention',
           createdAt: Date.now(),
           message: `Kira blocked: "${work.title}" 작업의 승인된 변경을 통합하는 중 충돌 또는 git 상태 문제가 발생했어요.`,
+        });
+        return;
+      } else if (isStrandedIntegrationSkip(autoCommitResult, workspace.isolated)) {
+        // The approved change exists ONLY in this worktree (auto-commit turned off
+        // mid-run, or staged changes were already present). Cleaning up here
+        // force-deleted the worktree and its branch and lost it; keep both and hand
+        // the work back to the operator instead.
+        updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
+          ...current,
+          status: 'blocked',
+        }));
+        addComment(options.sessionsDir, sessionPath, {
+          taskId: work.id,
+          taskType: 'work',
+          author: runtime.reviewerAuthor,
+          body: buildKiraStatusComment({
+            status: 'Integration skipped',
+            summary:
+              'The change was approved but not integrated, so Kira kept the isolated worktree that holds it.',
+            details: [
+              `Auto-commit result:\n${autoCommitResult.message}`,
+              `Worktree: ${workspace.projectRoot}`,
+            ],
+            issues: [autoCommitResult.message],
+            solutions: buildOperatorFixSolutions(),
+          }),
+        });
+        enqueueEvent(options.sessionsDir, sessionPath, {
+          id: makeId('event'),
+          workId: work.id,
+          title: work.title,
+          projectName: work.projectName,
+          type: 'needs_attention',
+          createdAt: Date.now(),
+          message: `Kira kept the worktree for "${work.title}": the approved change was not integrated (${autoCommitResult.message}).`,
         });
         return;
       } else if (autoCommitResult.message) {

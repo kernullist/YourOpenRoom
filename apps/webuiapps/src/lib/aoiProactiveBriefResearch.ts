@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import { isIP } from 'net';
+import { extractEmbeddedIpv4 } from './aoiHostUrlSafety';
 import type { AoiResearchTavilyConfig } from './aoiResearchEngine';
 import type {
   AoiInterestTopic,
@@ -169,13 +170,14 @@ function isPrivateIPv4(ip: string): boolean {
 
 function isPrivateIPv6(ip: string): boolean {
   const normalized = ip.toLowerCase();
+  const embedded = extractEmbeddedIpv4(normalized);
   return (
     normalized === '::' ||
     normalized === '::1' ||
     normalized.startsWith('fc') ||
     normalized.startsWith('fd') ||
     /^fe[89ab]/.test(normalized) ||
-    (normalized.startsWith('::ffff:') && isPrivateIPv4(normalized.slice('::ffff:'.length)))
+    (embedded !== null && isPrivateIPv4(embedded))
   );
 }
 
