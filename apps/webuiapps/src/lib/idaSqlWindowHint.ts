@@ -117,7 +117,11 @@ while ((Get-Date) -lt $deadline) {
 if ($h -eq [IntPtr]::Zero) { Write-Output '{"found":false}'; exit 0 }
 $r = New-Object IdaHint+RECT
 [void][IdaHint]::GetWindowRect($h, [ref]$r)
-$flashed = [IdaHint]::Flash($h)
+# FlashWindowEx returns whether the window was ACTIVE before the call, not
+# whether it flashed -- it has no failure result. Reading it as success said
+# "not flashed" for exactly the window the operator cannot see.
+[void][IdaHint]::Flash($h)
+$flashed = $true
 $screen = [System.Windows.Forms.Screen]::PrimaryScreen
 $offPrimary = $false
 if ($screen) { $offPrimary = ($r.Left -lt 0) -or ($r.Top -lt 0) -or ($r.Left -ge $screen.Bounds.Width) -or ($r.Top -ge $screen.Bounds.Height) }

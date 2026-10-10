@@ -27,7 +27,19 @@ export type AoiBrowserDriveArtifactWriter = (
 ) => Promise<void> | void;
 
 // Screenshot + DOM subset used here (a subset of AoiBrowserDriveActablePage).
-type CapturablePage = Pick<AoiBrowserDriveActablePage, 'screenshot' | 'content'>;
+type CapturablePage = Pick<AoiBrowserDriveActablePage, 'screenshot' | 'content' | 'pendingDialog'>;
+
+// A native dialog holds the page: measured against Chrome, a screenshot runs to
+// its timeout and reading the DOM does not return until the dialog is gone. An
+// act that raised one would sit behind its own audit capture for half a minute,
+// so a phase with a dialog up is recorded without artifacts instead.
+function dialogIsUp(page: CapturablePage): boolean {
+  try {
+    return Boolean(page.pendingDialog?.());
+  } catch {
+    return false;
+  }
+}
 
 function sanitizeSegment(value: string): string {
   // Strip everything but word chars + hyphen (dots too, so no ".." can survive in
@@ -48,6 +60,9 @@ export function makeAoiBrowserDriveAuditObserver(params: {
   const runId = sanitizeSegment(params.runId);
   return {
     onStep: async ({ stepIndex, phase }): Promise<AoiBrowserDriveObservation | void> => {
+      if (dialogIsUp(params.page)) {
+        return undefined;
+      }
       const base = `${runId}/step-${stepIndex}-${phase}`;
       const observation: AoiBrowserDriveObservation = {};
       try {

@@ -8,6 +8,28 @@ import {
   runAoiHostBrowserRead,
 } from '../aoiHostBrowserRead';
 
+describe('the reader without its network guard', () => {
+  it('does not read at all when the guard does not start', async () => {
+    const spawnImpl = vi.fn();
+    const removed: string[] = [];
+    const result = await runAoiHostBrowserRead({
+      url: 'https://example.com/',
+      browserPath: 'C:/chrome.exe',
+      existsSyncImpl: () => true,
+      mkdtempImpl: () => 'C:/tmp/aoi-host-browser-x',
+      rmImpl: (path) => removed.push(path),
+      spawnImpl: spawnImpl as never,
+      startEgressGuard: async () => {
+        throw new Error('EADDRINUSE');
+      },
+    });
+    expect(result).toMatchObject({ ok: false, reason: 'spawn_failed' });
+    expect(JSON.stringify(result)).toContain('network guard did not start');
+    expect(spawnImpl).not.toHaveBeenCalled();
+    expect(removed).toEqual(['C:/tmp/aoi-host-browser-x']);
+  });
+});
+
 describe('resolveAoiHostBrowserUrl', () => {
   it('accepts public https URLs and adds https when missing', () => {
     expect(resolveAoiHostBrowserUrl('https://example.com/a').ok).toBe(true);

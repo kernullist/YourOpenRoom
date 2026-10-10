@@ -80,9 +80,12 @@
 
 #include <string>
 #include <vector>
+#include <map>
 #include <iostream>
 #include <sstream>
 #include <algorithm>
+#include <cctype>
+#include <cstdlib>
 
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "oleaut32.lib")
@@ -513,6 +516,39 @@ bool LooksLikeCredential(const std::string& name)
     return false;
 }
 
+// A text control that runs what is typed into it, inside an app that is not
+// itself a terminal: an editor's integrated terminal (VS Code names its input
+// "Terminal 1, bash"), an IDE console. The window around it is an editor, so
+// only the control itself can give it away. Whole words only, so a field that
+// merely mentions a console in passing ("consoleLog") is left alone.
+bool LooksLikeTerminalPane(const std::string& name)
+{
+    static const char* kWords[] = {"terminal", "xterm", "console"};
+    std::string lowered;
+    lowered.reserve(name.size());
+    for (size_t i = 0; i < name.size(); ++i)
+    {
+        lowered.push_back(static_cast<char>(tolower(static_cast<unsigned char>(name[i]))));
+    }
+    for (size_t i = 0; i < sizeof(kWords) / sizeof(kWords[0]); ++i)
+    {
+        const std::string word = kWords[i];
+        for (size_t at = lowered.find(word); at != std::string::npos;
+             at = lowered.find(word, at + 1))
+        {
+            const bool startsWord = at == 0 || !isalnum(static_cast<unsigned char>(lowered[at - 1]));
+            const size_t end = at + word.size();
+            const bool endsWord =
+                end >= lowered.size() || !isalnum(static_cast<unsigned char>(lowered[end]));
+            if (startsWord && endsWord)
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 // ---------------------------------------------------------------------------
 // Result emission. Every op answers in the same shape so the daemon can parse
 // one contract.
@@ -575,6 +611,58 @@ std::string ProcessNameOf(HWND hwnd)
     }
     CloseHandle(handle);
     return name;
+}
+
+// Windows whose keyboard input is a command line: what is typed or pasted into
+// them RUNS. Driving one is process spawning by another name, and it skipped the
+// approval-gated spawn route entirely, so keyboard input, pastes (right and
+// middle click) and drops are refused for them outright. Matched by window class
+// (console and terminal hosts) and by process name (shells and emulators).
+bool IsTerminalWindow(HWND hwnd)
+{
+    HWND root = GetAncestor(hwnd, GA_ROOT);
+    if (root == NULL)
+    {
+        root = hwnd;
+    }
+    wchar_t className[128] = {0};
+    if (GetClassNameW(root, className, 128) > 0)
+    {
+        static const wchar_t* const kTerminalClasses[] = {
+            L"ConsoleWindowClass", L"CASCADIA_HOSTING_WINDOW_CLASS", L"PuTTY", L"mintty",
+            L"VirtualConsoleClass"};
+        for (const wchar_t* terminalClass : kTerminalClasses)
+        {
+            if (_wcsicmp(className, terminalClass) == 0)
+            {
+                return true;
+            }
+        }
+    }
+    std::string process = ProcessNameOf(root);
+    std::transform(process.begin(), process.end(), process.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    static const char* const kTerminalProcesses[] = {
+        "cmd.exe",     "powershell.exe", "pwsh.exe",       "windowsterminal.exe", "wt.exe",
+        "openconsole.exe", "conhost.exe", "bash.exe",      "wsl.exe",             "mintty.exe",
+        "alacritty.exe", "wezterm-gui.exe", "putty.exe",   "kitty.exe",           "conemu.exe",
+        "conemu64.exe", "mobaxterm.exe",  "tabby.exe",      "hyper.exe"};
+    for (const char* terminalProcess : kTerminalProcesses)
+    {
+        if (process == terminalProcess)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+void EmitTerminalRefusal(const std::string& why = "that window is a terminal")
+{
+    EmitFailure("terminal_input_refused",
+                why + ", where whatever is typed or pasted runs as a command; run commands "
+                      "through host_process_spawn_preview and host_process_spawn_run, which show "
+                      "the command to the user for approval");
 }
 
 BOOL CALLBACK CollectWindow(HWND hwnd, LPARAM param)
@@ -640,6 +728,9 @@ struct ElementInfo
     bool enabled;
     bool sensitive;
     IUIAutomationElement* element;
+    // What makes this the same control in the next snapshot. Set by
+    // CollectElements, which needs the whole list to work it out.
+    std::string identity;
 };
 
 std::string RoleOf(CONTROLTYPEID type)
@@ -847,7 +938,7 @@ void ReleaseElements(std::vector<ElementInfo>& elements)
 // in the window and turned an ordinary sequence into a random stale-ref refusal.
 // Insertions, removals and reordering still change the id -- those are the
 // changes that actually make a ref point somewhere else.
-std::string IdentityOf(const ElementInfo& element)
+std::string BaseIdentityOf(const ElementInfo& element)
 {
     if (!element.automationId.empty())
     {
@@ -856,13 +947,34 @@ std::string IdentityOf(const ElementInfo& element)
     return element.role + "::" + element.name;
 }
 
+// An automation id is only an identity while it is unique. List rows built from
+// one template all carry the same id ("Row"), so by the id alone a list that
+// re-sorted or scrolled from Alice/Bob to Kim/Lee was the SAME snapshot -- the
+// refs survived and ref 1 quietly meant Kim. For an id that several controls
+// share, the name has to be part of it.
+void AssignIdentities(std::vector<ElementInfo>& elements)
+{
+    std::map<std::string, int> uses;
+    for (size_t i = 0; i < elements.size(); ++i)
+    {
+        uses[BaseIdentityOf(elements[i])] += 1;
+    }
+    for (size_t i = 0; i < elements.size(); ++i)
+    {
+        const std::string base = BaseIdentityOf(elements[i]);
+        elements[i].identity = (!elements[i].automationId.empty() && uses[base] > 1)
+                                   ? base + "::" + elements[i].name
+                                   : base;
+    }
+}
+
 std::string SnapshotIdFor(HWND hwnd, const std::vector<ElementInfo>& elements)
 {
     std::ostringstream material;
     material << reinterpret_cast<uintptr_t>(hwnd);
     for (size_t i = 0; i < elements.size(); ++i)
     {
-        material << "|" << IdentityOf(elements[i]);
+        material << "|" << elements[i].identity;
     }
     return HashSnapshot(material.str());
 }
@@ -977,11 +1089,16 @@ bool CollectElements(IUIAutomation* automation,
         // refs however the tree is walked, while insertions and removals still
         // change the set, and so still retire the refs -- which is the case that
         // actually makes a ref point at something else.
-        std::sort(out.begin(), out.end(),
-                  [](const ElementInfo& left, const ElementInfo& right)
-                  {
-                      return IdentityOf(left) < IdentityOf(right);
-                  });
+        //
+        // Stable, so controls that are indistinguishable even by name (two
+        // unnamed "Delete" buttons) keep their tree order instead of whatever
+        // order the sort happened to leave them in on this particular run.
+        AssignIdentities(out);
+        std::stable_sort(out.begin(), out.end(),
+                         [](const ElementInfo& left, const ElementInfo& right)
+                         {
+                             return left.identity < right.identity;
+                         });
         for (size_t i = 0; i < out.size(); ++i)
         {
             out[i].ref = static_cast<int>(i) + 1;
@@ -1325,6 +1442,11 @@ void RunInvoke(IUIAutomation* automation, HWND hwnd, int ref,
 void RunSetValue(IUIAutomation* automation, HWND hwnd, int ref,
                  const std::string& snapshotId, const std::string& value)
 {
+    if (IsTerminalWindow(hwnd))
+    {
+        EmitTerminalRefusal();
+        return;
+    }
     std::vector<ElementInfo> elements;
     size_t index = 0;
     std::string code;
@@ -1899,8 +2021,321 @@ void SendForegroundClick(POINT screenPoint, const ClickSpec& spec, int clicks,
 // Keyboard is where most real desktop work happens (ctrl+s, tab, escape), and
 // UI Automation has no pattern for "press a key" -- so this starts at the
 // background rung. Neither rung can prove the app acted, so neither claims to.
-void RunKey(HWND hwnd, const std::string& combo, DeliveryMode delivery, bool allowForeground)
+//
+// Where keyboard input sent to this window would land. set_value and click
+// refuse credential fields by ref and by position; key and type address no
+// element, so without this they were the way around that guard -- and a pane
+// that runs what is typed into it is the way around the approval-gated spawn.
+enum FocusTarget
 {
+    kFocusOrdinary,
+    kFocusCredential,
+    kFocusTerminal,
+    // The window draws its own controls inside one window (browsers, Electron,
+    // WPF, Qt), so from the background the control that has focus inside it
+    // cannot be seen at all.
+    kFocusUnknown,
+};
+
+bool IsHostLikeControlType(CONTROLTYPEID type)
+{
+    return type == 0 || type == UIA_PaneControlTypeId || type == UIA_WindowControlTypeId ||
+           type == UIA_DocumentControlTypeId || type == UIA_CustomControlTypeId ||
+           type == UIA_GroupControlTypeId;
+}
+
+// `precise` is true for UI Automation's own focused element, which is exact. An
+// element reached through the focused child WINDOW is exact only when that
+// window is the control itself -- a classic edit or button. A browser or WPF
+// window answers as a pane or document there, whatever field has focus inside.
+FocusTarget ClassifyFocused(IUIAutomationElement* element, bool precise)
+{
+    ElementInfo info;
+    ReadElementInfo(element, false, info);
+    CONTROLTYPEID type = 0;
+    if (FAILED(element->get_CurrentControlType(&type)))
+    {
+        type = 0;
+    }
+    if (info.sensitive)
+    {
+        return kFocusCredential;
+    }
+    const bool takesText = type == UIA_EditControlTypeId || type == UIA_DocumentControlTypeId;
+    if (takesText && (LooksLikeTerminalPane(info.name) || LooksLikeTerminalPane(info.automationId)))
+    {
+        return kFocusTerminal;
+    }
+    if (!precise && IsHostLikeControlType(type))
+    {
+        return kFocusUnknown;
+    }
+    return kFocusOrdinary;
+}
+
+FocusTarget ReadFocusTarget(IUIAutomation* automation, HWND hwnd)
+{
+    IUIAutomationElement* target = NULL;
+    bool precise = false;
+    if (GetForegroundWindow() == hwnd && SUCCEEDED(automation->GetFocusedElement(&target)) &&
+        target != NULL)
+    {
+        precise = true;
+    }
+    if (target == NULL)
+    {
+        const HWND focused = FocusedChildOf(hwnd);
+        if (focused == NULL || FAILED(automation->ElementFromHandle(focused, &target)) ||
+            target == NULL)
+        {
+            return kFocusUnknown;
+        }
+    }
+    const FocusTarget result = ClassifyFocused(target, precise);
+    target->Release();
+    return result;
+}
+
+// The focus once the window is in front. Focus moves back in a moment AFTER
+// the window comes forward -- the app restores it to the control that last had
+// it -- and until then UI Automation reports the window itself, so reading
+// straight away would see the frame and miss the password field the keystrokes
+// are about to land in. Unknown means the window lost the foreground again.
+FocusTarget SettledFocusTarget(IUIAutomation* automation, HWND hwnd)
+{
+    FocusTarget result = kFocusUnknown;
+    for (int waited = 0; waited <= 300; waited += 30)
+    {
+        IUIAutomationElement* target = NULL;
+        if (GetForegroundWindow() == hwnd && SUCCEEDED(automation->GetFocusedElement(&target)) &&
+            target != NULL)
+        {
+            CONTROLTYPEID type = 0;
+            if (FAILED(target->get_CurrentControlType(&type)))
+            {
+                type = 0;
+            }
+            result = ClassifyFocused(target, true);
+            target->Release();
+            if (result != kFocusOrdinary || !IsHostLikeControlType(type))
+            {
+                return result;
+            }
+        }
+        else
+        {
+            result = kFocusUnknown;
+        }
+        Sleep(30);
+    }
+    return result;
+}
+
+bool WindowHasPasswordField(IUIAutomation* automation, HWND hwnd)
+{
+    IUIAutomationElement* root = NULL;
+    if (FAILED(automation->ElementFromHandle(hwnd, &root)) || root == NULL)
+    {
+        return false;
+    }
+    VARIANT yes;
+    VariantInit(&yes);
+    yes.vt = VT_BOOL;
+    yes.boolVal = VARIANT_TRUE;
+    IUIAutomationCondition* condition = NULL;
+    bool found = false;
+    if (SUCCEEDED(automation->CreatePropertyCondition(UIA_IsPasswordPropertyId, yes, &condition)) &&
+        condition != NULL)
+    {
+        IUIAutomationElement* match = NULL;
+        if (SUCCEEDED(root->FindFirst(TreeScope_Descendants, condition, &match)) && match != NULL)
+        {
+            found = true;
+            match->Release();
+        }
+        condition->Release();
+    }
+    root->Release();
+    return found;
+}
+
+// A terminal pane anywhere in the window: a text control -- an edit, or the
+// document some terminal emulators expose -- whose name says it is one. The same
+// two control types ClassifyFocused judges a focused terminal by, and searched
+// over the whole window like the password field above: the interactable list
+// holds only edits, and it is capped.
+bool WindowHasTerminalPane(IUIAutomation* automation, HWND hwnd)
+{
+    IUIAutomationElement* root = NULL;
+    if (FAILED(automation->ElementFromHandle(hwnd, &root)) || root == NULL)
+    {
+        return false;
+    }
+    VARIANT editType;
+    VariantInit(&editType);
+    editType.vt = VT_I4;
+    editType.lVal = UIA_EditControlTypeId;
+    VARIANT documentType;
+    VariantInit(&documentType);
+    documentType.vt = VT_I4;
+    documentType.lVal = UIA_DocumentControlTypeId;
+    IUIAutomationCondition* isEdit = NULL;
+    IUIAutomationCondition* isDocument = NULL;
+    IUIAutomationCondition* either = NULL;
+    bool found = false;
+    if (SUCCEEDED(automation->CreatePropertyCondition(UIA_ControlTypePropertyId, editType,
+                                                      &isEdit)) &&
+        isEdit != NULL &&
+        SUCCEEDED(automation->CreatePropertyCondition(UIA_ControlTypePropertyId, documentType,
+                                                      &isDocument)) &&
+        isDocument != NULL &&
+        SUCCEEDED(automation->CreateOrCondition(isEdit, isDocument, &either)) && either != NULL)
+    {
+        IUIAutomationElementArray* matches = NULL;
+        if (SUCCEEDED(root->FindAll(TreeScope_Subtree, either, &matches)) && matches != NULL)
+        {
+            int count = 0;
+            if (FAILED(matches->get_Length(&count)))
+            {
+                count = 0;
+            }
+            for (int i = 0; i < count && !found; ++i)
+            {
+                IUIAutomationElement* element = NULL;
+                if (SUCCEEDED(matches->GetElement(i, &element)) && element != NULL)
+                {
+                    ElementInfo info;
+                    ReadElementInfo(element, false, info);
+                    found = LooksLikeTerminalPane(info.name) ||
+                            LooksLikeTerminalPane(info.automationId);
+                    element->Release();
+                }
+            }
+            matches->Release();
+        }
+    }
+    if (either != NULL)
+    {
+        either->Release();
+    }
+    if (isDocument != NULL)
+    {
+        isDocument->Release();
+    }
+    if (isEdit != NULL)
+    {
+        isEdit->Release();
+    }
+    root->Release();
+    return found;
+}
+
+// For a focus that cannot be read: what the window holds ANYWHERE. A keystroke
+// posted into it could be going into any of its controls, so a credential field
+// or a terminal pane somewhere in it is enough to stop a blind post. A window
+// that cannot be read at all counts as holding a credential field.
+void ReadRiskyInput(IUIAutomation* automation, HWND hwnd, bool& credential, bool& terminal)
+{
+    credential = false;
+    terminal = false;
+    std::vector<ElementInfo> elements;
+    std::string error;
+    if (!CollectElements(automation, hwnd, elements, error))
+    {
+        ReleaseElements(elements);
+        credential = true;
+        return;
+    }
+    for (size_t i = 0; i < elements.size(); ++i)
+    {
+        if (elements[i].sensitive)
+        {
+            credential = true;
+        }
+    }
+    ReleaseElements(elements);
+    // The element list is capped; a password box further down still counts.
+    if (!credential)
+    {
+        credential = WindowHasPasswordField(automation, hwnd);
+    }
+    terminal = WindowHasTerminalPane(automation, hwnd);
+}
+
+const char* const kCredentialFocusDetail =
+    "keyboard focus in that window is on a credential field; Aoi does not type into those";
+const char* const kBlindPostDetail =
+    "this window draws its own controls, so from the background there is no telling which one "
+    "has focus -- and it holds a credential field, which the keys could be going into. Nothing "
+    "was sent. The foreground rung can read the real focus first";
+
+// The checks every keystroke goes through before anything is sent. Returns
+// false, having answered, when it must not be sent at all. `postable` comes back
+// false when the focus cannot be read from the background and the window holds
+// something a blind keystroke could land in: then only the foreground rung,
+// which can read the real focus, may deliver it. `exempt` is for keys that only
+// move focus away (tab, escape), which are harmless in a credential field.
+bool CheckFocusBeforePosting(IUIAutomation* automation, HWND hwnd, bool exempt, bool& postable)
+{
+    postable = true;
+    const FocusTarget focus = ReadFocusTarget(automation, hwnd);
+    if (focus == kFocusTerminal)
+    {
+        EmitTerminalRefusal("keyboard focus in that window is on a terminal pane");
+        return false;
+    }
+    if (exempt)
+    {
+        return true;
+    }
+    if (focus == kFocusCredential)
+    {
+        EmitFailure("element_forbidden", kCredentialFocusDetail);
+        return false;
+    }
+    if (focus == kFocusUnknown)
+    {
+        bool credential = false;
+        bool terminal = false;
+        ReadRiskyInput(automation, hwnd, credential, terminal);
+        postable = !credential && !terminal;
+    }
+    return true;
+}
+
+// The same checks once the window is in front, where the focus can be read
+// exactly. Returns false, having answered, when the input must not be sent.
+bool CheckFocusInFront(IUIAutomation* automation, HWND hwnd, bool exempt)
+{
+    const FocusTarget focus = SettledFocusTarget(automation, hwnd);
+    if (focus == kFocusTerminal)
+    {
+        EmitTerminalRefusal("keyboard focus in that window is on a terminal pane");
+        return false;
+    }
+    if (focus == kFocusUnknown)
+    {
+        EmitFailure("foreground_denied",
+                    "the window lost the foreground before the input could be sent; nothing "
+                    "was sent");
+        return false;
+    }
+    if (!exempt && focus == kFocusCredential)
+    {
+        EmitFailure("element_forbidden", kCredentialFocusDetail);
+        return false;
+    }
+    return true;
+}
+
+void RunKey(IUIAutomation* automation, HWND hwnd, const std::string& combo,
+            DeliveryMode delivery, bool allowForeground)
+{
+    if (IsTerminalWindow(hwnd))
+    {
+        EmitTerminalRefusal();
+        return;
+    }
     std::vector<WORD> modifiers;
     WORD mainKey = 0;
     if (!ParseKeyCombo(combo, modifiers, mainKey))
@@ -1909,8 +2344,29 @@ void RunKey(HWND hwnd, const std::string& combo, DeliveryMode delivery, bool all
                     "could not read that as a key combo; use forms like 'ctrl+s', 'tab', 'f5'");
         return;
     }
+    // Moving focus OUT of a credential field (tab, shift+tab, escape) is fine;
+    // anything else there types, pastes or submits a secret.
+    bool onlyShift = true;
+    for (WORD modifier : modifiers)
+    {
+        if (modifier != VK_SHIFT)
+        {
+            onlyShift = false;
+        }
+    }
+    const bool leavesField = onlyShift && (mainKey == VK_TAB || mainKey == VK_ESCAPE);
+    bool postable = true;
+    if (!CheckFocusBeforePosting(automation, hwnd, leavesField, postable))
+    {
+        return;
+    }
+    if (!postable && (delivery == kDeliveryBackground || !allowForeground))
+    {
+        EmitFailure("element_forbidden", kBlindPostDetail);
+        return;
+    }
 
-    if (delivery != kDeliveryForeground)
+    if (delivery != kDeliveryForeground && postable)
     {
         const HWND focused = FocusedChildOf(hwnd);
         if (focused != NULL)
@@ -1965,6 +2421,12 @@ void RunKey(HWND hwnd, const std::string& combo, DeliveryMode delivery, bool all
                     "whatever is actually in front");
         return;
     }
+    // In front now, so the focus can be read exactly -- including a password
+    // field inside a browser, which the background check cannot see.
+    if (!CheckFocusInFront(automation, hwnd, leavesField))
+    {
+        return;
+    }
     PressForegroundKeys(modifiers, mainKey);
     EmitVerdict(true, "unverifiable", false, "foreground", "key sent as real keyboard input");
 }
@@ -1979,16 +2441,32 @@ void RunKey(HWND hwnd, const std::string& combo, DeliveryMode delivery, bool all
 // after a programmatic set_value the caret sits at position 0, so typing then
 // PREPENDS rather than appends. Nothing here can see the caret to warn about it.
 // set_value replaces the whole field and can prove it did.
-void RunType(HWND hwnd, const std::string& text, DeliveryMode delivery, bool allowForeground)
+void RunType(IUIAutomation* automation, HWND hwnd, const std::string& text,
+             DeliveryMode delivery, bool allowForeground)
 {
     if (text.empty())
     {
         EmitFailure("bad_request", "text is required");
         return;
     }
+    if (IsTerminalWindow(hwnd))
+    {
+        EmitTerminalRefusal();
+        return;
+    }
+    bool postable = true;
+    if (!CheckFocusBeforePosting(automation, hwnd, false, postable))
+    {
+        return;
+    }
+    if (!postable && (delivery == kDeliveryBackground || !allowForeground))
+    {
+        EmitFailure("element_forbidden", kBlindPostDetail);
+        return;
+    }
     const std::wstring wide = WideFromUtf8(text);
 
-    if (delivery != kDeliveryForeground)
+    if (delivery != kDeliveryForeground && postable)
     {
         const HWND focused = FocusedChildOf(hwnd);
         if (focused != NULL)
@@ -2023,6 +2501,10 @@ void RunType(HWND hwnd, const std::string& text, DeliveryMode delivery, bool all
                     "whatever is actually in front");
         return;
     }
+    if (!CheckFocusInFront(automation, hwnd, false))
+    {
+        return;
+    }
     TypeForegroundText(wide);
     EmitVerdict(true, "unverifiable", false, "foreground", "text sent as real keyboard input");
 }
@@ -2037,14 +2519,59 @@ void RunType(HWND hwnd, const std::string& text, DeliveryMode delivery, bool all
 // resolved back to whatever element sits there and the SAME checks run. A window
 // with no tree yields no element, and only then does the point go through
 // unchecked -- which is exactly the case this exists for, and it is reported.
-bool CoordinateTargetAllowed(IUIAutomation* automation, POINT screenPoint, bool& hadElement,
-                             std::string& code, std::string& detail)
+//
+// The screen's hit test answers for whatever is on top at the point. A click
+// posted to this window reaches its own child window there whatever covers it
+// -- another app, the lock screen -- so where the window is not the one on top,
+// what is checked is that child, the one the click is posted to. A child that
+// holds controls of its own drawn without windows (a web page, a WPF or UWP
+// view), or no child at all, cannot say which of them the point is over: that
+// is refused rather than let through unchecked.
+bool CoordinateTargetAllowed(IUIAutomation* automation, HWND hwnd, POINT screenPoint,
+                             bool& hadElement, std::string& code, std::string& detail)
 {
     hadElement = false;
     IUIAutomationElement* atPoint = NULL;
-    if (FAILED(automation->ElementFromPoint(screenPoint, &atPoint)) || atPoint == NULL)
+    const HWND onTop = WindowFromPoint(screenPoint);
+    if (onTop != NULL && GetAncestor(onTop, GA_ROOT) == GetAncestor(hwnd, GA_ROOT))
     {
-        return true;
+        if (FAILED(automation->ElementFromPoint(screenPoint, &atPoint)) || atPoint == NULL)
+        {
+            return true;
+        }
+    }
+    else
+    {
+        POINT clientPoint;
+        const HWND child = ChildAtScreenPoint(hwnd, screenPoint, clientPoint);
+        if (child != NULL && child != hwnd &&
+            FAILED(automation->ElementFromHandle(child, &atPoint)))
+        {
+            atPoint = NULL;
+        }
+        IUIAutomationElement* inside = NULL;
+        IUIAutomationTreeWalker* walker = NULL;
+        if (atPoint != NULL && SUCCEEDED(automation->get_ControlViewWalker(&walker)) &&
+            walker != NULL)
+        {
+            walker->GetFirstChildElement(atPoint, &inside);
+            walker->Release();
+        }
+        if (atPoint == NULL || inside != NULL)
+        {
+            if (inside != NULL)
+            {
+                inside->Release();
+            }
+            if (atPoint != NULL)
+            {
+                atPoint->Release();
+            }
+            code = "element_obscured";
+            detail = "another window covers that point, and what the window has under it cannot "
+                     "be told; bring the window forward or address the control by ref";
+            return false;
+        }
     }
 
     hadElement = true;
@@ -2068,6 +2595,80 @@ bool CoordinateTargetAllowed(IUIAutomation* automation, POINT screenPoint, bool&
     return true;
 }
 
+// A raw point to click. By default it is in the window's CLIENT area, which is
+// what the legacy callers send. With windowFrame set it is measured from the
+// window rectangle's top-left -- the frame included -- which is exactly the
+// picture desktop_capture returns, so a point read off that picture lands where
+// it was seen.
+struct PointTarget
+{
+    POINT at = {0, 0};
+    bool windowFrame = false;
+    // The window size the picture was taken at (unscaled). A window resized
+    // since then no longer matches the picture, so the point means nothing.
+    int expectedWidth = 0;
+    int expectedHeight = 0;
+};
+
+bool ResolvePointTarget(HWND hwnd, const PointTarget& point, POINT& screenPoint,
+                        std::string& code, std::string& detail)
+{
+    if (!point.windowFrame)
+    {
+        screenPoint = point.at;
+        if (ClientToScreen(hwnd, &screenPoint) == FALSE)
+        {
+            code = "bad_request";
+            detail = "the point could not be mapped onto that window";
+            return false;
+        }
+        return true;
+    }
+
+    RECT rc;
+    if (GetWindowRect(hwnd, &rc) == FALSE)
+    {
+        code = "bad_request";
+        detail = "the point could not be mapped onto that window";
+        return false;
+    }
+    const int width = static_cast<int>(rc.right - rc.left);
+    const int height = static_cast<int>(rc.bottom - rc.top);
+    // A pixel or two of slack: rounding the scaled picture back up can be off by
+    // one, and that is not a different window.
+    if (point.expectedWidth > 0 && point.expectedHeight > 0 &&
+        (std::abs(width - point.expectedWidth) > 2 || std::abs(height - point.expectedHeight) > 2))
+    {
+        code = "window_changed";
+        detail = "the window was resized after it was captured; capture it again and read the "
+                 "point off the new picture";
+        return false;
+    }
+    POINT at = point.at;
+    // Inside that slack, a point on the far edge of the picture can sit a pixel
+    // or two past the window as it is now. It is the same edge, not outside.
+    if (point.expectedWidth > 0 && point.expectedHeight > 0)
+    {
+        if (at.x >= width && at.x < width + 3)
+        {
+            at.x = width - 1;
+        }
+        if (at.y >= height && at.y < height + 3)
+        {
+            at.y = height - 1;
+        }
+    }
+    if (at.x < 0 || at.y < 0 || at.x >= width || at.y >= height)
+    {
+        code = "bad_request";
+        detail = "the point is outside the window";
+        return false;
+    }
+    screenPoint.x = rc.left + at.x;
+    screenPoint.y = rc.top + at.y;
+    return true;
+}
+
 // --- Op: click --------------------------------------------------------------
 //
 // A single click on a plain button is better served by invoke (rung 1, provable).
@@ -2075,12 +2676,19 @@ bool CoordinateTargetAllowed(IUIAutomation* automation, POINT screenPoint, bool&
 // modifiers -- and for controls that expose no InvokePattern at all.
 void RunClick(IUIAutomation* automation, HWND hwnd, int ref, const std::string& snapshotId,
               const std::string& button, int clicks, const std::vector<WORD>& modifiers,
-              DeliveryMode delivery, bool allowForeground, bool byPoint, POINT clientPoint)
+              DeliveryMode delivery, bool allowForeground, bool byPoint, const PointTarget& point)
 {
     ClickSpec spec;
     if (!ResolveClickSpec(button, spec))
     {
         EmitFailure("bad_request", "button must be left, right or middle");
+        return;
+    }
+    // In a console a right click pastes the clipboard, and in several emulators
+    // a middle click does; either runs whatever the clipboard holds.
+    if ((button == "right" || button == "middle") && IsTerminalWindow(hwnd))
+    {
+        EmitTerminalRefusal();
         return;
     }
     if (clicks < 1 || clicks > 3)
@@ -2100,13 +2708,12 @@ void RunClick(IUIAutomation* automation, HWND hwnd, int ref, const std::string& 
     {
         // Window-relative, so a moved window does not silently redirect the
         // click to wherever those screen pixels now belong.
-        center = clientPoint;
-        if (ClientToScreen(hwnd, &center) == FALSE)
+        if (!ResolvePointTarget(hwnd, point, center, code, detail))
         {
-            EmitFailure("bad_request", "the point could not be mapped onto that window");
+            EmitFailure(code, detail);
             return;
         }
-        if (!CoordinateTargetAllowed(automation, center, pointHadElement, code, detail))
+        if (!CoordinateTargetAllowed(automation, hwnd, center, pointHadElement, code, detail))
         {
             EmitFailure(code, detail);
             return;
@@ -2371,6 +2978,12 @@ void RunScroll(IUIAutomation* automation, HWND hwnd, int ref, const std::string&
 void RunDrag(IUIAutomation* automation, HWND hwnd, int fromRef, int toRef,
              const std::string& snapshotId, bool allowForeground)
 {
+    // A drop into a terminal pastes, and a paste runs.
+    if (IsTerminalWindow(hwnd))
+    {
+        EmitTerminalRefusal();
+        return;
+    }
     if (!allowForeground)
     {
         EmitFailure("uia_unsupported",
@@ -2959,6 +3572,37 @@ void RunSelect(IUIAutomation* automation, HWND hwnd, int ref, const std::string&
 // "check this" and "click this" are different requests -- a click on an already
 // checked box unchecks it. This takes the DESIRED state and reads the result
 // back, so asking for checked twice is idempotent instead of a toggle.
+// Waits (briefly) for a toggle to move off `from`. Returns false only when the
+// state cannot be read at all; when it never moves, `now` is left equal to
+// `from` and the caller reports that honestly as a no-op.
+enum ToggleWait
+{
+    kToggleMoved,
+    // Still showing the old state when the wait ran out. NOT proof the toggle
+    // failed: an app can apply it later than that.
+    kToggleStill,
+    kToggleUnreadable,
+};
+
+ToggleWait WaitForToggleChange(IUIAutomationTogglePattern* pattern, ToggleState from,
+                               ToggleState& now)
+{
+    now = from;
+    for (int waited = 0; waited <= 600; waited += 25)
+    {
+        if (FAILED(pattern->get_CurrentToggleState(&now)))
+        {
+            return kToggleUnreadable;
+        }
+        if (now != from)
+        {
+            return kToggleMoved;
+        }
+        Sleep(25);
+    }
+    return kToggleStill;
+}
+
 void RunToggle(IUIAutomation* automation, HWND hwnd, int ref, const std::string& snapshotId,
                const std::string& desired)
 {
@@ -3012,16 +3656,21 @@ void RunToggle(IUIAutomation* automation, HWND hwnd, int ref, const std::string&
     }
 
     HRESULT hr = pattern->Toggle();
+    ToggleState now = state;
+    ToggleWait wait = SUCCEEDED(hr) ? WaitForToggleChange(pattern, state, now) : kToggleUnreadable;
     // Tri-state controls cycle, so one Toggle may land on indeterminate rather
-    // than the state that was asked for.
-    for (int attempt = 0; attempt < 2 && SUCCEEDED(hr) && desired != "toggle"; ++attempt)
+    // than the state that was asked for. Only toggle again once the previous one
+    // has VISIBLY landed: the Win32 proxy applies Toggle by posting a click, so a
+    // read straight after can still show the old state, and toggling again on
+    // that stale read flipped the control back. A toggle the wait did not see
+    // move is not followed by another for the same reason -- the app may simply
+    // be slower than the wait.
+    for (int attempt = 0;
+         attempt < 2 && wait == kToggleMoved && desired != "toggle" && now != wanted; ++attempt)
     {
-        ToggleState now = ToggleState_Indeterminate;
-        if (FAILED(pattern->get_CurrentToggleState(&now)) || now == wanted)
-        {
-            break;
-        }
+        const ToggleState landed = now;
         hr = pattern->Toggle();
+        wait = SUCCEEDED(hr) ? WaitForToggleChange(pattern, landed, now) : kToggleUnreadable;
     }
 
     if (FAILED(hr))
@@ -3032,30 +3681,41 @@ void RunToggle(IUIAutomation* automation, HWND hwnd, int ref, const std::string&
         return;
     }
 
-    ToggleState after = ToggleState_Indeterminate;
-    const bool readOk = SUCCEEDED(pattern->get_CurrentToggleState(&after));
+    ToggleState after = now;
+    bool readOk = true;
+    if (wait != kToggleMoved)
+    {
+        // Read once more: a slow control may have caught up by now.
+        readOk = SUCCEEDED(pattern->get_CurrentToggleState(&after));
+    }
     pattern->Release();
+    const bool reached = (desired == "toggle") ? (after != state) : (after == wanted);
 
     if (!readOk)
     {
         EmitVerdict(true, "unverifiable", false, "uia_toggle",
                     "Toggle reported success but the state could not be read back");
     }
-    else if (desired == "toggle")
+    else if (reached)
     {
-        EmitVerdict(true, after != state ? "confirmed" : "suspected_noop", after != state,
-                    "uia_toggle",
-                    after != state ? "the state changed and was read back"
-                                   : "the state did not change");
+        EmitVerdict(true, "confirmed", true, "uia_toggle",
+                    desired == "toggle" ? "the state changed and was read back"
+                                        : "the requested state was read back");
     }
-    else if (after == wanted)
+    else if (wait == kToggleStill)
     {
-        EmitVerdict(true, "confirmed", true, "uia_toggle", "the requested state was read back");
+        // Sent, and not seen to land within the wait. Calling that a no-op would
+        // invite a retry, and a retry on a control that is merely slow flips it
+        // back.
+        EmitVerdict(true, "unverifiable", false, "uia_toggle",
+                    "Toggle was sent but the control had not reported the new state when the "
+                    "wait ran out; take a fresh snapshot before trying again");
     }
     else
     {
         EmitVerdict(false, "suspected_noop", false, "uia_toggle",
-                    "the control did not reach the requested state");
+                    desired == "toggle" ? "the state did not change"
+                                        : "the control did not reach the requested state");
     }
     ReleaseElements(elements);
 }
@@ -3245,8 +3905,9 @@ bool IsUniformFrame(const void* bits, int width, int height)
 // what is on top does not matter. Some GPU-composited surfaces still come back
 // black, which is a limitation to report rather than hide.
 bool CaptureWindowPng(HWND hwnd, const std::vector<ElementInfo>* overlay, int maxLongSide,
+                      int maxShortSide,
                       std::string& outPng, int& outWidth, int& outHeight, double& outScale,
-                      bool* uniform)
+                      int& outWindowWidth, int& outWindowHeight, bool* uniform)
 {
     outPng.clear();
     RECT rc;
@@ -3256,6 +3917,11 @@ bool CaptureWindowPng(HWND hwnd, const std::vector<ElementInfo>* overlay, int ma
     }
     int width = static_cast<int>(rc.right - rc.left);
     int height = static_cast<int>(rc.bottom - rc.top);
+    // The window's own size, before any shrinking: a point read off the picture
+    // is divided by the scale to get back here, and a later click checks the
+    // window still has this size.
+    outWindowWidth = width;
+    outWindowHeight = height;
     if (width <= 0 || height <= 0 || width > 16384 || height > 16384)
     {
         return false;
@@ -3315,12 +3981,27 @@ bool CaptureWindowPng(HWND hwnd, const std::vector<ElementInfo>* overlay, int ma
             break;
         }
         const int longSide = (width > height) ? width : height;
+        const int shortSide = (width > height) ? height : width;
         int targetWidth = width;
         int targetHeight = height;
         outScale = 1.0;
+        // Both caps, whichever bites harder. The short-side cap is what keeps the
+        // picture below every model provider's own resize threshold: a picture the
+        // provider shrinks again is one whose pixels the model no longer sees, so
+        // a point read off it would be scaled wrong.
+        double fit = 1.0;
         if (maxLongSide > 0 && longSide > maxLongSide)
         {
-            outScale = static_cast<double>(maxLongSide) / longSide;
+            fit = static_cast<double>(maxLongSide) / longSide;
+        }
+        if (maxShortSide > 0 && shortSide > maxShortSide)
+        {
+            const double shortFit = static_cast<double>(maxShortSide) / shortSide;
+            fit = (shortFit < fit) ? shortFit : fit;
+        }
+        if (fit < 1.0)
+        {
+            outScale = fit;
             targetWidth = static_cast<int>(width * outScale);
             targetHeight = static_cast<int>(height * outScale);
             if (targetWidth < 1)
@@ -3382,7 +4063,8 @@ bool CaptureWindowPng(HWND hwnd, const std::vector<ElementInfo>* overlay, int ma
     return ok;
 }
 
-void RunCapture(IUIAutomation* automation, HWND hwnd, const std::string& mode, int maxLongSide)
+void RunCapture(IUIAutomation* automation, HWND hwnd, const std::string& mode, int maxLongSide,
+                int maxShortSide)
 {
     std::vector<ElementInfo> elements;
     std::string error;
@@ -3400,10 +4082,13 @@ void RunCapture(IUIAutomation* automation, HWND hwnd, const std::string& mode, i
     int width = 0;
     int height = 0;
     double scale = 1.0;
+    int windowWidth = 0;
+    int windowHeight = 0;
     bool uniform = false;
     const bool captured = CaptureWindowPng(
-        hwnd, (wantOverlay && !elements.empty()) ? &elements : NULL, maxLongSide, png, width,
-        height, scale, &uniform);
+        hwnd, (wantOverlay && !elements.empty()) ? &elements : NULL, maxLongSide, maxShortSide,
+        png, width,
+        height, scale, windowWidth, windowHeight, &uniform);
 
     if (!captured)
     {
@@ -3426,6 +4111,7 @@ void RunCapture(IUIAutomation* automation, HWND hwnd, const std::string& mode, i
         << JsonEscape(ProcessNameOf(hwnd)) << "\",\"mode\":\""
         << (wantOverlay && !elements.empty() ? "som" : "plain") << "\",\"width\":" << width
         << ",\"height\":" << height << ",\"scale\":" << scale
+        << ",\"windowWidth\":" << windowWidth << ",\"windowHeight\":" << windowHeight
         << ",\"totalElements\":" << totalFound << ",\"elements\":[";
     for (size_t i = 0; i < elements.size(); ++i)
     {
@@ -3449,8 +4135,29 @@ void RunCapture(IUIAutomation* automation, HWND hwnd, const std::string& mode, i
 
 } // namespace
 
+// UI Automation rectangles, GetWindowRect, PrintWindow and SendInput only agree
+// on coordinates when the process is per-monitor DPI aware. Left unaware, Windows
+// virtualizes some of them and not others, so on a scaled display a numbered
+// badge is drawn at one place and the click lands at another.
+void EnablePerMonitorDpiAwareness()
+{
+    using SetContextFn = BOOL(WINAPI*)(DPI_AWARENESS_CONTEXT);
+    const HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    const SetContextFn setContext =
+        user32 != NULL ? reinterpret_cast<SetContextFn>(
+                             GetProcAddress(user32, "SetProcessDpiAwarenessContext"))
+                       : NULL;
+    if (setContext != NULL && setContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) != FALSE)
+    {
+        return;
+    }
+    SetProcessDPIAware();
+}
+
 int main(int argc, char** argv)
 {
+    EnablePerMonitorDpiAwareness();
+
     std::string command;
     bool allowForeground = false;
     bool readStdin = false;
@@ -3568,8 +4275,11 @@ int main(int argc, char** argv)
     else if (op == "capture")
     {
         const int maxLongSide = static_cast<int>(JsonReadNumber(command, "maxLongSide", 1200));
+        // 0 (absent) means no short-side cap, which is what older callers expect.
+        const int maxShortSide = static_cast<int>(JsonReadNumber(command, "maxShortSide", 0));
         RunCapture(automation, hwnd, JsonReadString(command, "mode"),
-                   (maxLongSide >= 200 && maxLongSide <= 4096) ? maxLongSide : 1200);
+                   (maxLongSide >= 200 && maxLongSide <= 4096) ? maxLongSide : 1200,
+                   (maxShortSide >= 200 && maxShortSide <= 4096) ? maxShortSide : 0);
     }
     else if (op == "invoke")
     {
@@ -3592,11 +4302,14 @@ int main(int argc, char** argv)
         std::string yRaw;
         const bool byPoint = (ref <= 0) && ExtractTopLevelRaw(command, "x", xRaw) &&
                              ExtractTopLevelRaw(command, "y", yRaw);
-        POINT clientPoint;
-        clientPoint.x = static_cast<LONG>(JsonReadNumber(command, "x", 0));
-        clientPoint.y = static_cast<LONG>(JsonReadNumber(command, "y", 0));
+        PointTarget point;
+        point.at.x = static_cast<LONG>(JsonReadNumber(command, "x", 0));
+        point.at.y = static_cast<LONG>(JsonReadNumber(command, "y", 0));
+        point.windowFrame = JsonReadString(command, "space") == "window";
+        point.expectedWidth = static_cast<int>(JsonReadNumber(command, "windowWidth", 0));
+        point.expectedHeight = static_cast<int>(JsonReadNumber(command, "windowHeight", 0));
         RunClick(automation, hwnd, ref, snapshotId, JsonReadString(command, "button"), clicks,
-                 modifiers, delivery, allowForeground, byPoint, clientPoint);
+                 modifiers, delivery, allowForeground, byPoint, point);
     }
     else if (op == "scroll")
     {
@@ -3606,11 +4319,11 @@ int main(int argc, char** argv)
     }
     else if (op == "key")
     {
-        RunKey(hwnd, JsonReadString(command, "keys"), delivery, allowForeground);
+        RunKey(automation, hwnd, JsonReadString(command, "keys"), delivery, allowForeground);
     }
     else if (op == "type")
     {
-        RunType(hwnd, JsonReadString(command, "text"), delivery, allowForeground);
+        RunType(automation, hwnd, JsonReadString(command, "text"), delivery, allowForeground);
     }
     else if (op == "drag")
     {

@@ -31,8 +31,10 @@ import {
   runAoiHostBrowserDriveTask,
   type AoiHostBrowserDriveActExecuteView,
   type AoiHostBrowserDriveActPreviewView,
+  type AoiHostBrowserDriveAfterActView,
   type AoiHostBrowserDriveTaskResultView,
 } from './aoiHostBridgeClient';
+import { UNTRUSTED_PAGE_TEXT_NOTE } from './aoiUntrustedText';
 
 export const BROWSER_DRIVE_PROPOSE_TOOL = 'browser_drive_act';
 export const BROWSER_DRIVE_RUN_TOOL = 'browser_drive_run';
@@ -199,12 +201,17 @@ export function getBrowserDriveActToolDefinitions(): ToolDef[] {
           'Fails if the user has not approved this exact action. ' +
           'READ THE RESULT BEFORE REPORTING: `ok` only means the call ran, it is NOT proof the action ' +
           'landed. Follow `status`/`effect`: "done" (confirmed -- say it happened, never repeat it); ' +
-          '"delivered_unverified" (unverifiable -- re-read the page with a read step before saying ' +
-          'anything, and do NOT repeat the action or claim success); "not_performed" (suspected no-op or ' +
+          '"delivered_unverified" (unverifiable -- read `observed_after` before saying anything, and ' +
+          'do NOT repeat the action or claim a success it does not show); "not_performed" (suspected no-op or ' +
           'refusal -- say plainly it did not happen, and follow `escalation.recommended`: ' +
           'alternate_selector = try a different selector from a fresh snapshot, stop = do not retry). ' +
           'If `audit_recorded` is false the action HAPPENED but could not be written to the audit ' +
-          'ledger, so the record of what was done is missing it -- say so to the user.',
+          'ledger, so the record of what was done is missing it -- say so to the user. ' +
+          '`observed_after` is the page looked at again just after the act: the URL, the visible ' +
+          'text that appeared, went away or was rearranged, tabs it opened, and a dialog it raised. ' +
+          'It is the only look at the page AS THE ACT LEFT IT: the tab closes when this call ends, ' +
+          'so a later read opens the page afresh and shows what the site kept, not a toast, a ' +
+          'dialog or anything else the act left only on screen.',
         parameters: {
           type: 'object',
           properties: PLAN_PARAM_SCHEMA,
@@ -368,6 +375,14 @@ function formatActGateError(error: unknown): string {
   if (lowered.includes('plan_inadmissible') || lowered.includes('too_many_steps')) {
     return `error: the plan was rejected: ${message}. Keep it short and free of any forbidden step.`;
   }
+  // Before the denylist arm below: this one HAPPENED, and must not be retried.
+  if (lowered.includes('drift_after_act')) {
+    return (
+      `error: the action was carried out (or may have been), and then the page moved to a site ` +
+      `on the browser-drive denylist, so Aoi closed it: ${message}. Do NOT repeat the action: ` +
+      'tell the user what was done and that the page it led to is blocked.'
+    );
+  }
   if (lowered.includes('host_private')) {
     return (
       `error: private/loopback hosts are never driven by browser-drive: ${message}. ` +
@@ -404,10 +419,94 @@ function formatActGateError(error: unknown): string {
   ) {
     return (
       `error: could not drive the browser: ${message}. ` +
-      'Make sure the Aoi debug browser is running (close a conflicting main Chrome/Edge first), then retry.'
+      "If a window is already open on Aoi's browser profile without the debug port, close it, then retry."
     );
   }
   return `error: browser drive act failed: ${message}`;
+}
+
+/**
+ * The page as it was just after the act, for the model.
+ *
+ * `summary` says in plain words what the look found; the lines themselves are
+ * the page's own words and are kept apart from it, so nothing the page wrote is
+ * ever phrased as something Aoi concluded.
+ */
+export function describeBrowserDriveObservedAfter(
+  view: AoiHostBrowserDriveAfterActView,
+): Record<string, unknown> {
+  const parts: string[] = [];
+  if (view.actInterrupted) {
+    parts.push(
+      'A dialog came up before the act finished, so it is not known whether the act itself ' +
+        'went through: it may be what raised the dialog, or the page raised the dialog first ' +
+        'and the act never landed. Do not report it as done.',
+    );
+  }
+  if (view.dialog) {
+    const kind = view.dialog.type === 'dialog' ? 'a dialog' : `a ${view.dialog.type} dialog`;
+    parts.push(
+      view.dialog.type === 'alert'
+        ? 'The page showed an alert (dialog.message); it is closed when this call ends.'
+        : `The page raised ${kind} (dialog.message) and nothing answered it. ` +
+            'It is dismissed when this call ends, so what it asked about did NOT go ahead. Tell ' +
+            'the user rather than repeating the act.',
+    );
+  }
+  if (view.urlChanged) {
+    parts.push('The page moved to a different address (url).');
+  }
+  if (view.tabsOpened?.length) {
+    parts.push(
+      `${view.tabsOpened.length === 1 ? 'A new tab' : `${view.tabsOpened.length} new tabs`} ` +
+        'opened (tabs_opened).',
+    );
+  }
+  if (!view.textRead) {
+    if (!view.dialog) {
+      parts.push(
+        'The page text could not be read again, so nothing here shows what changed on it.',
+      );
+    }
+  } else if (view.textAppeared.length === 0 && view.textGone.length === 0) {
+    parts.push(
+      view.textReordered
+        ? 'The same lines of visible text are still there, but in a different order ' +
+            '(text_reordered): a list may have been sorted or an item moved. Nothing appeared ' +
+            'or went away.'
+        : `The visible text did not change within ${view.waitedMs} ms of the act. That is not ` +
+            'proof nothing happened: a change may not show as text.',
+    );
+  } else {
+    parts.push(
+      'The visible text changed: text_appeared is new since the act, text_gone is no longer shown.',
+    );
+  }
+  if (view.textRead && view.textTruncated) {
+    parts.push(
+      'The page has more text than is compared (text_truncated), so a change further down ' +
+        'the page would not show here.',
+    );
+  }
+  return {
+    waited_ms: view.waitedMs,
+    url: view.url,
+    url_changed: view.urlChanged,
+    ...(view.textRead
+      ? {
+          text_appeared: view.textAppeared,
+          text_gone: view.textGone,
+          ...(view.textAppearedOmitted ? { text_appeared_omitted: view.textAppearedOmitted } : {}),
+          ...(view.textGoneOmitted ? { text_gone_omitted: view.textGoneOmitted } : {}),
+          ...(view.textReordered ? { text_reordered: true } : {}),
+          ...(view.textTruncated ? { text_truncated: true } : {}),
+        }
+      : { text_unreadable: true }),
+    ...(view.tabsOpened?.length ? { tabs_opened: view.tabsOpened } : {}),
+    ...(view.dialog ? { dialog: view.dialog } : {}),
+    ...(view.actInterrupted ? { act_interrupted: true } : {}),
+    summary: parts.join(' '),
+  };
 }
 
 export async function executeBrowserDriveProposeTool(
@@ -440,7 +539,8 @@ export async function executeBrowserDriveProposeTool(
       note:
         "This is a LIVE, irreversible action on the user's logged-in browser. It was NOT performed. " +
         'Ask the user to approve it in Settings -> Advanced -> Host PC -> Approvals (a before-screenshot ' +
-        'was captured). Once approved, call browser_drive_run with the identical plan.',
+        'was captured). Once approved, call browser_drive_run with the identical plan.' +
+        (preview.reads?.length ? ` ${UNTRUSTED_PAGE_TEXT_NOTE}` : ''),
     });
   } catch (error) {
     return formatActGateError(error);
@@ -495,6 +595,10 @@ export async function executeBrowserDriveRunTool(
       // all -- without this the model cannot use `element` + `snapshot_id` and
       // has to fall back to authoring selectors, which is the weaker path.
       ...(result.reads?.length ? { reads: result.reads } : {}),
+      // The only look at what the act did: this call's tab closes with it.
+      ...(result.observedAfter
+        ? { observed_after: describeBrowserDriveObservedAfter(result.observedAfter) }
+        : {}),
       // The act happened but the audit ledger could not be written. Said out
       // loud, because the ledger is what the operator would consult afterwards
       // to see what was done, and it will not mention this.
@@ -505,9 +609,13 @@ export async function executeBrowserDriveRunTool(
           : result.ok
             ? 'The action was delivered to the live browser. Nothing here proves it landed -- re-read the page before telling the user it worked.'
             : 'The action did not run; see stop_reason.',
+        result.observedAfter
+          ? 'observed_after is the page looked at again just after the act: say only what it shows.'
+          : '',
         result.auditRecorded === false
           ? 'The audit ledger could not be written, so this step is missing from the record of what Aoi did. Tell the user.'
           : '',
+        result.reads?.length || result.observedAfter ? UNTRUSTED_PAGE_TEXT_NOTE : '',
       ]
         .filter(Boolean)
         .join(' '),

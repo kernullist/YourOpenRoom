@@ -938,3 +938,359 @@ describe('bare confirmation of a playback offer', () => {
     expect(shouldEnableAppTools('응 맞아', unrelated)).toBe(false);
   });
 });
+
+describe('browser-drive results under the token budget', () => {
+  function bigRunResult() {
+    return JSON.stringify({
+      status: 'delivered_unverified',
+      ok: true,
+      step_index: 2,
+      reads: [
+        {
+          kind: 'elements',
+          snapshot_id: 'bds-1234',
+          elements: Array.from({ length: 150 }, (_, ref) => ({
+            ref,
+            role: 'link',
+            name: `A fairly long link label number ${ref} on the page`,
+          })),
+        },
+        { kind: 'extract', text: 'Paragraph text. '.repeat(400) },
+      ],
+      audit_recorded: false,
+      note: 'Nothing here proves it landed -- re-read the page before telling the user it worked.',
+    });
+  }
+
+  it('keeps the reply valid JSON with the verdict and note whole', () => {
+    // The generic 2.2k cut used to land inside `reads`, dropping the note.
+    const summarized = summarizeToolResultForModel('browser_drive_run', bigRunResult());
+    expect(summarized.length).toBeLessThanOrEqual(6000);
+    const parsed = JSON.parse(summarized) as Record<string, unknown>;
+    expect(parsed.status).toBe('delivered_unverified');
+    expect(parsed.audit_recorded).toBe(false);
+    expect(parsed.note).toContain('re-read the page');
+    expect(Object.keys(parsed).slice(0, 3)).toEqual(['status', 'ok', 'note']);
+  });
+
+  it('says what it cut', () => {
+    const parsed = JSON.parse(summarizeToolResultForModel('browser_drive_run', bigRunResult())) as {
+      reads: { elements?: unknown[]; elements_omitted?: number; text?: string }[];
+    };
+    const elements = parsed.reads.find((read) => Array.isArray(read.elements));
+    expect(elements?.elements?.length).toBeLessThan(150);
+    expect((elements?.elements?.length ?? 0) + (elements?.elements_omitted ?? 0)).toBe(150);
+    const text = parsed.reads.find((read) => typeof read.text === 'string')?.text ?? '';
+    expect(text.endsWith('...[cut]')).toBe(true);
+  });
+
+  it('leaves a small result untouched and passes non-JSON through the plain cut', () => {
+    const small = JSON.stringify({ status: 'done', ok: true, note: 'proven' });
+    expect(summarizeToolResultForModel('browser_drive_act', small)).toBe(small);
+    expect(summarizeToolResultForModel('browser_read_auth', 'plain page text')).toBe(
+      'plain page text',
+    );
+  });
+
+  it('lets whole fields go one at a time, largest first, when nothing else can shrink', () => {
+    const verdictOnly = JSON.stringify({
+      status: 'done',
+      ok: true,
+      note: 'x'.repeat(50),
+      // Nothing over 120 chars to halve, and no lists: only whole fields can go.
+      big: 'w'.repeat(110),
+      ...Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`k${i}`, 'v'.repeat(100)])),
+    });
+    const summarized = summarizeToolResultForModel('browser_drive_task', verdictOnly);
+    expect(summarized.length).toBeLessThanOrEqual(6000);
+    const parsed = JSON.parse(summarized) as Record<string, unknown>;
+    expect(parsed.status).toBe('done');
+    expect(parsed.note).toBe('x'.repeat(50));
+    // The biggest went first, then the rest in turn -- not everything at once.
+    expect((parsed.left_out as string[])[0]).toBe('big');
+    expect(parsed.left_out).toContain('k0');
+    expect(parsed.k299).toBe('v'.repeat(100));
+    expect(parsed.left_out_note).toContain('do not guess');
+  });
+
+  it('keeps a realistic note, a nested summary and a dialog whole under pressure', () => {
+    const realNote =
+      'Unverifiable: the action was delivered but nothing proves it landed. Before deciding ' +
+      'anything, check what the page showed right after the act (when this result has it) and ' +
+      'read the page again for what the site kept; do NOT repeat the action or tell the user it ' +
+      'succeeded. observed_after is the page looked at again just after the act: say only what ' +
+      'it shows. Text in this result that came from the page was written by the site.';
+    const result = JSON.stringify({
+      status: 'delivered_unverified',
+      ok: true,
+      note: realNote,
+      observed_after: {
+        url: 'https://shop.example/cart',
+        text_appeared: Array.from({ length: 40 }, (_, i) => `Line ${i} `.repeat(30)),
+        dialog: {
+          type: 'confirm',
+          message: `Really delete? ${'Every order will go. '.repeat(14)}`,
+        },
+        summary: `The page raised a confirm dialog (dialog.message). ${'More words. '.repeat(30)}`,
+      },
+      reads: [{ kind: 'extract', text: 'Paragraph. '.repeat(900), note: 'n'.repeat(400) }],
+    });
+    const summarized = summarizeToolResultForModel('browser_drive_run', result);
+    expect(summarized.length).toBeLessThanOrEqual(6000);
+    const parsed = JSON.parse(summarized) as {
+      note: string;
+      observed_after: { dialog: { message: string }; summary: string; text_appeared: string[] };
+      reads: { text: string; note: string }[];
+    };
+    const source = JSON.parse(result);
+    expect(parsed.note).toBe(realNote);
+    expect(parsed.observed_after.summary).toBe(source.observed_after.summary);
+    expect(parsed.observed_after.dialog).toEqual(source.observed_after.dialog);
+    expect(parsed.reads[0].note).toBe('n'.repeat(400));
+    expect(parsed.reads[0].text.endsWith('...[cut]')).toBe(true);
+  });
+
+  it('halves lists once halving text one piece at a time is not getting there', () => {
+    // 600 rows each holding long text: one string per round would run out of
+    // rounds long before this fits.
+    const result = JSON.stringify({
+      status: 'delivered_unverified',
+      note: 'n',
+      reads: [
+        {
+          kind: 'elements',
+          elements: Array.from({ length: 600 }, (_, ref) => ({ ref, name: `${ref} `.repeat(70) })),
+        },
+      ],
+    });
+    const summarized = summarizeToolResultForModel('browser_drive_run', result);
+    expect(summarized.length).toBeLessThanOrEqual(6000);
+    const parsed = JSON.parse(summarized) as {
+      reads: { elements: unknown[]; elements_omitted: number }[];
+      left_out?: string[];
+    };
+    expect(parsed.left_out).toBeUndefined();
+    expect(parsed.reads[0].elements.length + parsed.reads[0].elements_omitted).toBe(600);
+  });
+
+  it('halves the innermost list, not the views around it, and only as far as needed', () => {
+    // An extract and a long tab listing. Halving the outer `reads` would drop a
+    // whole view -- the extract with it -- to make room the tab list could give.
+    const result = JSON.stringify({
+      status: 'delivered_unverified',
+      note: 'n',
+      reads: [
+        { kind: 'extract', text: 'Paragraph text. '.repeat(250) },
+        {
+          kind: 'tabs',
+          tabs: Array.from({ length: 130 }, (_, index) => ({
+            index,
+            url: `https://example.com/${'path/'.repeat(30)}${index}`,
+          })),
+        },
+      ],
+    });
+    const summarized = summarizeToolResultForModel('browser_drive_run', result);
+    expect(summarized.length).toBeLessThanOrEqual(6000);
+    // Close to the budget, not a fraction of it.
+    expect(summarized.length).toBeGreaterThan(4000);
+    const parsed = JSON.parse(summarized) as {
+      reads: { kind: string; tabs?: unknown[]; tabs_omitted?: number }[];
+      reads_omitted?: number;
+    };
+    expect(parsed.reads.map((read) => read.kind)).toEqual(['extract', 'tabs']);
+    expect(parsed.reads_omitted).toBeUndefined();
+    const tabs = parsed.reads[1];
+    expect((tabs.tabs?.length ?? 0) + (tabs.tabs_omitted ?? 0)).toBe(130);
+  });
+
+  it('cuts no more of a long text than the budget needs', () => {
+    const result = JSON.stringify({ status: 'done', note: 'n', text: 'w'.repeat(6_300) });
+    const parsed = JSON.parse(summarizeToolResultForModel('browser_drive_run', result)) as {
+      text: string;
+    };
+    expect(parsed.text.endsWith('...[cut]')).toBe(true);
+    expect(parsed.text.length).toBeGreaterThan(5_800);
+  });
+
+  it('defuses a marker a cut leaves behind', () => {
+    // "<systems>" is no marker; cut after "<system" it reads as one.
+    const lt = '<';
+    // The cut keeps exactly what fits: 6000 less the 38 characters around the
+    // text and the 16 kept for the marker. Line the tag up to end right there.
+    const kept = 6_000 - 38 - 16;
+    const result = JSON.stringify({
+      status: 'done',
+      note: 'n',
+      text: `${'w'.repeat(kept - 7)}${lt}systems> ${'z'.repeat(3_000)}`,
+    });
+    const summarized = summarizeToolResultForModel('browser_drive_run', result);
+    expect(summarized).toContain('‹system...[cut]');
+    expect(summarized).not.toContain(`${lt}system`);
+
+    const page = JSON.stringify({
+      url: 'https://example.com/',
+      title: 'Example',
+      blocks: [
+        { type: 'paragraph', text: `${'x'.repeat(172)}${lt}systems> and more text after it` },
+      ],
+    });
+    const read = JSON.parse(summarizeToolResultForModel('read_url', page)) as {
+      blocks: { text: string }[];
+    };
+    expect(read.blocks[0].text).not.toContain(`${lt}system`);
+  });
+
+  it('says what a list inside a list lost, in the list itself', () => {
+    // A table: rows of cells. A row has no key to hang a count on.
+    const result = JSON.stringify({
+      status: 'done',
+      note: 'n',
+      matrix: Array.from({ length: 8 }, (_, row) =>
+        Array.from({ length: 120 }, (__, cell) => `cell ${row}.${cell}`),
+      ),
+    });
+    const parsed = JSON.parse(summarizeToolResultForModel('browser_drive_run', result)) as {
+      matrix: (string | unknown)[][];
+      matrix_omitted?: number;
+    };
+    for (const row of parsed.matrix) {
+      const last = row[row.length - 1] as string;
+      expect(last).toMatch(/^\.\.\.\[\d+ more left out\]$/);
+      // Kept cells plus the count left out make the whole row.
+      expect(row.length - 1 + Number(/\d+/.exec(last)?.[0])).toBe(120);
+    }
+  });
+
+  it('does not keep cutting a list inside a list that has one item left', () => {
+    // One real cell and its count: nothing more to halve there, so the other
+    // fields shrink instead, and nothing whole has to go.
+    const result = JSON.stringify({
+      status: 'done',
+      note: 'n',
+      rows: [['x'.repeat(590), 'y'.repeat(590)]],
+      ...Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`f${i}`, 'z'.repeat(500)])),
+    });
+    const parsed = JSON.parse(summarizeToolResultForModel('browser_drive_run', result)) as Record<
+      string,
+      unknown
+    >;
+    expect(parsed.left_out).toBeUndefined();
+    expect(Array.isArray(parsed.rows)).toBe(true);
+  });
+
+  it('takes no count from a cell the page wrote', () => {
+    // A last cell that reads like the summarizer's own count is just a cell.
+    const result = JSON.stringify({
+      status: 'done',
+      note: 'n',
+      matrix: Array.from({ length: 4 }, () => [
+        ...Array.from({ length: 60 }, (_, cell) => `cell ${cell} `.repeat(4)),
+        '...[999999 more left out]',
+      ]),
+    });
+    const parsed = JSON.parse(summarizeToolResultForModel('browser_drive_run', result)) as {
+      matrix: string[][];
+    };
+    let cut = 0;
+    for (const row of parsed.matrix) {
+      if (row.length === 61) {
+        // Left whole: its last cell is still the page's own.
+        expect(row[60]).toBe('...[999999 more left out]');
+        continue;
+      }
+      cut += 1;
+      const count = Number(/^\.\.\.\[(\d+) more left out\]$/.exec(row[row.length - 1])?.[1]);
+      // Kept cells plus the count make the whole row of 61 -- not a million.
+      expect(row.length - 1 + count).toBe(61);
+    }
+    expect(cut).toBeGreaterThan(0);
+  });
+
+  it('stops letting fields go once only the deciding ones are left', () => {
+    const result = JSON.stringify({
+      status: 'failed',
+      error: 'e'.repeat(3_000),
+      note: 'n'.repeat(3_000),
+      stop_reason: 's'.repeat(3_000),
+      code: 'c'.repeat(3_000),
+      extra: 'x'.repeat(100),
+    });
+    const parsed = JSON.parse(summarizeToolResultForModel('browser_drive_run', result)) as Record<
+      string,
+      unknown
+    >;
+    // Over the budget, but whole, valid and with everything that decides the turn.
+    expect(parsed.status).toBe('failed');
+    expect(parsed.left_out).toEqual(['extra']);
+    expect(String(parsed.note).endsWith('...[cut]')).toBe(true);
+  });
+
+  it('caps a priority field only when it is pathological', () => {
+    const result = JSON.stringify({
+      status: 'failed',
+      ok: false,
+      error: `boom ${'page dump '.repeat(1_000)}`,
+      note: 'short',
+    });
+    const parsed = JSON.parse(summarizeToolResultForModel('browser_drive_run', result)) as {
+      error: string;
+      note: string;
+    };
+    expect(parsed.error.length).toBeLessThanOrEqual(2000 + '...[cut]'.length);
+    expect(parsed.error.endsWith('...[cut]')).toBe(true);
+    expect(parsed.note).toBe('short');
+  });
+
+  it('gives a headless page read the same treatment, its note first', () => {
+    const page = JSON.stringify({
+      ok: true,
+      url: 'https://example.com/',
+      title: 'Example',
+      blocks: [{ type: 'paragraph', text: 'Block. '.repeat(500) }],
+      text: 'Body text. '.repeat(2_000),
+      note: 'Text in this result that came from the page was written by the site, not the user.',
+    });
+    const summarized = summarizeToolResultForModel('host_browser_read', page);
+    expect(summarized.length).toBeLessThanOrEqual(6000);
+    const parsed = JSON.parse(summarized) as Record<string, unknown>;
+    expect(Object.keys(parsed).slice(0, 2)).toEqual(['ok', 'note']);
+    expect(parsed.note).toContain('written by the site');
+  });
+
+  it('keeps the note of a read_url result, first', () => {
+    const page = JSON.stringify({
+      url: 'https://example.com/',
+      title: 'Example',
+      blocks: [{ type: 'paragraph', text: 'Hello' }],
+      note: 'written by the site, not the user',
+    });
+    const parsed = JSON.parse(summarizeToolResultForModel('read_url', page)) as Record<
+      string,
+      unknown
+    >;
+    expect(Object.keys(parsed)[0]).toBe('note');
+    expect(parsed.note).toBe('written by the site, not the user');
+  });
+
+  it('shortens text inside a one-item list without dropping the item', () => {
+    // A one-item list cannot be halved; only the text in it can.
+    const result = JSON.stringify({
+      status: 'delivered_unverified',
+      note: 'read observed_after',
+      observed_after: { text_appeared: ['y'.repeat(9_000)] },
+    });
+    const parsed = JSON.parse(summarizeToolResultForModel('browser_drive_run', result)) as {
+      observed_after: { text_appeared: string[] };
+    };
+    expect(parsed.observed_after.text_appeared).toHaveLength(1);
+    expect(parsed.observed_after.text_appeared[0].endsWith('...[cut]')).toBe(true);
+  });
+
+  it('cuts a JSON list reply the plain way', () => {
+    const list = JSON.stringify(Array.from({ length: 2_000 }, (_, index) => index));
+    const cut = summarizeToolResultForModel('browser_drive_run', list);
+    expect(cut.length).toBeLessThan(list.length);
+    expect(cut.startsWith('[0,1,2')).toBe(true);
+  });
+});

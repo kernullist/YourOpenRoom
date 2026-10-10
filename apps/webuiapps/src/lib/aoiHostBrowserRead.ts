@@ -25,6 +25,11 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { dirname, join } from 'path';
 import { isAoiPrivateOrLocalHostname } from './aoiHostUrlSafety';
+import {
+  buildAoiHostBrowserEgressArgs,
+  startAoiHostBrowserEgressGuard,
+  type AoiHostBrowserEgressGuard,
+} from './aoiHostBrowserEgressGuard';
 
 export const AOI_HOST_BROWSER_READ_CAPABILITY = 'os_browser_read';
 export const AOI_HOST_BROWSER_READ_SOURCE_ID = 'host-browser-read';
@@ -229,8 +234,14 @@ export function resolveAoiHostBrowserExecutable(
   return null;
 }
 
-export function buildAoiHostBrowserHeadlessArgs(url: string, userDataDir: string): string[] {
+export function buildAoiHostBrowserHeadlessArgs(
+  url: string,
+  userDataDir: string,
+  // The egress guard's port: every connection the browser makes goes through it.
+  egressPort?: number,
+): string[] {
   return [
+    ...(egressPort ? buildAoiHostBrowserEgressArgs(egressPort) : []),
     '--headless=new',
     '--disable-gpu',
     '--no-first-run',
@@ -351,6 +362,8 @@ export interface RunAoiHostBrowserReadOptions {
   rmImpl?: (path: string, options: { recursive: boolean; force: boolean }) => void;
   env?: Record<string, string | undefined>;
   platform?: NodeJS.Platform;
+  // What starts the proxy the browser's every connection goes through.
+  startEgressGuard?: () => Promise<AoiHostBrowserEgressGuard>;
 }
 
 export async function runAoiHostBrowserRead(
@@ -403,7 +416,24 @@ export async function runAoiHostBrowserRead(
     };
   }
 
-  const args = buildAoiHostBrowserHeadlessArgs(resolved.url, userDataDir);
+  // The URL's host was checked by name; everything the browser then reaches --
+  // redirects, scripts, names that resolve somewhere private -- is checked by
+  // address, on its way out.
+  let guard: AoiHostBrowserEgressGuard;
+  try {
+    guard = await (options.startEgressGuard ?? startAoiHostBrowserEgressGuard)();
+  } catch (error) {
+    rmImpl(userDataDir, { recursive: true, force: true });
+    return {
+      ok: false,
+      reason: 'spawn_failed',
+      detail: `the reader's network guard did not start: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+
+  const args = buildAoiHostBrowserHeadlessArgs(resolved.url, userDataDir, guard.port);
   const started = Date.now();
 
   try {
@@ -524,6 +554,7 @@ export async function runAoiHostBrowserRead(
     }
     return { ok: false, reason: 'spawn_failed', detail: message };
   } finally {
+    await guard.close().catch(() => undefined);
     if (userDataDir) {
       // Parent of user-data-dir may be the tmp root; only remove the temp profile.
       rmImpl(userDataDir, { recursive: true, force: true });

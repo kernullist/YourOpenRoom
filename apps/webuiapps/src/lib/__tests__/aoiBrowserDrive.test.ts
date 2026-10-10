@@ -95,6 +95,7 @@ describe('buildAoiBrowserDriveLaunchArgs', () => {
     );
     expect(args).toContain('--no-first-run');
     expect(args).toContain('--no-default-browser-check');
+    expect(args).toContain('--disable-back-forward-cache');
     // Attaching to the visible browser: not headless unless asked.
     expect(args.some((a) => a.startsWith('--headless'))).toBe(false);
   });

@@ -96,6 +96,27 @@ describe('navigateAndExtractAoiBrowserDrive', () => {
     expect(result).toMatchObject({ ok: false, reason: 'navigation_failed' });
   });
 
+  it('fails a page whose document never comes, in time', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const page = fakePage({ content: () => new Promise<string>(() => {}) });
+      const pending = navigateAndExtractAoiBrowserDrive({
+        page,
+        allowlist: EMPTY,
+        url: 'https://example.com/stuck',
+        now: 1000,
+      });
+      await vi.advanceTimersByTimeAsync(10_001);
+      expect(await pending).toMatchObject({
+        ok: false,
+        reason: 'navigation_failed',
+        detail: expect.stringContaining('in time'),
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('reports empty_document for a blank page', async () => {
     const page = fakePage({ content: async () => '   ' });
     const result = await navigateAndExtractAoiBrowserDrive({

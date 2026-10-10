@@ -78,6 +78,90 @@ export function extractEmbeddedIpv4(ipv6: string): string | null {
   return [high >> 8, high & 0xff, low >> 8, low & 0xff].join('.');
 }
 
+// An IPv6 address as its eight 16-bit groups, `::` expanded and a dotted IPv4
+// tail folded into the last two -- or null when it is not one.
+function ipv6Groups(host: string): number[] | null {
+  let text = host;
+  const dotted = text.match(/^(.*:)(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (dotted) {
+    const octets = dotted.slice(2).map((part) => Number.parseInt(part, 10));
+    if (octets.some((octet) => octet > 255)) {
+      return null;
+    }
+    text =
+      `${dotted[1]}${((octets[0] << 8) | octets[1]).toString(16)}:` +
+      `${((octets[2] << 8) | octets[3]).toString(16)}`;
+  }
+  const halves = text.split('::');
+  if (halves.length > 2) {
+    return null;
+  }
+  const groupsOf = (part: string) => (part === '' ? [] : part.split(':'));
+  const head = groupsOf(halves[0]);
+  const tail = halves.length === 2 ? groupsOf(halves[1]) : [];
+  const missing = 8 - head.length - tail.length;
+  if (halves.length === 2 ? missing < 1 : missing !== 0) {
+    return null;
+  }
+  const all = [...head, ...new Array<string>(halves.length === 2 ? missing : 0).fill('0'), ...tail];
+  if (all.some((group) => !/^[0-9a-f]{1,4}$/i.test(group))) {
+    return null;
+  }
+  return all.map((group) => Number.parseInt(group, 16));
+}
+
+// Where an IPv6 address carries or tunnels to an IPv4 one, whether that one is
+// private: the IPv4-translated SIIT form (::ffff:0:a.b.c.d), the NAT64 local-use
+// prefix (64:ff9b:1::/48, private by definition), 6to4 (2002:AABB:CCDD::, the
+// IPv4 in the second and third groups) and Teredo (2001:0::/32, a tunnel whose
+// far end is not this address at all).
+function tunnelsToPrivateIpv4(groups: number[]): boolean {
+  const zero = (from: number, to: number) => groups.slice(from, to).every((group) => group === 0);
+  const octetsAt = (index: number) => [groups[index] >> 8, groups[index] & 0xff];
+  if (zero(0, 4) && groups[4] === 0xffff && groups[5] === 0) {
+    const [a, b] = octetsAt(6);
+    return isPrivateIpv4Octets(a, b);
+  }
+  if (groups[0] === 0x64 && groups[1] === 0xff9b && groups[2] === 1) {
+    return true;
+  }
+  if (groups[0] === 0x2002) {
+    const [a, b] = octetsAt(1);
+    return isPrivateIpv4Octets(a, b);
+  }
+  return groups[0] === 0x2001 && groups[1] === 0;
+}
+
+// Names that only resolve inside a private network: suffixes reserved or never
+// delegated for that use (.local is mDNS, .internal was set aside by ICANN in
+// 2024 and also holds cloud metadata names like metadata.google.internal,
+// .home.arpa is RFC 8375; .lan, .corp, .home and .intranet are not in the
+// public root). .test is RFC 6761's name for testing, and local development
+// setups (Valet, dnsmasq) point it at this machine; .mshome.net is the name
+// Windows Internet Connection Sharing hands out on its private subnet.
+const PRIVATE_NAME_SUFFIXES = [
+  '.local',
+  '.internal',
+  '.home.arpa',
+  '.localdomain',
+  '.lan',
+  '.intranet',
+  '.corp',
+  '.home',
+  '.test',
+  '.mshome.net',
+];
+
+// The browser resolves a name itself, after this check, so an intranet host is
+// only stopped here by its NAME. A single label ("intranet", "nas") is looked up
+// on the local network and never on the public internet.
+function isPrivateNetworkName(host: string): boolean {
+  if (!host.includes('.') && !host.includes(':')) {
+    return true;
+  }
+  return PRIVATE_NAME_SUFFIXES.some((suffix) => host.endsWith(suffix) || host === suffix.slice(1));
+}
+
 /**
  * True for loopback / private / link-local / metadata / CGNAT hosts that must
  * never be opened by host-browser or browser-drive navigations (SSRF surface).
@@ -94,6 +178,9 @@ export function isAoiPrivateOrLocalHostname(hostname: string): boolean {
     return true;
   }
   if (host === 'localhost' || host.endsWith('.localhost') || host === '0.0.0.0') {
+    return true;
+  }
+  if (isPrivateNetworkName(host)) {
     return true;
   }
   if (host === '::1' || host === '[::1]') {
@@ -114,12 +201,14 @@ export function isAoiPrivateOrLocalHostname(hostname: string): boolean {
     if (mapped && isPrivateIpv4Octets(mapped.a, mapped.b)) {
       return true;
     }
-    if (
-      host.startsWith('fc') ||
-      host.startsWith('fd') ||
-      host.startsWith('fe80') ||
-      host === '::'
-    ) {
+    const groups = ipv6Groups(host);
+    if (groups && tunnelsToPrivateIpv4(groups)) {
+      return true;
+    }
+    // fc00::/7 unique local, fe80::/10 link-local (fe80 to febf, not just
+    // fe80) and the retired fec0::/10 site-local block, which some networks
+    // still route.
+    if (/^f[cd]/.test(host) || /^fe[89a-f]/.test(host) || host === '::') {
       return true;
     }
   }

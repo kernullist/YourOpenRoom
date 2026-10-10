@@ -2658,6 +2658,84 @@ describe('desktop-input', () => {
       expect((result.payload as { code: string }).code).toBe('helper_not_installed');
     });
   });
+
+  // Acts used to be serialized by accident: spawnSync held the event loop. With
+  // the helper asynchronous, two acts could interleave their input.
+  const ACT_BODY = { op: 'invoke', hwnd: '0x1a2b', ref: 1, snapshotId: 'dis-0a1b2c3d' };
+  const PROVEN = { ok: true, effect: 'confirmed', verified: true, path: 'uia_invoke', detail: 'x' };
+
+  function heldHelper() {
+    let release: () => void = () => undefined;
+    let started = false;
+    const spawn = () => {
+      started = true;
+      return new Promise<{ status: number; stdout: string; stderr: string }>((resolveRun) => {
+        release = () => resolveRun({ status: 0, stdout: JSON.stringify(PROVEN), stderr: '' });
+      });
+    };
+    return {
+      spawn,
+      release: () => release(),
+      get started() {
+        return started;
+      },
+    };
+  }
+
+  it('runs one act at a time, lets reads through, and re-reads the switch for an act that waited', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    await withHelperPath(__filename, async () => {
+      const first = heldHelper();
+      const second = fakeHelper(PROVEN);
+      const firstCall = callDesktopInput(home, sessionsDir, token, ACT_BODY, first.spawn as never);
+      const secondCall = callDesktopInput(home, sessionsDir, token, ACT_BODY, second.spawn);
+      await new Promise((resolveTick) => setTimeout(resolveTick, 20));
+      expect(first.started).toBe(true);
+      expect(second.seen).toHaveLength(0);
+
+      // A read does not wait behind an act.
+      const read = await callDesktopInput(
+        home,
+        sessionsDir,
+        token,
+        { op: 'list_windows' },
+        fakeHelper({ ok: true, windows: [] }).spawn,
+      );
+      expect(read.status).toBe(200);
+
+      // Panic while the second act waits: it must not run once its turn comes.
+      saveAoiHostBridgeKillSwitchState(home, {
+        version: 1,
+        globalPanic: true,
+        entries: {},
+        updatedAt: 4500,
+      });
+      first.release();
+      expect((await firstCall).status).toBe(200);
+      expect((await secondCall).status).toBe(403);
+      expect(second.seen).toHaveLength(0);
+    });
+  });
+
+  it('does not start an act that could not get its turn in time', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    await withHelperPath(__filename, async () => {
+      const first = heldHelper();
+      const second = fakeHelper(PROVEN);
+      const firstCall = callDesktopInput(home, sessionsDir, token, ACT_BODY, first.spawn as never);
+      const started = Date.now();
+      const busy = await callDesktopInput(home, sessionsDir, token, ACT_BODY, second.spawn);
+      first.release();
+      await firstCall;
+
+      expect(Date.now() - started).toBeGreaterThanOrEqual(4_900);
+      expect(busy.status).toBe(200);
+      expect(busy.payload).toMatchObject({
+        act: { ok: false, verdict: { effect: 'suspected_noop', code: 'desktop_busy' } },
+      });
+      expect(second.seen).toHaveLength(0);
+    });
+  }, 15_000);
 });
 
 describe('desktop-activity ingest + summary', () => {

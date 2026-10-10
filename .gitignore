@@ -122,4 +122,5 @@ docs/*
 !docs/kira-remaining-work-items.md
 !docs/aoi-music-intent-design.md
 !docs/code-review-2026-10.md
+!docs/computer-browser-use-2026-10.md
 .worktrees/

@@ -52,8 +52,10 @@ import {
 import {
   AOI_DESKTOP_CAPTURE_CAPABILITY,
   AOI_DESKTOP_INPUT_FOREGROUND_CAPABILITY,
+  isAoiDesktopInputReadOp,
   parseAoiDesktopInputRequest,
   runAoiDesktopInput,
+  withAoiDesktopActLock,
   type AoiDesktopInputSpawn,
 } from './aoiDesktopInput';
 import { listHostProcesses, type AoiHostProcessListing } from './aoiHostProcessInspect';
@@ -2463,26 +2465,29 @@ async function resolveAoiHostBridgeRouteInner(
   // mouse and cannot verify what it hit, so it is not something the main toggle
   // should quietly include.
   if (params.method === 'POST' && params.route === '/desktop-input') {
-    const killSwitch = loadAoiHostBridgeKillSwitchState(params.openroomHome);
-    const gate = evaluateAoiHostBridgeGate({
-      authenticated: true,
-      killSwitchState: killSwitch,
-      // One switch for the whole Computer-Use feature. The old per-feature key
-      // still works as an override for anyone who set it, but the master is
-      // what the settings UI presents and what decides by default.
-      capabilityKey: AOI_COMPUTER_USE_CAPABILITY,
-      irreversible: false,
+    const evaluateDesktopGate = (state: AoiHostBridgeKillSwitchState) =>
+      evaluateAoiHostBridgeGate({
+        authenticated: true,
+        killSwitchState: state,
+        // One switch for the whole Computer-Use feature. The old per-feature key
+        // still works as an override for anyone who set it, but the master is
+        // what the settings UI presents and what decides by default.
+        capabilityKey: AOI_COMPUTER_USE_CAPABILITY,
+        irreversible: false,
+      });
+    const blockedResponse = (gate: ReturnType<typeof evaluateAoiHostBridgeGate>) => ({
+      status: 403,
+      payload: {
+        ok: false,
+        error: 'blocked',
+        denyReasons: gate.denyReasons,
+        detail: gate.detail,
+      },
     });
+    const killSwitch = loadAoiHostBridgeKillSwitchState(params.openroomHome);
+    const gate = evaluateDesktopGate(killSwitch);
     if (!gate.allowed) {
-      return {
-        status: 403,
-        payload: {
-          ok: false,
-          error: 'blocked',
-          denyReasons: gate.denyReasons,
-          detail: gate.detail,
-        },
-      };
+      return blockedResponse(gate);
     }
     const request = parseAoiDesktopInputRequest(params.body);
     // Capture is gated separately: os_desktop_input lets Aoi read control names
@@ -2516,16 +2521,62 @@ async function resolveAoiHostBridgeRouteInner(
     }
     // Evaluated as its own capability so panic and the per-capability disable
     // both apply; a denial here downgrades the rung, it does not fail the call.
-    const foregroundAllowed = isAoiHostBridgeCapabilityEnabled(
+    let foregroundAllowed = isAoiHostBridgeCapabilityEnabled(
       killSwitch,
       AOI_DESKTOP_INPUT_FOREGROUND_CAPABILITY,
     );
-    const result = runAoiDesktopInput({
-      request,
-      openroomHome: params.openroomHome,
-      foregroundAllowed,
-      ...(params.desktopInputSpawnImpl ? { spawnImpl: params.desktopInputSpawnImpl } : {}),
-    });
+    const runRequest = (allowForegroundRung: boolean) =>
+      runAoiDesktopInput({
+        request,
+        openroomHome: params.openroomHome,
+        foregroundAllowed: allowForegroundRung,
+        ...(params.desktopInputSpawnImpl ? { spawnImpl: params.desktopInputSpawnImpl } : {}),
+      });
+    let result: Awaited<ReturnType<typeof runAoiDesktopInput>>;
+    if (isAoiDesktopInputReadOp(request.op)) {
+      result = await runRequest(foregroundAllowed);
+    } else {
+      // Acts run one at a time. One that waited its turn re-reads the switch:
+      // panic may have been engaged while it waited.
+      const turn = await withAoiDesktopActLock(async () => {
+        const current = loadAoiHostBridgeKillSwitchState(params.openroomHome);
+        const currentGate = evaluateDesktopGate(current);
+        if (!currentGate.allowed) {
+          return { kind: 'blocked' as const, gate: currentGate };
+        }
+        const allowForegroundRung = isAoiHostBridgeCapabilityEnabled(
+          current,
+          AOI_DESKTOP_INPUT_FOREGROUND_CAPABILITY,
+        );
+        return {
+          kind: 'ran' as const,
+          allowForegroundRung,
+          result: await runRequest(allowForegroundRung),
+        };
+      });
+      if (!turn.ran) {
+        // A verdict, like every other act answer: nothing was done.
+        return {
+          status: 200,
+          payload: {
+            ok: true,
+            act: {
+              ok: false,
+              verdict: { effect: 'suspected_noop', verified: false, code: 'desktop_busy' },
+              detail:
+                'another desktop action was still running, so this one was not started; nothing ' +
+                'was done',
+            },
+            foregroundAllowed,
+          },
+        };
+      }
+      if (turn.value.kind === 'blocked') {
+        return blockedResponse(turn.value.gate);
+      }
+      foregroundAllowed = turn.value.allowForegroundRung;
+      result = turn.value.result;
+    }
     if (result.kind === 'error') {
       return {
         status: result.code === 'helper_not_installed' ? 501 : 422,

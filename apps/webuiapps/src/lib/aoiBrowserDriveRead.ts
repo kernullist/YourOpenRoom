@@ -8,6 +8,7 @@
 // A redirect onto a denylisted host is refused and the tab is blanked so no
 // blocked content is ever read. Fail-closed on denylist hits.
 
+import { cleanUntrustedErrorText } from './aoiUntrustedText';
 import {
   isAoiBrowserDriveUrlAllowed,
   type AoiBrowserDriveAllowlist,
@@ -17,6 +18,8 @@ import { extractAoiHostBrowserReadable, type AoiHostBrowserReadBlock } from './a
 const DEFAULT_NAV_TIMEOUT_MS = 20_000;
 const MAX_NAV_TIMEOUT_MS = 45_000;
 const BLANK_URL = 'about:blank';
+// How long the rendered document is waited for once the page has loaded.
+const PAGE_CONTENT_DEADLINE_MS = 10_000;
 
 // The subset of a Playwright Page this operation needs. Kept local so the session
 // module's page type stays minimal and no static playwright import is pulled in.
@@ -90,7 +93,8 @@ export async function navigateAndExtractAoiBrowserDrive(params: {
     return {
       ok: false,
       reason: 'navigation_failed',
-      detail: error instanceof Error ? error.message : String(error),
+      // Playwright's message carries a call log of the page's own markup.
+      detail: cleanUntrustedErrorText(error instanceof Error ? error.message : String(error)),
     };
   }
 
@@ -112,10 +116,20 @@ export async function navigateAndExtractAoiBrowserDrive(params: {
     };
   }
 
-  // 4) Extract a bounded reader snapshot from the rendered DOM.
+  // 4) Extract a bounded reader snapshot from the rendered DOM -- in time: a
+  // page whose main thread never comes back holds no read.
   let html = '';
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    html = await page.content();
+    html = await Promise.race([
+      page.content(),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error('the page did not give its document in time')),
+          PAGE_CONTENT_DEADLINE_MS,
+        );
+      }),
+    ]).finally(() => clearTimeout(timer));
   } catch (error) {
     return {
       ok: false,

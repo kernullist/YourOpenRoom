@@ -8,10 +8,13 @@ import {
   saveAoiBrowserDriveAllowlist,
 } from './aoiBrowserDriveAllowlist';
 import {
+  isAoiDesktopInputReadOp,
   mapAoiDesktopInputActReply,
   parseAoiDesktopInputRequest,
   resolveAoiDesktopInputHelperPath,
   runAoiDesktopInput,
+  spawnAoiDesktopInputHelper,
+  withAoiDesktopActLock,
   type AoiDesktopInputSpawn,
 } from './aoiDesktopInput';
 
@@ -27,11 +30,11 @@ function spawnReturning(stdout: string): { spawn: AoiDesktopInputSpawn; calls: s
   return { spawn, calls };
 }
 
-function run(body: Record<string, unknown>, stdout: string, foregroundAllowed = false) {
+async function run(body: Record<string, unknown>, stdout: string, foregroundAllowed = false) {
   const request = parseAoiDesktopInputRequest(body);
   expect(request).not.toBeNull();
   const { spawn, calls } = spawnReturning(stdout);
-  const result = runAoiDesktopInput({
+  const result = await runAoiDesktopInput({
     request: request!,
     openroomHome: 'C:/openroom',
     foregroundAllowed,
@@ -262,8 +265,8 @@ describe('mapAoiDesktopInputActReply', () => {
 });
 
 describe('runAoiDesktopInput', () => {
-  it('reports a missing helper instead of failing to spawn', () => {
-    const result = runAoiDesktopInput({
+  it('reports a missing helper instead of failing to spawn', async () => {
+    const result = await runAoiDesktopInput({
       request: { op: 'list_windows' },
       openroomHome: 'C:/openroom',
       foregroundAllowed: false,
@@ -282,9 +285,9 @@ describe('runAoiDesktopInput', () => {
     expect(result.detail).toContain('Install-AoiDesktopInput.ps1');
   });
 
-  it('passes the command on stdin, never on the command line', () => {
+  it('passes the command on stdin, never on the command line', async () => {
     // A typed value on argv is readable by every other process on the machine.
-    const { calls } = run(
+    const { calls } = await run(
       {
         op: 'set_value',
         hwnd: '0x1',
@@ -301,9 +304,9 @@ describe('runAoiDesktopInput', () => {
     expect(JSON.parse(stdin)).toMatchObject({ op: 'set_value', value: 'private note' });
   });
 
-  it('does not grant the SendInput rung just because it was asked for', () => {
+  it('does not grant the SendInput rung just because it was asked for', async () => {
     // The request may ask; only the separate capability decides.
-    const { calls } = run(
+    const { calls } = await run(
       {
         op: 'invoke',
         hwnd: '0x1',
@@ -317,8 +320,8 @@ describe('runAoiDesktopInput', () => {
     expect(calls[0]).not.toContain('--allow-foreground');
   });
 
-  it('grants the SendInput rung when the capability is on and it was asked for', () => {
-    const { calls } = run(
+  it('grants the SendInput rung when the capability is on and it was asked for', async () => {
+    const { calls } = await run(
       {
         op: 'invoke',
         hwnd: '0x1',
@@ -332,8 +335,8 @@ describe('runAoiDesktopInput', () => {
     expect(calls[0]).toContain('--allow-foreground');
   });
 
-  it('never passes the rung flag when it was not asked for', () => {
-    const { calls } = run(
+  it('never passes the rung flag when it was not asked for', async () => {
+    const { calls } = await run(
       { op: 'invoke', hwnd: '0x1', ref: 2, snapshotId: 'dis-00000000' },
       '{"ok":true,"effect":"confirmed","verified":false,"path":"uia_invoke"}',
       true,
@@ -341,9 +344,9 @@ describe('runAoiDesktopInput', () => {
     expect(calls[0]).not.toContain('--allow-foreground');
   });
 
-  it('marks an element sensitive when the helper does not say otherwise', () => {
+  it('marks an element sensitive when the helper does not say otherwise', async () => {
     // Fail-closed: "should Aoi touch this" defaults to no.
-    const { result } = run(
+    const { result } = await run(
       { op: 'snapshot', hwnd: '0x1' },
       JSON.stringify({
         ok: true,
@@ -370,8 +373,8 @@ describe('runAoiDesktopInput', () => {
     expect(result.snapshot.elements[1].sensitive).toBe(false);
   });
 
-  it('keeps the note that separates an empty window from a silent one', () => {
-    const { result } = run(
+  it('keeps the note that separates an empty window from a silent one', async () => {
+    const { result } = await run(
       { op: 'snapshot', hwnd: '0x1' },
       JSON.stringify({
         ok: true,
@@ -387,9 +390,9 @@ describe('runAoiDesktopInput', () => {
     expect(result.snapshot.note).toBe('no_automation_tree');
   });
 
-  it('reports a helper that says nothing rather than inventing a result', () => {
+  it('reports a helper that says nothing rather than inventing a result', async () => {
     const request = parseAoiDesktopInputRequest({ op: 'list_windows' });
-    const result = runAoiDesktopInput({
+    const result = await runAoiDesktopInput({
       request: request!,
       openroomHome: 'C:/openroom',
       foregroundAllowed: false,
@@ -403,8 +406,8 @@ describe('runAoiDesktopInput', () => {
     });
   });
 
-  it('drops windows whose handle it cannot trust', () => {
-    const { result } = run(
+  it('drops windows whose handle it cannot trust', async () => {
+    const { result } = await run(
       { op: 'list_windows' },
       JSON.stringify({
         ok: true,
@@ -466,7 +469,7 @@ describe('runAoiDesktopInput browser-window reads', () => {
     return home;
   }
 
-  function snapshotOf(home: string, processName: string, op = 'snapshot') {
+  async function snapshotOf(home: string, processName: string, op = 'snapshot') {
     const request = parseAoiDesktopInputRequest({ op, hwnd: '0x1234' });
     expect(request).not.toBeNull();
     return runAoiDesktopInput({
@@ -493,36 +496,36 @@ describe('runAoiDesktopInput browser-window reads', () => {
     });
   }
 
-  it('refuses a snapshot of a browser window when a denylist exists', () => {
-    const result = snapshotOf(homeWithDenylist(['bank.example']), 'chrome.exe');
+  it('refuses a snapshot of a browser window when a denylist exists', async () => {
+    const result = await snapshotOf(homeWithDenylist(['bank.example']), 'chrome.exe');
     expect(result.kind).toBe('error');
     expect((result as { code: string }).code).toBe('browser_window_denylisted');
     // The page content must not ride along on the refusal.
     expect(JSON.stringify(result)).not.toContain('Transfer');
   });
 
-  it('refuses a capture of a browser window too', () => {
-    const result = snapshotOf(homeWithDenylist(['bank.example']), 'msedge.exe', 'capture');
+  it('refuses a capture of a browser window too', async () => {
+    const result = await snapshotOf(homeWithDenylist(['bank.example']), 'msedge.exe', 'capture');
     expect(result.kind).toBe('error');
     expect((result as { code: string }).code).toBe('browser_window_denylisted');
     expect(JSON.stringify(result)).not.toContain('iVBORw0KGgo=');
   });
 
-  it('leaves an ordinary app alone', () => {
+  it('leaves an ordinary app alone', async () => {
     // The bound is the browser, not the feature: denylisting a site must not
     // quietly stop Aoi from reading Notepad.
-    const result = snapshotOf(homeWithDenylist(['bank.example']), 'notepad.exe');
+    const result = await snapshotOf(homeWithDenylist(['bank.example']), 'notepad.exe');
     expect(result.kind).toBe('snapshot');
   });
 
-  it('refuses when the helper is too old to say whose window it is', () => {
+  it('refuses when the helper is too old to say whose window it is', async () => {
     // The helper is a SEPARATELY INSTALLED copy, so an operator can be running
     // one built before it reported the process at all. An absent field is not
     // evidence that this is not a browser, and treating it as such reopened the
     // whole bypass silently on exactly the machines least likely to notice.
     const home = homeWithDenylist(['bank.example']);
     const request = parseAoiDesktopInputRequest({ op: 'snapshot', hwnd: '0x1234' });
-    const result = runAoiDesktopInput({
+    const result = await runAoiDesktopInput({
       request: request!,
       openroomHome: home,
       foregroundAllowed: false,
@@ -545,9 +548,285 @@ describe('runAoiDesktopInput browser-window reads', () => {
     expect(JSON.stringify(result)).not.toContain('Transfer');
   });
 
-  it('refuses nothing when the operator ruled nothing out', () => {
+  it('refuses nothing when the operator ruled nothing out', async () => {
     // An empty denylist is the default, so the default posture is unchanged.
-    const result = snapshotOf(homeWithDenylist([]), 'chrome.exe');
+    const result = await snapshotOf(homeWithDenylist([]), 'chrome.exe');
     expect(result.kind).toBe('snapshot');
+  });
+});
+
+describe('window-frame coordinate clicks', () => {
+  const point = { op: 'click', hwnd: '0x1a2b', x: 40, y: 12 };
+
+  it('accepts a point measured in the pictured window frame', () => {
+    expect(
+      parseAoiDesktopInputRequest({
+        ...point,
+        space: 'window',
+        windowWidth: 800,
+        windowHeight: 600,
+      }),
+    ).toMatchObject({
+      op: 'click',
+      x: 40,
+      y: 12,
+      space: 'window',
+      windowWidth: 800,
+      windowHeight: 600,
+    });
+    // Legacy callers send client-area points and no space at all.
+    expect(parseAoiDesktopInputRequest(point)?.space).toBeUndefined();
+  });
+
+  it('refuses an unknown space or a window size no window can have', () => {
+    expect(parseAoiDesktopInputRequest({ ...point, space: 'screen' })).toBeNull();
+    expect(parseAoiDesktopInputRequest({ ...point, space: 'window', windowWidth: 0 })).toBeNull();
+    expect(parseAoiDesktopInputRequest({ ...point, windowHeight: 1.5 })).toBeNull();
+    expect(parseAoiDesktopInputRequest({ ...point, windowWidth: 20_000 })).toBeNull();
+  });
+
+  it('hands the space and the pictured size to the helper', async () => {
+    const { calls } = await run(
+      { ...point, space: 'window', windowWidth: 800, windowHeight: 600 },
+      '{"ok":true,"effect":"unverifiable","verified":false,"path":"background"}',
+    );
+    const [args] = calls;
+    expect(JSON.parse(args[args.length - 1])).toMatchObject({
+      op: 'click',
+      x: 40,
+      y: 12,
+      space: 'window',
+      windowWidth: 800,
+      windowHeight: 600,
+    });
+  });
+
+  it('passes capture caps through and refuses ones outside the safe range', () => {
+    expect(
+      parseAoiDesktopInputRequest({
+        op: 'capture',
+        hwnd: '0x1a2b',
+        maxLongSide: 1366,
+        maxShortSide: 768,
+      }),
+    ).toEqual({ op: 'capture', hwnd: '0x1a2b', mode: 'som', maxLongSide: 1366, maxShortSide: 768 });
+    for (const cap of [199, 4097, 512.5, '768']) {
+      expect(
+        parseAoiDesktopInputRequest({ op: 'capture', hwnd: '0x1a2b', maxShortSide: cap }),
+        String(cap),
+      ).toBeNull();
+    }
+  });
+
+  it('reports the unscaled window size a capture was taken at', async () => {
+    const { result } = await run(
+      { op: 'capture', hwnd: '0x1a2b' },
+      JSON.stringify({
+        ok: true,
+        snapshotId: 'dis-0a1b2c3d',
+        process: 'notepad.exe',
+        mode: 'plain',
+        width: 600,
+        height: 400,
+        scale: 0.5,
+        windowWidth: 1200,
+        windowHeight: 800,
+        totalElements: 0,
+        elements: [],
+        pngBase64: 'iVBORw0KGgo=',
+      }),
+    );
+    expect(result).toMatchObject({
+      kind: 'capture',
+      capture: { width: 600, height: 400, scale: 0.5, windowWidth: 1200, windowHeight: 800 },
+    });
+  });
+});
+
+describe('spawnAoiDesktopInputHelper', () => {
+  it('feeds the command on stdin and collects the reply', async () => {
+    const outcome = await spawnAoiDesktopInputHelper(
+      process.execPath,
+      ['-e', 'process.stdin.pipe(process.stdout)'],
+      '{"op":"echo"}',
+    );
+    expect(outcome).toMatchObject({ status: 0, stdout: '{"op":"echo"}' });
+    expect(outcome.timedOut).toBeUndefined();
+  });
+
+  it('keeps the event loop running while the helper works', async () => {
+    // spawnSync held the server for the whole run, kill-switch requests included.
+    let ticked = false;
+    setTimeout(() => {
+      ticked = true;
+    }, 0);
+    await spawnAoiDesktopInputHelper(process.execPath, ['-e', 'setTimeout(() => {}, 300)'], '');
+    expect(ticked).toBe(true);
+  });
+
+  it('stops a helper that runs past the timeout and says so', async () => {
+    const outcome = await spawnAoiDesktopInputHelper(
+      process.execPath,
+      ['-e', 'setInterval(() => {}, 1000)'],
+      '',
+      200,
+    );
+    expect(outcome.timedOut).toBe(true);
+  });
+
+  it('stops a helper that floods its output instead of buffering all of it', async () => {
+    const outcome = await spawnAoiDesktopInputHelper(
+      process.execPath,
+      ['-e', 'process.stdout.write("x".repeat(4 * 1024 * 1024)); setInterval(() => {}, 1000)'],
+      '',
+      10_000,
+      64 * 1024,
+    );
+    // Cut off near the cap and stopped, well before the timeout would have.
+    expect(outcome.timedOut).toBeUndefined();
+    expect(outcome.stdout.length).toBeLessThan(4 * 1024 * 1024);
+  });
+
+  it('rejects when the helper cannot be started at all', async () => {
+    await expect(
+      spawnAoiDesktopInputHelper(join(os.tmpdir(), 'no-such-aoi-helper.exe'), [], ''),
+    ).rejects.toThrow();
+  });
+
+  it('turns a timeout and a failed start into errors that say what happened', async () => {
+    const request = parseAoiDesktopInputRequest({ op: 'snapshot', hwnd: '0x1a2b' })!;
+    const base = {
+      request,
+      openroomHome: 'C:/openroom',
+      foregroundAllowed: false,
+      env: { AOI_DESKTOP_INPUT_HELPER: REAL_FILE },
+    };
+    await expect(
+      runAoiDesktopInput({
+        ...base,
+        spawnImpl: () => ({ status: null, stdout: '', stderr: '', timedOut: true }),
+      }),
+    ).resolves.toMatchObject({ kind: 'error', code: 'helper_timeout' });
+    await expect(
+      runAoiDesktopInput({
+        ...base,
+        spawnImpl: () => Promise.reject(new Error('spawn EACCES')),
+      }),
+    ).resolves.toMatchObject({
+      kind: 'error',
+      code: 'helper_spawn_failed',
+      detail: 'spawn EACCES',
+    });
+  });
+
+  it('keeps a verdict the helper wrote before it was stopped for running long', async () => {
+    // The helper writes its reply and only then tears COM down, and that can
+    // stall on a window the act just made busy.
+    const request = parseAoiDesktopInputRequest({
+      op: 'invoke',
+      hwnd: '0x1a2b',
+      ref: 1,
+      snapshotId: 'dis-0a1b2c3d',
+    })!;
+    const base = {
+      request,
+      openroomHome: 'C:/openroom',
+      foregroundAllowed: false,
+      env: { AOI_DESKTOP_INPUT_HELPER: REAL_FILE },
+    };
+    const proven =
+      '{"ok":true,"effect":"confirmed","verified":true,"path":"uia_invoke","detail":"x"}';
+    await expect(
+      runAoiDesktopInput({
+        ...base,
+        spawnImpl: () => ({ status: null, stdout: proven, stderr: '', timedOut: true }),
+      }),
+    ).resolves.toMatchObject({
+      kind: 'act',
+      act: { ok: true, verdict: { effect: 'confirmed', verified: true } },
+    });
+    // Cut off mid-reply: that one really is unknown.
+    await expect(
+      runAoiDesktopInput({
+        ...base,
+        spawnImpl: () => ({
+          status: null,
+          stdout: proven.slice(0, 20),
+          stderr: '',
+          timedOut: true,
+        }),
+      }),
+    ).resolves.toMatchObject({ kind: 'error', code: 'helper_timeout' });
+  });
+});
+
+describe('one act at a time', () => {
+  it('tells reads from acts', () => {
+    for (const op of ['list_windows', 'list_apps', 'snapshot', 'capture']) {
+      expect(isAoiDesktopInputReadOp(op), op).toBe(true);
+    }
+    for (const op of ['invoke', 'set_value', 'click', 'key', 'type', 'focus', 'drag', 'toggle']) {
+      expect(isAoiDesktopInputReadOp(op), op).toBe(false);
+    }
+  });
+
+  it('runs a second act only after the first has finished', async () => {
+    const order: string[] = [];
+    let finishFirst: () => void = () => undefined;
+    const first = withAoiDesktopActLock(async () => {
+      order.push('first starts');
+      await new Promise<void>((resolveFirst) => {
+        finishFirst = resolveFirst;
+      });
+      order.push('first ends');
+      return 'first';
+    });
+    const second = withAoiDesktopActLock(async () => {
+      order.push('second starts');
+      return 'second';
+    });
+    await new Promise((resolveTick) => setTimeout(resolveTick, 20));
+    expect(order).toEqual(['first starts']);
+    finishFirst();
+    await expect(first).resolves.toEqual({ ran: true, value: 'first' });
+    await expect(second).resolves.toEqual({ ran: true, value: 'second' });
+    expect(order).toEqual(['first starts', 'first ends', 'second starts']);
+  });
+
+  it('does not run an act that could not get its turn in time, and frees its place', async () => {
+    let finishFirst: () => void = () => undefined;
+    const first = withAoiDesktopActLock(
+      () =>
+        new Promise<string>((resolveFirst) => {
+          finishFirst = () => resolveFirst('first');
+        }),
+    );
+    let ranLate = false;
+    const late = await withAoiDesktopActLock(async () => {
+      ranLate = true;
+      return 'late';
+    }, 30);
+    expect(late).toEqual({ ran: false });
+    expect(ranLate).toBe(false);
+
+    finishFirst();
+    await first;
+    // The abandoned place does not block whoever comes next.
+    await expect(withAoiDesktopActLock(async () => 'next', 1_000)).resolves.toEqual({
+      ran: true,
+      value: 'next',
+    });
+  });
+
+  it('passes the act on even when the one before it failed', async () => {
+    await expect(
+      withAoiDesktopActLock(async () => {
+        throw new Error('helper crashed');
+      }),
+    ).rejects.toThrow('helper crashed');
+    await expect(withAoiDesktopActLock(async () => 'after')).resolves.toEqual({
+      ran: true,
+      value: 'after',
+    });
   });
 });

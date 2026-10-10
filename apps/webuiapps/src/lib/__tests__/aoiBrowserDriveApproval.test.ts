@@ -282,7 +282,7 @@ describe('standing-grant fallback (P3.1)', () => {
       fingerprint: 'ff00aa',
       stepIndex: 1,
       action: clickStep,
-      url: 'https://other.test/x',
+      url: 'https://other.example/x',
     });
     expect(verdict.approved).toBe(false);
   });
@@ -409,19 +409,19 @@ describe('what the approval is bound to', () => {
 
   it('still gives the same plan the same fingerprint', () => {
     const p = plan(
-      { kind: 'navigate', url: 'https://x.test/a' } as AoiBrowserDriveActionRequest,
+      { kind: 'navigate', url: 'https://x.example/a' } as AoiBrowserDriveActionRequest,
       clickStep,
     );
     const first = buildAoiBrowserDriveActApprovalPreview({
       plan: p,
       stepIndex: 1,
-      hostname: 'x.test',
+      hostname: 'x.example',
       now: 1_000,
     });
     const second = buildAoiBrowserDriveActApprovalPreview({
       plan: p,
       stepIndex: 1,
-      hostname: 'x.test',
+      hostname: 'x.example',
       now: 2_000,
     });
     expect(first.ok && second.ok).toBe(true);

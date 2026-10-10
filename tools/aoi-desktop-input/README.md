@@ -45,7 +45,7 @@ throw, which is precisely the failure this contract exists to remove.
 | `invoke` | Press a control through UI Automation. |
 | `set_value` | Replace a field's text, **verified by read-back**. |
 | `select` | Choose a dropdown option by label, **verified**. |
-| `toggle` | Set a checkbox to `on`/`off` (idempotent), **verified**. |
+| `toggle` | Set a checkbox to `on`/`off` (idempotent), **verified**. A toggle not yet seen to move is never pressed again: a slow control may still be applying the first, and a second press would undo it. That case answers `unverifiable`. |
 | `scroll` | Scroll a control, **verified** by reading the position back. |
 | `click` | Right / middle / double click, or held modifiers. |
 | `key` | A keystroke or combo (`ctrl+s`, `tab`, `f5`). |
@@ -97,6 +97,8 @@ tops out at `unverifiable`, by construction.
 | `option_not_found` / `option_ambiguous` | No option with that label, or more than one. |
 | `no_automation_tree` | (snapshot note) The window exposes nothing to UIA at all. |
 | `window_not_found` | The handle is not a live window. |
+| `terminal_input_refused` | The window is a terminal; see below. |
+| `window_changed` | A point click carried the size of the picture it was read off, and the window has been resized since. |
 
 A refusal always reports `effect: suspected_noop`, never a claimed effect, and
 in the SendInput rung a refusal means **no input was synthesized at all**.
@@ -118,6 +120,23 @@ Absolute mouse coordinates are normalized across the **virtual** screen, whose
 origin is negative when a monitor sits left of or above the primary one. That
 origin is included; dropping it puts the click on the wrong monitor while
 `SendInput` still reports success.
+
+The process declares itself **Per-Monitor-V2 DPI aware** before anything else
+(falling back to system-aware on older Windows). Without it, every rectangle and
+point on a scaled monitor is virtualized, so a click computed from one lands
+somewhere else.
+
+### Point clicks
+
+`click` with `x`/`y` instead of a ref clicks a point, for windows that describe
+no controls. With `"space":"window"` the point is measured from the window
+rectangle's top-left, frame included -- the space of a `capture` picture, which
+reports the window's own `windowWidth`/`windowHeight` next to the picture size.
+Passing those back with the click makes a resize since the picture a
+`window_changed` refusal instead of a click at a stale position. `capture`
+takes `maxLongSide` and `maxShortSide` (200-4096): the caller keeps the picture
+under every model provider's own resize threshold, so the pixels a point is
+read off are the pixels the model saw.
 
 ### Capture is its own capability
 
@@ -156,6 +175,11 @@ box retired every ref in the window, so an edit-then-click sequence could not be
 completed. Insertions and removals still change the set, and still retire the
 refs — which is the case that actually makes a ref point at something else.
 
+Some apps give several controls the **same** automation id (a list of rows built
+from one template). Those controls get their name added to their identity, and
+the sort is stable, so renaming the rows mints a new snapshot id instead of
+leaving an old ref pointing at a row that now says something else.
+
 ### `no_automation_tree` vs an empty list
 
 An empty element list is ambiguous, so the snapshot says which kind of empty it
@@ -178,7 +202,26 @@ On top of that, the helper enforces:
   password box, or whose name/automation id reads like a credential (`password`,
   `cvc`, `otp`, `pin`, …), is refused for both invoke and set_value. Windows
   blocks `ValuePattern` writes into password fields too, so this is the first of
-  two layers, not the only one.
+  two layers, not the only one. `key` and `type` address no element, so they
+  check the element that has focus instead: text and keys into a focused
+  credential field are refused too, except moving away (tab or escape, with only
+  shift held).
+- **No blind typing.** A window in the background often cannot say which
+  control has focus: Chromium, Electron and other single-HWND hosts report only
+  their own pane. When focus cannot be read and the window holds a password field
+  or a terminal pane anywhere (an edit or a document named like one, searched
+  over the whole window), posting keys or text in the background is refused
+  (`element_forbidden`, "there is no telling where it would go"). With the
+  foreground rung allowed, the helper takes the foreground, reads the focus again
+  -- now precisely -- and only then sends anything.
+- **Terminals are not typed into.** In a console, Windows Terminal, PuTTY,
+  mintty and similar windows (matched by window class and process name), typed
+  or pasted text runs as a command -- a way around the daemon's approval-gated
+  process spawn. `type`, `key`, `set_value`, `drag` and right/middle clicks there
+  answer `terminal_input_refused`; a left click (to focus or select) is allowed.
+  A terminal **pane** inside an ordinary window -- an editor's integrated
+  terminal, recognized by its control name ("Terminal 1, bash", "xterm",
+  "console" as a whole word) -- is refused the same way when it has focus.
 - **Focus is never taken** unless `--allow-foreground` is passed explicitly.
 - **Refs fail closed** (above).
 - The process holds **no secrets** and reads no files.

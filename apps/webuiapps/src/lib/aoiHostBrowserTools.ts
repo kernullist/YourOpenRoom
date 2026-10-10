@@ -6,6 +6,7 @@
 
 import type { ToolDef } from './llmClient';
 import { fetchAoiHostBrowserRead, type AoiHostBrowserPageView } from './aoiHostBridgeClient';
+import { defusePageReadFields, UNTRUSTED_PAGE_TEXT_NOTE } from './aoiUntrustedText';
 
 export const HOST_BROWSER_READ_TOOL = 'host_browser_read';
 
@@ -92,7 +93,8 @@ function formatGateError(error: unknown): string {
   return `error: host browser read failed: ${message}`;
 }
 
-export function formatHostBrowserPageForChat(page: AoiHostBrowserPageView): string {
+export function formatHostBrowserPageForChat(read: AoiHostBrowserPageView): string {
+  const page = defusePageReadFields(read);
   return JSON.stringify({
     ok: true,
     url: page.url,
@@ -107,7 +109,7 @@ export function formatHostBrowserPageForChat(page: AoiHostBrowserPageView): stri
     privacy: 'public_http_only_ssrf_blocked',
     note:
       'Rendered with the operator PC headless Chrome/Edge. Private/local hosts are blocked. ' +
-      'This is a snapshot, not an interactive browser session.',
+      `This is a snapshot, not an interactive browser session. ${UNTRUSTED_PAGE_TEXT_NOTE}`,
   });
 }
 

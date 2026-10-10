@@ -298,6 +298,24 @@ try
     $combo = Invoke-Helper @{ op = 'key'; hwnd = $handle; keys = 'ctrl+s'; delivery = 'background' }
     Assert-That 'a modifier combo is refused in the background' ($combo.code -eq 'modifiers_need_foreground') "code=$($combo.code)"
 
+    # key and type address no element, so they must check where focus is: with
+    # it on the password field they were a way around the credential guard.
+    Write-Host '[test] keyboard into a credential field'
+    [void][AoiTest.Win]::PostMessageW($hwnd, 0x8001, [IntPtr]::Zero, [IntPtr]::Zero) # WM_APP+1
+    Start-Sleep -Milliseconds 250
+    $typedSecret = Invoke-Helper @{ op = 'type'; hwnd = $handle; text = 'hunter2' }
+    Assert-That 'typing into a focused password field is refused' ($typedSecret.code -eq 'element_forbidden') "code=$($typedSecret.code) detail=$($typedSecret.detail)"
+    $keySecret = Invoke-Helper @{ op = 'key'; hwnd = $handle; keys = 'a' }
+    Assert-That 'a character key into a focused password field is refused' ($keySecret.code -eq 'element_forbidden') "code=$($keySecret.code)"
+    Start-Sleep -Milliseconds 250
+    Assert-That 'the password field really stayed empty' ((Get-ControlText $hwnd 103) -eq '') "contains '$(Get-ControlText $hwnd 103)'"
+    # Escape rather than tab: both are allowed, but a posted tab moves focus on to
+    # the next control and that leaks into the toggle tests below.
+    $leave = Invoke-Helper @{ op = 'key'; hwnd = $handle; keys = 'escape' }
+    Assert-That 'escape is still allowed in a password field' ($leave.ok -eq $true) "code=$($leave.code) detail=$($leave.detail)"
+    [void][AoiTest.Win]::PostMessageW($hwnd, 0x8002, [IntPtr]::Zero, [IntPtr]::Zero) # WM_APP+2
+    Start-Sleep -Milliseconds 250
+
     $badCombo = Invoke-Helper @{ op = 'key'; hwnd = $handle; keys = 'ctrl+nonsense' }
     Assert-That 'an unreadable combo is refused' ($badCombo.code -eq 'bad_key_combo') "code=$($badCombo.code)"
 
@@ -421,6 +439,48 @@ try
     $atPassword = Invoke-Helper @{ op = 'click'; hwnd = $handle; x = $pwPoint.X; y = $pwPoint.Y; delivery = 'background' }
     Assert-That 'a coordinate over a credential field is refused' ($atPassword.code -eq 'element_forbidden') "code=$($atPassword.code)"
 
+    # --- window-frame points: the space desktop_capture pictures -------------
+    # The capture is of the window RECT (frame included), so a point read off it
+    # has to be resolved against that, not the client area.
+    Write-Host '[test] window-frame points'
+    [void][AoiTest.Win]::GetWindowRect($hwnd, [ref]$frame)
+    $pictured = Invoke-Helper @{ op = 'capture'; hwnd = $handle; mode = 'plain'; maxLongSide = 4096 }
+    Assert-That 'a capture reports the window size it pictured' (($pictured.windowWidth -eq ($frame.Right - $frame.Left)) -and ($pictured.windowHeight -eq ($frame.Bottom - $frame.Top))) "reported $($pictured.windowWidth)x$($pictured.windowHeight)"
+    [void][AoiTest.Win]::GetWindowRect([AoiTest.Win]::GetDlgItem($hwnd, 101), [ref]$box)
+    $frameX = $box.Left + [int](($box.Right - $box.Left) / 2) - $frame.Left
+    $frameY = $box.Top + [int](($box.Bottom - $box.Top) / 2) - $frame.Top
+    $tallyBefore = Get-ControlText $hwnd 105
+    $framePoint = Invoke-Helper @{ op = 'click'; hwnd = $handle; x = $frameX; y = $frameY; space = 'window'; windowWidth = $pictured.windowWidth; windowHeight = $pictured.windowHeight; delivery = 'background' }
+    Assert-That 'a window-frame point click is delivered' ($framePoint.ok -eq $true) "detail=$($framePoint.detail)"
+    Start-Sleep -Milliseconds 250
+    Assert-That 'the window-frame point click really reached the app' ((Get-ControlText $hwnd 105) -ne $tallyBefore) "tally stayed $tallyBefore"
+    $resized = Invoke-Helper @{ op = 'click'; hwnd = $handle; x = $frameX; y = $frameY; space = 'window'; windowWidth = ($pictured.windowWidth + 40); windowHeight = $pictured.windowHeight; delivery = 'background' }
+    Assert-That 'a point read off a differently sized picture is refused' ($resized.code -eq 'window_changed') "code=$($resized.code)"
+    $outside = Invoke-Helper @{ op = 'click'; hwnd = $handle; x = ($pictured.windowWidth + 5); y = 5; space = 'window'; delivery = 'background' }
+    Assert-That 'a point outside the window is refused' ($outside.code -eq 'bad_request') "code=$($outside.code)"
+    # The short-side cap is what keeps a picture under the providers' own resize
+    # thresholds, so it has to bite even when the long side is allowed.
+    $shortCapped = Invoke-Helper @{ op = 'capture'; hwnd = $handle; mode = 'plain'; maxLongSide = 4096; maxShortSide = 200 }
+    Assert-That 'the short-side cap shrinks the picture' (([Math]::Min($shortCapped.width, $shortCapped.height) -le 200) -and ($shortCapped.scale -lt 1)) "got $($shortCapped.width)x$($shortCapped.height) scale=$($shortCapped.scale)"
+
+    # --- terminals -----------------------------------------------------------
+    # What is typed or pasted into a terminal runs. Driving one was process
+    # spawning without the approval the spawn route asks for.
+    Write-Host '[test] terminal windows'
+    $consoleHwnd = [AoiTest.Win]::FindWindowW('ConsoleWindowClass', "$title Console")
+    Assert-That 'the fake console window exists' ($consoleHwnd -ne [IntPtr]::Zero)
+    $consoleHandle = ('0x{0:x}' -f $consoleHwnd.ToInt64())
+    $typeInConsole = Invoke-Helper @{ op = 'type'; hwnd = $consoleHandle; text = 'del *' }
+    Assert-That 'typing into a terminal is refused' ($typeInConsole.code -eq 'terminal_input_refused') "code=$($typeInConsole.code)"
+    $keyInConsole = Invoke-Helper @{ op = 'key'; hwnd = $consoleHandle; keys = 'enter' }
+    Assert-That 'a key into a terminal is refused' ($keyInConsole.code -eq 'terminal_input_refused') "code=$($keyInConsole.code)"
+    $pasteInConsole = Invoke-Helper @{ op = 'click'; hwnd = $consoleHandle; x = 20; y = 20; button = 'right'; delivery = 'background' }
+    Assert-That 'a right click (paste) into a terminal is refused' ($pasteInConsole.code -eq 'terminal_input_refused') "code=$($pasteInConsole.code)"
+    $leftInConsole = Invoke-Helper @{ op = 'click'; hwnd = $consoleHandle; x = 20; y = 20; delivery = 'background' }
+    Assert-That 'a plain left click on a terminal is still allowed' ($leftInConsole.code -ne 'terminal_input_refused') "code=$($leftInConsole.code)"
+    $typeInApp = Invoke-Helper @{ op = 'type'; hwnd = $handle; text = 'x' }
+    Assert-That 'an ordinary window is not mistaken for a terminal' ($typeInApp.code -ne 'terminal_input_refused') "code=$($typeInApp.code)"
+
     # --- stale refs ----------------------------------------------------------
     Write-Host '[test] stale refs'
     Invoke-Helper @{ op = 'invoke'; hwnd = $handle; ref = $renameMe.ref; snapshotId = $snap.snapshotId } | Out-Null
@@ -434,6 +494,62 @@ try
     # not be specific to invoke.
     $staleClick = Invoke-Helper @{ op = 'click'; hwnd = $handle; ref = $clickMe.ref; snapshotId = $snap.snapshotId }
     Assert-That 'a stale ref is refused for click too' ($staleClick.code -eq 'element_ref_stale') "code=$($staleClick.code)"
+
+    # --- focus that cannot be read from the background -----------------------
+    # A browser or WPF window keeps every control inside one window, so from the
+    # background the focused child is the whole window. With a password field
+    # somewhere in it, a posted keystroke could be landing in that field.
+    Write-Host '[test] keyboard where the focused control cannot be read'
+    [void][AoiTest.Win]::PostMessageW($hwnd, 0x8003, [IntPtr]::Zero, [IntPtr]::Zero) # WM_APP+3
+    [void][AoiTest.Win]::PostMessageW($hwnd, 0x8006, [IntPtr]::Zero, [IntPtr]::Zero) # WM_APP+6
+    Start-Sleep -Milliseconds 250
+    $blind = Invoke-Helper @{ op = 'type'; hwnd = $handle; text = 'hunter2'; delivery = 'background' }
+    $blindAuto = Invoke-Helper @{ op = 'key'; hwnd = $handle; keys = 'a' }
+    if ([AoiTest.Win]::GetForegroundWindow() -eq $hwnd)
+    {
+        # Windows sometimes hands a newly started window the foreground. In front,
+        # UI Automation reports the real focus -- the canvas -- so the keys go to
+        # it, and there is nothing blind about posting them.
+        Assert-That 'with the window in front the real focus is read, so typing reaches the canvas' ($blind.ok -eq $true) "code=$($blind.code) detail=$($blind.detail)"
+        Assert-That 'and so does a key' ($blindAuto.ok -eq $true) "code=$($blindAuto.code)"
+    }
+    else
+    {
+        Assert-That 'typing blind into a window holding a password field is refused' ($blind.code -eq 'element_forbidden') "code=$($blind.code) detail=$($blind.detail)"
+        Assert-That 'and the refusal says why' ($blind.detail -match 'no telling') "detail=$($blind.detail)"
+        Assert-That 'without the foreground rung there is no other way, so a key is refused too' ($blindAuto.code -eq 'element_forbidden') "code=$($blindAuto.code)"
+    }
+    $blindEscape = Invoke-Helper @{ op = 'key'; hwnd = $handle; keys = 'escape' }
+    Assert-That 'moving focus with escape is still allowed' ($blindEscape.ok -eq $true) "code=$($blindEscape.code) detail=$($blindEscape.detail)"
+    Start-Sleep -Milliseconds 250
+    Assert-That 'the password field is still empty' ((Get-ControlText $hwnd 103) -eq '') "contains '$(Get-ControlText $hwnd 103)'"
+
+    # An editor's integrated terminal runs what is typed into it, and the window
+    # around it is an editor -- only the focused control gives it away.
+    Write-Host '[test] a terminal pane inside an ordinary window'
+    [void][AoiTest.Win]::PostMessageW($hwnd, 0x8004, [IntPtr]::Zero, [IntPtr]::Zero) # WM_APP+4
+    Start-Sleep -Milliseconds 250
+    $intoPane = Invoke-Helper @{ op = 'type'; hwnd = $handle; text = 'rm -rf ~' }
+    Assert-That 'typing into a focused terminal pane is refused' ($intoPane.code -eq 'terminal_input_refused') "code=$($intoPane.code) detail=$($intoPane.detail)"
+    $enterInPane = Invoke-Helper @{ op = 'key'; hwnd = $handle; keys = 'enter' }
+    Assert-That 'a key into a focused terminal pane is refused' ($enterInPane.code -eq 'terminal_input_refused') "code=$($enterInPane.code)"
+    Start-Sleep -Milliseconds 250
+    Assert-That 'the terminal pane received nothing' ((Get-ControlText $hwnd 112) -eq '') "contains '$(Get-ControlText $hwnd 112)'"
+    [void][AoiTest.Win]::PostMessageW($hwnd, 0x8002, [IntPtr]::Zero, [IntPtr]::Zero) # WM_APP+2
+    Start-Sleep -Milliseconds 250
+
+    # A toggle the control applies late must not be toggled again: the second
+    # Toggle would flip it straight back.
+    Write-Host '[test] a slow toggle'
+    $slowSnap = Invoke-Helper @{ op = 'snapshot'; hwnd = $handle }
+    $slow = Find-Element $slowSnap 113
+    Assert-That 'the slow checkbox is listed' ($null -ne $slow)
+    $slowOn = Invoke-Helper @{ op = 'toggle'; hwnd = $handle; ref = $slow.ref; snapshotId = $slowSnap.snapshotId; state = 'on' }
+    Assert-That 'a toggle not seen to land is unverifiable, not a no-op' ($slowOn.effect -eq 'unverifiable') "effect=$($slowOn.effect) detail=$($slowOn.detail)"
+    Start-Sleep -Milliseconds 1500
+    $slowAgain = Invoke-Helper @{ op = 'toggle'; hwnd = $handle; ref = $slow.ref; snapshotId = $slowSnap.snapshotId; state = 'on' }
+    Assert-That 'and it was toggled once, so it ends up on' (($slowAgain.effect -eq 'confirmed') -and ($slowAgain.detail -match 'already')) "effect=$($slowAgain.effect) detail=$($slowAgain.detail)"
+
 
     # --- the foreground rung -------------------------------------------------
     Write-Host '[test] foreground rung'
@@ -510,6 +626,22 @@ try
     # --- unknown window -----------------------------------------------------
     $gone = Invoke-Helper @{ op = 'snapshot'; hwnd = '0xdeadbeef' }
     Assert-That 'a dead window handle is refused' ($gone.code -eq 'window_not_found') "code=$($gone.code)"
+
+    # --- rows that share an automation id ------------------------------------
+    # Last, because renaming the rows retires every outstanding snapshot.
+    # Rows from one template share an automation id. When they change, the refs
+    # have to go stale rather than quietly point at a different row.
+    Write-Host '[test] controls that share an automation id'
+    $twinSnap = Invoke-Helper @{ op = 'snapshot'; hwnd = $handle }
+    $twins = @($twinSnap.elements | Where-Object { $_.automationId -eq '114' })
+    Assert-That 'both rows are listed' ($twins.Count -eq 2) "found $($twins.Count)"
+    $alice = $twins | Where-Object { $_.name -eq 'Alice' } | Select-Object -First 1
+    [void][AoiTest.Win]::PostMessageW($hwnd, 0x8005, [IntPtr]::Zero, [IntPtr]::Zero) # WM_APP+5
+    Start-Sleep -Milliseconds 250
+    $renamedSnap = Invoke-Helper @{ op = 'snapshot'; hwnd = $handle }
+    Assert-That 'renamed rows mint a new snapshot id' ($renamedSnap.snapshotId -ne $twinSnap.snapshotId)
+    $oldRow = Invoke-Helper @{ op = 'invoke'; hwnd = $handle; ref = $alice.ref; snapshotId = $twinSnap.snapshotId }
+    Assert-That 'a ref to a renamed row is refused, not re-pointed' ($oldRow.code -eq 'element_ref_stale') "code=$($oldRow.code)"
 }
 finally
 {

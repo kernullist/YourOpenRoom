@@ -22,7 +22,7 @@
 // spawning anything.
 import * as fs from 'fs';
 import { resolve } from 'path';
-import { spawnSync } from 'child_process';
+import { spawn } from 'child_process';
 import { parseAoiBrowserDriveVerdict, type AoiBrowserDriveVerdict } from './aoiBrowserDriveVerdict';
 import { loadAoiBrowserDriveAllowlist } from './aoiBrowserDriveAllowlist';
 
@@ -87,8 +87,20 @@ export interface AoiDesktopInputRequest {
   state?: string;
   x?: number;
   y?: number;
+  // Where x/y are measured from. 'window' is the window rectangle's top-left,
+  // frame included -- the space a desktop_capture picture is in, so a point read
+  // off it lands where it was seen. 'client' (the default) is the client area.
+  space?: 'window' | 'client';
+  // The window size the picture was taken at. The helper refuses the point if
+  // the window has since been resized, because it no longer matches the picture.
+  windowWidth?: number;
+  windowHeight?: number;
   mode?: string;
   maxLongSide?: number;
+  // Cap on the picture's SHORT side. Some providers shrink any image whose
+  // short side is over 768 px, and a re-shrunk picture no longer has the pixels
+  // a point was read off.
+  maxShortSide?: number;
   // Opt in to the SendInput rung. Honored only when the separate foreground
   // capability is also enabled; the route enforces that, not this parser.
   allowForeground?: boolean;
@@ -109,6 +121,10 @@ export interface AoiDesktopInputCapture {
   height: number;
   // <1 when the image was shrunk to fit the long-side cap.
   scale: number;
+  // The window's own size when it was pictured, before shrinking. 0 from a
+  // helper that predates these fields.
+  windowWidth: number;
+  windowHeight: number;
   totalElements: number;
   elements: AoiDesktopInputElement[];
   pngBase64: string;
@@ -163,12 +179,14 @@ export interface AoiDesktopInputSpawnOutcome {
   status: number | null;
   stdout: string;
   stderr: string;
+  // The helper ran past HELPER_TIMEOUT_MS and was killed.
+  timedOut?: boolean;
 }
 export type AoiDesktopInputSpawn = (
   helperPath: string,
   args: string[],
   stdin: string,
-) => AoiDesktopInputSpawnOutcome;
+) => AoiDesktopInputSpawnOutcome | Promise<AoiDesktopInputSpawnOutcome>;
 
 // --- Request parsing ---------------------------------------------------------
 
@@ -221,17 +239,15 @@ export function parseAoiDesktopInputRequest(
       return null;
     }
     const request: AoiDesktopInputRequest = { op, hwnd, mode };
-    const maxLongSide = body.maxLongSide;
-    if (maxLongSide !== undefined) {
-      if (
-        typeof maxLongSide !== 'number' ||
-        !Number.isInteger(maxLongSide) ||
-        maxLongSide < 200 ||
-        maxLongSide > 4096
-      ) {
+    for (const key of ['maxLongSide', 'maxShortSide'] as const) {
+      const cap = body[key];
+      if (cap === undefined) {
+        continue;
+      }
+      if (typeof cap !== 'number' || !Number.isInteger(cap) || cap < 200 || cap > 4096) {
         return null;
       }
-      request.maxLongSide = maxLongSide;
+      request[key] = cap;
     }
     return request;
   }
@@ -282,6 +298,23 @@ export function parseAoiDesktopInputRequest(
       return null;
     }
     const request: AoiDesktopInputRequest = { op, hwnd, x, y, delivery, allowForeground };
+    const space = body.space;
+    if (space !== undefined) {
+      if (space !== 'window' && space !== 'client') {
+        return null;
+      }
+      request.space = space;
+    }
+    for (const key of ['windowWidth', 'windowHeight'] as const) {
+      const value = body[key];
+      if (value === undefined) {
+        continue;
+      }
+      if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 16_384) {
+        return null;
+      }
+      request[key] = value;
+    }
     const button = readString(body, 'button');
     if (button && !BUTTONS.has(button)) {
       return null;
@@ -560,28 +593,131 @@ export function mapAoiDesktopInputActReply(raw: Record<string, unknown>): AoiDes
 
 // --- Runner ------------------------------------------------------------------
 
-function defaultSpawn(
+// The ops that only read. Every other op changes a window, and runs alone.
+const AOI_DESKTOP_INPUT_READ_OPS: ReadonlySet<string> = new Set([
+  'list_windows',
+  'list_apps',
+  'snapshot',
+  'capture',
+]);
+
+export function isAoiDesktopInputReadOp(op: string): boolean {
+  return AOI_DESKTOP_INPUT_READ_OPS.has(op);
+}
+
+// How long an act waits for the one ahead of it. Well inside the client's own
+// 30 s deadline: an act that runs after its caller has stopped waiting is an
+// act nobody is told about.
+const ACT_LOCK_WAIT_MS = 5_000;
+
+let actTail: Promise<void> = Promise.resolve();
+
+/**
+ * Run one act with no other act in flight.
+ *
+ * spawnSync used to serialize every helper run by holding the event loop. With
+ * the helper asynchronous, two acts -- two open tabs, a cancelled turn's act
+ * still running beside a new one -- could interleave: one raising its window
+ * while the other's real click lands on it. Reads stay concurrent, since they
+ * change nothing. An act that cannot get its turn in time is not run at all.
+ */
+export async function withAoiDesktopActLock<T>(
+  work: () => Promise<T>,
+  waitMs = ACT_LOCK_WAIT_MS,
+): Promise<{ ran: true; value: T } | { ran: false }> {
+  const ahead = actTail;
+  let release: () => void = () => undefined;
+  const mine = new Promise<void>((resolveTurn) => {
+    release = resolveTurn;
+  });
+  actTail = ahead.then(() => mine);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const gotTurn = await Promise.race([
+    ahead.then(() => true),
+    new Promise<boolean>((resolveWait) => {
+      timer = setTimeout(() => resolveWait(false), waitMs);
+    }),
+  ]);
+  clearTimeout(timer);
+  if (!gotTurn) {
+    // Giving up still has to free the slot, or every act after this one waits
+    // forever behind an act that never runs.
+    release();
+    return { ran: false };
+  }
+  try {
+    return { ran: true, value: await work() };
+  } finally {
+    release();
+  }
+}
+
+// A capture reply carries a base64 PNG, which at the top of the size range runs
+// to several megabytes. Past this the reply is cut, and a cut reply no longer
+// parses, so the cap only has to stop a runaway helper, not a real capture.
+const HELPER_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
+
+// Asynchronous on purpose. spawnSync held the dev server's (or the daemon's)
+// event loop for as long as the helper ran -- up to 20 s on a wedged UI
+// Automation call -- and that included the kill-switch route, so the panic
+// button could not be heard while an action was in flight.
+export function spawnAoiDesktopInputHelper(
   helperPath: string,
   args: string[],
   stdin: string,
-): AoiDesktopInputSpawnOutcome {
-  const outcome = spawnSync(helperPath, args, {
-    input: stdin,
-    encoding: 'utf-8',
-    windowsHide: true,
-    timeout: HELPER_TIMEOUT_MS,
-    // A capture reply carries a base64 PNG. At the top of the allowed size range
-    // that can run to several megabytes, and overflowing this does not fail
-    // loudly -- it truncates, the JSON no longer parses, and the caller is told
-    // the helper "produced no parseable reply", which points at entirely the
-    // wrong thing.
-    maxBuffer: 64 * 1024 * 1024,
+  timeoutMs = HELPER_TIMEOUT_MS,
+  maxOutputBytes = HELPER_MAX_OUTPUT_BYTES,
+): Promise<AoiDesktopInputSpawnOutcome> {
+  return new Promise((resolveOutcome, rejectOutcome) => {
+    const child = spawn(helperPath, args, { windowsHide: true });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    let outputBytes = 0;
+    let timedOut = false;
+    let settled = false;
+
+    const collect = (sink: Buffer[]) => (chunk: Buffer) => {
+      outputBytes += chunk.length;
+      if (outputBytes > maxOutputBytes) {
+        child.kill();
+        return;
+      }
+      sink.push(chunk);
+    };
+    child.stdout.on('data', collect(stdout));
+    child.stderr.on('data', collect(stderr));
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, timeoutMs);
+
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      if (!settled) {
+        settled = true;
+        rejectOutcome(error);
+      }
+    });
+    child.on('close', (status) => {
+      clearTimeout(timer);
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolveOutcome({
+        status: typeof status === 'number' ? status : null,
+        stdout: Buffer.concat(stdout).toString('utf-8'),
+        stderr: Buffer.concat(stderr).toString('utf-8'),
+        ...(timedOut ? { timedOut } : {}),
+      });
+    });
+
+    // The helper reads its command from stdin. A helper that exits before
+    // reading it closes the pipe; that surfaces through 'close', not as a crash.
+    child.stdin.on('error', () => undefined);
+    child.stdin.end(stdin, 'utf-8');
   });
-  return {
-    status: typeof outcome.status === 'number' ? outcome.status : null,
-    stdout: typeof outcome.stdout === 'string' ? outcome.stdout : '',
-    stderr: typeof outcome.stderr === 'string' ? outcome.stderr : '',
-  };
 }
 
 // Processes whose windows show CONTENT FROM THE WEB. Snapshotting one returns
@@ -692,7 +828,9 @@ export interface RunAoiDesktopInputParams {
  * command on STDIN (so a typed value never lands in a process command line that
  * any other process on the machine can read), and maps the reply.
  */
-export function runAoiDesktopInput(params: RunAoiDesktopInputParams): AoiDesktopInputResult {
+export async function runAoiDesktopInput(
+  params: RunAoiDesktopInputParams,
+): Promise<AoiDesktopInputResult> {
   const helperPath = resolveAoiDesktopInputHelperPath(params.openroomHome, params.env);
   if (!helperPath) {
     return {
@@ -733,13 +871,24 @@ export function runAoiDesktopInput(params: RunAoiDesktopInputParams): AoiDesktop
     'option',
     'state',
     'mode',
+    'space',
   ] as const) {
     const value = request[key];
     if (typeof value === 'string' && value) {
       command[key] = value;
     }
   }
-  for (const key of ['clicks', 'amount', 'toRef', 'x', 'y', 'maxLongSide'] as const) {
+  for (const key of [
+    'clicks',
+    'amount',
+    'toRef',
+    'x',
+    'y',
+    'maxLongSide',
+    'maxShortSide',
+    'windowWidth',
+    'windowHeight',
+  ] as const) {
     const value = request[key];
     if (typeof value === 'number') {
       command[key] = value;
@@ -752,10 +901,10 @@ export function runAoiDesktopInput(params: RunAoiDesktopInputParams): AoiDesktop
     args.push('--allow-foreground');
   }
 
-  const spawnImpl = params.spawnImpl ?? defaultSpawn;
+  const spawnImpl = params.spawnImpl ?? spawnAoiDesktopInputHelper;
   let outcome: AoiDesktopInputSpawnOutcome;
   try {
-    outcome = spawnImpl(helperPath, args, JSON.stringify(command));
+    outcome = await spawnImpl(helperPath, args, JSON.stringify(command));
   } catch (error) {
     return {
       kind: 'error',
@@ -763,8 +912,21 @@ export function runAoiDesktopInput(params: RunAoiDesktopInputParams): AoiDesktop
       detail: error instanceof Error ? error.message : String(error),
     };
   }
-
+  // The reply is read before the timeout is looked at. The helper writes its
+  // verdict and only then tears down COM, and that teardown can stall on a
+  // window the act just made busy -- so a helper stopped for running long may
+  // already have said exactly what happened. Throwing that away turned a proven
+  // act into "unknown".
   const raw = parseJsonObject(outcome.stdout);
+  if (!raw && outcome.timedOut) {
+    return {
+      kind: 'error',
+      code: 'helper_timeout',
+      detail:
+        `the desktop-input helper did not finish within ${HELPER_TIMEOUT_MS / 1000} s and was ` +
+        'stopped; the window may be hung. Whether the action took effect is unknown.',
+    };
+  }
   if (!raw) {
     return {
       kind: 'error',
@@ -833,6 +995,8 @@ export function runAoiDesktopInput(params: RunAoiDesktopInputParams): AoiDesktop
         width: typeof raw.width === 'number' ? raw.width : 0,
         height: typeof raw.height === 'number' ? raw.height : 0,
         scale: typeof raw.scale === 'number' ? raw.scale : 1,
+        windowWidth: typeof raw.windowWidth === 'number' ? raw.windowWidth : 0,
+        windowHeight: typeof raw.windowHeight === 'number' ? raw.windowHeight : 0,
         totalElements: snapshot ? snapshot.totalElements : 0,
         elements: snapshot ? snapshot.elements : [],
         pngBase64: raw.pngBase64,

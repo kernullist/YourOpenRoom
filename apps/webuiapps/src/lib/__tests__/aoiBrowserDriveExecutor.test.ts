@@ -16,10 +16,10 @@ import {
 import type { AoiBrowserDrivePlan } from '../aoiBrowserDrivePlan';
 import type { AoiBrowserDriveActionRequest } from '../aoiBrowserDriveAction';
 
-// Denylist: block evil.test (and subdomains). example.com and others are allowed.
+// Denylist: block evil.example (and subdomains). example.com and others are allowed.
 const ALLOWLIST: AoiBrowserDriveAllowlist = addAoiBrowserDriveAllowlistEntry(
   { version: 1, entries: [], updatedAt: 0 },
-  { domain: 'evil.test' },
+  { domain: 'evil.example' },
   1,
 ).allowlist;
 
@@ -232,7 +232,7 @@ describe('executeAoiBrowserDriveStep - guards', () => {
   });
 
   it('refuses to act on a page that is denylisted', async () => {
-    const { page, raw } = fakePage({ startUrl: 'https://evil.test/x' });
+    const { page, raw } = fakePage({ startUrl: 'https://evil.example/x' });
     const result = await executeAoiBrowserDriveStep({
       page,
       plan: plan({ kind: 'click', selector: '#go' }),
@@ -326,7 +326,7 @@ describe('executeAoiBrowserDriveStep - ACT execution', () => {
   it('blanks and stops when an ACT drifts onto a denylisted host', async () => {
     const { page, raw } = fakePage({
       startUrl: 'https://example.com/x',
-      actLandingUrl: 'https://evil.test/steal',
+      actLandingUrl: 'https://evil.example/steal',
     });
     const result = await executeAoiBrowserDriveStep({
       page,
@@ -337,7 +337,7 @@ describe('executeAoiBrowserDriveStep - ACT execution', () => {
       now: 1,
     });
     expect(result.ok).toBe(false);
-    expect(result.stopReason).toBe('drift_to_denylist');
+    expect(result.stopReason).toBe('drift_after_act'); // the act ran first: not to repeat
     expect(raw.goto).toHaveBeenCalledWith('about:blank', expect.anything());
   });
 
@@ -417,7 +417,7 @@ describe('executeAoiBrowserDriveStep - READ execution', () => {
     const { page, raw } = fakePage();
     const result = await executeAoiBrowserDriveStep({
       page,
-      plan: plan({ kind: 'navigate', url: 'https://evil.test/x' }),
+      plan: plan({ kind: 'navigate', url: 'https://evil.example/x' }),
       stepIndex: 0,
       allowlist: ALLOWLIST,
       approvalGate: denyGate,
@@ -492,10 +492,101 @@ describe('executeAoiBrowserDriveStep - READ execution', () => {
     expect(back.ok).toBe(true);
   });
 
+  describe('a page that asks something as it loads', () => {
+    // A load a dialog holds: the navigation does not finish while it waits.
+    function askingPage(options: { lands?: string; waiting?: boolean } = {}) {
+      const { page, raw } = fakePage({ startUrl: 'https://example.com/cart' });
+      let here = 'https://example.com/cart';
+      const stale = { type: 'alert', message: 'Your cart was updated' };
+      const asked = { type: 'confirm', message: 'Pay $49.00 now?' };
+      let showing: { type: string; message: string } | null = options.waiting ? stale : null;
+      const held = (target: string) => {
+        if (target === 'about:blank') {
+          here = target;
+          showing = null;
+          return Promise.resolve(null);
+        }
+        here = options.lands ?? target;
+        showing = asked;
+        return new Promise<null>(() => {});
+      };
+      Object.assign(raw, {
+        url: () => here,
+        goto: vi.fn(held),
+        goBack: vi.fn(() => held('https://example.com/cart')),
+        pendingDialog: () => showing,
+      });
+      return { page, raw };
+    }
+    const run = (page: AoiBrowserDriveActablePage, action: AoiBrowserDriveActionRequest) =>
+      executeAoiBrowserDriveStep({
+        page,
+        plan: plan(action),
+        stepIndex: 0,
+        allowlist: ALLOWLIST,
+        approvalGate: allowGate,
+        now: 1,
+        timeoutMs: 20_000,
+      });
+
+    it('says the page is asking, without waiting out the load', async () => {
+      const started = Date.now();
+      const navigated = await run(askingPage().page, {
+        kind: 'navigate',
+        url: 'https://example.com/pay',
+      });
+      expect(navigated.ok).toBe(false);
+      expect(navigated.detail).toContain(
+        'dialog_raised: a confirm came up while the step navigated',
+      );
+      expect(navigated.finalUrl).toBe('https://example.com/pay');
+      const back = await run(askingPage().page, { kind: 'back' });
+      expect(back.detail).toContain('dialog_raised: a confirm came up while the step went back');
+      expect(back.detail).toContain('another back would leave');
+      expect(Date.now() - started).toBeLessThan(5_000);
+    });
+
+    it('closes a denied page that asks as it loads, as any drift', async () => {
+      const { page, raw } = askingPage({ lands: 'https://evil.example/z' });
+      const result = await run(page, { kind: 'navigate', url: 'https://example.com/pay' });
+      expect(result.stopReason).toBe('drift_to_denylist');
+      expect(raw.goto).toHaveBeenLastCalledWith('about:blank', expect.anything());
+    });
+
+    it('does not take a dialog that was already waiting for one the load raised', async () => {
+      const { page, raw } = askingPage({ waiting: true });
+      // The load goes through: the stale alert is no answer to it.
+      raw.goto.mockImplementation(async (target: string) => {
+        Object.assign(raw, { url: () => target });
+      });
+      const result = await run(page, { kind: 'navigate', url: 'https://example.com/account' });
+      expect(result.ok).toBe(true);
+    });
+  });
+
+  it('says what closes a dialog the connection cannot answer, and sends nothing', async () => {
+    const { page, raw, calls } = fakePage({ startUrl: 'https://example.com/x' });
+    Object.assign(raw, {
+      pendingDialog: () => ({ type: 'confirm', message: 'Pay $49.00 now?', unanswerable: true }),
+    });
+    const result = await executeAoiBrowserDriveStep({
+      page,
+      plan: plan({ kind: 'click', selector: '#more' }),
+      stepIndex: 0,
+      allowlist: ALLOWLIST,
+      approvalGate: allowGate,
+      now: 1,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('cannot answer');
+    expect(result.detail).toContain('navigate or go back');
+    expect(calls).toEqual([]);
+  });
+
   it('back that drifts onto a denylisted host is blanked and stopped', async () => {
     const { page, raw } = fakePage({
       startUrl: 'https://example.com/x',
-      actLandingUrl: 'https://evil.test/z',
+      actLandingUrl: 'https://evil.example/z',
     });
     const result = await executeAoiBrowserDriveStep({
       page,
@@ -635,7 +726,7 @@ describe('executeAoiBrowserDriveStep - semantic verdict', () => {
     const result = await runAct(
       { kind: 'click', selector: '#go' },
       {
-        actLandingUrl: 'https://example.test/next',
+        actLandingUrl: 'https://next.example/next',
       },
     );
     expect(result.verdict).toEqual({ effect: 'confirmed', verified: false });
@@ -651,12 +742,15 @@ describe('executeAoiBrowserDriveStep - semantic verdict', () => {
     const result = await runAct(
       { kind: 'click', selector: '#go' },
       {
-        actLandingUrl: 'https://evil.test/x',
+        actLandingUrl: 'https://evil.example/x',
       },
     );
     expect(result.ok).toBe(false);
-    expect(result.verdict?.effect).toBe('suspected_noop');
+    // The click was delivered before the page left for a denied site: not a
+    // no-op, and its code says why the run stopped.
+    expect(result.verdict?.effect).toBe('unverifiable');
     expect(result.verdict?.code).toBe(result.stopReason);
+    expect(result.verdict?.escalation?.recommended).toBe('stop');
   });
 
   it('does not attach a verdict to a read step', async () => {
@@ -799,5 +893,52 @@ describe('executeAoiBrowserDriveStep - element refs', () => {
       'input[name="pw"]',
       '#off',
     ]);
+  });
+});
+
+describe('a page whose document never comes', () => {
+  it('fails an extract in time instead of holding the step', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { page, raw } = fakePage({ startUrl: 'https://example.com/account' });
+      raw.content = vi.fn(() => new Promise<string>(() => {}));
+      const pending = executeAoiBrowserDriveStep({
+        page,
+        plan: plan({ kind: 'extract' }),
+        stepIndex: 0,
+        allowlist: ALLOWLIST,
+        approvalGate: allowGate,
+        now: 1,
+      });
+      await vi.advanceTimersByTimeAsync(10_001);
+      const result = await pending;
+      expect(result.ok).toBe(false);
+      expect(result.detail).toContain('did not give its document in time');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('resolves no element ref on it: there is no snapshot to resolve against', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { page, raw, calls } = fakePage({ startUrl: 'https://example.com/account' });
+      raw.content = vi.fn(() => new Promise<string>(() => {}));
+      const pending = executeAoiBrowserDriveStep({
+        page,
+        plan: plan({ kind: 'click', element: 1, snapshotId: 'bds-anything' }),
+        stepIndex: 0,
+        allowlist: ALLOWLIST,
+        approvalGate: allowGate,
+        now: 1,
+      });
+      await vi.advanceTimersByTimeAsync(10_001);
+      const result = await pending;
+      expect(result.ok).toBe(false);
+      expect(result.detail).toContain('element_ref_stale');
+      expect(calls.some((call) => call.startsWith('click:'))).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

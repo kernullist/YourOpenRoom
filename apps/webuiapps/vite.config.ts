@@ -864,9 +864,15 @@ function browserReaderProxyPlugin(): Plugin {
           const contentType = fetchRes.headers.get('content-type') || 'text/html; charset=utf-8';
           if (!contentType.toLowerCase().includes('text/html')) {
             res.writeHead(415, { 'Content-Type': 'application/json' });
+            // The media type alone: the header is the site's to write, and its
+            // parameters can carry any text at all.
+            const mediaType = contentType.split(';')[0].trim().toLowerCase();
+            const shownType = /^[\w.+-]{1,64}\/[\w.+-]{1,64}$/.test(mediaType)
+              ? mediaType
+              : 'not a media type';
             res.end(
               JSON.stringify({
-                error: `Unsupported content type: ${contentType}`,
+                error: `Unsupported content type: ${shownType}`,
                 finalUrl: fetched.finalUrl,
               }),
             );

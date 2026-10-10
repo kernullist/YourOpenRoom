@@ -24,6 +24,8 @@
 // prove a click hit the control the model meant, which is exactly why the
 // honest answer for most clicks is `unverifiable` rather than `confirmed`.
 
+import { defuseRoleMarkers } from './aoiUntrustedText';
+
 export type AoiBrowserDriveEffect =
   // Proven: a value was read back, or the act demonstrably navigated.
   | 'confirmed'
@@ -69,6 +71,9 @@ export interface AoiBrowserDriveActEvidence {
   // Present only for acts that write a value we can read back (type/select).
   // `actual` is null when the read-back itself could not be performed.
   readBack?: { expected: string; actual: string | null };
+  // The act went out, and the page was still busy with it -- a navigation it
+  // started, a handler still running -- when the wait for it ran out.
+  unsettled?: boolean;
 }
 
 // Acts whose result can be read straight back off the element.
@@ -78,9 +83,17 @@ function normalizeValue(value: string): string {
   return value.trim();
 }
 
+// Only the part before '#'. A page rewrites its own fragment as it scrolls or
+// as a widget opens, so a fragment that changed is no evidence the act did it.
+function documentUrl(url: string | undefined): string {
+  const trimmed = (url ?? '').trim();
+  const hash = trimmed.indexOf('#');
+  return hash >= 0 ? trimmed.slice(0, hash) : trimmed;
+}
+
 function navigated(evidence: AoiBrowserDriveActEvidence): boolean {
-  const before = (evidence.urlBefore ?? '').trim();
-  const after = (evidence.urlAfter ?? '').trim();
+  const before = documentUrl(evidence.urlBefore);
+  const after = documentUrl(evidence.urlAfter);
   return before.length > 0 && after.length > 0 && before !== after;
 }
 
@@ -130,8 +143,9 @@ export function classifyAoiBrowserDriveActVerdict(
       verified: false,
       escalation: {
         recommended: 'alternate_selector',
-        reason: `read-back does not match what was written (got ${JSON.stringify(
-          actual.slice(0, 40),
+        // The value read back is the page's, so it is defused like any page text.
+        reason: `read-back does not match what was written (got ${defuseRoleMarkers(
+          JSON.stringify(actual.slice(0, 40)),
         )})`,
       },
     };
@@ -141,6 +155,22 @@ export function classifyAoiBrowserDriveActVerdict(
     // Something demonstrably happened. Not `verified`: this does not prove the
     // intended control caused it.
     return { effect: 'confirmed', verified: false };
+  }
+
+  if (evidence.unsettled) {
+    // Not "nothing changed": the page had not finished answering. Sending the
+    // act again is how a slow submit becomes two.
+    return {
+      effect: 'unverifiable',
+      verified: false,
+      code: 'still_loading',
+      escalation: {
+        recommended: 'fresh_state',
+        reason:
+          'the act was delivered and the page was still busy with it when the wait ran out; ' +
+          're-read the page before acting, and do not repeat the act',
+      },
+    };
   }
 
   return {
@@ -199,7 +229,9 @@ export function parseAoiBrowserDriveVerdict(value: unknown): AoiBrowserDriveVerd
     if (typeof entry.recommended === 'string' && RUNGS.has(entry.recommended)) {
       verdict.escalation = {
         recommended: entry.recommended as AoiBrowserDriveEscalationRung,
-        reason: typeof entry.reason === 'string' ? entry.reason.slice(0, 200) : '',
+        // A read-back mismatch quotes the page's own value here.
+        reason:
+          typeof entry.reason === 'string' ? defuseRoleMarkers(entry.reason.slice(0, 200)) : '',
       };
     }
   }
@@ -255,8 +287,9 @@ export function describeAoiBrowserDriveVerdict(verdict: AoiBrowserDriveVerdict):
         : 'Confirmed: the page navigated as a result. Do not repeat this action.';
     case 'verify_fresh_state':
       return (
-        'Unverifiable: the action was delivered but nothing proves it landed. ' +
-        'Re-read the page before deciding anything, and do NOT repeat the action or ' +
+        'Unverifiable: the action was delivered but nothing proves it landed. Before ' +
+        'deciding anything, check what the page showed right after the act (when this result ' +
+        'has it) and read the page again for what the site kept; do NOT repeat the action or ' +
         'tell the user it succeeded.'
       );
     default:

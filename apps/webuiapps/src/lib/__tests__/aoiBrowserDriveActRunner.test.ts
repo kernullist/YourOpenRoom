@@ -27,10 +27,10 @@ import {
   type AoiHostBridgeApprovalStoreData,
 } from '../aoiHostBridgeApprovalStore';
 
-// Denylist: block evil.test. example.com and other hosts are allowed by default.
+// Denylist: block evil.example. example.com and other hosts are allowed by default.
 const ALLOWLIST: AoiBrowserDriveAllowlist = addAoiBrowserDriveAllowlistEntry(
   { version: 1, entries: [], updatedAt: 0 },
-  { domain: 'evil.test' },
+  { domain: 'evil.example' },
   1,
 ).allowlist;
 
@@ -55,6 +55,9 @@ function fakePage(options: { landingUrl?: string; actLandingUrl?: string } = {})
     goBack: vi.fn(async () => null),
     screenshot: vi.fn(async () => new Uint8Array([9, 9, 9])),
     mouse: { wheel: vi.fn(async () => {}) },
+    // The target is there to be checked, and says nothing that would stop it.
+    textContent: vi.fn(async () => ''),
+    getAttribute: vi.fn(async () => null),
   };
   return page as unknown as AoiBrowserDriveActablePage;
 }
@@ -149,7 +152,7 @@ describe('previewAoiBrowserDriveActStep', () => {
   });
 
   it('fails when a prefix read drifts onto a denylisted host', async () => {
-    const page = fakePage({ landingUrl: 'https://evil.test/x' });
+    const page = fakePage({ landingUrl: 'https://evil.example/x' });
     const { factory, close } = sessionFactory(page);
     const result = await previewAoiBrowserDriveActStep({
       plan: plan(navStep, clickStep),
@@ -275,7 +278,7 @@ describe('executeAoiBrowserDriveActStep', () => {
   });
 
   it('stops with prefix_failed when a prefix read fails', async () => {
-    const page = fakePage({ landingUrl: 'https://evil.test/x' });
+    const page = fakePage({ landingUrl: 'https://evil.example/x' });
     const { factory, close } = sessionFactory(page);
     const result = await executeAoiBrowserDriveActStep({
       plan: plan(navStep, clickStep),
@@ -535,7 +538,7 @@ describe('artifacts written before a step is refused', () => {
   }
 
   it('does not write the forbidden page to disk before refusing', async () => {
-    const { factory } = sessionFactory(pageOn('https://evil.test/secrets'));
+    const { factory } = sessionFactory(pageOn('https://evil.example/secrets'));
     const artifacts: { ref: string; data: string }[] = [];
     const result = await executeAoiBrowserDriveActStep({
       plan: plan(clickStep),

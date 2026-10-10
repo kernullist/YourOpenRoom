@@ -56,6 +56,52 @@ describe('makeAoiBrowserDriveAuditObserver', () => {
     ]);
   });
 
+  it('does not wait on a page a dialog is holding', async () => {
+    // In Chrome both calls stall behind the dialog: the screenshot to its
+    // timeout, the DOM read until the dialog is gone.
+    const page = capturablePage({
+      pendingDialog: () => ({ type: 'confirm', message: 'Empty the cart?' }),
+      screenshot: vi.fn(() => new Promise<Uint8Array>(() => {})),
+      content: vi.fn(() => new Promise<string>(() => {})),
+    });
+    const writeArtifact = vi.fn();
+    const observer = makeAoiBrowserDriveAuditObserver({ page, runId: 'run-d', writeArtifact });
+
+    const after = await observer.onStep!({
+      stepIndex: 1,
+      phase: 'after',
+      action: { kind: 'click', selector: '#empty' },
+      url: 'https://shop.example/',
+    });
+
+    expect(after).toBeUndefined();
+    expect(page.screenshot).not.toHaveBeenCalled();
+    expect(writeArtifact).not.toHaveBeenCalled();
+  });
+
+  it('still captures when the dialog check itself fails', async () => {
+    const page = capturablePage({
+      pendingDialog: () => {
+        throw new Error('page closed');
+      },
+    });
+    const observer = makeAoiBrowserDriveAuditObserver({
+      page,
+      runId: 'run-e',
+      writeArtifact: () => undefined,
+    });
+    const before = await observer.onStep!({
+      stepIndex: 0,
+      phase: 'before',
+      action: { kind: 'click', selector: '#go' },
+      url: 'https://example.com',
+    });
+    expect(before).toEqual({
+      screenshotRef: 'run-e/step-0-before.png',
+      domRef: 'run-e/step-0-before.html',
+    });
+  });
+
   it('sanitizes a hostile runId into a safe path segment', async () => {
     const writes: string[] = [];
     const observer = makeAoiBrowserDriveAuditObserver({

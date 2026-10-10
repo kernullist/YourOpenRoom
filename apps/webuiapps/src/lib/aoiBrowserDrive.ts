@@ -13,10 +13,12 @@
 //     can drive a browser exposing it. So: bind loopback only, use a caller-picked
 //     ephemeral port, and PIN --remote-allow-origins to that exact loopback endpoint
 //     (never `*`). M111+ Chrome rejects the CDP websocket without a matching origin.
-//   - BLAST RADIUS = EVERY LOGGED-IN SITE. Because we attach to the MAIN profile
-//     (not a throwaway one), containment is: operator domain denylist (default-allow
-//     public hosts) + hard private-host block + per-action approval for ACTs; there
-//     is no cryptographic isolation of cookies here.
+//   - BLAST RADIUS = EVERY SITE SIGNED IN ON THE DRIVE PROFILE. Chrome 136+ refuses
+//     remote debugging on the default profile, so the drive runs on a dedicated
+//     profile directory the operator configures and signs in to -- not the main
+//     one, but not a throwaway either. Containment is: operator domain denylist
+//     (default-allow public hosts) + hard private-host block + per-action approval
+//     for ACTs; there is no cryptographic isolation of cookies here.
 
 export const AOI_BROWSER_DRIVE_CAPABILITY = 'os_browser_drive';
 export const AOI_BROWSER_DRIVE_SOURCE_ID = 'browser-drive';
@@ -33,7 +35,8 @@ export interface AoiBrowserDriveLaunchOptions {
   // pin the allow-origin to it). We do not use `--remote-debugging-port=0` because
   // the allow-origin must be pinned to the exact port, which is unknown with 0.
   port: number;
-  // The user's real Chrome/Edge profile directory (attach to the MAIN session).
+  // The dedicated profile directory the operator configured for Aoi (Chrome
+  // refuses remote debugging on the default one).
   userDataDir: string;
   // Defaults to the pinned loopback endpoint for `port`. Never widen to `*`.
   allowOrigin?: string;
@@ -126,6 +129,11 @@ export function buildAoiBrowserDriveLaunchArgs(options: AoiBrowserDriveLaunchOpt
     `--user-data-dir=${dir}`,
     '--no-first-run',
     '--no-default-browser-check',
+    // A page restored from the back/forward cache fires no DOMContentLoaded:
+    // "back" would wait out its time and report a failure for a step that
+    // went back, and a dialog of the page it left would stay queued. Playwright
+    // launches its own browsers with it off.
+    '--disable-back-forward-cache',
   ];
   if (options.headless) {
     args.push('--headless=new');

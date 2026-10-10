@@ -8,6 +8,7 @@ import {
   fetchAoiHostBrowserDriveRead,
   type AoiHostBrowserDrivePageView,
 } from './aoiHostBridgeClient';
+import { defusePageReadFields, UNTRUSTED_PAGE_TEXT_NOTE } from './aoiUntrustedText';
 
 export const BROWSER_DRIVE_READ_TOOL = 'browser_read_auth';
 
@@ -100,8 +101,8 @@ function formatGateError(error: unknown): string {
   if (lowered.includes('attach_timeout') || lowered.includes('navigation_failed')) {
     return (
       `error: could not drive the browser: ${message}. ` +
-      'Make sure the Aoi browser is started with the debug port (the daemon launches it); if your ' +
-      'main Chrome/Edge is already open without it, close it first, then retry.'
+      "The daemon starts the browser on Aoi's own profile with the debug port; if a window is " +
+      'already open on that profile without the port, close it, then retry.'
     );
   }
   if (lowered.includes('blocked') || lowered.includes('deny') || lowered.includes('unauthorized')) {
@@ -110,7 +111,8 @@ function formatGateError(error: unknown): string {
   return `error: browser drive read failed: ${message}`;
 }
 
-export function formatBrowserDrivePageForChat(page: AoiHostBrowserDrivePageView): string {
+export function formatBrowserDrivePageForChat(read: AoiHostBrowserDrivePageView): string {
+  const page = defusePageReadFields(read);
   return JSON.stringify({
     ok: true,
     url: page.url,
@@ -123,7 +125,7 @@ export function formatBrowserDrivePageForChat(page: AoiHostBrowserDrivePageView)
     text: page.text,
     note:
       "Read from the operator's OWN logged-in browser over CDP (denylist-gated, default-allow). " +
-      'Read-only snapshot; no clicks/typing/submits were performed.',
+      `Read-only snapshot; no clicks/typing/submits were performed. ${UNTRUSTED_PAGE_TEXT_NOTE}`,
   });
 }
 

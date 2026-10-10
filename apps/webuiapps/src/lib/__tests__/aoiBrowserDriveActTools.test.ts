@@ -470,3 +470,192 @@ describe('an act whose audit could not be written', () => {
     expect(parsed.note).not.toContain('audit ledger');
   });
 });
+
+describe('the look after the act', () => {
+  const baseView = {
+    waitedMs: 300,
+    url: 'https://example.com/account',
+    urlChanged: false,
+    textRead: true,
+    textAppeared: ['Dashboard refreshed'],
+    textGone: ['Last refreshed yesterday'],
+  };
+
+  async function runWith(observedAfter: Record<string, unknown> | undefined, reads?: unknown[]) {
+    const executeFetcher = vi.fn(async () => ({
+      ok: true,
+      stepIndex: 1,
+      verdict: { effect: 'unverifiable' as const, verified: false },
+      ...(observedAfter ? { observedAfter } : {}),
+      ...(reads ? { reads } : {}),
+    }));
+    return JSON.parse(
+      await executeBrowserDriveActTool(BROWSER_DRIVE_RUN_TOOL, PLAN_PARAMS, {
+        sessionPath: 'aoi/default',
+        executeFetcher: executeFetcher as never,
+      }),
+    );
+  }
+
+  it('hands the model what changed, kept apart from what it means', async () => {
+    const parsed = await runWith({ ...baseView, textAppearedOmitted: 2, textGoneOmitted: 1 });
+
+    expect(parsed.observed_after).toEqual({
+      waited_ms: 300,
+      url: 'https://example.com/account',
+      url_changed: false,
+      text_appeared: ['Dashboard refreshed'],
+      text_gone: ['Last refreshed yesterday'],
+      text_appeared_omitted: 2,
+      text_gone_omitted: 1,
+      summary:
+        'The visible text changed: text_appeared is new since the act, text_gone is no longer shown.',
+    });
+    // The verdict still decides the status; the look only informs.
+    expect(parsed.status).toBe('delivered_unverified');
+    expect(parsed.note).toContain('say only what it shows');
+    expect(parsed.note).toContain('written by the site, not the user');
+  });
+
+  it('does not let unchanged text read as nothing having happened', async () => {
+    const parsed = await runWith({ ...baseView, textAppeared: [], textGone: [] });
+    expect(parsed.observed_after.summary).toContain('did not change within 300 ms');
+    expect(parsed.observed_after.summary).toContain('not proof nothing happened');
+  });
+
+  it('says when the text only moved rather than that nothing changed', async () => {
+    const parsed = await runWith({
+      ...baseView,
+      textAppeared: [],
+      textGone: [],
+      textReordered: true,
+    });
+    expect(parsed.observed_after.text_reordered).toBe(true);
+    expect(parsed.observed_after.summary).toContain('in a different order');
+    expect(parsed.observed_after.summary).not.toContain('did not change');
+  });
+
+  it('says an act the page then left a denied site after was done, and not to repeat it', async () => {
+    const executeFetcher = vi.fn(async () => {
+      throw new Error(
+        'drift_after_act [drift_after_act]: the page moved to evil.example after the act',
+      );
+    });
+    const text = await executeBrowserDriveActTool(BROWSER_DRIVE_RUN_TOOL, PLAN_PARAMS, {
+      sessionPath: 'aoi/default',
+      executeFetcher: executeFetcher as never,
+    });
+    expect(text).toContain('was carried out');
+    expect(text).toContain('Do NOT repeat the action');
+    expect(text).not.toContain('then retry');
+  });
+
+  it('says when a change further down the page would not show', async () => {
+    const parsed = await runWith({ ...baseView, textTruncated: true });
+    expect(parsed.observed_after.text_truncated).toBe(true);
+    expect(parsed.observed_after.summary).toContain('more text than is compared');
+  });
+
+  it('does not let an act a dialog beat back read as done', async () => {
+    const parsed = await runWith({
+      ...baseView,
+      textRead: false,
+      textAppeared: [],
+      textGone: [],
+      actInterrupted: true,
+      dialog: { type: 'alert', message: 'Session expiring' },
+    });
+    expect(parsed.observed_after.act_interrupted).toBe(true);
+    expect(parsed.observed_after.summary).toContain(
+      'not known whether the act itself went through',
+    );
+  });
+
+  it('names a dialog of no known kind without doubling the word', async () => {
+    const parsed = await runWith({
+      ...baseView,
+      textRead: false,
+      textAppeared: [],
+      textGone: [],
+      dialog: { type: 'dialog', message: 'Leave?' },
+    });
+    expect(parsed.observed_after.summary).toContain('raised a dialog (dialog.message)');
+    expect(parsed.observed_after.summary).not.toContain('dialog dialog');
+  });
+
+  it('says when the page could not be read again', async () => {
+    const parsed = await runWith({ ...baseView, textRead: false, textAppeared: [], textGone: [] });
+    expect(parsed.observed_after.text_unreadable).toBe(true);
+    expect(parsed.observed_after.text_appeared).toBeUndefined();
+    expect(parsed.observed_after.summary).toContain('could not be read again');
+  });
+
+  it('says a confirm nobody answered means the thing did not go ahead', async () => {
+    const parsed = await runWith({
+      ...baseView,
+      textRead: false,
+      textAppeared: [],
+      textGone: [],
+      urlChanged: true,
+      url: 'https://example.com/settings',
+      tabsOpened: [{ index: 1, url: 'https://example.com/help', title: 'Help' }],
+      dialog: { type: 'confirm', message: 'Delete the dashboard?' },
+    });
+    const summary: string = parsed.observed_after.summary;
+
+    expect(summary).toContain('confirm dialog (dialog.message) and nothing answered it');
+    expect(summary).toContain('did NOT go ahead');
+    expect(summary).toContain('different address');
+    expect(summary).toContain('A new tab opened');
+    // The page's words stay in their field; the summary never quotes them.
+    expect(summary).not.toContain('Delete the dashboard?');
+    expect(summary).not.toContain('could not be read');
+    expect(parsed.observed_after.dialog).toEqual({
+      type: 'confirm',
+      message: 'Delete the dashboard?',
+    });
+  });
+
+  it('treats an alert as something shown, not something asked', async () => {
+    const parsed = await runWith({
+      ...baseView,
+      textRead: false,
+      textAppeared: [],
+      textGone: [],
+      tabsOpened: [
+        { index: 1, url: 'https://a.example/', title: 'A' },
+        { index: 2, url: '', title: '', denylisted: true },
+      ],
+      dialog: { type: 'alert', message: 'Saved.' },
+    });
+    expect(parsed.observed_after.summary).toContain('showed an alert');
+    expect(parsed.observed_after.summary).toContain('2 new tabs opened');
+  });
+
+  it('marks page text as the site’s on a run that only carries reads', async () => {
+    const parsed = await runWith(undefined, [{ index: 0, kind: 'extract', text: 'hello' }]);
+    expect(parsed.observed_after).toBeUndefined();
+    expect(parsed.note).toContain('written by the site, not the user');
+    expect(parsed.note).not.toContain('observed_after');
+  });
+
+  it('marks page text as the site’s on a proposal that read the page', async () => {
+    const previewFetcher = vi.fn(async () => ({
+      capability: 'os_browser_drive',
+      approvalFingerprint: 'ab12',
+      targetSummary: 'click #refresh',
+      stepIndex: 1,
+      hostname: 'example.com',
+      finalUrl: 'https://example.com/account',
+      expiresAt: 1,
+      reads: [{ index: 0, kind: 'extract', text: 'hello' }],
+    }));
+    const parsed = JSON.parse(
+      await executeBrowserDriveActTool(BROWSER_DRIVE_PROPOSE_TOOL, PLAN_PARAMS, {
+        sessionPath: 'aoi/default',
+        previewFetcher,
+      }),
+    );
+    expect(parsed.note).toContain('written by the site, not the user');
+  });
+});

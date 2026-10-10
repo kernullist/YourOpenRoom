@@ -12,6 +12,7 @@ import {
   type AoiBrowserDriveEffect,
   type AoiBrowserDriveVerdict,
 } from './aoiBrowserDriveVerdict';
+import { defuseRoleMarkers } from './aoiUntrustedText';
 
 const API_PREFIX = '/api/aoi-host';
 
@@ -25,6 +26,23 @@ function asString(value: unknown): string {
 
 function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
+}
+
+/**
+ * A route answered, and said no. `code` is the route's own code
+ * ('helper_timeout', 'blocked', ...) so a caller can tell "refused, nothing
+ * happened" from "ran, and the outcome is unknown" without parsing a message.
+ */
+export class AoiHostBridgeRequestError extends Error {
+  readonly code: string;
+  readonly status: number;
+
+  constructor(message: string, code: string, status: number) {
+    super(message);
+    this.name = 'AoiHostBridgeRequestError';
+    this.code = code;
+    this.status = status;
+  }
 }
 
 // Parse the uniform { ok, ... } envelope, throwing a readable error (including
@@ -52,7 +70,12 @@ async function readOk(response: Response): Promise<Record<string, unknown>> {
       ? asStringArray(payload.detail).join('; ')
       : asString(payload.detail);
     const withReasons = reasons.length > 0 ? `${base} [${reasons.join(', ')}]` : base;
-    throw new Error(detail && detail !== base ? `${withReasons}: ${detail}` : withReasons);
+    throw new AoiHostBridgeRequestError(
+      // A route's detail can quote a page (an act's error, a refused address).
+      defuseRoleMarkers(detail && detail !== base ? `${withReasons}: ${detail}` : withReasons),
+      asString(payload.code) || asString(payload.error),
+      response.status,
+    );
   }
   return payload;
 }
@@ -61,18 +84,78 @@ async function getJson(route: string): Promise<Record<string, unknown>> {
   return readOk(await fetch(`${API_PREFIX}${route}`));
 }
 
+// A deadline for one request. AbortSignal.timeout is the obvious tool, but an
+// engine without it (an older webview, the test DOM) threw a TypeError before
+// the request was even sent, so every call with a deadline failed. A controller
+// on a timer works everywhere, and remembering that the timer fired is what
+// tells a deadline apart from any other abort.
+function startDeadline(timeoutMs: number): {
+  signal: AbortSignal;
+  expired: () => boolean;
+  clear: () => void;
+} {
+  const controller = new AbortController();
+  let fired = false;
+  const timer = setTimeout(() => {
+    fired = true;
+    controller.abort();
+  }, timeoutMs);
+  return { signal: controller.signal, expired: () => fired, clear: () => clearTimeout(timer) };
+}
+
 async function sendJson(
   route: string,
   method: 'POST' | 'DELETE',
   body?: Record<string, unknown>,
+  timeoutMs?: number,
 ): Promise<Record<string, unknown>> {
-  return readOk(
-    await fetch(`${API_PREFIX}${route}`, {
+  const deadline = timeoutMs ? startDeadline(timeoutMs) : null;
+  try {
+    const response = await fetch(`${API_PREFIX}${route}`, {
       method,
       headers: { 'Content-Type': 'application/json' },
       ...(body ? { body: JSON.stringify(body) } : {}),
-    }),
-  );
+      ...(deadline ? { signal: deadline.signal } : {}),
+    });
+    // The body is read under the same deadline as the headers.
+    return await readOk(response);
+  } catch (error) {
+    // The route's own answer wins over a timer that fired as it arrived: a
+    // refusal is a definite "nothing was done", and calling it a timeout would
+    // tell the model the act may have happened.
+    if (deadline?.expired() && !(error instanceof AoiHostBridgeRequestError)) {
+      throw new AoiHostBridgeTimeoutError(route, timeoutMs ?? 0);
+    }
+    throw error;
+  } finally {
+    deadline?.clear();
+  }
+}
+
+/**
+ * The host bridge did not answer in time. Unlike a refusal, this does NOT mean
+ * nothing happened: the request may have reached the window before the answer
+ * was lost, so callers must report the outcome as unknown.
+ */
+export class AoiHostBridgeTimeoutError extends Error {
+  constructor(route: string, timeoutMs: number) {
+    super(
+      `the host bridge did not answer ${route} within ${Math.round(timeoutMs / 1000)} s; ` +
+        'whether the action took effect is unknown',
+    );
+    this.name = 'AoiHostBridgeTimeoutError';
+  }
+}
+
+// The helper is stopped server-side after 20 s and answers helper_timeout, so
+// this outer bound only fires when the bridge itself is hung or unreachable.
+const DESKTOP_INPUT_TIMEOUT_MS = 30_000;
+
+function sendDesktopInput(
+  body: Record<string, unknown>,
+  timeoutMs = DESKTOP_INPUT_TIMEOUT_MS,
+): Promise<Record<string, unknown>> {
+  return sendJson('/desktop-input', 'POST', body, timeoutMs);
 }
 
 // --- Status + kill switch ----------------------------------------------------
@@ -524,7 +607,9 @@ function readViewsFrom(raw: unknown): AoiHostBrowserDriveReadView[] {
         .map((element) => ({
           ref: typeof element.ref === 'number' ? element.ref : 0,
           role: asString(element.role),
-          name: asString(element.name).slice(0, 120),
+          // Page-written, like the title and text below: defused here, where
+          // the page's words become something the model reads.
+          name: defuseRoleMarkers(asString(element.name).slice(0, 120)),
         }));
       if (elements.length > MAX_READ_ELEMENTS) {
         view.elementsTruncated = true;
@@ -539,14 +624,14 @@ function readViewsFrom(raw: unknown): AoiHostBrowserDriveReadView[] {
       view.tabs = entry.tabs.filter(isRecord).map((tab) => ({
         index: typeof tab.index === 'number' ? tab.index : 0,
         url: asString(tab.url),
-        title: asString(tab.title).slice(0, 200),
+        title: defuseRoleMarkers(asString(tab.title).slice(0, 200)),
         current: tab.current === true,
       }));
     }
     const extract = isRecord(entry.extract) ? entry.extract : null;
     if (extract && typeof extract.text === 'string' && extract.text) {
       view.kind = view.kind ?? 'extract';
-      view.text = extract.text.slice(0, MAX_READ_TEXT);
+      view.text = defuseRoleMarkers(extract.text.slice(0, MAX_READ_TEXT));
     }
     // Only carry a step that actually observed something.
     if (view.snapshotId || view.tabs || view.text) {
@@ -554,6 +639,91 @@ function readViewsFrom(raw: unknown): AoiHostBrowserDriveReadView[] {
     }
   }
   return views;
+}
+
+/**
+ * What the page showed once the act had a moment to land, as the executor saw
+ * it. The only look at the act's result there will be: the session closes with
+ * the call, and the next one starts over in a new tab.
+ */
+export interface AoiHostBrowserDriveAfterActView {
+  waitedMs: number;
+  url: string;
+  urlChanged: boolean;
+  textRead: boolean;
+  textAppeared: string[];
+  textGone: string[];
+  textAppearedOmitted?: number;
+  textGoneOmitted?: number;
+  textReordered?: true;
+  textTruncated?: true;
+  tabsOpened?: { index: number; url: string; title: string; denylisted?: true }[];
+  dialog?: { type: string; message: string };
+  // A dialog came up before the act returned: whether the act went through is
+  // not known.
+  actInterrupted?: true;
+}
+
+const MAX_AFTER_ACT_LINES = 12;
+// The kinds a browser raises. Anything else is called a plain "dialog": the
+// type is said to the model in a sentence, so it is not free text.
+const DIALOG_TYPES: ReadonlySet<string> = new Set(['alert', 'confirm', 'prompt', 'beforeunload']);
+const MAX_AFTER_ACT_LINE = 200;
+
+function pageLines(raw: unknown): string[] {
+  return Array.isArray(raw)
+    ? raw
+        .filter((line): line is string => typeof line === 'string' && line.length > 0)
+        .slice(0, MAX_AFTER_ACT_LINES)
+        .map((line) => defuseRoleMarkers(line.slice(0, MAX_AFTER_ACT_LINE + 3)))
+    : [];
+}
+
+function countOf(raw: unknown): number {
+  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
+}
+
+function afterActViewFrom(raw: unknown): AoiHostBrowserDriveAfterActView | null {
+  if (!isRecord(raw) || typeof raw.url !== 'string') {
+    return null;
+  }
+  const tabs = Array.isArray(raw.tabsOpened)
+    ? raw.tabsOpened.filter(isRecord).map((tab) => ({
+        index: typeof tab.index === 'number' ? tab.index : 0,
+        url: asString(tab.url),
+        title: defuseRoleMarkers(asString(tab.title).slice(0, 200)),
+        ...(tab.denylisted === true ? { denylisted: true as const } : {}),
+      }))
+    : [];
+  const dialog = isRecord(raw.dialog) ? raw.dialog : null;
+  const appearedOmitted = countOf(raw.textAppearedOmitted);
+  const goneOmitted = countOf(raw.textGoneOmitted);
+  return {
+    waitedMs: countOf(raw.waitedMs),
+    url: raw.url,
+    urlChanged: raw.urlChanged === true,
+    textRead: raw.textRead === true,
+    textAppeared: pageLines(raw.textAppeared),
+    textGone: pageLines(raw.textGone),
+    ...(appearedOmitted ? { textAppearedOmitted: appearedOmitted } : {}),
+    ...(goneOmitted ? { textGoneOmitted: goneOmitted } : {}),
+    ...(raw.textRead === true && raw.textReordered === true
+      ? { textReordered: true as const }
+      : {}),
+    ...(raw.textRead === true && raw.textTruncated === true
+      ? { textTruncated: true as const }
+      : {}),
+    ...(tabs.length ? { tabsOpened: tabs } : {}),
+    ...(dialog
+      ? {
+          dialog: {
+            type: DIALOG_TYPES.has(asString(dialog.type)) ? asString(dialog.type) : 'dialog',
+            message: defuseRoleMarkers(asString(dialog.message).slice(0, 300)),
+          },
+        }
+      : {}),
+    ...(raw.actInterrupted === true ? { actInterrupted: true as const } : {}),
+  };
 }
 
 export interface AoiHostBrowserDriveActExecuteView {
@@ -569,6 +739,8 @@ export interface AoiHostBrowserDriveActExecuteView {
   verdict?: AoiBrowserDriveVerdict;
   // What the read steps before the act observed: element refs, tabs, page text.
   reads?: AoiHostBrowserDriveReadView[];
+  // The page looked at again after the act.
+  observedAfter?: AoiHostBrowserDriveAfterActView;
   // Present and false when the act happened but the audit ledger could not be
   // written. The daemon reports this; picking a fixed set of fields here dropped
   // it, so the flag existed and reached nobody -- the act looked cleanly
@@ -641,6 +813,10 @@ export async function runAoiHostBrowserDriveActExecute(
     ...((): { reads?: AoiHostBrowserDriveReadView[] } => {
       const reads = readViewsFrom(result.prefix);
       return reads.length ? { reads } : {};
+    })(),
+    ...((): { observedAfter?: AoiHostBrowserDriveAfterActView } => {
+      const observedAfter = afterActViewFrom(target.afterAct);
+      return observedAfter ? { observedAfter } : {};
     })(),
     ...(result.auditRecorded === false ? { auditRecorded: false as const } : {}),
   };
@@ -1072,8 +1248,11 @@ export interface AoiHostDesktopActView {
 }
 
 // List drivable top-level windows. Throws (403) when os_desktop_input is off.
-export async function listAoiHostDesktopWindows(): Promise<AoiHostDesktopWindowView[]> {
-  const payload = await sendJson('/desktop-input', 'POST', { op: 'list_windows' });
+// timeoutMs lets a caller that only wants a quick look give up early.
+export async function listAoiHostDesktopWindows(
+  options: { timeoutMs?: number } = {},
+): Promise<AoiHostDesktopWindowView[]> {
+  const payload = await sendDesktopInput({ op: 'list_windows' }, options.timeoutMs);
   const windows = Array.isArray(payload.windows) ? payload.windows : [];
   return windows.filter(isRecord).map((record) => ({
     hwnd: asString(record.hwnd),
@@ -1086,8 +1265,9 @@ export async function listAoiHostDesktopWindows(): Promise<AoiHostDesktopWindowV
 // makes a ref usable, and it is valid for THIS snapshot only.
 export async function snapshotAoiHostDesktopWindow(
   hwnd: string,
+  options: { timeoutMs?: number } = {},
 ): Promise<AoiHostDesktopSnapshotView> {
-  const payload = await sendJson('/desktop-input', 'POST', { op: 'snapshot', hwnd });
+  const payload = await sendDesktopInput({ op: 'snapshot', hwnd }, options.timeoutMs);
   const snapshot = isRecord(payload.snapshot) ? payload.snapshot : {};
   const elements = Array.isArray(snapshot.elements) ? snapshot.elements : [];
   const mapped = elements.filter(isRecord);
@@ -1134,15 +1314,24 @@ export async function clickAoiHostDesktopPoint(params: {
   hwnd: string;
   x: number;
   y: number;
+  // 'window': x/y measured from the window rectangle's top-left (frame
+  // included), the space of a desktop_capture picture. Default: client area.
+  space?: 'window' | 'client';
+  // The window size the picture was taken at, so a resized window is refused.
+  windowWidth?: number;
+  windowHeight?: number;
   button?: string;
   clicks?: number;
   delivery?: 'background' | 'foreground';
 }): Promise<AoiHostDesktopActView> {
-  const payload = await sendJson('/desktop-input', 'POST', {
+  const payload = await sendDesktopInput({
     op: 'click',
     hwnd: params.hwnd,
     x: params.x,
     y: params.y,
+    ...(params.space ? { space: params.space } : {}),
+    ...(typeof params.windowWidth === 'number' ? { windowWidth: params.windowWidth } : {}),
+    ...(typeof params.windowHeight === 'number' ? { windowHeight: params.windowHeight } : {}),
     ...(params.button ? { button: params.button } : {}),
     ...(typeof params.clicks === 'number' ? { clicks: params.clicks } : {}),
     ...(params.delivery ? { delivery: params.delivery } : {}),
@@ -1174,7 +1363,7 @@ export async function actOnAoiHostDesktopElement(params: {
   // whether it is granted -- asking is not the same as being allowed.
   const wantsForeground =
     params.allowForeground === true || params.delivery === 'foreground' || op === 'drag';
-  const payload = await sendJson('/desktop-input', 'POST', {
+  const payload = await sendDesktopInput({
     op,
     hwnd: params.hwnd,
     ref: params.ref,
@@ -1227,7 +1416,7 @@ export interface AoiHostDesktopAppView {
 
 // Running apps that have windows, grouped by program.
 export async function listAoiHostDesktopApps(): Promise<AoiHostDesktopAppView[]> {
-  const payload = await sendJson('/desktop-input', 'POST', { op: 'list_apps' });
+  const payload = await sendDesktopInput({ op: 'list_apps' });
   const apps = Array.isArray(payload.apps) ? payload.apps : [];
   return apps.filter(isRecord).map((record) => ({
     process: asString(record.process),
@@ -1252,7 +1441,7 @@ export async function sendAoiHostDesktopWindowInput(params: {
   text?: string;
   delivery?: 'background' | 'foreground';
 }): Promise<AoiHostDesktopActView> {
-  const payload = await sendJson('/desktop-input', 'POST', {
+  const payload = await sendDesktopInput({
     op: params.op,
     hwnd: params.hwnd,
     ...(params.keys ? { keys: params.keys } : {}),
@@ -1270,6 +1459,9 @@ export interface AoiHostDesktopCaptureView {
   width: number;
   height: number;
   scale: number;
+  // The window's own size when it was pictured (before the picture was shrunk).
+  windowWidth: number;
+  windowHeight: number;
   totalElements: number;
   elements: AoiHostDesktopElementView[];
   // A data: URL ready to attach to a message. Deliberately not written to disk
@@ -1289,12 +1481,14 @@ export async function captureAoiHostDesktopWindow(params: {
   hwnd: string;
   mode?: 'som' | 'plain';
   maxLongSide?: number;
+  maxShortSide?: number;
 }): Promise<AoiHostDesktopCaptureView> {
-  const payload = await sendJson('/desktop-input', 'POST', {
+  const payload = await sendDesktopInput({
     op: 'capture',
     hwnd: params.hwnd,
     mode: params.mode ?? 'som',
     ...(typeof params.maxLongSide === 'number' ? { maxLongSide: params.maxLongSide } : {}),
+    ...(typeof params.maxShortSide === 'number' ? { maxShortSide: params.maxShortSide } : {}),
   });
   const capture = isRecord(payload.capture) ? payload.capture : {};
   const elements = Array.isArray(capture.elements) ? capture.elements : [];
@@ -1305,6 +1499,8 @@ export async function captureAoiHostDesktopWindow(params: {
     width: typeof capture.width === 'number' ? capture.width : 0,
     height: typeof capture.height === 'number' ? capture.height : 0,
     scale: typeof capture.scale === 'number' ? capture.scale : 1,
+    windowWidth: typeof capture.windowWidth === 'number' ? capture.windowWidth : 0,
+    windowHeight: typeof capture.windowHeight === 'number' ? capture.windowHeight : 0,
     totalElements: typeof capture.totalElements === 'number' ? capture.totalElements : 0,
     elements: elements.filter(isRecord).map((record) => ({
       ref: typeof record.ref === 'number' ? record.ref : 0,

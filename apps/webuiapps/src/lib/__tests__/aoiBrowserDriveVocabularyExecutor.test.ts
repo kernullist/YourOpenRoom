@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  AOI_BROWSER_DRIVE_REACH_SELECTORS as REACH,
   computeAoiBrowserDriveActionFingerprint,
   executeAoiBrowserDriveStep,
   type AoiBrowserDriveActablePage,
@@ -16,7 +17,7 @@ import type { AoiBrowserDriveActionRequest } from '../aoiBrowserDriveAction';
 
 const ALLOWLIST: AoiBrowserDriveAllowlist = addAoiBrowserDriveAllowlistEntry(
   { version: 1, entries: [], updatedAt: 0 },
-  { domain: 'evil.test' },
+  { domain: 'evil.example' },
   1,
 ).allowlist;
 
@@ -27,6 +28,10 @@ interface VocabPageOptions {
   // Per-selector text, so a drag's SOURCE and DESTINATION can read differently.
   domTextBySelector?: Record<string, string>;
   domAttributes?: Record<string, string>;
+  // Per-selector attributes, over `domAttributes`.
+  domAttributesBySelector?: Record<string, Record<string, string>>;
+  // A dialog the page is showing.
+  pendingDialog?: { type: string; message: string };
   tabs?: { index: number; url: string; title: string; current: boolean }[];
   // What listTabs reports AFTER selectTab -- a session that ignores the switch
   // keeps reporting the old tab as current.
@@ -34,6 +39,15 @@ interface VocabPageOptions {
   dialogNeverResolves?: boolean;
   dialogMessage?: string;
   omit?: string[];
+}
+
+// One document, and a first match is the match: the live-DOM check's "first
+// of" and "this document's root" steps fold away, so tests name elements plainly.
+function normalize(selector: string): string {
+  const rootStep = ' >> xpath=ancestor-or-self::*[last()] >> ';
+  const atRoot = selector.lastIndexOf(rootStep);
+  const scoped = atRoot >= 0 ? selector.slice(atRoot + rootStep.length) : selector;
+  return scoped.split(' >> nth=0').join('');
 }
 
 function vocabPage(options: VocabPageOptions = {}) {
@@ -52,14 +66,20 @@ function vocabPage(options: VocabPageOptions = {}) {
     screenshot: vi.fn(async () => new Uint8Array([1])),
     mouse: { wheel: vi.fn(async () => {}) },
     textContent: vi.fn(async (selector: string) => {
-      if (options.domTextBySelector && selector in options.domTextBySelector) {
-        return options.domTextBySelector[selector];
+      const key = normalize(selector);
+      if (options.domTextBySelector && key in options.domTextBySelector) {
+        return options.domTextBySelector[key];
       }
       return options.domTextContent ?? null;
     }),
-    getAttribute: vi.fn(async (_selector: string, name: string) => {
-      return options.domAttributes?.[name] ?? null;
+    getAttribute: vi.fn(async (selector: string, name: string) => {
+      return (
+        options.domAttributesBySelector?.[normalize(selector)]?.[name] ??
+        options.domAttributes?.[name] ??
+        null
+      );
     }),
+    ...(options.pendingDialog ? { pendingDialog: () => options.pendingDialog } : {}),
     inputValue: vi.fn(async () => ''),
     hover: vi.fn(async (selector: string) => calls.push(`hover:${selector}`)),
     dragAndDrop: vi.fn(async (from: string, to: string) => calls.push(`drag:${from}->${to}`)),
@@ -216,6 +236,208 @@ describe('uploads are gated, not merely declared', () => {
   });
 });
 
+// The tool schema tells the model to send snake_case keys. The act used to read
+// only the camelCase ones, so a model that followed the schema had every one of
+// these fail -- and an upload's file was missing from the approval fingerprint.
+describe('the snake_case keys the tool schema documents', () => {
+  const snake = (action: Record<string, unknown>) =>
+    action as unknown as AoiBrowserDriveActionRequest;
+
+  it('switch tabs by tab_index', async () => {
+    const { page } = vocabPage();
+    const result = await runStep(page, snake({ kind: 'tab', tab_index: 1 }));
+    expect(result.ok).toBe(true);
+    expect(result.tabSwitched).toBe(true);
+  });
+
+  it('drag to to_selector', async () => {
+    const { page, calls } = vocabPage({ domTextBySelector: { '#a': 'card', '#b': 'column two' } });
+    const result = await runStep(page, snake({ kind: 'drag', selector: '#a', to_selector: '#b' }));
+    expect(result.ok).toBe(true);
+    expect(calls).toContain('drag:#a->#b');
+  });
+
+  it('upload the file named by file_path', async () => {
+    const { page, calls } = vocabPage();
+    const result = await runStep(
+      page,
+      snake({ kind: 'upload', selector: '#file', file_path: 'C:/work/a.pdf' }),
+      () => ({ allowed: true, reason: 'inside a registered root' }),
+    );
+    expect(result.ok).toBe(true);
+    expect(calls).toContain('upload:#file=C:/work/a.pdf');
+  });
+
+  it('bind file_path and prompt_text into the approval fingerprint', () => {
+    const upload = (file: string) =>
+      computeAoiBrowserDriveActionFingerprint(
+        'goal',
+        0,
+        snake({ kind: 'upload', selector: '#file', file_path: file }),
+        'example.com',
+      );
+    expect(upload('C:/work/a.pdf')).not.toBe(upload('C:/work/b.pdf'));
+    // And a key's spelling is not part of what was approved.
+    expect(upload('C:/work/a.pdf')).toBe(
+      computeAoiBrowserDriveActionFingerprint(
+        'goal',
+        0,
+        { kind: 'upload', selector: '#file', filePath: 'C:/work/a.pdf' },
+        'example.com',
+      ),
+    );
+    const prompt = (text: string) =>
+      computeAoiBrowserDriveActionFingerprint(
+        'goal',
+        0,
+        snake({ kind: 'dialog', disposition: 'accept', prompt_text: text }),
+        'example.com',
+      );
+    expect(prompt('yes')).not.toBe(prompt('delete everything'));
+  });
+});
+
+// The denylist used to stop at navigation: a plan could reach a denied host by
+// switching to a tab the operator already had open on it, and the tab listing
+// handed over every tab's address and title.
+// The live-DOM re-check covers press and select now. The form a field sits in is
+// what Enter submits, so its submit control's text is what the hard-block reads.
+describe('press and select are re-checked against the live page', () => {
+  // The button Enter in #card presses: its form's default button.
+  const FORM = REACH.defaultInForm(`#card >> ${REACH.ANCESTOR_FORM}`);
+
+  it('refuses Enter in a field whose form pays', async () => {
+    const { page } = vocabPage({ domTextBySelector: { '#card': '', [FORM]: '결제하기' } });
+    const result = await runStep(page, { kind: 'press', selector: '#card', key: 'Enter' });
+    expect(result.ok).toBe(false);
+    expect(result.stopReason).toBe('forbidden');
+  });
+
+  it('refuses a key in a field the page marks as a password', async () => {
+    const { page } = vocabPage({ domAttributes: { type: 'password' } });
+    const result = await runStep(page, { kind: 'press', selector: '#pw', key: 'Enter' });
+    expect(result.stopReason).toBe('forbidden');
+  });
+
+  it('refuses choosing an option in a payment field the page describes', async () => {
+    const { page } = vocabPage({ domAttributes: { autocomplete: 'cc-exp-year' } });
+    const result = await runStep(page, { kind: 'select', selector: '#year', value: '2030' });
+    expect(result.stopReason).toBe('forbidden');
+  });
+
+  it('still refuses a click on a pay button read from the page', async () => {
+    const { page, calls } = vocabPage({ domTextBySelector: { '#go': 'Pay now' } });
+    const result = await runStep(page, { kind: 'click', selector: '#go' });
+    expect(result.stopReason).toBe('forbidden');
+    expect(calls).not.toContain('click:#go');
+  });
+
+  it('finds the form of a field addressed by a Playwright selector', async () => {
+    // `form:has(text=Card number)` is not CSS, so the old read failed quietly
+    // and Enter went through unchecked.
+    const field = 'text=Card number';
+    const { page } = vocabPage({
+      domTextBySelector: {
+        [field]: '',
+        [REACH.defaultInForm(`${field} >> ${REACH.ANCESTOR_FORM}`)]: 'Pay now',
+      },
+    });
+    const result = await runStep(page, { kind: 'press', selector: field, key: 'Enter' });
+    expect(result.stopReason).toBe('forbidden');
+  });
+
+  it('reads the button of a form the field only names', async () => {
+    // <input form="checkout"> sits outside its form; <button form="checkout">
+    // may too.
+    const { page } = vocabPage({
+      domTextBySelector: {
+        '#qty': '',
+        [normalize(REACH.defaultNamingForm('#qty', 'checkout'))]: 'Place order',
+      },
+      domAttributesBySelector: { '#qty': { form: 'checkout' } },
+    });
+    const result = await runStep(page, { kind: 'press', selector: '#qty', key: 'Enter' });
+    expect(result.stopReason).toBe('forbidden');
+  });
+
+  it('refuses an act on a target it could not read to check', async () => {
+    // The element was not there within the check's wait. One that turned up
+    // after the check gave up would have been clicked unexamined.
+    const { page, calls } = vocabPage();
+    (page as unknown as { textContent: () => Promise<string> }).textContent = async () => {
+      throw new Error('Timeout 3000ms exceeded');
+    };
+    const result = await runStep(page, { kind: 'click', selector: '#later' });
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('target_unreadable');
+    expect(calls).not.toContain('click:#later');
+  });
+
+  it('refuses a download whose control commits a payment', async () => {
+    const { page, calls } = vocabPage({ domTextBySelector: { '#get': 'Buy now' } });
+    const result = await runStep(
+      page,
+      { kind: 'download', selector: '#get', filePath: 'C:/Downloads' },
+      undefined,
+      () => ({ allowed: true, reason: '' }),
+    );
+    expect(result.stopReason).toBe('forbidden');
+    expect(calls.some((entry) => entry.startsWith('download:'))).toBe(false);
+  });
+
+  it('lets an ordinary Enter through to approval', async () => {
+    const { page } = vocabPage({
+      domTextBySelector: {
+        '#search': '',
+        [REACH.defaultInForm(`#search >> ${REACH.ANCESTOR_FORM}`)]: 'Search',
+      },
+    });
+    const result = await runStep(page, { kind: 'press', selector: '#search', key: 'Enter' });
+    expect(result.ok).toBe(true);
+  });
+});
+
+describe('tabs obey the denylist', () => {
+  const tabsWithDeniedOne = (current: number) => [
+    { index: 0, url: 'https://example.com/app', title: 'App', current: current === 0 },
+    { index: 1, url: 'https://evil.example/inbox', title: 'Secret inbox', current: current === 1 },
+    { index: 2, url: 'about:blank', title: '', current: current === 2 },
+  ];
+
+  it('lists a denylisted tab without its address or title', async () => {
+    const { page } = vocabPage({ tabs: tabsWithDeniedOne(0) });
+    const result = await runStep(page, { kind: 'tabs' });
+    expect(result.ok).toBe(true);
+    expect(result.tabs).toEqual([
+      { index: 0, url: 'https://example.com/app', title: 'App', current: true },
+      { index: 1, url: '', title: '', current: false, denylisted: true },
+      { index: 2, url: 'about:blank', title: '', current: false },
+    ]);
+  });
+
+  it('refuses to switch onto a denylisted tab and goes back to its own', async () => {
+    const { page, calls } = vocabPage({
+      tabs: tabsWithDeniedOne(0),
+      tabsAfterSelect: tabsWithDeniedOne(1),
+    });
+    const result = await runStep(page, { kind: 'tab', tabIndex: 1 });
+    expect(result.ok).toBe(false);
+    expect(result.stopReason).toBe('host_denylisted');
+    expect(calls).toContain('returnToOwnTab');
+    expect(JSON.stringify(result)).not.toContain('Secret inbox');
+  });
+
+  it('still switches to a blank tab', async () => {
+    const { page } = vocabPage({
+      tabs: tabsWithDeniedOne(0),
+      tabsAfterSelect: tabsWithDeniedOne(2),
+    });
+    const result = await runStep(page, { kind: 'tab', tabIndex: 2 });
+    expect(result.ok).toBe(true);
+    expect(result.tabSwitched).toBe(true);
+  });
+});
+
 describe('tab switching is verified, not assumed', () => {
   it('reports the tabs it can see', async () => {
     const { page } = vocabPage();
@@ -270,14 +492,68 @@ describe('dialogs', () => {
     expect(calls.some((entry) => entry.startsWith('dialog:'))).toBe(false);
   });
 
+  it('binds an approval to which tab the plan switched to', () => {
+    const act: AoiBrowserDriveActionRequest = { kind: 'click', selector: '#send' };
+    const withTab = (tabIndex: number) =>
+      computeAoiBrowserDriveActionFingerprint('goal', 1, act, 'example.com', [
+        { action: { kind: 'tab', tabIndex } },
+      ]);
+    // Shown one tab's page, approved there: that approval is not another tab's.
+    expect(withTab(1)).not.toBe(withTab(2));
+    expect(withTab(1)).toBe(withTab(1));
+  });
+
   it('does not hang forever when no dialog appears', async () => {
     // Without a bound this wedges the whole run: no step, no verdict, no way to
-    // tell what happened.
+    // tell what happened. (Dismissing may wait for one; accepting may not.)
     const { page } = vocabPage({ dialogNeverResolves: true });
-    const result = await runStep(page, { kind: 'dialog', disposition: 'accept' });
+    const result = await runStep(page, { kind: 'dialog', disposition: 'dismiss' });
     expect(result.ok).toBe(false);
     expect(result.detail ?? '').toContain('no dialog appeared');
   }, 20_000);
+
+  it("never navigates one of the operator's own tabs away", async () => {
+    // Their tab may hold a half-written message; navigating loses it.
+    for (const action of [
+      { kind: 'navigate', url: 'https://example.com/other' },
+      { kind: 'back' },
+    ] as AoiBrowserDriveActionRequest[]) {
+      const { page } = vocabPage();
+      (page as unknown as { isOnOwnTab: () => boolean }).isOnOwnTab = () => false;
+      const result = await runStep(page, action);
+      expect(result.ok, action.kind).toBe(false);
+      expect(result.detail, action.kind).toContain('not_own_tab');
+      expect((page as unknown as { goto: ReturnType<typeof vi.fn> }).goto).not.toHaveBeenCalled();
+      expect(
+        (page as unknown as { goBack: ReturnType<typeof vi.fn> }).goBack,
+      ).not.toHaveBeenCalled();
+    }
+  });
+
+  it('never accepts a dialog whose question nobody has read', async () => {
+    const { page, calls } = vocabPage();
+    const result = await runStep(page, { kind: 'dialog', disposition: 'accept' });
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('no dialog is showing');
+    expect(calls).not.toContain('dialog:accept');
+  });
+
+  it('reads the question off the page before accepting, and refuses a payment', async () => {
+    // The plan said nothing about money; the dialog did.
+    const { page, calls } = vocabPage({
+      pendingDialog: { type: 'confirm', message: 'Confirm payment of $480?' },
+    });
+    const result = await runStep(page, { kind: 'dialog', disposition: 'accept' });
+    expect(result.stopReason).toBe('forbidden');
+    expect(calls).not.toContain('dialog:accept');
+
+    const { page: harmless, calls: answered } = vocabPage({
+      pendingDialog: { type: 'confirm', message: 'Leave this page?' },
+    });
+    const accepted = await runStep(harmless, { kind: 'dialog', disposition: 'accept' });
+    expect(accepted.ok).toBe(true);
+    expect(answered).toContain('dialog:accept');
+  });
 });
 
 // An approval is bound to a fingerprint, so any field NOT in the fingerprint is
@@ -441,12 +717,12 @@ describe('containment does not navigate a tab Aoi does not own', () => {
     (page as unknown as { url: () => string }).url = () => here;
     (page as unknown as { click: (s: string) => Promise<void> }).click = async (selector) => {
       calls.push(`click:${selector}`);
-      here = 'https://evil.test/landed';
+      here = 'https://evil.example/landed';
     };
 
     const result = await runStep(page, { kind: 'click', selector: '#a' });
     expect(result.ok).toBe(false);
-    expect(result.stopReason).toBe('drift_to_denylist');
+    expect(result.stopReason).toBe('drift_after_act');
     // Come back to Aoi's own tab BEFORE blanking anything.
     expect(calls).toContain('returnToOwnTab');
   });

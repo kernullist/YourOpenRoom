@@ -24,6 +24,15 @@
 //   combo box             -> select by label, likewise readable back. Both exist
 //                            because a control that can only be clicked can
 //                            never be more than "unverifiable".
+//   canvas      pane      -> a child window that draws itself, the way a browser
+//                            or WPF window holds all its controls: with focus on
+//                            it, the helper cannot see what has focus "inside".
+//   "Terminal 1, bash" edit -> an editor's integrated terminal, inside a window
+//                            that is not a terminal itself.
+//   "Slow"      checkbox  -> applies each click 900 ms late, the way a slow app
+//                            does, so a toggle cannot be read back in time.
+//   "Alice"/"Bob" buttons -> share one control id, as list rows built from one
+//                            template share an automation id.
 //
 // The tally is what makes the background rung testable at all: the helper
 // reports a posted click as unverifiable BECAUSE it cannot see whether the app
@@ -57,11 +66,27 @@ const int kIdNotes = 107;
 const int kIdCheck = 108;
 const int kIdCombo = 109;
 const int kIdExtra = 110;
+const int kIdCanvas = 111;
+const int kIdTerminalPane = 112;
+const int kIdSlowCheck = 113;
+const int kIdTwin = 114;
+// One timer per request on the slow checkbox, so two requests really flip it
+// twice -- the way an app that toggles on click behaves.
+const UINT_PTR kSlowTimerBase = 1000;
 
 WNDPROC g_buttonProc = NULL;
 HWND g_renameMe = NULL;
 HWND g_tally = NULL;
 HWND g_message = NULL;
+HWND g_canvas = NULL;
+HWND g_terminalPane = NULL;
+HWND g_slowCheck = NULL;
+HWND g_twinA = NULL;
+HWND g_twinB = NULL;
+HWND g_console = NULL;
+UINT_PTR g_slowClicks = 0;
+WNDPROC g_slowProc = NULL;
+bool g_applyingSlow = false;
 
 int g_leftClicks = 0;
 int g_rightClicks = 0;
@@ -97,6 +122,22 @@ LRESULT CALLBACK ButtonProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     return CallWindowProcW(g_buttonProc, hwnd, message, wParam, lParam);
 }
 
+// UI Automation sets a checkbox through BM_SETCHECK (or clicks it), and the
+// state reads back at once. A slow app does not: this one turns every request
+// into a flip of whatever the box shows 900 ms later, so a toggle cannot be read
+// back inside the helper's wait -- and a second toggle sent on that stale read
+// flips it straight back.
+LRESULT CALLBACK SlowCheckProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    if ((message == BM_SETCHECK || message == BM_CLICK) && !g_applyingSlow)
+    {
+        g_slowClicks += 1;
+        SetTimer(GetParent(hwnd), kSlowTimerBase + g_slowClicks, 900, NULL);
+        return 0;
+    }
+    return CallWindowProcW(g_slowProc, hwnd, message, wParam, lParam);
+}
+
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
     LRESULT result = 0;
@@ -129,6 +170,59 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                             reinterpret_cast<HINSTANCE>(
                                 GetWindowLongPtrW(hwnd, GWLP_HINSTANCE)),
                             NULL);
+        }
+        break;
+    }
+    // Test hooks: move keyboard focus inside the fixture without raising it, so
+    // the keyboard guards can be tested with focus on the password field.
+    case WM_APP + 1:
+    {
+        SetFocus(GetDlgItem(hwnd, kIdPassword));
+        break;
+    }
+    case WM_APP + 2:
+    {
+        SetFocus(g_message);
+        break;
+    }
+    case WM_APP + 3:
+    {
+        SetFocus(g_canvas);
+        break;
+    }
+    case WM_APP + 4:
+    {
+        SetFocus(g_terminalPane);
+        break;
+    }
+    // Hand the foreground to the fixture's other window. Windows sometimes gives
+    // a freshly started window the foreground, and a window in front has a
+    // readable focus -- the background case has to be made, not hoped for.
+    case WM_APP + 6:
+    {
+        if (g_console != NULL)
+        {
+            SetForegroundWindow(g_console);
+        }
+        break;
+    }
+    // The rows a list re-sorted or scrolled: same template, new names.
+    case WM_APP + 5:
+    {
+        SetWindowTextW(g_twinA, L"Kim");
+        SetWindowTextW(g_twinB, L"Lee");
+        break;
+    }
+    case WM_TIMER:
+    {
+        if (wParam > kSlowTimerBase)
+        {
+            KillTimer(hwnd, wParam);
+            const LRESULT state = SendMessageW(g_slowCheck, BM_GETCHECK, 0, 0);
+            g_applyingSlow = true;
+            SendMessageW(g_slowCheck, BM_SETCHECK, state == BST_CHECKED ? BST_UNCHECKED : BST_CHECKED,
+                         0);
+            g_applyingSlow = false;
         }
         break;
     }
@@ -200,7 +294,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR commandLine, int)
     }
 
     HWND window = CreateWindowExW(0, L"AoiInputTestFixture", title.c_str(), WS_OVERLAPPEDWINDOW,
-                                  CW_USEDEFAULT, CW_USEDEFAULT, 460, 420, NULL, NULL, instance,
+                                  CW_USEDEFAULT, CW_USEDEFAULT, 460, 480, NULL, NULL, instance,
                                   NULL);
     if (window == NULL)
     {
@@ -275,6 +369,58 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR commandLine, int)
             filler += entry;
         }
         SetWindowTextW(notes, filler.c_str());
+    }
+
+    // Created after everything above so their labels cannot re-associate with
+    // the controls the earlier tests address.
+    WNDCLASSEXW canvasClass = windowClass;
+    canvasClass.lpfnWndProc = DefWindowProcW;
+    canvasClass.lpszClassName = L"AoiTestCanvas";
+    RegisterClassExW(&canvasClass);
+    g_canvas = CreateWindowExW(WS_EX_CLIENTEDGE, L"AoiTestCanvas", L"",
+                               WS_CHILD | WS_VISIBLE | WS_TABSTOP, 16, 340, 80, 24, window,
+                               reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kIdCanvas)), instance,
+                               NULL);
+
+    CreateWindowExW(0, L"STATIC", L"Terminal 1, bash", WS_CHILD | WS_VISIBLE, 112, 342, 120, 20,
+                    window, NULL, NULL, NULL);
+    g_terminalPane = CreateWindowExW(
+        WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 236, 340, 180, 24,
+        window, reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kIdTerminalPane)), instance, NULL);
+
+    // BS_CHECKBOX, not AUTOCHECKBOX: the app sets the check itself, late.
+    g_slowCheck = CreateWindowExW(0, L"BUTTON", L"Slow", WS_CHILD | WS_VISIBLE | BS_CHECKBOX, 16,
+                                  376, 80, 24, window,
+                                  reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kIdSlowCheck)),
+                                  instance, NULL);
+    g_slowProc = reinterpret_cast<WNDPROC>(
+        SetWindowLongPtrW(g_slowCheck, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(SlowCheckProc)));
+
+    g_twinA = CreateWindowExW(0, L"BUTTON", L"Alice", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 112,
+                              376, 70, 24, window,
+                              reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kIdTwin)), instance,
+                              NULL);
+    g_twinB = CreateWindowExW(0, L"BUTTON", L"Bob", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 188,
+                              376, 70, 24, window,
+                              reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kIdTwin)), instance,
+                              NULL);
+
+    // A stand-in for a console window: same window class as conhost's, so the
+    // helper's terminal guard can be tested without opening a real shell.
+    WNDCLASSEXW consoleClass = windowClass;
+    consoleClass.lpfnWndProc = DefWindowProcW;
+    consoleClass.lpszClassName = L"ConsoleWindowClass";
+    if (RegisterClassExW(&consoleClass) != 0)
+    {
+        const std::wstring consoleTitle = title + L" Console";
+        HWND console = CreateWindowExW(0, L"ConsoleWindowClass", consoleTitle.c_str(),
+                                       WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 240,
+                                       160, NULL, NULL, instance, NULL);
+        if (console != NULL)
+        {
+            ShowWindow(console, SW_SHOWNOACTIVATE);
+            g_console = console;
+        }
     }
 
     // SW_SHOWNOACTIVATE: appearing must not steal the operator's focus. The

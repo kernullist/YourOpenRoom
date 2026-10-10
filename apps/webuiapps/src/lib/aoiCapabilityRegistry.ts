@@ -507,7 +507,7 @@ const AOI_CAPABILITY_REGISTRY = {
     approval: 'policy-gated',
     promptVisible: true,
     policyNotes:
-      'Requires Host Bridge os_browser_drive capability + browser-drive consent. Attaches to the MAIN profile; domains default to allowed and only the operator denylist blocks hosts. Interactions need per-action approval, and passwords/payments/CAPTCHAs are never entered.',
+      'Requires Host Bridge os_browser_drive capability + browser-drive consent. Runs on the dedicated browser profile the operator configured and signed in to (Chrome refuses remote debugging on the default profile); domains default to allowed and only the operator denylist blocks hosts. Interactions need per-action approval, and passwords/payments/CAPTCHAs are never entered.',
   },
   // The four tool names the browser-drive surface actually exposes to the model.
   // os_browser_drive above is the host-bridge CAPABILITY name, which is what the

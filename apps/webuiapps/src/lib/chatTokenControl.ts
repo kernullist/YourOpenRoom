@@ -1,3 +1,4 @@
+import { defuseRoleMarkers } from './aoiUntrustedText';
 import type { ChatMessage } from './llmClient';
 import { getAppRecognitionEntries } from './appRegistry';
 import { shouldEnableGhidraTools } from './aoiGhidraTools';
@@ -317,17 +318,22 @@ function summarizeUrlToolResult(result: string): string {
       site_name?: string;
       excerpt?: string;
       blocks?: Array<{ type?: string; text?: string }>;
+      note?: string;
     };
 
     return JSON.stringify({
+      // The note says whose words these are; it goes first and whole.
+      ...(typeof parsed.note === 'string' && parsed.note ? { note: parsed.note } : {}),
       url: parsed.url || '',
       final_url: parsed.final_url || parsed.url || '',
       title: parsed.title || '',
       site_name: parsed.site_name || '',
-      excerpt: truncateForTokenBudget(parsed.excerpt || '', 220, '…'),
+      // Defused again after the cut: "<systems>" is no marker, but cut to
+      // "<system…" it reads as one.
+      excerpt: defuseRoleMarkers(truncateForTokenBudget(parsed.excerpt || '', 220, '…')),
       blocks: (parsed.blocks || []).slice(0, MAX_URL_BLOCKS).map((block) => ({
         type: block.type || 'paragraph',
-        text: truncateForTokenBudget(block.text || '', MAX_URL_BLOCK_CHARS, '…'),
+        text: defuseRoleMarkers(truncateForTokenBudget(block.text || '', MAX_URL_BLOCK_CHARS, '…')),
       })),
     });
   } catch {
@@ -652,9 +658,292 @@ export function summarizeToolResultForModel(toolName: string, result: string): s
     case 'file_list':
     case 'list_apps':
       return summarizeListLikeResult(trimmed);
+    case 'browser_read_auth':
+    case 'host_browser_read':
+    case 'browser_drive_act':
+    case 'browser_drive_run':
+    case 'browser_drive_task':
+      return summarizeBrowserDriveToolResult(trimmed);
     default:
       return truncateForTokenBudget(trimmed, MAX_GENERIC_TOOL_RESULT_CHARS);
   }
+}
+
+// A page observation is bulky by nature; 2.2k characters cut one off mid-list.
+const MAX_BROWSER_DRIVE_RESULT_CHARS = 6000;
+
+// The fields that say what happened and what may be said about it. They go first
+// and are never shortened: the generic cut used to land after `reads`, so the
+// note telling the model not to claim success was the part that got dropped.
+const BROWSER_DRIVE_PRIORITY_KEYS = [
+  'status',
+  'ok',
+  'effect',
+  'verified',
+  'code',
+  'next',
+  'escalation',
+  'stop_reason',
+  'error',
+  'note',
+  'audit_recorded',
+  'step_index',
+  'final_url',
+  'approval_required',
+];
+
+// Never shortened, wherever they sit: `summary` says what the look after an act
+// found, `note` how the result may be used, and `dialog` is the question a page
+// put to the user. Halving one of those turns it into something it did not say.
+const BROWSER_DRIVE_PROTECTED_KEYS: ReadonlySet<string> = new Set(['summary', 'note', 'dialog']);
+
+// The priority fields are this app's own wording and stay whole -- unless one
+// carries something pathological, like an error that quotes a whole page.
+const MAX_PRIORITY_STRING_CHARS = 2000;
+
+// Long text is halved one piece at a time first, which keeps every item of a
+// list. Past this many rounds the lists themselves are halved: a result with
+// hundreds of long lines would otherwise run out of rounds still too big.
+const LEAF_ONLY_ROUNDS = 120;
+const MAX_SHRINK_ROUNDS = 400;
+// An item this big is a view of its own (a page extract, a read step), not one
+// entry of a list.
+const VIEW_ITEM_CHARS = 600;
+// How a list inside a list says what it lost.
+const NESTED_OMITTED = /^\.\.\.\[(\d+) more left out\]$/;
+
+type JsonContainer = Record<string, unknown> | unknown[];
+
+interface ShrinkTarget {
+  parent: JsonContainer;
+  key: string | number;
+  size: number;
+  // A list holding no list that could be halved itself.
+  innermost?: boolean;
+}
+
+// What to shorten next, outside the priority fields at the top level and the
+// protected ones at any depth. Long text and lists of small items come first; a
+// list whose items themselves hold long text or lists only loses whole items
+// once nothing inside them can shrink -- otherwise halving `reads` would drop an
+// entire page extract to save a few characters of it. `listsFirst` reverses
+// that, for when halving one piece of text at a time is not getting there.
+function findLargestShrinkable(
+  root: Record<string, unknown>,
+  listsFirst = false,
+  // Lists this summarizer cut and marked: their last item is its count.
+  marked: WeakSet<unknown[]> = new WeakSet(),
+): ShrinkTarget | null {
+  const best: {
+    leaf: ShrinkTarget | null;
+    container: ShrinkTarget | null;
+    innermostList: ShrinkTarget | null;
+  } = {
+    leaf: null,
+    container: null,
+    innermostList: null,
+  };
+  const consider = (tier: 'leaf' | 'container' | 'innermostList', target: ShrinkTarget) => {
+    const current = best[tier];
+    if (!current || target.size > current.size) {
+      best[tier] = target;
+    }
+  };
+  // Returns what at or below `value` can be shortened: anything at all, and a
+  // list that could be halved.
+  const visit = (
+    parent: JsonContainer,
+    key: string | number,
+    value: unknown,
+  ): { any: boolean; list: boolean } => {
+    if (typeof value === 'string') {
+      if (value.length <= 120) {
+        return { any: false, list: false };
+      }
+      consider('leaf', { parent, key, size: value.length });
+      return { any: true, list: false };
+    }
+    if (Array.isArray(value)) {
+      let inner = false;
+      let innerList = false;
+      let largestItem = 0;
+      value.forEach((item, index) => {
+        const found = visit(value, index, item);
+        inner = found.any || inner;
+        innerList = found.list || innerList;
+        largestItem = Math.max(largestItem, JSON.stringify(item ?? null).length);
+      });
+      // A marked list's last item is its count, not one of its items: with one
+      // real item left there is nothing to halve.
+      const items = marked.has(value) ? value.length - 1 : value.length;
+      if (items > 1) {
+        const target = { parent, key, size: JSON.stringify(value).length };
+        // A list of small items -- tabs, refs, lines -- can lose whole items
+        // like any long text loses its end. One whose items are whole views is
+        // shortened inside first.
+        consider(inner && largestItem > VIEW_ITEM_CHARS ? 'container' : 'leaf', target);
+        if (!innerList) {
+          consider('innermostList', target);
+        }
+        return { any: true, list: true };
+      }
+      return { any: inner, list: innerList };
+    }
+    if (value && typeof value === 'object') {
+      const record = value as Record<string, unknown>;
+      let inner = false;
+      let innerList = false;
+      for (const [childKey, child] of Object.entries(record)) {
+        if (!BROWSER_DRIVE_PROTECTED_KEYS.has(childKey)) {
+          const found = visit(record, childKey, child);
+          inner = found.any || inner;
+          innerList = found.list || innerList;
+        }
+      }
+      return { any: inner, list: innerList };
+    }
+    return { any: false, list: false };
+  };
+  for (const [key, value] of Object.entries(root)) {
+    if (!BROWSER_DRIVE_PRIORITY_KEYS.includes(key) && !BROWSER_DRIVE_PROTECTED_KEYS.has(key)) {
+      visit(root, key, value);
+    }
+  }
+  // Halving lists, the innermost go first: an outer list is always at least as
+  // big as one inside it, and halving it drops whole views -- a page extract
+  // and all its refs -- where halving the long list inside would do.
+  return listsFirst
+    ? (best.innermostList ?? best.container ?? best.leaf)
+    : (best.leaf ?? best.container);
+}
+
+// A cut can turn the end of a harmless word into a tag opener ("<systems>" cut
+// to "<system"), so whatever is cut is defused again.
+function cutText(value: string, keep: number): string {
+  return defuseRoleMarkers(`${value.slice(0, keep)}...[cut]`);
+}
+
+function cutPriorityString(value: unknown): unknown {
+  return typeof value === 'string' && value.length > MAX_PRIORITY_STRING_CHARS
+    ? cutText(value, MAX_PRIORITY_STRING_CHARS)
+    : value;
+}
+
+/**
+ * Shorten a browser-drive result to a budget without breaking it: the reply
+ * stays valid JSON, the verdict and note stay whole and first, and whatever was
+ * cut says so (`<key>_omitted` counts for lists, a marker on cut text, and the
+ * names of any whole fields that had to go).
+ */
+export function summarizeBrowserDriveToolResult(
+  trimmed: string,
+  budget = MAX_BROWSER_DRIVE_RESULT_CHARS,
+): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return truncateForTokenBudget(trimmed, budget);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return truncateForTokenBudget(trimmed, budget);
+  }
+  const source = parsed as Record<string, unknown>;
+  const ordered: Record<string, unknown> = {};
+  for (const key of BROWSER_DRIVE_PRIORITY_KEYS) {
+    if (key in source) {
+      ordered[key] = cutPriorityString(source[key]);
+    }
+  }
+  for (const [key, value] of Object.entries(source)) {
+    if (!(key in ordered)) {
+      ordered[key] = value;
+    }
+  }
+
+  const marked = new WeakSet<unknown[]>();
+  for (
+    let round = 0;
+    round < MAX_SHRINK_ROUNDS && JSON.stringify(ordered).length > budget;
+    round += 1
+  ) {
+    const target = findLargestShrinkable(ordered, round >= LEAF_ONLY_ROUNDS, marked);
+    if (!target) {
+      break;
+    }
+    const { parent, key } = target;
+    const value = (parent as Record<string | number, unknown>)[key];
+    // At most half per round, and no more than the budget still needs: halving
+    // when a few hundred characters would do threw most of a page away.
+    const over = JSON.stringify(ordered).length - budget;
+    if (typeof value === 'string') {
+      const keep = Math.max(Math.floor(value.length / 2), value.length - over - 16);
+      (parent as Record<string | number, unknown>)[key] = cutText(value, keep);
+    } else if (Array.isArray(value)) {
+      // A list inside a list has no key to say what it lost beside it, so it
+      // says so as its own last item -- carried forward when it is cut again.
+      // Only a list this summarizer marked carries a count: a page's own last
+      // cell that reads like one is a cell.
+      const earlier = marked.has(value)
+        ? Number(NESTED_OMITTED.exec(String(value[value.length - 1]))?.[1] ?? 0)
+        : 0;
+      const items = marked.has(value) ? value.slice(0, -1) : value;
+      const perItem = target.size / value.length;
+      const keep = Math.max(
+        Math.ceil(items.length / 2),
+        items.length - Math.ceil((over + 32) / Math.max(perItem, 1)),
+      );
+      const kept = items.slice(0, keep);
+      if (Array.isArray(parent)) {
+        kept.push(`...[${earlier + items.length - keep} more left out]`);
+        marked.add(kept);
+      }
+      (parent as Record<string | number, unknown>)[key] = kept;
+      if (!Array.isArray(parent) && typeof key === 'string') {
+        const omittedKey = `${key}_omitted`;
+        const already = typeof parent[omittedKey] === 'number' ? (parent[omittedKey] as number) : 0;
+        parent[omittedKey] = already + (items.length - keep);
+      }
+    }
+  }
+
+  if (JSON.stringify(ordered).length <= budget) {
+    return JSON.stringify(ordered);
+  }
+  // Still too big with nothing left to shorten: let whole fields go, the largest
+  // first and one at a time, and say which. What decides the turn stays.
+  const dropped: string[] = [];
+  const withDropNote = () =>
+    dropped.length
+      ? {
+          ...ordered,
+          left_out: dropped,
+          left_out_note:
+            'These parts of the result did not fit and were left out. What they showed is not ' +
+            'here; do not guess at it. A fresh read of the page shows what the site kept, not ' +
+            'what this act left on screen.',
+        }
+      : ordered;
+  while (JSON.stringify(withDropNote()).length > budget) {
+    const candidates = Object.keys(ordered).filter(
+      (key) => !BROWSER_DRIVE_PRIORITY_KEYS.includes(key),
+    );
+    // A protected field only goes once nothing else is left to let go of.
+    const unprotected = candidates.filter((key) => !BROWSER_DRIVE_PROTECTED_KEYS.has(key));
+    const pool = unprotected.length ? unprotected : candidates;
+    if (pool.length === 0) {
+      break;
+    }
+    const largest = pool.reduce((a, b) =>
+      JSON.stringify(ordered[a] ?? null).length >= JSON.stringify(ordered[b] ?? null).length
+        ? a
+        : b,
+    );
+    delete ordered[largest];
+    delete ordered[`${largest}_omitted`];
+    dropped.push(largest);
+  }
+  return JSON.stringify(withDropNote());
 }
 
 function normalizeSearchToken(value: string): string {

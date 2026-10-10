@@ -149,7 +149,7 @@ describe('buildAoiBrowserDriveSnapshot', () => {
     const c = snap('<button id="a">A</button><button id="b">B</button>');
     expect(a.id).toBe(b.id);
     expect(c.id).not.toBe(a.id);
-    expect(snap('<button id="a">A</button>', 'https://other.test/').id).not.toBe(a.id);
+    expect(snap('<button id="a">A</button>', 'https://other.example/').id).not.toBe(a.id);
   });
 
   it('survives empty and malformed html without throwing', () => {

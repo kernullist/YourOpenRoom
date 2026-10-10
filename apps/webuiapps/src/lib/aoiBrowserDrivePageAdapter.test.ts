@@ -130,6 +130,353 @@ describe('dialog handling', () => {
     expect(dialog.dismissed).toBe(0);
   });
 
+  it('leaves no abandon timer behind a dialog answered or released', async () => {
+    const cleared: unknown[] = [];
+    let next = 0;
+    const page = fakePage();
+    const handle = attachAoiBrowserDriveDialogs(page, {
+      abandonAfterMs: 1,
+      setTimer: (() => {
+        next += 1;
+        return next;
+      }) as unknown as typeof setTimeout,
+      clearTimer: ((id: unknown) => {
+        cleared.push(id);
+      }) as unknown as typeof clearTimeout,
+    });
+    page.fire(fakeDialog('Save changes?'));
+    await handle.answerDialog('accept');
+    expect(cleared).toEqual([1]);
+    page.fire(fakeDialog('Leave site?'));
+    await handle.releasePendingDialogs();
+    expect(cleared).toEqual([1, 2]);
+    // One answered as it arrives was never queued, and has no timer.
+    const pending = handle.answerDialog('dismiss');
+    page.fire(fakeDialog('Really?'));
+    await pending;
+    expect(cleared).toEqual([1, 2]);
+    expect(next).toBe(2);
+  });
+
+  describe('the question read', () => {
+    it('answers only a dialog that asks what was read', async () => {
+      const page = fakePage();
+      const handle = attachAoiBrowserDriveDialogs(page);
+      const pay = fakeDialog('Pay $49.00 now?');
+      page.fire(pay);
+      // Read as "Leave this page?", which the page let go and asked again in
+      // its place: nothing is answered, and the new one is still showing.
+      await expect(
+        handle.answerDialog('accept', undefined, { read: 'Leave this page?' }),
+      ).rejects.toThrow('not the one that was read');
+      expect(pay.accepted).toEqual([]);
+      expect(handle.pendingDialog()).toMatchObject({ message: 'Pay $49.00 now?' });
+      await expect(
+        handle.answerDialog('accept', undefined, { read: 'Pay $49.00 now?' }),
+      ).resolves.toBe('Pay $49.00 now?');
+      expect(pay.accepted).toEqual(['']);
+    });
+
+    it('waits for no later dialog in place of one that was read and is gone', async () => {
+      const page = fakePage();
+      const handle = attachAoiBrowserDriveDialogs(page);
+      await expect(
+        handle.answerDialog('accept', undefined, { read: 'Leave this page?' }),
+      ).rejects.toThrow('is gone');
+      // The next one the page raises is queued for reading, not answered.
+      const next = fakeDialog('Pay $49.00 now?');
+      page.fire(next);
+      expect(next.accepted).toEqual([]);
+      expect(handle.pendingDialog()).toMatchObject({ message: 'Pay $49.00 now?' });
+    });
+
+    it('answers nothing that comes after a wait given up on', async () => {
+      const page = fakePage();
+      const handle = attachAoiBrowserDriveDialogs(page);
+      await expect(handle.answerDialog('dismiss', undefined, { timeoutMs: 20 })).rejects.toThrow(
+        'no dialog appeared to answer',
+      );
+      const later = fakeDialog('Delete your account?');
+      page.fire(later);
+      expect(later.dismissed).toBe(0);
+      expect(handle.pendingDialog()).toMatchObject({ message: 'Delete your account?' });
+    });
+
+    it('answers one that comes within the wait, and lets the wait go', async () => {
+      const page = fakePage();
+      const clearTimer = vi.fn();
+      const handle = attachAoiBrowserDriveDialogs(page, {
+        setTimer: (() => 7) as unknown as typeof setTimeout,
+        clearTimer: clearTimer as unknown as typeof clearTimeout,
+      });
+      const answered = handle.answerDialog('dismiss', undefined, { timeoutMs: 5_000 });
+      const raised = fakeDialog('Leave site?');
+      page.fire(raised);
+      await expect(answered).resolves.toBe('Leave site?');
+      expect(raised.dismissed).toBe(1);
+      expect(clearTimer).toHaveBeenCalledWith(7);
+    });
+  });
+
+  describe('one dialog shown at a time', () => {
+    it('forgets a dialog still queued when another is shown, and never answers it', async () => {
+      const page = fakePage();
+      const handle = attachAoiBrowserDriveDialogs(page);
+      // The alert of the page before, closed by the browser, and the confirm
+      // the next page raised: an accept of the first would answer the second.
+      const closed = fakeDialog('Your cart was updated');
+      const live = fakeDialog('Pay $49.00 now?');
+      page.fire(closed);
+      page.fire(live);
+      expect(handle.pendingDialog()).toMatchObject({ message: 'Pay $49.00 now?' });
+      await expect(
+        handle.answerDialog('accept', undefined, { read: 'Your cart was updated' }),
+      ).rejects.toThrow('not the one that was read');
+      expect(closed.accepted).toEqual([]);
+      expect(closed.dismissed).toBe(0);
+      expect(live.accepted).toEqual([]);
+      await handle.releasePendingDialogs();
+      expect(closed.dismissed).toBe(0);
+      expect(live.dismissed).toBe(1);
+    });
+
+    it('puts back a dialog an answer failed on, unless another took its place', async () => {
+      const page = fakePage();
+      const handle = attachAoiBrowserDriveDialogs(page);
+      const stuck = fakeDialog('Leave this page?');
+      stuck.accept = async () => {
+        throw new Error(
+          'Protocol error (Page.handleJavaScriptDialog): Not attached to an active page',
+        );
+      };
+      page.fire(stuck);
+      await expect(handle.answerDialog('accept')).rejects.toThrow('Not attached');
+      // Still showing, so still what every act waits on.
+      expect(handle.pendingDialog()).toMatchObject({ message: 'Leave this page?' });
+      // One whose answer failed because another was shown in its place is gone.
+      const other = fakePage();
+      const second = attachAoiBrowserDriveDialogs(other);
+      const replaced = fakeDialog('Leave this page?');
+      replaced.accept = async () => {
+        other.fire(fakeDialog('Stay on this page?'));
+        throw new Error('No dialog is showing');
+      };
+      other.fire(replaced);
+      await expect(second.answerDialog('accept')).rejects.toThrow('No dialog is showing');
+      expect(second.pendingDialog()).toMatchObject({ message: 'Stay on this page?' });
+      // And one the browser says is not showing is gone too.
+      const third = fakePage();
+      const thirdHandle = attachAoiBrowserDriveDialogs(third);
+      const closed = fakeDialog('Your cart was updated');
+      closed.dismiss = async () => {
+        throw new Error('Protocol error (Page.handleJavaScriptDialog): No dialog is showing');
+      };
+      third.fire(closed);
+      await expect(thirdHandle.answerDialog('dismiss')).rejects.toThrow('No dialog is showing');
+      expect(thirdHandle.pendingDialog()).toBeNull();
+    });
+  });
+
+  describe('a page navigated away from', () => {
+    function navigablePage() {
+      const handlers = new Map<string, (arg?: unknown) => void>();
+      const top = { name: 'top' };
+      const page = {
+        url: () => 'https://example.com/',
+        on: (event: string, handler: (arg?: unknown) => void) => {
+          handlers.set(event, handler);
+        },
+        mainFrame: () => top,
+      } as unknown as AoiBrowserDriveRawPage;
+      const cleared: unknown[] = [];
+      let next = 0;
+      const handle = attachAoiBrowserDriveDialogs(page, {
+        setTimer: (() => (next += 1)) as unknown as typeof setTimeout,
+        clearTimer: ((id: unknown) => cleared.push(id)) as unknown as typeof clearTimeout,
+      });
+      const emit = (event: string, arg?: unknown) => handlers.get(event)?.(arg);
+      return { handle, emit, top, cleared };
+    }
+
+    it('lets a dialog go once the next document has loaded, without answering it', () => {
+      const { handle, emit, top, cleared } = navigablePage();
+      const old = fakeDialog('Your session has expired');
+      emit('dialog', old);
+      emit('framenavigated', top);
+      emit('domcontentloaded');
+      expect(handle.pendingDialog()).toBeNull();
+      // Forgotten, not dismissed: a dismiss now would answer the new page's.
+      expect(old.dismissed).toBe(0);
+      expect(cleared).toEqual([1]);
+    });
+
+    it('keeps a dialog the new page raised before its content loaded', () => {
+      const { handle, emit, top } = navigablePage();
+      emit('dialog', fakeDialog('Your session has expired'));
+      emit('framenavigated', top);
+      emit('dialog', fakeDialog('Allow notifications?'));
+      emit('domcontentloaded');
+      expect(handle.pendingDialog()).toMatchObject({ message: 'Allow notifications?' });
+    });
+
+    it('keeps a dialog through a route the page pushes, and a frame inside navigating', () => {
+      const { handle, emit, top } = navigablePage();
+      emit('dialog', fakeDialog('Your session has expired'));
+      // The top frame navigating within its document: no content loads after.
+      emit('framenavigated', top);
+      expect(handle.pendingDialog()).toMatchObject({ message: 'Your session has expired' });
+      // A frame inside the page navigating, then loading, closes nothing.
+      emit('framenavigated', { name: 'ad' });
+      expect(handle.pendingDialog()).toMatchObject({ message: 'Your session has expired' });
+    });
+
+    it('does not accept a dialog raised before the page navigated, and dismisses it', async () => {
+      const { handle, emit, top } = navigablePage();
+      const old = fakeDialog('Your session has expired');
+      emit('dialog', old);
+      emit('framenavigated', top);
+      // It may be gone, and an accept would answer whatever the page shows.
+      await expect(handle.answerDialog('accept')).rejects.toThrow('nothing was accepted');
+      expect(old.accepted).toEqual([]);
+      await expect(handle.answerDialog('dismiss')).resolves.toBe('Your session has expired');
+      expect(old.dismissed).toBe(1);
+      // Answered before the new document loaded: nothing is left to let go.
+      emit('domcontentloaded');
+      expect(handle.pendingDialog()).toBeNull();
+      // One raised after the navigation is the new page's own.
+      const fresh = fakeDialog('Keep shopping?');
+      emit('dialog', fresh);
+      await expect(handle.answerDialog('accept')).resolves.toBe('Keep shopping?');
+    });
+
+    it('keeps a dialog shown in place of another that the connection cannot answer, until the page moves', async () => {
+      const { handle, emit, top } = navigablePage();
+      // The page's alert, then a frame's confirm: the browser shows the new one,
+      // then closes the old -- and leaves the protocol none to answer.
+      emit('dialog', fakeDialog('Your cart was saved'));
+      const confirm = fakeDialog('Pay $49.00 now?');
+      let tries = 0;
+      confirm.dismiss = async () => {
+        tries += 1;
+        throw new Error('Protocol error (Page.handleJavaScriptDialog): No dialog is showing');
+      };
+      emit('dialog', confirm);
+      await expect(handle.answerDialog('dismiss')).rejects.toThrow('cannot be answered');
+      const view = handle.pendingDialog();
+      expect(view).toEqual({ type: 'confirm', message: 'Pay $49.00 now?', unanswerable: true });
+      // Asked again, nothing is tried: nothing can answer it.
+      await expect(handle.answerDialog('accept')).rejects.toThrow('navigate or go back');
+      expect(tries).toBe(1);
+      expect(confirm.accepted).toEqual([]);
+      expect(handle.pendingDialog()).toBe(view);
+      // Leaving the page closes it.
+      emit('framenavigated', top);
+      emit('domcontentloaded');
+      expect(handle.pendingDialog()).toBeNull();
+    });
+  });
+
+  describe('a dialog a frame inside the page raised', () => {
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+    it('is dismissed at once, not held for a page to remove its frame under it', async () => {
+      const page = fakePage();
+      const fromAFrame = vi.fn(async (dialog: AoiBrowserDriveDialog) =>
+        dialog.message().startsWith('Widget'),
+      );
+      const leave = vi.fn(async () => {});
+      const handle = attachAoiBrowserDriveDialogs(page, { fromAFrame, leave });
+      const widget = fakeDialog('Widget says hi');
+      page.fire(widget);
+      await settle();
+      expect(widget.dismissed).toBe(1);
+      expect(handle.pendingDialog()).toBeNull();
+      expect(leave).not.toHaveBeenCalled();
+      // The top frame's own is held for a step to answer.
+      const own = fakeDialog('Discard draft?');
+      page.fire(own);
+      await settle();
+      expect(own.dismissed).toBe(0);
+      expect(handle.pendingDialog()).toMatchObject({ message: 'Discard draft?' });
+      await handle.answerDialog('dismiss');
+      expect(own.dismissed).toBe(1);
+      // One a step was waiting for is the step's: answered once, by the step --
+      // and asked about all the same, so that the browser's report of it is
+      // its own and no later dialog's.
+      const answering = handle.answerDialog('dismiss');
+      const taken = fakeDialog('Widget again');
+      page.fire(taken);
+      await answering;
+      await settle();
+      expect(taken.dismissed).toBe(1);
+      expect(fromAFrame).toHaveBeenCalledWith(taken);
+    });
+
+    it("lets a frame's ask to stay go, so the page can be left", async () => {
+      const page = fakePage();
+      const handle = attachAoiBrowserDriveDialogs(page, { fromAFrame: async () => true });
+      const stay = Object.assign(fakeDialog(''), { type: () => 'beforeunload' });
+      page.fire(stay);
+      await settle();
+      expect(stay.accepted).toEqual(['']);
+      expect(stay.dismissed).toBe(0);
+      expect(handle.pendingDialog()).toBeNull();
+      // A frame that cannot be told apart from the top is held, as before; and
+      // one that fails to say which it is, too.
+      const failing = attachAoiBrowserDriveDialogs(fakePage(), {
+        fromAFrame: () => {
+          throw new Error('no session');
+        },
+      });
+      const page2 = fakePage();
+      const held = attachAoiBrowserDriveDialogs(page2, {
+        fromAFrame: async () => {
+          throw new Error('Target closed');
+        },
+      });
+      const own = fakeDialog('Discard draft?');
+      page2.fire(own);
+      await settle();
+      expect(own.dismissed).toBe(0);
+      expect(held.pendingDialog()).toMatchObject({ message: 'Discard draft?' });
+      expect(failing.pendingDialog()).toBeNull();
+    });
+
+    it('leaves the page when no answer reaches it, before its frame can be removed', async () => {
+      const page = fakePage();
+      const leave = vi.fn(async () => {});
+      const handle = attachAoiBrowserDriveDialogs(page, {
+        fromAFrame: async (dialog) => dialog.message().startsWith('Widget'),
+        leave,
+      });
+      const noneShowing = async () => {
+        throw new Error('Protocol error (Page.handleJavaScriptDialog): No dialog is showing');
+      };
+      // The top frame's, held -- and a frame's shown in its place, which no
+      // answer reaches.
+      page.fire(fakeDialog('Your session will expire soon'));
+      const stuck = fakeDialog('Widget says hi');
+      stuck.dismiss = noneShowing;
+      page.fire(stuck);
+      await settle();
+      expect(leave).toHaveBeenCalledTimes(1);
+      expect(handle.pendingDialog()).toBeNull();
+      // One shown in place of none that is not showing is gone already: the
+      // page is not left for it -- nor for one that fails for another reason.
+      const gone = fakeDialog('Widget gone');
+      gone.dismiss = noneShowing;
+      page.fire(gone);
+      await settle();
+      const closed = fakeDialog('Widget closed');
+      closed.dismiss = async () => {
+        throw new Error('Target closed');
+      };
+      page.fire(closed);
+      await settle();
+      expect(leave).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('releases anything still queued on teardown', async () => {
     const page = fakePage();
     const handle = attachAoiBrowserDriveDialogs(page);
@@ -137,6 +484,36 @@ describe('dialog handling', () => {
     page.fire(dialog);
     await handle.releasePendingDialogs();
     expect(dialog.dismissed).toBe(1);
+  });
+
+  it('shows the waiting dialog without answering it', async () => {
+    const page = fakePage();
+    const handle = attachAoiBrowserDriveDialogs(page);
+    expect(handle.pendingDialog()).toBeNull();
+
+    const dialog = fakeDialog('Empty the cart?');
+    page.fire(dialog);
+    expect(handle.pendingDialog()).toEqual({ type: 'confirm', message: 'Empty the cart?' });
+    // The same view for as long as the same dialog waits.
+    expect(handle.pendingDialog()).toBe(handle.pendingDialog());
+    // Looking is not answering.
+    expect(dialog.dismissed).toBe(0);
+    expect(dialog.accepted).toEqual([]);
+
+    await handle.answerDialog('dismiss');
+    expect(handle.pendingDialog()).toBeNull();
+  });
+
+  it('still reports a dialog that cannot describe itself', () => {
+    const page = fakePage();
+    const handle = attachAoiBrowserDriveDialogs(page);
+    page.fire({
+      ...fakeDialog(''),
+      message: () => {
+        throw new Error('dialog already handled');
+      },
+    });
+    expect(handle.pendingDialog()).toEqual({ type: 'dialog', message: '' });
   });
 });
 
@@ -152,6 +529,28 @@ describe('tab handling', () => {
     const tabs = await handle.listTabs();
     expect(tabs.map((tab) => tab.url)).toEqual(['https://example.com/a', 'https://example.com/b']);
     expect(tabs.map((tab) => tab.current)).toEqual([true, false]);
+  });
+
+  it('lists a tab whose page holds its title -- a dialog showing -- without one, in time', async () => {
+    vi.useFakeTimers();
+    try {
+      const held = Object.assign(fakePage('https://example.com/held'), {
+        title: () => new Promise<string>(() => {}),
+      });
+      const failing = Object.assign(fakePage('https://example.com/gone'), {
+        title: async () => {
+          throw new Error('Execution context was destroyed');
+        },
+      });
+      const other = fakePage('https://example.com/b');
+      const handle = attachAoiBrowserDriveTabs(fakeContext([held, failing, other]), held);
+      const listing = handle.listTabs();
+      await vi.advanceTimersByTimeAsync(1_000);
+      const tabs = await listing;
+      expect(tabs.map((tab) => tab.title)).toEqual(['', '', 'title of https://example.com/b']);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('makes the selected tab the one later actions go to', async () => {
@@ -220,10 +619,13 @@ describe('saving a download', () => {
       suggested?: string;
       failure?: string | null;
       resolveBeforeClick?: boolean;
+      // A server that sends part of the file, then nothing.
+      stalls?: boolean;
     } = {},
   ) {
     const saved: string[] = [];
     const order: string[] = [];
+    const cancel = vi.fn(async () => {});
     let releaseDownload: ((download: unknown) => void) | null = null;
     const page = {
       url: () => 'https://example.com/',
@@ -246,13 +648,17 @@ describe('saving a download', () => {
     function makeDownload() {
       return {
         suggestedFilename: () => options.suggested ?? 'report.pdf',
-        saveAs: async (target: string) => {
-          saved.push(target);
-        },
+        saveAs: (target: string) =>
+          options.stalls
+            ? new Promise<void>((_resolve, reject) => {
+                cancel.mockImplementation(async () => reject(new Error('canceled')));
+              })
+            : Promise.resolve(void saved.push(target)),
         failure: async () => options.failure ?? null,
+        cancel,
       };
     }
-    return { page: page as unknown as AoiBrowserDriveDownloadablePage, saved, order };
+    return { page: page as unknown as AoiBrowserDriveDownloadablePage, saved, order, cancel };
   }
 
   it('saves the file into the given directory', async () => {
@@ -260,6 +666,35 @@ describe('saving a download', () => {
     const result = await downloadAoiBrowserDriveFile(page, '#report', 'C:/work/out');
     expect(saved).toEqual(['C:/work/out/report.pdf']);
     expect(result.path).toBe('C:/work/out/report.pdf');
+  });
+
+  it('leaves no wait unheard when the click fails', async () => {
+    const unheard: unknown[] = [];
+    const listen = (reason: unknown) => unheard.push(reason);
+    process.on('unhandledRejection', listen);
+    try {
+      const page = {
+        url: () => 'https://example.com/',
+        on: () => {},
+        waitForEvent: () =>
+          new Promise((_resolve, reject) => {
+            setTimeout(
+              () => reject(new Error('Timeout 10ms exceeded while waiting for event')),
+              10,
+            );
+          }),
+        click: async () => {
+          throw new Error('page.click: Timeout 5ms exceeded.');
+        },
+      } as unknown as AoiBrowserDriveDownloadablePage;
+      await expect(downloadAoiBrowserDriveFile(page, '#dl', 'C:/work/out')).rejects.toThrow(
+        'page.click',
+      );
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(unheard).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', listen);
+    }
   });
 
   it('arms the wait BEFORE clicking', async () => {
@@ -289,6 +724,23 @@ describe('saving a download', () => {
     const { page, saved } = downloadablePage();
     await downloadAoiBrowserDriveFile(page, '#report', 'C:/work/out/');
     expect(saved).toEqual(['C:/work/out/report.pdf']);
+  });
+
+  it("cancels a download that does not finish within the act's time", async () => {
+    // Saving waits for the whole file; a server that stalls it would hold the
+    // act until it gave up.
+    const { page, saved, cancel } = downloadablePage({ stalls: true });
+    const started = Date.now();
+    await expect(
+      downloadAoiBrowserDriveFile(page, '#report', 'C:/work/out', { timeout: 200 }),
+    ).rejects.toThrow('did not finish within the time');
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(saved).toEqual([]);
+    // In time, it lands.
+    const { page: quick, saved: landed } = downloadablePage();
+    await downloadAoiBrowserDriveFile(quick, '#report', 'C:/work/out', { timeout: 5_000 });
+    expect(landed).toEqual(['C:/work/out/report.pdf']);
   });
 
   it('reports a download that did not complete', async () => {
